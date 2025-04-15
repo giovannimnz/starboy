@@ -1,0 +1,37 @@
+API Key
+Pj9GvRwSHCQgLfmaKH44Fpwqdt8BDzxDUApXfxOZjqudC6HjmjU8c7xAm4p2LRuC
+
+Secret Key
+1vM1HFLC225QeWUswS2jU3tI2pkTxgFwXClBBakCOJlGXCTPQ7TOFaRHwsFG5hc5
+
+Bot Token
+6926113526:AAHwD6KwNw5JAe4nJ565DokdMLP3v8-HYfE
+
+API URL
+https://fapi.binance.com/fapi
+_____________________________________________________________________
+API URL Testnet
+https://testnet.binancefuture.com/fapi 
+
+API Key Testnet
+e091bce30ce186db0533ae0bdd26e7f04bce6cf434127e47e056c260b2b62296
+
+API Secret Testnet
+bfbb671a5a546baba3cf9704e1d5799e00552190fa302150ee524d2e75f5a456
+
+_____________________________________________________________________
+
+CoinStats
+
+API Key
+UZMITiN9V5UtgZu2MtBbniHOUe5eaBhAGbE3qNpZy7ozCLBI8NeT9o1kCQnHiprP
+
+Secret Key
+PwQfbgiibXP4kEWxEJq8sxpQFaYfMmsfh41i5tYBl4EUNZW75aWtiMwu8M8dEIeZ
+
+_____________________________________________________________________
+
+OpenAI API Key
+
+Secret key:
+sk-proj-F8K5lY3XEzNXPMI51kZgT3BlbkFJf377N195aMeVcfyc7TC0
