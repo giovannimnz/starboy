@@ -11,7 +11,7 @@ entry_group_id = 4217341650
 stoploss_group_id = 4263252665
 
 # Cliente Telegram
-client = TelegramClient('ATIUS-INDICATOR', api_id, api_hash)
+client = TelegramClient('webhook', api_id, api_hash)
 
 # Normaliza números no formato string (ex.: "1.234,56" -> "1234.56")
 def normalize_number(value):
