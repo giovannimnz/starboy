@@ -12,13 +12,6 @@ const apiSecret = process.env.API_SECRET;
 const apiUrl = process.env.API_URL;  // Deve ser https://fapi.binance.com/fapi
 const ws_apiUrl = process.env.WS_URL;
 
-// Fazer log dos valores para debugging
-console.log('[CONFIG] Valores de configuração carregados:');
-console.log(`API_KEY: ${apiKey ? '✓ Encontrado' : '✗ Não encontrado'}`);
-console.log(`API_SECRET: ${apiSecret ? '✓ Encontrado' : '✗ Não encontrado'}`);
-console.log(`API_URL: ${apiUrl}`);
-console.log(`WS_URL: ${ws_apiUrl}`);
-
 // Variável para armazenar os websockets de preço
 const priceWebsockets = {};
 
