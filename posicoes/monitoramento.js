@@ -7,7 +7,7 @@ const fs = require('fs').promises;
 const { Telegraf } = require("telegraf");
 const { newOrder, cancelOrder, newStopOrder, cancelAllOpenOrders } = require('../api');
 const { getAllLeverageBrackets } = require('../api');
-const {getDatabaseInstance, getPositionIdBySymbol, updatePositionInDb, checkOrderExists, getAllOrdersBySymbol, updatePositionStatus, insertNewOrder, disconnectDatabase, getAllPositionsFromDb, getOpenOrdersFromDb, getOrdersFromDb, updateOrderStatus, getPositionsFromDb, insertPosition, moveClosedPositionsAndOrders } = require('../db/conexao');
+const {getDatabaseInstance, getPositionIdBySymbol, updatePositionInDb, checkOrderExists, getAllOrdersBySymbol, updatePositionStatus, insertNewOrder, disconnectDatabase, getAllPositionsFromDb, getOpenOrdersFromDb, getOrdersFromDb, updateOrderStatus, getPositionsFromDb, insertPosition, moveClosedPositionsAndOrders, initializeDatabase} = require('../db/conexao');
 const websockets = require('../websockets');
 
 // Inicializar o bot do Telegram
