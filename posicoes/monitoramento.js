@@ -2,16 +2,17 @@ const axios = require('axios');
 const schedule = require('node-schedule');
 const fs = require('fs').promises;
 const path = require('path');
+require('dotenv').config(); // Garante que dotenv é carregado
 const { Telegraf } = require("telegraf");
 const { newOrder, cancelOrder, newStopOrder, cancelAllOpenOrders } = require('../api');
 const { getAllLeverageBrackets } = require('../api');
 const {getDatabaseInstance, getPositionIdBySymbol, updatePositionInDb, checkOrderExists, getAllOrdersBySymbol, updatePositionStatus, insertNewOrder, disconnectDatabase, getAllPositionsFromDb, getOpenOrdersFromDb, getOrdersFromDb, updateOrderStatus, getPositionsFromDb, insertPosition, moveClosedPositionsAndOrders } = require('../db/conexao');
-const { startUserDataStream, ensurePriceWebsocketExists } = require('../websockets');
+const websockets = require('../websockets');
 
 // Inicializar o bot do Telegram
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
-// Expor funções que serão chamadas pelo websocket.js
+// Definir funções de callback
 async function handleOrderUpdate(message, db) {
     const orderId = message.i;
     const status = message.X;
@@ -228,7 +229,7 @@ async function checkNewTrades() {
     // Monitorar também posições abertas
     const openTrades = positions.filter(trade => trade.status === 'ENTRY_FILLED');
     for (const trade of openTrades) {
-      ensurePriceWebsocketExists(trade.symbol);
+      websockets.ensurePriceWebsocketExists(trade.symbol);
     }
   } catch (error) {
     console.error('[MONITOR] Erro ao verificar novos trades:', error);
@@ -304,7 +305,7 @@ async function processNewTrade(trade, allPositions) {
     });
     
     // Iniciar monitoramento de preço para este símbolo
-    ensurePriceWebsocketExists(symbol);
+    websockets.ensurePriceWebsocketExists(symbol);
     
   } catch (error) {
     console.error(`[MONITOR] Erro ao processar novo trade para ${trade.symbol}:`, error);
@@ -320,12 +321,15 @@ monitorPositionsFile();
 // Adicionar essa linha antes de iniciar o startUserDataStream
 console.log('[INIT] Iniciando monitoramento de trades e posições...');
 
-// Iniciar o monitoramento
-startUserDataStream(getDatabaseInstance).catch(console.error);
+// Registrar os callbacks no módulo websockets
+websockets.setMonitoringCallbacks({
+  handleOrderUpdate,
+  handleAccountUpdate,
+  onPriceUpdate
+});
 
-// Exportar as funções que serão chamadas pelo websocket.js
-module.exports = {
-    handleOrderUpdate,
-    handleAccountUpdate,
-    onPriceUpdate
-};
+// Iniciar o monitoramento
+websockets.startUserDataStream(getDatabaseInstance).catch(console.error);
+
+// Não precisamos mais exportar estas funções
+module.exports = {};

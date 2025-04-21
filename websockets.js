@@ -2,15 +2,38 @@ const WebSocket = require('ws');
 const axios = require('axios');
 const path = require('path');
 const fs = require('fs').promises;
-const { handleOrderUpdate, handleAccountUpdate, processNewTrade } = require('./posicoes/monitoramento');
+require('dotenv').config(); // Garante que dotenv é carregado antes de acessar process.env
 
 // Variáveis globais
 const apiKey = process.env.API_KEY;
+const apiSecret = process.env.API_SECRET;
 const apiUrl = process.env.API_URL;
 const ws_apiUrl = process.env.WS_URL;
 
+// Verificações de segurança
+if (!apiKey || !apiSecret || !apiUrl || !ws_apiUrl) {
+  console.error('[ERRO] Variáveis de ambiente necessárias não foram carregadas:');
+  console.error(`API_KEY: ${apiKey ? 'OK' : 'FALTANDO'}`);
+  console.error(`API_SECRET: ${apiSecret ? 'OK' : 'FALTANDO'}`);
+  console.error(`API_URL: ${apiUrl ? 'OK' : 'FALTANDO'}`);
+  console.error(`WS_URL: ${ws_apiUrl ? 'OK' : 'FALTANDO'}`);
+  process.exit(1);
+}
+
 // Variável para armazenar os websockets de preço
 const priceWebsockets = {};
+
+// Funções que serão atribuídas dinamicamente depois
+let handleOrderUpdate;
+let handleAccountUpdate;
+let onPriceUpdate;
+
+// Função para definir as funções de callback do monitoramento
+function setMonitoringCallbacks(callbacks) {
+  handleOrderUpdate = callbacks.handleOrderUpdate;
+  handleAccountUpdate = callbacks.handleAccountUpdate;
+  onPriceUpdate = callbacks.onPriceUpdate;
+}
 
 // Função para criar o listenKey
 async function createListenKey() {
@@ -212,5 +235,5 @@ async function handlePriceUpdate(symbol, tickerData) {
 module.exports = {
   startUserDataStream,
   ensurePriceWebsocketExists,
-  handlePriceUpdate
+  setMonitoringCallbacks // Nova função para configurar callbacks
 };
