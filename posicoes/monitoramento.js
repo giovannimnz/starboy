@@ -189,7 +189,7 @@ async function ensureTablesExist(db) {
 
 // Agendar a função checkAndUpdateOrders para rodar a cada 2 minutos
 schedule.scheduleJob('*/2 * * * *', function() {
-    console.log('Running checkAndUpdateOrders...');
+    //console.log('Running checkAndUpdateOrders...');
     checkAndUpdateOrders();
 });
 

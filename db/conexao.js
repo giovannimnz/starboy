@@ -395,7 +395,7 @@ function getOrdersFromDb(db, params) {
                 console.error(err);
                 reject(err);
             } else if (rows.length === 0) {
-                console.log("Nenhuma ordem encontrada para os critérios fornecidos.");
+                //console.log("Nenhuma ordem encontrada para os critérios fornecidos.");
                 resolve([]);
             } else {
                 resolve(rows);
