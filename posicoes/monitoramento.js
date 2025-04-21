@@ -9,6 +9,9 @@ const { newOrder, cancelOrder, newStopOrder, cancelAllOpenOrders, getAllLeverage
 const {getDatabaseInstance, getPositionIdBySymbol, updatePositionInDb, checkOrderExists, getAllOrdersBySymbol, updatePositionStatus, insertNewOrder, disconnectDatabase, getAllPositionsFromDb, getOpenOrdersFromDb, getOrdersFromDb, updateOrderStatus, getPositionsFromDb, insertPosition, moveClosedPositionsAndOrders, initializeDatabase} = require('../db/conexao');
 const websockets = require('../websockets');
 
+// Adicione este conjunto no topo do arquivo para rastrear ordens já canceladas
+const cancelledOrders = new Set();
+
 // Inicializar o bot do Telegram
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
@@ -68,8 +71,17 @@ async function onPriceUpdate(symbol, currentPrice, relevantTrades, positions) {
                     console.log(`[MONITOR] TP atingido antes da entrada para ${symbol} - cancelando ordens`);
                     
                     try {
+                        // Verificar se já processamos esta ordem
+                        if (trade.entry_order_id && cancelledOrders.has(trade.entry_order_id)) {
+                            console.log(`[MONITOR] Ordem ${trade.entry_order_id} para ${symbol} já foi cancelada anteriormente. Ignorando.`);
+                            continue; // Pular para o próximo trade
+                        }
+
                         // Cancelar a ordem de entrada na Binance
                         await cancelOrder(trade.entry_order_id, symbol);
+                        
+                        // Adicionar à lista de ordens já canceladas
+                        cancelledOrders.add(trade.entry_order_id);
                         
                         // Remover a posição do banco de dados
                         const db = getDatabaseInstance();
@@ -87,17 +99,27 @@ async function onPriceUpdate(symbol, currentPrice, relevantTrades, positions) {
                             }
                         }
                         
-                        // Tentar enviar mensagem no Telegram somente se o chat_id for válido
-                        if (trade.chat_id) {
+                        // Verificar o chat_id antes de tentar enviar mensagem
+                        if (trade.chat_id && typeof trade.chat_id === 'number') {
                             try {
-                                await bot.telegram.sendMessage(trade.chat_id, 
-                                    `⚠️ Ordem para ${symbol} CANCELADA ⚠️\n\n` +
-                                    `O preço-alvo (${tpPrice}) foi atingido antes do ponto de entrada (${entryPrice}).\n\n` +
-                                    `Preço atual: ${currentPrice}`
-                                );
+                                // Verificar se o bot tem acesso ao chat antes de enviar
+                                await bot.telegram.getChat(trade.chat_id)
+                                    .then(async () => {
+                                        await bot.telegram.sendMessage(trade.chat_id, 
+                                            `⚠️ Ordem para ${symbol} CANCELADA ⚠️\n\n` +
+                                            `O preço-alvo (${tpPrice}) foi atingido antes do ponto de entrada (${entryPrice}).\n\n` +
+                                            `Preço atual: ${currentPrice}`
+                                        );
+                                        console.log(`[MONITOR] Mensagem Telegram enviada com sucesso para ${trade.chat_id}`);
+                                    })
+                                    .catch(chatError => {
+                                        console.log(`[MONITOR] Chat ${trade.chat_id} não existe ou o bot não tem acesso: ${chatError.message}`);
+                                    });
                             } catch (telegramError) {
-                                console.log(`[MONITOR] Não foi possível enviar mensagem no Telegram: ${telegramError.message}`);
+                                console.log(`[MONITOR] Erro no Telegram: ${telegramError.message}`);
                             }
+                        } else {
+                            console.log(`[MONITOR] Chat ID inválido ou não fornecido: ${trade.chat_id}`);
                         }
                         
                         // Remover este trade do array de positions
@@ -109,6 +131,7 @@ async function onPriceUpdate(symbol, currentPrice, relevantTrades, positions) {
                         
                         // Parar o websocket para este símbolo (opcional, dependendo da lógica)
                         console.log(`[MONITOR] Encerrando monitoramento de preço para ${symbol}`);
+                        websockets.stopPriceMonitoring(symbol);
                         
                         // Remove dos trades relevantes para evitar processamento repetido
                         relevantTrades.splice(i, 1);

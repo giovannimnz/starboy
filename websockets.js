@@ -228,23 +228,10 @@ async function needsMonitoring(symbol) {
     }
 }
 
-// Função para lidar com atualizações de preço - CORRIGIDO CAMINHO DO ARQUIVO
+// Função para lidar com atualizações de preço - Modificada para fechar o websocket após o processamento
 async function handlePriceUpdate(symbol, tickerData) {
     try {
-        // CORRIGIDO: usa posicoes/posicoes.json em vez de posicoes.json na raiz
-        const positionsFile = path.join(__dirname, 'posicoes', 'posicoes.json');
-        const fileExists = await fs.access(positionsFile).then(() => true).catch(() => false);
-        
-        if (!fileExists) {
-            return;
-        }
-        
-        const content = await fs.readFile(positionsFile, 'utf8');
-        if (!content.trim()) {
-            return;
-        }
-        
-        const positions = JSON.parse(content);
+        const positions = await getPositionsFromFile();
         
         // Encontrar trades para este símbolo que precisam ser monitorados
         const relevantTrades = positions.filter(pos => 
@@ -272,14 +259,38 @@ async function handlePriceUpdate(symbol, tickerData) {
             await handlers.onPriceUpdate(symbol, currentPrice, relevantTrades, positions);
         }
         
+        // Após chamar onPriceUpdate, verificar novamente se o websocket deve continuar
+        const updatedPositions = await getPositionsFromFile(); // Recarregar as posições após possíveis mudanças
+        const stillRelevant = updatedPositions.some(pos => 
+            pos.symbol === symbol && 
+            (pos.status === 'ENTRY_CREATED' || pos.status === 'ENTRY_FILLED')
+        );
+        
+        if (!stillRelevant && priceWebsockets[symbol]) {
+            console.log(`[WEBSOCKET] Fechando websocket de preço para ${symbol} - trade cancelado ou concluído`);
+            priceWebsockets[symbol].close();
+            delete priceWebsockets[symbol];
+        }
     } catch (error) {
         console.error(`[WEBSOCKET] Erro ao processar atualização de preço para ${symbol}:`, error);
     }
+}
+
+// Em websockets.js
+function stopPriceMonitoring(symbol) {
+    if (priceWebsockets[symbol]) {
+        console.log(`[WEBSOCKET] Fechando websocket de preço para ${symbol} por solicitação externa`);
+        priceWebsockets[symbol].close();
+        delete priceWebsockets[symbol];
+        return true;
+    }
+    return false;
 }
 
 // Exportar funções
 module.exports = {
     startUserDataStream,
     setMonitoringCallbacks,
-    ensurePriceWebsocketExists
+    ensurePriceWebsocketExists,
+    stopPriceMonitoring
 };
