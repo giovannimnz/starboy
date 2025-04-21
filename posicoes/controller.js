@@ -8,7 +8,7 @@ const {
   cancelAllOpenOrders,
   getOpenOrders,
   transferBetweenAccounts
-} = require('./api');
+} = require('../api');
 
 const bot = new Telegraf(process.env.BOT_TOKEN_CONTROLLER); // Use o token do novo bot
 

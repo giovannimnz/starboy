@@ -1,8 +1,8 @@
 // sniper.js
 
 const schedule = require('node-schedule');
-const { getDatabaseInstance, disconnectDatabase, getAllPositionsFromDb, getDataHoraFormatada } = require('./conexao');
-const { getFuturesAccountBalanceDetails, encerrarPosicao, getAllOpenPositions, getOpenOrders, cancelOrder, getPositionDetails, newStopOrder, getTickSize } = require('./api');
+const { getDatabaseInstance, disconnectDatabase, getAllPositionsFromDb, getDataHoraFormatada } = require('../db/conexao');
+const { getFuturesAccountBalanceDetails, encerrarPosicao, getAllOpenPositions, getOpenOrders, cancelOrder, getPositionDetails, newStopOrder, getTickSize } = require('../api');
 
 // Conectar ao banco de dados
 const db = getDatabaseInstance();

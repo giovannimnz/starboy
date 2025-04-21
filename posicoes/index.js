@@ -1,40 +1,14 @@
 require("dotenv").config();
 const axios = require("axios");
-const crypto = require("crypto");
+const crypto = require("axios");
 const { Telegraf } = require("telegraf");
 
 const sqlite3 = require('sqlite3').verbose();
-const { getDatabaseInstance, insertPosition, insertNewOrder, getDataHoraFormatada, getCurrentDateTimeAsString } = require("./conexao");
+const { getDatabaseInstance, insertPosition, insertNewOrder, getDataHoraFormatada, getCurrentDateTimeAsString } = require("../db/conexao");
 
-const { newOrder, newEntryOrder, newReduceOnlyOrder, newStopOrder, newTakeProfitOrder, getMaxLeverage, getTickSize, getPrecision, getFuturesAccountBalanceDetails, changeInitialLeverage, changeMarginType, getCurrentLeverage, getCurrentMarginType, getPositionDetails, encerrarPosicao } = require("./api");
+const { newOrder, newEntryOrder, newReduceOnlyOrder, newStopOrder, newTakeProfitOrder, getMaxLeverage, getTickSize, getPrecision, getFuturesAccountBalanceDetails, changeInitialLeverage, changeMarginType, getCurrentLeverage, getCurrentMarginType, getPositionDetails, encerrarPosicao } = require("../api");
 
 const bot = new Telegraf(process.env.BOT_TOKEN);
-
-const confirmationQueue = [];
-let isProcessingQueue = false;
-let lastProcessedMessage = '';
-
-function processQueue() {
-    if (confirmationQueue.length > 0 && !isProcessingQueue) {
-        const { ctx, message, originalMessageText } = confirmationQueue.shift();
-        
-        if (originalMessageText === lastProcessedMessage) {
-            console.log("Mensagem duplicada detectada, ignorando...");
-            processQueue(); 
-        } else {
-            isProcessingQueue = true;
-            ctx.reply(message).then(() => {
-                lastProcessedMessage = originalMessageText;
-                isProcessingQueue = false;
-                processQueue(); 
-            }).catch(error => {
-                console.error("Erro ao enviar mensagem:", error);
-                isProcessingQueue = false;
-                processQueue(); 
-            });
-        }
-    }
-}
 
 bot.on("text", async (ctx) => {
   try {

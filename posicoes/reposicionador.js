@@ -1,6 +1,6 @@
 const { Telegraf } = require('telegraf');
-const { getOpenOrders, cancelOrder, newStopOrder, getPositionDetails } = require('./api');
-const { getDataHoraFormatada } = require('./conexao');
+const { getOpenOrders, cancelOrder, newStopOrder, getPositionDetails } = require('../api');
+const { getDataHoraFormatada } = require('../conexao');
 
 const bot = new Telegraf(process.env.BOT_TOKEN_REPOSICIONADOR);
 

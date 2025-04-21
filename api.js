@@ -803,6 +803,37 @@ async function cancelAllOpenOrders(symbol) {
   }
 }
 
+/**
+ * Obtém todos os brackets de alavancagem da API da Binance
+ * @returns {Promise<Array>} Array com brackets de alavancagem para todos os símbolos
+ */
+async function getAllLeverageBrackets() {
+  const timestamp = Date.now();
+  const recvWindow = 60000;
+
+  const queryString = `timestamp=${timestamp}&recvWindow=${recvWindow}`;
+  const signature = crypto
+    .createHmac('sha256', apiSecret)
+    .update(queryString)
+    .digest('hex');
+
+  const url = `${apiUrl}/v1/leverageBracket?${queryString}&signature=${signature}`;
+
+  try {
+    console.log('[API] Buscando todos os brackets de alavancagem da Binance...');
+    const response = await axios.get(url, { 
+      headers: { 'X-MBX-APIKEY': apiKey }
+    });
+    
+    console.log(`[API] Brackets obtidos com sucesso. Total de símbolos: ${response.data.length}`);
+    return response.data;
+  } catch (error) {
+    console.error('[API] Erro ao obter brackets de alavancagem:', error.response ? error.response.data : error.message);
+    throw error;
+  }
+}
+
+// Modificar o module.exports para incluir a nova função
 module.exports = {
   getFuturesAccountBalanceDetails,
   getMaxLeverage,
@@ -826,5 +857,6 @@ module.exports = {
   cancelOrder,
   transferBetweenAccounts,
   cancelAllOpenOrders,
-  encerrarPosicao
+  encerrarPosicao,
+  getAllLeverageBrackets  // Nova função adicionada aqui
 };
