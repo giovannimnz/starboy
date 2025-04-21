@@ -29,7 +29,7 @@ function getDatabaseInstance() {
                 console.error(`Erro ao conectar ao banco de dados em ${dbPath}:`, err.message);
                 dbInstance = null;
             } else {
-                console.log(`Conexão com banco de dados estabelecida em: ${dbPath}`);
+                //console.log(`Conexão com banco de dados estabelecida em: ${dbPath}`);
                 
                 // Se o banco de dados foi recém-criado, inicializar as tabelas
                 if (!dbExists) {
@@ -418,7 +418,7 @@ function getOrdersFromDb(db, params) {
             
             // Lista de todas as colunas disponíveis
             const columnNames = columns.map(col => col.name);
-            console.log(`Colunas disponíveis na tabela 'ordens': ${columnNames.join(', ')}`);
+            //console.log(`Colunas disponíveis na tabela 'ordens': ${columnNames.join(', ')}`);
             
             // Colunas básicas que sempre vamos selecionar
             let selectColumns = ["id", "id_externo", "simbolo", "tipo_ordem", "preco", "quantidade", 
@@ -459,7 +459,7 @@ function getOrdersFromDb(db, params) {
                 sql += " WHERE " + conditions.join(" AND ");
             }
 
-            console.log(`Executando consulta: ${sql} com valores:`, sqlValues);
+            //console.log(`Executando consulta: ${sql} com valores:`, sqlValues);
 
             // Executar a consulta
             db.all(sql, sqlValues, (err, rows) => {
@@ -469,7 +469,7 @@ function getOrdersFromDb(db, params) {
                     reject(err);
                 } else {
                     if (rows.length === 0) {
-                        console.log("Nenhuma ordem encontrada para os critérios fornecidos.");
+                        //console.log("Nenhuma ordem encontrada para os critérios fornecidos.");
                         resolve([]);
                     } else {
                         // Preencher as propriedades ausentes para manter a consistência
