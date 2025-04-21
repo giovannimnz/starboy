@@ -572,9 +572,23 @@ async function cancelOrder(orderId, symbol) {
       url: url,
       headers: { "X-MBX-APIKEY": apiKey }
     });
+    console.log(`[API] Ordem ${orderId} para ${symbol} cancelada com sucesso.`);
     return result.data;
   } catch (error) {
-    console.error("Erro ao cancelar a ordem:", error);
+    // Tratamento específico para o erro "Unknown order"
+    if (error.response && error.response.data && error.response.data.code === -2011) {
+      console.log(`[API] A ordem ${orderId} para ${symbol} não foi encontrada (possivelmente já executada ou cancelada).`);
+      return {
+        success: true,
+        message: "Order already executed or cancelled",
+        orderId: orderId,
+        symbol: symbol
+      };
+    }
+    
+    // Outros erros
+    console.error(`[API] Erro ao cancelar a ordem ${orderId} para ${symbol}:`, 
+      error.response ? error.response.data : error.message);
     throw error;
   }
 }
