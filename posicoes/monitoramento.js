@@ -196,7 +196,7 @@ schedule.scheduleJob('*/2 * * * *', function() {
 // Função para atualizar o arquivo leverage.json
 async function updateLeverageBrackets() {
   try {
-    console.log('[SCHEDULER] Iniciando atualização dos brackets de alavancagem...');
+    //console.log('[SCHEDULER] Iniciando atualização dos brackets de alavancagem...');
     
     // Obter os brackets de alavancagem atualizados da API
     const brackets = await getAllLeverageBrackets();
@@ -234,10 +234,10 @@ schedule.scheduleJob('0 3 * * *', function() {
 
 // Adicionar esta linha para executar uma atualização imediata quando o script iniciar
 // (Útil para garantir que temos dados atualizados desde o primeiro uso)
-console.log('[INIT] Realizando primeira atualização de brackets de alavancagem ao iniciar...');
+//console.log('[INIT] Realizando primeira atualização de brackets de alavancagem ao iniciar...');
 updateLeverageBrackets()
-  .then(() => console.log('[INIT] Primeira atualização de brackets concluída'))
-  .catch(error => console.error('[INIT] Falha na primeira atualização de brackets:', error));
+  //.then(() => console.log('[INIT] Primeira atualização de brackets concluída'))
+  //.catch(error => console.error('[INIT] Falha na primeira atualização de brackets:', error));
 
 // Função para monitorar o arquivo posicoes.json
 async function monitorPositionsFile() {
