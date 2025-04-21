@@ -825,7 +825,7 @@ async function getAllLeverageBrackets() {
       headers: { 'X-MBX-APIKEY': apiKey }
     });
     
-    console.log(`[API] Brackets obtidos com sucesso. Total de símbolos: ${response.data.length}`);
+    //console.log(`[API] Brackets obtidos com sucesso. Total de símbolos: ${response.data.length}`);
     return response.data;
   } catch (error) {
     console.error('[API] Erro ao obter brackets de alavancagem:', error.response ? error.response.data : error.message);

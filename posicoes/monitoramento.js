@@ -207,14 +207,14 @@ async function updateLeverageBrackets() {
     // Salvar os brackets no arquivo leverage.json com formatação para legibilidade
     await fs.writeFile(leverageFilePath, JSON.stringify(brackets, null, 2));
     
-    console.log('[SCHEDULER] Arquivo leverage.json atualizado com sucesso!');
+    //console.log('[SCHEDULER] Arquivo leverage.json atualizado com sucesso!');
     console.log(`[SCHEDULER] Total de símbolos atualizados: ${brackets.length}`);
     
     // Verificar se algum símbolo específico está presente para validação
     const btcBracket = brackets.find(b => b.symbol === 'BTCUSDT');
     if (btcBracket) {
-      console.log('[SCHEDULER] Exemplo de bracket para BTCUSDT:', 
-        btcBracket.brackets.map(b => b.cum).slice(0, 3), '...');
+      //console.log('[SCHEDULER] Exemplo de bracket para BTCUSDT:', 
+        //btcBracket.brackets.map(b => b.cum).slice(0, 3), '...');
     }
     
     return brackets;
