@@ -41,91 +41,90 @@ function getDatabaseInstance() {
     return dbInstance; // Certifique-se de que a função retorne a instância
 }
 
-// Nova função para inicializar o banco de dados com as tabelas necessárias
+// Modifique a função initializeDatabase() para incluir verificação de colunas
 function initializeDatabase() {
     console.log('Inicializando banco de dados com tabelas...');
     
-    // Definição das tabelas
-    const createTableStatements = [
-        `CREATE TABLE IF NOT EXISTS posicoes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            simbolo TEXT NOT NULL,
-            quantidade REAL,
-            preco_medio REAL,
-            status TEXT,
-            data_hora_abertura TEXT,
-            data_hora_fechamento TEXT,
-            side TEXT,
-            leverage INTEGER,
-            data_hora_ultima_atualizacao TEXT,
-            preco_entrada REAL,
-            preco_corrente REAL,
-            orign_sig TEXT
-        )`,
-        
-        `CREATE TABLE IF NOT EXISTS posicoes_fechadas (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            simbolo TEXT NOT NULL,
-            quantidade REAL,
-            preco_medio REAL,
-            status TEXT,
-            data_hora_abertura TEXT,
-            data_hora_fechamento TEXT,
-            side TEXT,
-            leverage INTEGER,
-            data_hora_ultima_atualizacao TEXT,
-            preco_entrada REAL,
-            preco_corrente REAL,
-            orign_sig TEXT
-        )`,
-        
-        `CREATE TABLE IF NOT EXISTS ordens (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            tipo_ordem TEXT,
-            preco REAL,
-            quantidade REAL,
-            id_posicao INTEGER,
-            status TEXT,
-            data_hora_criacao TEXT,
-            id_externo TEXT,
-            side TEXT,
-            simbolo TEXT,
-            tipo_ordem_bot TEXT,
-            target TEXT,
-            reduce_only TEXT,
-            close_position TEXT,
-            last_update TEXT,
-            renew_sl_firs TEXT,
-            renew_sl_seco TEXT,
-            orign_sig TEXT,
-            FOREIGN KEY (id_posicao) REFERENCES posicoes (id)
-        )`,
-        
-        `CREATE TABLE IF NOT EXISTS ordens_fechadas (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            tipo_ordem TEXT,
-            preco REAL,
-            quantidade REAL,
-            id_posicao INTEGER,
-            status TEXT,
-            data_hora_criacao TEXT,
-            id_externo TEXT,
-            side TEXT,
-            simbolo TEXT,
-            tipo_ordem_bot TEXT,
-            target TEXT,
-            reduce_only TEXT,
-            close_position TEXT,
-            last_update TEXT,
-            renew_sl_firs TEXT,
-            renew_sl_seco TEXT,
-            orign_sig TEXT
-        )`
-    ];
-    
-    // Executar criação de cada tabela
     dbInstance.serialize(() => {
         dbInstance.run('PRAGMA foreign_keys = ON');
+        
+        // Criar tabelas principais se não existirem
+        const createTableStatements = [
+            `CREATE TABLE IF NOT EXISTS posicoes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                simbolo TEXT NOT NULL,
+                quantidade REAL,
+                preco_medio REAL,
+                status TEXT,
+                data_hora_abertura TEXT,
+                data_hora_fechamento TEXT,
+                side TEXT,
+                leverage INTEGER,
+                data_hora_ultima_atualizacao TEXT,
+                preco_entrada REAL,
+                preco_corrente REAL,
+                orign_sig TEXT
+            )`,
+            
+            `CREATE TABLE IF NOT EXISTS posicoes_fechadas (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                simbolo TEXT NOT NULL,
+                quantidade REAL,
+                preco_medio REAL,
+                status TEXT,
+                data_hora_abertura TEXT,
+                data_hora_fechamento TEXT,
+                side TEXT,
+                leverage INTEGER,
+                data_hora_ultima_atualizacao TEXT,
+                preco_entrada REAL,
+                preco_corrente REAL,
+                orign_sig TEXT
+            )`,
+            
+            `CREATE TABLE IF NOT EXISTS ordens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tipo_ordem TEXT,
+                preco REAL,
+                quantidade REAL,
+                id_posicao INTEGER,
+                status TEXT,
+                data_hora_criacao TEXT,
+                id_externo TEXT,
+                side TEXT,
+                simbolo TEXT,
+                tipo_ordem_bot TEXT,
+                target TEXT,
+                reduce_only TEXT,
+                close_position TEXT,
+                last_update TEXT,
+                renew_sl_firs TEXT,
+                renew_sl_seco TEXT,
+                orign_sig TEXT,
+                FOREIGN KEY (id_posicao) REFERENCES posicoes (id)
+            )`,
+            
+            `CREATE TABLE IF NOT EXISTS ordens_fechadas (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tipo_ordem TEXT,
+                preco REAL,
+                quantidade REAL,
+                id_posicao INTEGER,
+                status TEXT,
+                data_hora_criacao TEXT,
+                id_externo TEXT,
+                side TEXT,
+                simbolo TEXT,
+                tipo_ordem_bot TEXT,
+                target TEXT,
+                reduce_only TEXT,
+                close_position TEXT,
+                last_update TEXT,
+                renew_sl_firs TEXT,
+                renew_sl_seco TEXT,
+                orign_sig TEXT
+            )`
+        ];
         
         createTableStatements.forEach(statement => {
             dbInstance.run(statement, err => {
@@ -137,7 +136,57 @@ function initializeDatabase() {
             });
         });
         
+        // Verificar se as colunas específicas existem e adicioná-las se necessário
+        checkAndAddColumns();
+        
         console.log('Inicialização do banco de dados concluída!');
+    });
+}
+
+// Nova função para verificar e adicionar colunas faltantes
+function checkAndAddColumns() {
+    // Verificar a estrutura atual da tabela ordens
+    dbInstance.get("PRAGMA table_info(ordens)", [], (err, rows) => {
+        if (err) {
+            console.error("Erro ao verificar estrutura da tabela ordens:", err);
+            return;
+        }
+        
+        // Verificar cada coluna que pode estar faltando
+        checkAndAddColumn("ordens", "renew_sl_firs", "TEXT");
+        checkAndAddColumn("ordens", "renew_sl_seco", "TEXT");
+        checkAndAddColumn("ordens", "orign_sig", "TEXT");
+    });
+}
+
+function checkAndAddColumn(table, column, type) {
+    dbInstance.get(`PRAGMA table_info(${table})`, [], (err, rows) => {
+        if (err) {
+            console.error(`Erro ao verificar tabela ${table}:`, err);
+            return;
+        }
+        
+        // Verifica se a coluna existe
+        let columnExists = false;
+        if (Array.isArray(rows)) {
+            columnExists = rows.some(row => row.name === column);
+        } else {
+            // Se rows não for um array, verificamos um objeto único
+            columnExists = rows && rows.name === column;
+        }
+        
+        if (!columnExists) {
+            console.log(`Coluna ${column} não encontrada na tabela ${table}. Adicionando...`);
+            
+            // Adicionar a coluna
+            dbInstance.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`, err => {
+                if (err) {
+                    console.error(`Erro ao adicionar coluna ${column} à tabela ${table}:`, err);
+                } else {
+                    console.log(`Coluna ${column} adicionada à tabela ${table} com sucesso.`);
+                }
+            });
+        }
     });
 }
 
