@@ -47,9 +47,15 @@ async function onPriceUpdate(symbol, currentPrice, relevantTrades, positions) {
     try {
         const positionsFile = path.join(__dirname, 'posicoes.json');
         let needsUpdate = false;
+        let tradesRemoved = false;
+        
+        // Criar uma cópia das posições para modificar
+        let updatedPositions = [...positions];
         
         // Verificar cada trade relevante
-        for (const trade of relevantTrades) {
+        for (let i = 0; i < relevantTrades.length; i++) {
+            const trade = relevantTrades[i];
+            
             // Para trades com entrada criada, verificar se o preço atingiu o TP antes da entrada
             if (trade.status === 'ENTRY_CREATED') {
                 const entryPrice = parseFloat(trade.entry);
@@ -61,31 +67,97 @@ async function onPriceUpdate(symbol, currentPrice, relevantTrades, positions) {
                     (side === 'SELL' && currentPrice <= tpPrice)) {
                     console.log(`[MONITOR] TP atingido antes da entrada para ${symbol} - cancelando ordens`);
                     
-                    // Cancelar a ordem de entrada
-                    await cancelOrder(trade.entry_order_id, symbol);
-                    
-                    // Atualizar status
-                    trade.status = 'CANCELLED_TP_REACHED';
-                    trade.updated_at = new Date().toISOString();
-                    
-                    // Enviar mensagem para o Telegram
-                    await bot.telegram.sendMessage(trade.chat_id, 
-                        `⚠️ Ordem para ${symbol} CANCELADA ⚠️\n\n` +
-                        `O preço-alvo (${tpPrice}) foi atingido antes do ponto de entrada (${entryPrice}).\n\n` +
-                        `Preço atual: ${currentPrice}`
-                    );
-                    
-                    needsUpdate = true;
+                    try {
+                        // Cancelar a ordem de entrada na Binance
+                        await cancelOrder(trade.entry_order_id, symbol);
+                        
+                        // Remover a posição do banco de dados
+                        const db = getDatabaseInstance();
+                        if (db) {
+                            try {
+                                // Obter o ID da posição pelo símbolo
+                                const positionId = await getPositionIdBySymbol(db, symbol);
+                                if (positionId) {
+                                    // Excluir posição e ordens associadas do banco de dados
+                                    console.log(`[MONITOR] Excluindo posição ${positionId} do banco de dados para ${symbol}`);
+                                    await moveClosedPositionsAndOrders(db, positionId);
+                                }
+                            } catch (dbError) {
+                                console.error(`[MONITOR] Erro ao excluir posição do banco: ${dbError.message}`);
+                            }
+                        }
+                        
+                        // Tentar enviar mensagem no Telegram somente se o chat_id for válido
+                        if (trade.chat_id) {
+                            try {
+                                await bot.telegram.sendMessage(trade.chat_id, 
+                                    `⚠️ Ordem para ${symbol} CANCELADA ⚠️\n\n` +
+                                    `O preço-alvo (${tpPrice}) foi atingido antes do ponto de entrada (${entryPrice}).\n\n` +
+                                    `Preço atual: ${currentPrice}`
+                                );
+                            } catch (telegramError) {
+                                console.log(`[MONITOR] Não foi possível enviar mensagem no Telegram: ${telegramError.message}`);
+                            }
+                        }
+                        
+                        // Remover este trade do array de positions
+                        updatedPositions = updatedPositions.filter(pos => 
+                            !(pos.symbol === symbol && pos.entry_order_id === trade.entry_order_id)
+                        );
+                        
+                        tradesRemoved = true;
+                        
+                        // Parar o websocket para este símbolo (opcional, dependendo da lógica)
+                        console.log(`[MONITOR] Encerrando monitoramento de preço para ${symbol}`);
+                        
+                        // Remove dos trades relevantes para evitar processamento repetido
+                        relevantTrades.splice(i, 1);
+                        i--; // Ajustar o índice após remoção
+                        
+                    } catch (cancelError) {
+                        console.error(`[MONITOR] Erro ao cancelar ordem: ${cancelError.message}`);
+                    }
                 }
             }
         }
         
         // Salvar atualizações no arquivo se necessário
-        if (needsUpdate) {
+        if (tradesRemoved) {
+            await fs.writeFile(positionsFile, JSON.stringify(updatedPositions, null, 2));
+            console.log(`[MONITOR] Arquivo posicoes.json atualizado - trades cancelados removidos`);
+        } else if (needsUpdate) {
             await fs.writeFile(positionsFile, JSON.stringify(positions, null, 2));
         }
     } catch (error) {
         console.error(`[MONITOR] Erro ao processar atualização de preço para ${symbol}:`, error);
+    }
+}
+
+// Função auxiliar para verificar se um símbolo precisa de monitoramento
+async function needsMonitoring(symbol) {
+    try {
+        const positionsFile = path.join(__dirname, 'posicoes.json');
+        const fileExists = await fs.access(positionsFile).then(() => true).catch(() => false);
+        
+        if (!fileExists) {
+            return false;
+        }
+        
+        const content = await fs.readFile(positionsFile, 'utf8');
+        if (!content.trim()) {
+            return false;
+        }
+        
+        const positions = JSON.parse(content);
+        const needsMonitoring = positions.some(pos => 
+            pos.symbol === symbol && 
+            ['PENDING_ENTRY', 'ENTRY_CREATED', 'ENTRY_FILLED'].includes(pos.status)
+        );
+        
+        return needsMonitoring;
+    } catch (error) {
+        console.error(`[MONITOR] Erro ao verificar necessidade de monitoramento para ${symbol}:`, error);
+        return false;
     }
 }
 
@@ -324,9 +396,25 @@ async function checkNewTrades() {
     }
     
     // Monitorar também posições abertas
-    const openTrades = positions.filter(trade => trade.status === 'ENTRY_FILLED');
+    const openTrades = positions.filter(trade => 
+      ['ENTRY_CREATED', 'ENTRY_FILLED'].includes(trade.status)
+    );
+    
     for (const trade of openTrades) {
       websockets.ensurePriceWebsocketExists(trade.symbol);
+    }
+    
+    // Verificar se há trades que foram cancelados mas ainda estão no arquivo
+    const canceledTrades = positions.filter(trade => 
+      trade.status === 'CANCELLED_TP_REACHED'
+    );
+    
+    if (canceledTrades.length > 0) {
+      console.log(`[MONITOR] Removendo ${canceledTrades.length} trades cancelados do arquivo`);
+      const updatedPositions = positions.filter(trade => 
+        trade.status !== 'CANCELLED_TP_REACHED'
+      );
+      await fs.writeFile(positionsFile, JSON.stringify(updatedPositions, null, 2));
     }
   } catch (error) {
     console.error('[MONITOR] Erro ao verificar novos trades:', error);
