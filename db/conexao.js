@@ -3,7 +3,7 @@ const path = require('path');
 const fs = require('fs');
 let dbInstance = null;
 
-// Altere a função getDatabaseInstance para usar caminho absoluto
+// Modifique a função getDatabaseInstance() para inicializar o banco de dados
 function getDatabaseInstance() {
     if (!dbInstance) {
         // Criar caminho absoluto para o arquivo do banco de dados
@@ -20,6 +20,9 @@ function getDatabaseInstance() {
             }
         }
         
+        // Verificar se o arquivo de banco de dados já existe
+        const dbExists = fs.existsSync(dbPath);
+        
         // Abrir banco de dados (com opção para criar se não existir)
         dbInstance = new sqlite3.Database(dbPath, sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE, (err) => {
             if (err) {
@@ -27,10 +30,115 @@ function getDatabaseInstance() {
                 dbInstance = null;
             } else {
                 console.log(`Conexão com banco de dados estabelecida em: ${dbPath}`);
+                
+                // Se o banco de dados foi recém-criado, inicializar as tabelas
+                if (!dbExists) {
+                    initializeDatabase();
+                }
             }
         });
     }
     return dbInstance;
+}
+
+// Nova função para inicializar o banco de dados com as tabelas necessárias
+function initializeDatabase() {
+    console.log('Inicializando banco de dados com tabelas...');
+    
+    // Definição das tabelas
+    const createTableStatements = [
+        `CREATE TABLE IF NOT EXISTS posicoes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            simbolo TEXT NOT NULL,
+            quantidade REAL,
+            preco_medio REAL,
+            status TEXT,
+            data_hora_abertura TEXT,
+            data_hora_fechamento TEXT,
+            side TEXT,
+            leverage INTEGER,
+            data_hora_ultima_atualizacao TEXT,
+            preco_entrada REAL,
+            preco_corrente REAL,
+            orign_sig TEXT
+        )`,
+        
+        `CREATE TABLE IF NOT EXISTS posicoes_fechadas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            simbolo TEXT NOT NULL,
+            quantidade REAL,
+            preco_medio REAL,
+            status TEXT,
+            data_hora_abertura TEXT,
+            data_hora_fechamento TEXT,
+            side TEXT,
+            leverage INTEGER,
+            data_hora_ultima_atualizacao TEXT,
+            preco_entrada REAL,
+            preco_corrente REAL,
+            orign_sig TEXT
+        )`,
+        
+        `CREATE TABLE IF NOT EXISTS ordens (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tipo_ordem TEXT,
+            preco REAL,
+            quantidade REAL,
+            id_posicao INTEGER,
+            status TEXT,
+            data_hora_criacao TEXT,
+            id_externo TEXT,
+            side TEXT,
+            simbolo TEXT,
+            tipo_ordem_bot TEXT,
+            target TEXT,
+            reduce_only TEXT,
+            close_position TEXT,
+            last_update TEXT,
+            renew_sl_firs TEXT,
+            renew_sl_seco TEXT,
+            orign_sig TEXT,
+            FOREIGN KEY (id_posicao) REFERENCES posicoes (id)
+        )`,
+        
+        `CREATE TABLE IF NOT EXISTS ordens_fechadas (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tipo_ordem TEXT,
+            preco REAL,
+            quantidade REAL,
+            id_posicao INTEGER,
+            status TEXT,
+            data_hora_criacao TEXT,
+            id_externo TEXT,
+            side TEXT,
+            simbolo TEXT,
+            tipo_ordem_bot TEXT,
+            target TEXT,
+            reduce_only TEXT,
+            close_position TEXT,
+            last_update TEXT,
+            renew_sl_firs TEXT,
+            renew_sl_seco TEXT,
+            orign_sig TEXT
+        )`
+    ];
+    
+    // Executar criação de cada tabela
+    dbInstance.serialize(() => {
+        dbInstance.run('PRAGMA foreign_keys = ON');
+        
+        createTableStatements.forEach(statement => {
+            dbInstance.run(statement, err => {
+                if (err) {
+                    console.error('Erro ao criar tabela:', err.message);
+                } else {
+                    console.log('Tabela criada com sucesso:', statement.split('(')[0].trim());
+                }
+            });
+        });
+        
+        console.log('Inicialização do banco de dados concluída!');
+    });
 }
 
 function getAllOrdersBySymbol(db, symbol) {
