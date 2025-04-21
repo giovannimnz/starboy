@@ -131,7 +131,7 @@ async function startUserDataStream(getDatabaseInstance) {
         const keepAliveInterval = setInterval(async () => {
             try {
                 await keepAliveListenKey(listenKey);
-                console.log('[WEBSOCKET] Keep-alive enviado para o Listen Key');
+                //console.log('[WEBSOCKET] Keep-alive enviado para o Listen Key');
             } catch (error) {
                 console.error('[WEBSOCKET] Erro ao manter Listen Key:', error);
                 clearInterval(keepAliveInterval);
