@@ -1,8 +1,9 @@
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+
 const axios = require('axios');
 const schedule = require('node-schedule');
 const fs = require('fs').promises;
-const path = require('path');
-require('dotenv').config(); // Garante que dotenv é carregado
 const { Telegraf } = require("telegraf");
 const { newOrder, cancelOrder, newStopOrder, cancelAllOpenOrders } = require('../api');
 const { getAllLeverageBrackets } = require('../api');

@@ -2,7 +2,9 @@ const WebSocket = require('ws');
 const axios = require('axios');
 const path = require('path');
 const fs = require('fs').promises;
-require('dotenv').config(); // Garante que dotenv é carregado antes de acessar process.env
+
+// Corrigir o caminho do .env
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 // Variáveis globais
 const apiKey = process.env.API_KEY;
