@@ -98,18 +98,21 @@ async function checkAndUpdateOrders() {
         const partialOrders = await getOrdersFromDb(db, { 
             tipo_ordem_bot: "REDUCAO PARCIAL", 
             target: "1", 
-            status: "FILLED", 
-            renew_sl_firs: "NULL" 
+            status: "FILLED"
         }).catch(error => {
             console.error("Erro ao consultar ordens:", error);
             return [];
         });
 
-        if (!partialOrders || partialOrders.length === 0) {
+        const filteredOrders = partialOrders.filter(order => 
+            order.renew_sl_firs === null || order.renew_sl_firs === undefined
+        );
+
+        if (!filteredOrders || filteredOrders.length === 0) {
             return; // Nenhuma ordem para processar
         }
 
-        for (let order of partialOrders) {
+        for (let order of filteredOrders) {
             try {
                 // Cancelar a ordem de stop loss existente
                 await cancelOrder(order.id_externo, order.simbolo);

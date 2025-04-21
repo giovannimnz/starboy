@@ -160,20 +160,14 @@ function checkAndAddColumns() {
 }
 
 function checkAndAddColumn(table, column, type) {
-    dbInstance.get(`PRAGMA table_info(${table})`, [], (err, rows) => {
+    dbInstance.all(`PRAGMA table_info(${table})`, [], (err, columns) => {
         if (err) {
             console.error(`Erro ao verificar tabela ${table}:`, err);
             return;
         }
         
-        // Verifica se a coluna existe
-        let columnExists = false;
-        if (Array.isArray(rows)) {
-            columnExists = rows.some(row => row.name === column);
-        } else {
-            // Se rows não for um array, verificamos um objeto único
-            columnExists = rows && rows.name === column;
-        }
+        // Verificar se a coluna já existe
+        const columnExists = columns.some(col => col.name === column);
         
         if (!columnExists) {
             console.log(`Coluna ${column} não encontrada na tabela ${table}. Adicionando...`);
@@ -186,6 +180,8 @@ function checkAndAddColumn(table, column, type) {
                     console.log(`Coluna ${column} adicionada à tabela ${table} com sucesso.`);
                 }
             });
+        } else {
+            console.log(`Coluna ${column} já existe na tabela ${table}.`);
         }
     });
 }
@@ -413,42 +409,80 @@ function getOrdersFromDb(db, params) {
             return reject(new Error('Invalid database connection'));
         }
 
-        let sql = "SELECT id_externo, simbolo, tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao, side, tipo_ordem_bot, target, reduce_only, close_position, last_update, renew_sl_firs, renew_sl_seco, orign_sig FROM ordens";
-        let conditions = [];
-        let sqlValues = [];
-
-        if (params.status) {
-            conditions.push("status = ?");
-            sqlValues.push(params.status);
-        }
-        if (params.tipo_ordem_bot) {
-            conditions.push("tipo_ordem_bot = ?");
-            sqlValues.push(params.tipo_ordem_bot);
-        }
-        if (params.target) {
-            conditions.push("target = ?");
-            sqlValues.push(params.target);
-        }
-        if (params.renew_sl_firs !== undefined) {
-            conditions.push("renew_sl_firs IS ?");
-            sqlValues.push(params.renew_sl_firs);
-        }
-
-        if (conditions.length > 0) {
-            sql += " WHERE " + conditions.join(" AND ");
-        }
-
-        db.all(sql, sqlValues, (err, rows) => {
-            if (err) {
-                console.error("Error running SQL: " + sql);
-                console.error(err);
-                reject(err);
-            } else if (rows.length === 0) {
-                //console.log("Nenhuma ordem encontrada para os critérios fornecidos.");
-                resolve([]);
-            } else {
-                resolve(rows);
+        // Primeiro verificar se as colunas necessárias existem
+        db.all("PRAGMA table_info(ordens)", [], (pragmaErr, columns) => {
+            if (pragmaErr) {
+                console.error("Erro ao verificar colunas da tabela:", pragmaErr);
+                return reject(pragmaErr);
             }
+            
+            // Lista de todas as colunas disponíveis
+            const columnNames = columns.map(col => col.name);
+            console.log(`Colunas disponíveis na tabela 'ordens': ${columnNames.join(', ')}`);
+            
+            // Colunas básicas que sempre vamos selecionar
+            let selectColumns = ["id", "id_externo", "simbolo", "tipo_ordem", "preco", "quantidade", 
+                               "id_posicao", "status", "data_hora_criacao", "side", "tipo_ordem_bot", 
+                               "target", "reduce_only", "close_position", "last_update"];
+            
+            // Adicionar colunas extras apenas se existirem
+            if (columnNames.includes("renew_sl_firs")) selectColumns.push("renew_sl_firs");
+            if (columnNames.includes("renew_sl_seco")) selectColumns.push("renew_sl_seco");
+            if (columnNames.includes("orign_sig")) selectColumns.push("orign_sig");
+            
+            // Construir a consulta SQL
+            let sql = `SELECT ${selectColumns.join(', ')} FROM ordens`;
+            let conditions = [];
+            let sqlValues = [];
+
+            // Adicionar condições para a cláusula WHERE
+            if (params.status) {
+                conditions.push("status = ?");
+                sqlValues.push(params.status);
+            }
+            if (params.tipo_ordem_bot) {
+                conditions.push("tipo_ordem_bot = ?");
+                sqlValues.push(params.tipo_ordem_bot);
+            }
+            if (params.target) {
+                conditions.push("target = ?");
+                sqlValues.push(params.target);
+            }
+            
+            // Adicionar condição para renew_sl_firs APENAS se a coluna existir
+            if (params.renew_sl_firs !== undefined && columnNames.includes("renew_sl_firs")) {
+                conditions.push("renew_sl_firs IS ?");
+                sqlValues.push(params.renew_sl_firs);
+            }
+
+            if (conditions.length > 0) {
+                sql += " WHERE " + conditions.join(" AND ");
+            }
+
+            console.log(`Executando consulta: ${sql} com valores:`, sqlValues);
+
+            // Executar a consulta
+            db.all(sql, sqlValues, (err, rows) => {
+                if (err) {
+                    console.error("Error running SQL: " + sql);
+                    console.error(err);
+                    reject(err);
+                } else {
+                    if (rows.length === 0) {
+                        console.log("Nenhuma ordem encontrada para os critérios fornecidos.");
+                        resolve([]);
+                    } else {
+                        // Preencher as propriedades ausentes para manter a consistência
+                        const completeRows = rows.map(row => {
+                            if (!row.hasOwnProperty('renew_sl_firs')) row.renew_sl_firs = null;
+                            if (!row.hasOwnProperty('renew_sl_seco')) row.renew_sl_seco = null;
+                            if (!row.hasOwnProperty('orign_sig')) row.orign_sig = null;
+                            return row;
+                        });
+                        resolve(completeRows);
+                    }
+                }
+            });
         });
     });
 }
