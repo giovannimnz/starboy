@@ -6,7 +6,7 @@ const schedule = require('node-schedule');
 const fs = require('fs').promises;
 const { Telegraf } = require("telegraf");
 const { newOrder, cancelOrder, newStopOrder, cancelAllOpenOrders } = require('../api');
-const { getAllLeverageBrackets } = require('../api');
+const { getAllLeverageBrackets, getFuturesAccountBalanceDetails } = require('../api'); // Adicionado getFuturesAccountBalanceDetails
 const {getDatabaseInstance, getPositionIdBySymbol, updatePositionInDb, checkOrderExists, getAllOrdersBySymbol, updatePositionStatus, insertNewOrder, disconnectDatabase, getAllPositionsFromDb, getOpenOrdersFromDb, getOrdersFromDb, updateOrderStatus, getPositionsFromDb, insertPosition, moveClosedPositionsAndOrders, initializeDatabase} = require('../db/conexao');
 const websockets = require('../websockets');
 
@@ -160,6 +160,7 @@ async function checkAndUpdateOrders() {
         }
     } catch (error) {
         console.error("Erro geral em checkAndUpdateOrders:", error);
+        // Não há tentativa de recuperação
     }
 }
 
@@ -177,9 +178,8 @@ async function ensureTablesExist(db) {
                 console.log("Tabela 'ordens' não encontrada. Inicializando o banco de dados...");
                 initializeDatabase();
                 setTimeout(() => {
-                    // Damos um pequeno tempo para inicializar
                     resolve();
-                }, 1000);
+                }, 1000); // Hardcoded timeout
             } else {
                 resolve();
             }
@@ -249,8 +249,9 @@ async function monitorPositionsFile() {
     
     // Agendar verificações a cada 5 segundos
     setInterval(async () => {
-      await checkNewTrades();
+        await checkNewTrades();
     }, 5000);
+    // Nunca é limpo com clearInterval
   } catch (error) {
     console.error('[MONITOR] Erro ao iniciar monitoramento:', error);
   }
@@ -307,7 +308,7 @@ async function processNewTrade(trade, allPositions) {
     const capitalPct = parseFloat(trade.capital_pct);
     
     // Obter detalhes da conta
-    const balanceDetails = await getFuturesAccountBalanceDetails();
+    const balanceDetails = await getFuturesAccountBalanceDetails(); // <-- FUNÇÃO NÃO IMPORTADA
     const usdtBalance = balanceDetails.find(item => item.asset === 'USDT');
     const capital = parseFloat(usdtBalance.balance) * (capitalPct / 100);
     
@@ -391,3 +392,7 @@ websockets.startUserDataStream(getDatabaseInstance).catch(console.error);
 
 // Não precisamos mais exportar estas funções
 module.exports = {};
+
+// Comentários explicativos sobre a dependência circular entre os módulos
+// monitoramento.js requer websockets.js 
+// websockets.js acessa funções de monitoramento.js
