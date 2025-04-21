@@ -244,7 +244,7 @@ updateLeverageBrackets()
 
 // Função para monitorar o arquivo posicoes.json
 async function monitorPositionsFile() {
-  console.log('[MONITOR] Iniciando monitoramento do arquivo posicoes.json');
+  //console.log('[MONITOR] Iniciando monitoramento do arquivo posicoes.json');
   
   try {
     // Verificar arquivo imediatamente na inicialização
@@ -381,7 +381,7 @@ async function processNewTrade(trade, allPositions) {
 monitorPositionsFile();
 
 // Adicionar essa linha antes de iniciar o startUserDataStream
-console.log('[INIT] Iniciando monitoramento de trades e posições...');
+//console.log('[INIT] Iniciando monitoramento de trades e posições...');
 
 // Registrar os callbacks no módulo websockets
 websockets.setMonitoringCallbacks({

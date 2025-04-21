@@ -34,7 +34,7 @@ async function createListenKey() {
         const endpoint = '/v1/listenKey';
         const fullUrl = `${apiUrl}${endpoint}`;
         
-        console.log(`[WEBSOCKET] Chamando endpoint para criar listenKey: ${fullUrl}`);
+        //console.log(`[WEBSOCKET] Chamando endpoint para criar listenKey: ${fullUrl}`);
         
         const response = await axios.post(fullUrl, null, {
             headers: {
@@ -77,7 +77,7 @@ async function closeListenKey(listenKey) {
 
 // Função para iniciar o WebSocket de dados do usuário - CORRIGIDO O FORMATO DA URL
 async function startUserDataStream(getDatabaseInstance) {
-    console.log('[WEBSOCKET] Iniciando conexão com WebSocket de dados do usuário');
+    //console.log('[WEBSOCKET] Iniciando conexão com WebSocket de dados do usuário');
     
     try {
         const listenKey = await createListenKey();
@@ -85,7 +85,7 @@ async function startUserDataStream(getDatabaseInstance) {
         // URL CORRIGIDA para conexão do WebSocket usando o listenKey
         // Formato correto para Futuros USDT-M: wss://fstream.binance.com/ws/<listenKey>
         const wsUrl = `${ws_apiUrl}/ws/${listenKey}`;
-        console.log(`[WEBSOCKET] Conectando ao WebSocket URL: ${wsUrl}`);
+        //console.log(`[WEBSOCKET] Conectando ao WebSocket URL: ${wsUrl}`);
         
         const ws = new WebSocket(wsUrl);
         

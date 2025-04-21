@@ -820,7 +820,7 @@ async function getAllLeverageBrackets() {
   const url = `${apiUrl}/v1/leverageBracket?${queryString}&signature=${signature}`;
 
   try {
-    console.log('[API] Buscando todos os brackets de alavancagem da Binance...');
+    //console.log('[API] Buscando todos os brackets de alavancagem da Binance...');
     const response = await axios.get(url, { 
       headers: { 'X-MBX-APIKEY': apiKey }
     });
