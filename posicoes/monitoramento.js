@@ -8,10 +8,6 @@ const { getAllLeverageBrackets } = require('../api');
 const {getDatabaseInstance, getPositionIdBySymbol, updatePositionInDb, checkOrderExists, getAllOrdersBySymbol, updatePositionStatus, insertNewOrder, disconnectDatabase, getAllPositionsFromDb, getOpenOrdersFromDb, getOrdersFromDb, updateOrderStatus, getPositionsFromDb, insertPosition, moveClosedPositionsAndOrders } = require('../db/conexao');
 const { startUserDataStream, ensurePriceWebsocketExists } = require('../websockets');
 
-const apiKey = process.env.API_KEY;
-const apiUrl = process.env.API_URL;
-const ws_apiUrl = process.env.WS_URL;
-
 // Inicializar o bot do Telegram
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
