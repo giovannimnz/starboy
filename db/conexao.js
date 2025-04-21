@@ -6,8 +6,8 @@ let dbInstance = null;
 // Modifique a função getDatabaseInstance() para inicializar o banco de dados
 function getDatabaseInstance() {
     if (!dbInstance) {
-        // Criar caminho absoluto para o arquivo do banco de dados
-        const dbPath = path.join(__dirname, '..', 'starboy1.db');
+        // MODIFICADO: Criar caminho absoluto para o arquivo do banco de dados na pasta db/
+        const dbPath = path.join(__dirname, 'starboy1.db');
         
         // Verificar se o diretório existe
         const dbDir = path.dirname(dbPath);
