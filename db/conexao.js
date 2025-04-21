@@ -1,13 +1,32 @@
 const sqlite3 = require('sqlite3').verbose();
+const path = require('path');
+const fs = require('fs');
 let dbInstance = null;
 
+// Altere a função getDatabaseInstance para usar caminho absoluto
 function getDatabaseInstance() {
     if (!dbInstance) {
-        dbInstance = new sqlite3.Database('./starboy1.db', sqlite3.OPEN_READWRITE, (err) => {
+        // Criar caminho absoluto para o arquivo do banco de dados
+        const dbPath = path.join(__dirname, '..', 'starboy1.db');
+        
+        // Verificar se o diretório existe
+        const dbDir = path.dirname(dbPath);
+        if (!fs.existsSync(dbDir)) {
+            try {
+                fs.mkdirSync(dbDir, { recursive: true });
+                console.log(`Diretório criado: ${dbDir}`);
+            } catch (err) {
+                console.error('Erro ao criar diretório:', err);
+            }
+        }
+        
+        // Abrir banco de dados (com opção para criar se não existir)
+        dbInstance = new sqlite3.Database(dbPath, sqlite3.OPEN_READWRITE | sqlite3.OPEN_CREATE, (err) => {
             if (err) {
-                console.error('Erro ao conectar ao banco de dados:', err.message);
+                console.error(`Erro ao conectar ao banco de dados em ${dbPath}:`, err.message);
                 dbInstance = null;
             } else {
+                console.log(`Conexão com banco de dados estabelecida em: ${dbPath}`);
             }
         });
     }
@@ -26,7 +45,6 @@ function getAllOrdersBySymbol(db, symbol) {
         });
     });
 }
-
 
 function disconnectDatabase() {
     if (dbInstance) {
@@ -232,7 +250,6 @@ function getOpenOrdersFromDb(db) {
     });
 }
 
-
 function getOrdersFromDb(db, params) {
     return new Promise((resolve, reject) => {
         if (!db || typeof db.all !== 'function') {
@@ -278,7 +295,6 @@ function getOrdersFromDb(db, params) {
         });
     });
 }
-
 
 function getPositionsFromDb(db, status) {
     return new Promise((resolve, reject) => {
@@ -472,8 +488,6 @@ async function moveClosedPositionsAndOrders(db, positionId) {
         throw error;
     }
 }
-
-
 
 // Nova função para obter uma posição específica pelo ID
 function getPositionById(db, positionId) {
