@@ -5,8 +5,7 @@ const axios = require('axios');
 const schedule = require('node-schedule');
 const fs = require('fs').promises;
 const { Telegraf } = require("telegraf");
-const { newOrder, cancelOrder, newStopOrder, cancelAllOpenOrders } = require('../api');
-const { getAllLeverageBrackets, getFuturesAccountBalanceDetails } = require('../api'); // Adicionado getFuturesAccountBalanceDetails
+const { newOrder, cancelOrder, newStopOrder, cancelAllOpenOrders, getAllLeverageBrackets, getFuturesAccountBalanceDetails, getTickSize, getPrecision, changeInitialLeverage, changeMarginType, getPositionDetails } = require('../api');
 const {getDatabaseInstance, getPositionIdBySymbol, updatePositionInDb, checkOrderExists, getAllOrdersBySymbol, updatePositionStatus, insertNewOrder, disconnectDatabase, getAllPositionsFromDb, getOpenOrdersFromDb, getOrdersFromDb, updateOrderStatus, getPositionsFromDb, insertPosition, moveClosedPositionsAndOrders, initializeDatabase} = require('../db/conexao');
 const websockets = require('../websockets');
 
@@ -190,6 +189,36 @@ async function ensureTablesExist(db) {
     });
 }
 
+// Adicionar esta função ao arquivo monitoramento.js
+async function getPositionById(db, id_posicao) {
+  return new Promise((resolve, reject) => {
+    db.get("SELECT * FROM posicoes WHERE id = ?", [id_posicao], (err, row) => {
+      if (err) {
+        console.error("Erro ao buscar posição por ID:", err);
+        reject(err);
+      } else {
+        resolve(row);
+      }
+    });
+  });
+}
+
+// Adicionar também esta função que é chamada mas não definida
+async function updateOrderRenewFlag(db, orderId) {
+  return new Promise((resolve, reject) => {
+    const sql = "UPDATE ordens SET renew_sl_firs = 'TRUE' WHERE id = ?";
+    db.run(sql, [orderId], function(err) {
+      if (err) {
+        console.error(`Erro ao atualizar flag de renovação para ordem ${orderId}:`, err.message);
+        reject(err);
+      } else {
+        console.log(`Flag de renovação atualizado para ordem ${orderId}`);
+        resolve();
+      }
+    });
+  });
+}
+
 // Agendar a função checkAndUpdateOrders para rodar a cada 2 minutos
 schedule.scheduleJob('*/2 * * * *', function() {
     //console.log('Running checkAndUpdateOrders...');
@@ -235,8 +264,7 @@ schedule.scheduleJob('0 3 * * *', function() {
     .catch(error => console.error('[SCHEDULER] Falha na atualização programada:', error));
 });
 
-// Adicionar esta linha para executar uma atualização imediata quando o script iniciar
-// (Útil para garantir que temos dados atualizados desde o primeiro uso)
+// Adicionar essa linha antes de iniciar o startUserDataStream
 //console.log('[INIT] Realizando primeira atualização de brackets de alavancagem ao iniciar...');
 updateLeverageBrackets()
   //.then(() => console.log('[INIT] Primeira atualização de brackets concluída'))
@@ -311,7 +339,7 @@ async function processNewTrade(trade, allPositions) {
     const capitalPct = parseFloat(trade.capital_pct);
     
     // Obter detalhes da conta
-    const balanceDetails = await getFuturesAccountBalanceDetails(); // <-- FUNÇÃO NÃO IMPORTADA
+    const balanceDetails = await getFuturesAccountBalanceDetails();
     const usdtBalance = balanceDetails.find(item => item.asset === 'USDT');
     const capital = parseFloat(usdtBalance.balance) * (capitalPct / 100);
     
