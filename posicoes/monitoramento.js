@@ -85,49 +85,106 @@ async function onPriceUpdate(symbol, currentPrice, relevantTrades, positions) {
 
 // Função que realiza as verificações e atualizações necessárias
 async function checkAndUpdateOrders() {
-    const db = getDatabaseInstance();
-    const partialOrders = await getOrdersFromDb(db, { tipo_ordem_bot: "REDUCAO PARCIAL", target: "1", status: "FILLED", renew_sl_firs: "NULL" });
+    try {
+        const db = getDatabaseInstance();
+        if (!db) {
+            console.log("Banco de dados não disponível. Tentando novamente mais tarde.");
+            return;
+        }
+        
+        // Verificar se a tabela ordens existe antes de consultar
+        await ensureTablesExist(db);
+        
+        const partialOrders = await getOrdersFromDb(db, { 
+            tipo_ordem_bot: "REDUCAO PARCIAL", 
+            target: "1", 
+            status: "FILLED", 
+            renew_sl_firs: "NULL" 
+        }).catch(error => {
+            console.error("Erro ao consultar ordens:", error);
+            return [];
+        });
 
-    for (let order of partialOrders) {
-        // Cancelar a ordem de stop loss existente
-        await cancelOrder(order.id_externo, order.simbolo);
-
-        // Obter preço médio da posição
-        const position = await getPositionById(db, order.id_posicao);
-        const averagePrice = position.preco_medio;
-
-        // Determinar o lado oposto para a nova ordem de stop loss
-        const side = order.side === 'BUY' ? 'SELL' : 'BUY';
-
-        // Enviar nova ordem de stop loss com o preço médio
-        const newStopLossResult = await newStopOrder(order.simbolo, order.quantidade, side, averagePrice);
-        if (newStopLossResult.data && newStopLossResult.data.orderId) {
-            // Inserir a nova ordem no banco de dados
-            const id_posicao = await getPositionIdBySymbol(db, order.simbolo);
-            await insertNewOrder(db, {
-                tipo_ordem: 'STOP LOSS',
-                preco: averagePrice,
-                quantidade: order.quantidade,
-                id_posicao: id_posicao,
-                status: 'OPEN',
-                data_hora_criacao: new Date().toISOString(),
-                id_externo: newStopLossResult.data.orderId,
-                side: side,
-                simbolo: order.simbolo,
-                tipo_ordem_bot: 'STOP LOSS',
-                target: null,
-                reduce_only: true,
-                close_position: true,
-                last_update: new Date().toISOString()
-            });
-            console.log(`New stop loss order created with ID: ${newStopLossResult.data.orderId}`);
-        } else {
-            console.error("Error creating new stop loss order on Binance.");
+        if (!partialOrders || partialOrders.length === 0) {
+            return; // Nenhuma ordem para processar
         }
 
-        // Atualizar o banco de dados para refletir que o stop loss foi renovado
-        await updateOrderRenewFlag(db, order.id);
+        for (let order of partialOrders) {
+            try {
+                // Cancelar a ordem de stop loss existente
+                await cancelOrder(order.id_externo, order.simbolo);
+
+                // Obter preço médio da posição
+                const position = await getPositionById(db, order.id_posicao);
+                if (!position) {
+                    console.error(`Posição com ID ${order.id_posicao} não encontrada`);
+                    continue;
+                }
+                
+                const averagePrice = position.preco_medio;
+
+                // Determinar o lado oposto para a nova ordem de stop loss
+                const side = order.side === 'BUY' ? 'SELL' : 'BUY';
+
+                // Enviar nova ordem de stop loss com o preço médio
+                const newStopLossResult = await newStopOrder(order.simbolo, order.quantidade, side, averagePrice);
+                if (newStopLossResult.data && newStopLossResult.data.orderId) {
+                    // Inserir a nova ordem no banco de dados
+                    const id_posicao = await getPositionIdBySymbol(db, order.simbolo);
+                    await insertNewOrder(db, {
+                        tipo_ordem: 'STOP LOSS',
+                        preco: averagePrice,
+                        quantidade: order.quantidade,
+                        id_posicao: id_posicao,
+                        status: 'OPEN',
+                        data_hora_criacao: new Date().toISOString(),
+                        id_externo: newStopLossResult.data.orderId,
+                        side: side,
+                        simbolo: order.simbolo,
+                        tipo_ordem_bot: 'STOP LOSS',
+                        target: null,
+                        reduce_only: true,
+                        close_position: true,
+                        last_update: new Date().toISOString()
+                    });
+                    console.log(`New stop loss order created with ID: ${newStopLossResult.data.orderId}`);
+                } else {
+                    console.error("Error creating new stop loss order on Binance.");
+                }
+
+                // Atualizar o banco de dados para refletir que o stop loss foi renovado
+                await updateOrderRenewFlag(db, order.id);
+            } catch (error) {
+                console.error(`Erro ao processar ordem ${order.id_externo}:`, error);
+            }
+        }
+    } catch (error) {
+        console.error("Erro geral em checkAndUpdateOrders:", error);
     }
+}
+
+// Adicionar esta nova função para garantir que as tabelas existam
+async function ensureTablesExist(db) {
+    return new Promise((resolve, reject) => {
+        // Verificar se a tabela 'ordens' existe
+        db.get("SELECT name FROM sqlite_master WHERE type='table' AND name='ordens'", (err, row) => {
+            if (err) {
+                reject(err);
+                return;
+            }
+            
+            if (!row) {
+                console.log("Tabela 'ordens' não encontrada. Inicializando o banco de dados...");
+                initializeDatabase();
+                setTimeout(() => {
+                    // Damos um pequeno tempo para inicializar
+                    resolve();
+                }, 1000);
+            } else {
+                resolve();
+            }
+        });
+    });
 }
 
 // Agendar a função checkAndUpdateOrders para rodar a cada 2 minutos

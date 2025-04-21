@@ -38,7 +38,7 @@ function getDatabaseInstance() {
             }
         });
     }
-    return dbInstance;
+    return dbInstance; // Certifique-se de que a função retorne a instância
 }
 
 // Nova função para inicializar o banco de dados com as tabelas necessárias
@@ -654,5 +654,6 @@ module.exports = {
     updatePositionInDb,
     moveClosedPositionsAndOrders,
     getPositionById,
-    getDataHoraFormatada
+    getDataHoraFormatada,
+    initializeDatabase  // Adicionamos esta função ao exports
 };
