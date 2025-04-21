@@ -5,7 +5,7 @@ const axios = require('axios');
 const schedule = require('node-schedule');
 const fs = require('fs').promises;
 const { Telegraf } = require("telegraf");
-const { newOrder, cancelOrder, newStopOrder, cancelAllOpenOrders, getAllLeverageBrackets, getFuturesAccountBalanceDetails, getTickSize, getPrecision, changeInitialLeverage, changeMarginType, getPositionDetails } = require('../api');
+const { newOrder, cancelOrder, newStopOrder, cancelAllOpenOrders, getAllLeverageBrackets, getFuturesAccountBalanceDetails, getTickSize, getPrecision, changeInitialLeverage, changeMarginType, getPositionDetails, setPositionMode } = require('../api');
 const {getDatabaseInstance, getPositionIdBySymbol, updatePositionInDb, checkOrderExists, getAllOrdersBySymbol, updatePositionStatus, insertNewOrder, disconnectDatabase, getAllPositionsFromDb, getOpenOrdersFromDb, getOrdersFromDb, updateOrderStatus, getPositionsFromDb, insertPosition, moveClosedPositionsAndOrders, initializeDatabase} = require('../db/conexao');
 const websockets = require('../websockets');
 
@@ -34,6 +34,13 @@ async function handleAccountUpdate(message, db) {
         console.error('[ACCOUNT UPDATE] Erro ao processar atualização de conta:', error);
     }
 }
+
+// Na inicialização do script
+console.log('[INIT] Verificando e configurando modo de posição...');
+setPositionMode(false) // Configurar como One-way mode
+  .then(() => console.log('[INIT] Modo de posição configurado como One-way'))
+  .catch(error => console.error('[INIT] Erro ao configurar modo de posição:', error));
+  
 
 // Nova função para processar atualizações de preço (chamada pelo websocket.js)
 async function onPriceUpdate(symbol, currentPrice, relevantTrades, positions) {

@@ -43,6 +43,10 @@ async function newEntryOrder(symbol, quantity, side) {
 
 async function newOrder(symbol, quantity, side, price) {
   price = await roundPriceToTickSize(symbol, price);
+  
+  // Verificar o modo de posição atual
+  const isHedgeMode = await getPositionMode();
+  
   const data = {
     symbol,
     side,
@@ -51,6 +55,12 @@ async function newOrder(symbol, quantity, side, price) {
     price: parseFloat(price),
     timeInForce: "GTC"
   };
+  
+  // Adicionar positionSide se estiver em Hedge Mode
+  if (isHedgeMode) {
+    // Se side é BUY, positionSide deve ser LONG; se SELL, deve ser SHORT
+    data.positionSide = side === 'BUY' ? 'LONG' : 'SHORT';
+  }
 
   const timestamp = Date.now();
   const recvWindow = 60000;
@@ -70,6 +80,31 @@ async function newOrder(symbol, quantity, side, price) {
   });
 
   return result;
+}
+
+async function setPositionMode(dualSidePosition) {
+  const data = {
+    dualSidePosition, // true para hedge mode, false para one-way mode
+    timestamp: Date.now(),
+    recvWindow: 60000
+  };
+
+  const queryString = new URLSearchParams(data).toString();
+  const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
+  const url = `${apiUrl}/v1/positionSide/dual?${queryString}&signature=${signature}`;
+
+  try {
+    const response = await axios.post(url, null, { headers: { 'X-MBX-APIKEY': apiKey } });
+    return response.data;
+  } catch (error) {
+    // Ignorar erro se o modo já estiver configurado
+    if (error.response && error.response.data && error.response.data.code === -4059) {
+      console.log("Modo de posição já configurado corretamente.");
+      return { success: true };
+    }
+    console.error('Erro ao configurar modo de posição:', error.message);
+    throw error;
+  }
 }
 
 async function newReduceOnlyOrder(symbol, quantity, side, price) {
@@ -833,6 +868,24 @@ async function getAllLeverageBrackets() {
   }
 }
 
+// Adicione esta função para verificar o modo de posição atual
+async function getPositionMode() {
+  const timestamp = Date.now();
+  const recvWindow = 60000;
+
+  const queryString = `timestamp=${timestamp}&recvWindow=${recvWindow}`;
+  const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
+  const url = `${apiUrl}/v1/positionSide/dual?${queryString}&signature=${signature}`;
+
+  try {
+    const response = await axios.get(url, { headers: { 'X-MBX-APIKEY': apiKey } });
+    return response.data.dualSidePosition; // true para hedge mode, false para one-way
+  } catch (error) {
+    console.error('Erro ao verificar modo de posição:', error.message);
+    throw error;
+  }
+}
+
 // Modificar o module.exports para incluir a nova função
 module.exports = {
   getFuturesAccountBalanceDetails,
@@ -858,5 +911,7 @@ module.exports = {
   transferBetweenAccounts,
   cancelAllOpenOrders,
   encerrarPosicao,
-  getAllLeverageBrackets  // Nova função adicionada aqui
+  getAllLeverageBrackets,
+  setPositionMode,
+  getPositionMode
 };
