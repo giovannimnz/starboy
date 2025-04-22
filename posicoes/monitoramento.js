@@ -57,6 +57,79 @@ async function handleOrderUpdate(message, db) {
                     position.status = 'ENTRY_FILLED';
                     position.updated_at = new Date().toISOString();
 
+                    // ==== ADICIONAR ESTE CÓDIGO ====
+                    // Obter detalhes da quantidade e precisão
+                    const { quantityPrecision } = await getPrecision(symbol);
+                    const qty = parseFloat(orders[0].quantidade);
+                    
+                    // Criar ordem de Stop Loss
+                    const slPrice = parseFloat(position.stop_loss);
+                    const slSide = position.side === 'COMPRA' ? 'SELL' : 'BUY';
+                    
+                    console.log(`[ORDER UPDATE] Criando SL para ${symbol} a ${slPrice}, quantidade ${qty}`);
+                    
+                    try {
+                        const slOrder = await newStopOrder(symbol, qty.toFixed(quantityPrecision), slSide, slPrice);
+                        if (slOrder && slOrder.data && slOrder.data.orderId) {
+                            position.sl_order_id = slOrder.data.orderId;
+                            console.log(`[ORDER UPDATE] SL criado com ID: ${slOrder.data.orderId}`);
+                            
+                            // Registrar ordem SL no banco de dados
+                            await insertNewOrder(db, {
+                                tipo_ordem: 'STOP_MARKET',
+                                preco: slPrice,
+                                quantidade: qty,
+                                id_posicao: orders[0].id_posicao,
+                                status: 'OPEN',
+                                data_hora_criacao: new Date().toISOString(),
+                                id_externo: slOrder.data.orderId,
+                                side: slSide,
+                                simbolo: symbol,
+                                tipo_ordem_bot: 'STOP_LOSS',
+                                target: null,
+                                reduce_only: true,
+                                close_position: true,
+                                last_update: new Date().toISOString()
+                            });
+                        }
+                    } catch (slError) {
+                        console.error(`[ORDER UPDATE] Erro ao criar SL: ${slError.message}`);
+                    }
+                    
+                    // Criar ordem de Take Profit
+                    const tpPrice = parseFloat(position.tp);
+                    
+                    console.log(`[ORDER UPDATE] Criando TP para ${symbol} a ${tpPrice}, quantidade ${qty}`);
+                    
+                    try {
+                        const tpOrder = await newOrder(symbol, qty.toFixed(quantityPrecision), slSide, tpPrice, 'LIMIT', true);
+                        if (tpOrder && tpOrder.data && tpOrder.data.orderId) {
+                            position.tp_order_id = tpOrder.data.orderId;
+                            console.log(`[ORDER UPDATE] TP criado com ID: ${tpOrder.data.orderId}`);
+                            
+                            // Registrar ordem TP no banco de dados
+                            await insertNewOrder(db, {
+                                tipo_ordem: 'LIMIT',
+                                preco: tpPrice,
+                                quantidade: qty,
+                                id_posicao: orders[0].id_posicao,
+                                status: 'OPEN',
+                                data_hora_criacao: new Date().toISOString(),
+                                id_externo: tpOrder.data.orderId,
+                                side: slSide,
+                                simbolo: symbol,
+                                tipo_ordem_bot: 'TAKE_PROFIT',
+                                target: null,
+                                reduce_only: true,
+                                close_position: false,
+                                last_update: new Date().toISOString()
+                            });
+                        }
+                    } catch (tpError) {
+                        console.error(`[ORDER UPDATE] Erro ao criar TP: ${tpError.message}`);
+                    }
+                    // ==== FIM DO CÓDIGO ADICIONADO ====
+
                     // Garantir que o arquivo seja atualizado
                     console.log(`[ORDER UPDATE] Salvando posições atualizadas no arquivo...`);
                     await fs.writeFile(positionsFile, JSON.stringify(positions, null, 2), 'utf8');
