@@ -6,6 +6,29 @@ const fs = require('fs').promises;
 // Corrigir o caminho do .env
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
+// Função para obter posições do arquivo
+async function getPositionsFromFile() {
+    try {
+        const positionsFile = path.join(__dirname, 'posicoes', 'posicoes.json');
+        const fileExists = await fs.access(positionsFile).then(() => true).catch(() => false);
+        
+        if (!fileExists) {
+            console.log(`[WEBSOCKET] Arquivo de posições não encontrado: ${positionsFile}`);
+            return [];
+        }
+        
+        const content = await fs.readFile(positionsFile, 'utf8');
+        if (!content.trim()) {
+            return [];
+        }
+        
+        return JSON.parse(content);
+    } catch (error) {
+        console.error(`[WEBSOCKET] Erro ao ler arquivo de posições:`, error);
+        return [];
+    }
+}
+
 // Variáveis de ambiente para API da Binance
 const apiKey = process.env.API_KEY;
 const apiSecret = process.env.API_SECRET;
