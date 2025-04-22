@@ -710,7 +710,6 @@ async function changeMarginType(symbol, marginType) {
     
     // Se o tipo de margem já é o desejado, retornar sem fazer chamada à API
     if (currentMarginType === desiredMarginType) {
-      //console.log(`[API] O tipo de margem para ${symbol} já está configurado como ${marginType.toUpperCase()}.`);
       return { 
         code: 200, 
         msg: 'No need to change margin type.',
@@ -719,11 +718,9 @@ async function changeMarginType(symbol, marginType) {
     }
     
     // Se chegou aqui, precisamos alterar o tipo de margem
-    //console.log(`[API] Alterando tipo de margem de ${currentMarginType.toUpperCase()} para ${desiredMarginType.toUpperCase()} para ${symbol}...`);
-    
     const data = {
       symbol,
-      marginType: desiredMarginType,
+      marginType: desiredMarginType.toUpperCase(), // AQUI: Converter para MAIÚSCULAS
       timestamp: Date.now(),
       recvWindow: 60000
     };
@@ -733,7 +730,6 @@ async function changeMarginType(symbol, marginType) {
     const url = `${apiUrl}/v1/marginType?${queryString}&signature=${signature}`;
 
     const response = await axios.post(url, null, { headers: { 'X-MBX-APIKEY': apiKey } });
-    //console.log(`[API] Tipo de margem alterado com sucesso para ${desiredMarginType.toUpperCase()}`);
     return response.data;
   } catch (error) {
     console.error('[API] Erro ao alterar o tipo de margem:', error.message);

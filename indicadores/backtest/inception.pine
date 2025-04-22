@@ -1,0 +1,136 @@
+//@version=6
+strategy("Inception - 1 : 0.618", 
+     overlay=true, 
+     initial_capital=1000, 
+     default_qty_type=strategy.cash, 
+     default_qty_value=500,
+     commission_type=strategy.commission.percent, 
+     commission_value=0.05)
+     
+//---------------------------------------------------------
+// >>>>>>>>>>>>>>>> CONFIGURAÇÕES GERAIS <<<<<<<<<<<<<<<<<<
+//---------------------------------------------------------
+rsiLen         = input.int(14,   "RSI Período", display=display.none)
+volSmaLen      = input.int(20,   "Média Volume", display=display.none)
+emaLen         = input.int(50,   "EMA (tendência)", display=display.none)
+pivotLeft      = input.int(1,    "Pivô - barras à esquerda", display=display.none)
+pivotRight     = input.int(2,    "Pivô - barras à direita", display=display.none)
+volMultiplier  = input.float(1.0,"Volume acima da média (fator)", display=display.none)
+fibExt         = input.float(0.618, "Fib Extension TP (1.0 = 1:1)", display=display.none)
+
+// Parâmetros para envio de webhook
+leverage       = input.int(75,    title="Leverage p/ Envio Webhook", display=display.none)
+entry_percent  = input.float(0.5, title="Capital (em %) p/ Webhook", minval=0.0, maxval=1.0, display=display.none)
+
+//---------------------------------------------------------
+// >>>>>>>>>>>> INDICADORES BÁSICOS E DIVERGÊNCIAS <<<<<<<<<<
+//---------------------------------------------------------
+rsi      = ta.rsi(close, rsiLen)
+volSma   = ta.sma(volume, volSmaLen)
+ema50    = ta.ema(close, emaLen)
+
+//---------------------------------------------------------
+// >>>>>>>>>>>>>>>> ARMAZENAMENTO DE PIVÔS <<<<<<<<<<<<<<<<<
+//---------------------------------------------------------
+var float pivotLowPrice1 = na
+var float pivotLowPrice2 = na
+var float pivotLowRsi1   = na
+var float pivotLowRsi2   = na
+
+var float pivotHighPrice1 = na
+var float pivotHighPrice2 = na
+var float pivotHighRsi1   = na
+var float pivotHighRsi2   = na
+
+//---------------------------------------------------------
+// >>>>>>>>>>>>>>>> DIVERGÊNCIA ALTISTA <<<<<<<<<<<<<<<<<<<
+//---------------------------------------------------------
+pivotLowVal = ta.pivotlow(low, pivotLeft, pivotRight) 
+isPivotLow  = not na(pivotLowVal)
+
+if isPivotLow
+    pivotLowPrice2 := pivotLowPrice1
+    pivotLowRsi2   := pivotLowRsi1
+    pivotLowPrice1 := low[pivotRight]    
+    pivotLowRsi1   := rsi[pivotRight]
+
+bullDiv = isPivotLow and not na(pivotLowPrice1) and not na(pivotLowPrice2) and
+          (pivotLowPrice1 < pivotLowPrice2) and (pivotLowRsi1 > pivotLowRsi2)
+
+//---------------------------------------------------------
+// >>>>>>>>>>>>>>>> DIVERGÊNCIA BAIXISTA <<<<<<<<<<<<<<<<<<<
+//---------------------------------------------------------
+pivotHighVal = ta.pivothigh(high, pivotLeft, pivotRight)
+isPivotHigh  = not na(pivotHighVal)
+
+if isPivotHigh
+    pivotHighPrice2 := pivotHighPrice1
+    pivotHighRsi2   := pivotHighRsi1
+    pivotHighPrice1 := high[pivotRight]
+    pivotHighRsi1   := rsi[pivotRight]
+
+bearDiv = isPivotHigh and not na(pivotHighPrice1) and not na(pivotHighPrice2) and
+          (pivotHighPrice1 > pivotHighPrice2) and (pivotHighRsi1 < pivotHighRsi2)
+
+//---------------------------------------------------------
+// >>>>>>>>>>>>>>>>>>> TENDÊNCIA E VOLUME <<<<<<<<<<<<<<<<<<
+//---------------------------------------------------------
+emaSlopeUp   = ema50 > ema50[1]
+emaSlopeDown = ema50 < ema50[1]
+longTrend  = close > ema50
+shortTrend = close < ema50
+
+enoughVolume = volume > (volSma * volMultiplier)
+
+//---------------------------------------------------------
+// >>>>>>>>>>>>>>>> CONDIÇÕES DE ENTRADA <<<<<<<<<<<<<<<<<<<
+//---------------------------------------------------------
+bullSignal = longTrend  and bullDiv  and enoughVolume
+bearSignal = shortTrend and bearDiv and enoughVolume
+
+//---------------------------------------------------------
+// >>>>>>>>>>> COLORAÇÃO DAS BARRAS (visual) <<<<<<<<<<<<<<<
+//---------------------------------------------------------
+barcolor(bullSignal ? color.white : bearSignal ? color.yellow : na)
+
+//---------------------------------------------------------
+// >>>>>>>>>>>>>>>> FUNÇÃO DE ENVIO WEBHOOK <<<<<<<<<<<<<<<<
+//---------------------------------------------------------
+// Definir o Bearer Token
+var string bearer_token = "fd23e8ae1c1c4d78c5092ff6db6f79a00e1f0d4dba3a8ea0ddd318b6a01647ba"
+
+// Função que aceita 9 argumentos, combinando com os calls no if bullSignal/bearSignal
+// Recebe: _symbol, _side, _leverage, _entry_price, _tpPrice, _sl, _messageType, _id
+// e monta o JSON em uma ÚNICA LINHA para evitar erros de quebra de linha:
+send_webhook(_symbol, _side, _leverage, _entry_price, _tpPrice, _sl, _messageType, _id) =>
+    alert("{\"alert\":{\"message\":{\"id\":\"" + str.tostring(_id) + "\",\"symbol\":\"" + _symbol + "\",\"side\":\"" + _side + "\",\"leverage\":" + str.tostring(_leverage) + ",\"capital\":50,\"entry\":" + str.tostring(_entry_price) + ",\"tp\":" + str.tostring(_tpPrice) + ",\"sl\":" + str.tostring(_sl) + ",\"message_type\":\"" + _messageType + "\"},\"headers\":{\"Authorization\":\"Bearer " + bearer_token + "\"}}}", alert.freq_once_per_bar_close)
+
+//---------------------------------------------------------
+// >>>>>>>>>>>>>>> ORDENS + STOP + TAKE PROFIT <<<<<<<<<<<<<<
+//---------------------------------------------------------
+if bullSignal
+    entryPrice = close
+    stopPrice  = pivotLowPrice1  // Stop na mínima do pivô
+    tpPrice    = entryPrice + (entryPrice - stopPrice) * fibExt
+
+    // Estratégia
+    strategy.entry("BUY", strategy.long)
+    strategy.exit("TP/SL Long", from_entry="BUY", stop=stopPrice, limit=tpPrice)
+
+    // Envio do alerta (webhook) em uma linha
+    // Ordem dos argumentos (9):
+    // (1)_symbol, (2)_side, (3)_leverage, (4)_entry_price, (5)_tpPrice, (6)_tp2, (7)_sl, (8)_messageType, (9)_id
+    send_webhook(syminfo.ticker, "buy", leverage, entryPrice, tpPrice, stopPrice, "new_trade_long", str.tostring(time))
+
+if bearSignal
+    entryPrice = close
+    stopPrice  = pivotHighPrice1 // Stop na máxima do pivô
+    tpPrice    = entryPrice - (stopPrice - entryPrice) * fibExt
+
+    // Estratégia
+    strategy.entry("SELL", strategy.short)
+    strategy.exit("TP/SL Short", from_entry="SELL", stop=stopPrice, limit=tpPrice)
+
+    // Envio do alerta (webhook) em uma linha
+    // Mesma ordem de argumentos
+    send_webhook(syminfo.ticker, "sell", leverage, entryPrice, tpPrice, stopPrice, "new_trade_short", str.tostring(time))
