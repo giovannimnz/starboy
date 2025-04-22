@@ -184,7 +184,7 @@ async function createDatabase() {
     }
 }
 
-// Executar a criação do banco de dados
+// Executar a criação do banco de dados no servidor
 createDatabase()
     .then(() => {
         console.log('Processo finalizado com sucesso!');
