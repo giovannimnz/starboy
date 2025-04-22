@@ -17,127 +17,59 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 
 // Definir funções de callback
 async function handleOrderUpdate(message, db) {
-    const orderId = message.i;
-    const status = message.X;
-    const symbol = message.s;
+    // Extrair os dados corretos dependendo do formato da mensagem
+    const orderId = message.i || message.orderId;
+    const status = message.X || message.status;
+    const symbol = message.s || message.symbol;
   
-    console.log(`[ORDER UPDATE] Symbol: ${symbol}, OrderID: ${orderId}, Status: ${status}`);
+    console.log(`[ORDER UPDATE] Symbol: ${symbol}, OrderID: ${orderId}, Status: ${status}, Mensagem completa:`, message);
   
     try {
         // Verificar se esta é uma ordem de ENTRADA que foi PREENCHIDA
         if (status === 'FILLED') {
+            console.log(`[ORDER UPDATE] Ordem com status FILLED detectada para ${symbol}, ID: ${orderId}`);
+            
             // Primeiro verificar se é uma ordem de entrada
             const orders = await getOrdersFromDb(db, { id_externo: orderId });
+            console.log(`[ORDER UPDATE] Ordens encontradas no banco:`, orders);
+            
             if (orders && orders.length > 0 && orders[0].tipo_ordem_bot === 'ENTRADA') {
                 console.log(`[ORDER UPDATE] Ordem de entrada ${orderId} para ${symbol} preenchida. Criando SL e TP...`);
 
-                // Buscar a posição no arquivo posicoes.json
+                // Buscar a posição no arquivo posicoes.json com mais tolerância
                 const positionsFile = path.join(__dirname, 'posicoes.json');
+                console.log(`[ORDER UPDATE] Buscando posições no arquivo: ${positionsFile}`);
                 const content = await fs.readFile(positionsFile, 'utf8');
                 const positions = JSON.parse(content);
+                console.log(`[ORDER UPDATE] Posições encontradas no arquivo:`, positions);
                 
-                // Encontrar esta posição específica pelo entry_order_id
+                // Encontrar esta posição pelo símbolo e ID da ordem de entrada (com maior tolerância na comparação)
                 const position = positions.find(p => 
-                    p.entry_order_id == orderId && p.symbol === symbol
+                    p.symbol === symbol && (
+                        String(p.entry_order_id) === String(orderId)
+                    )
                 );
                 
+                console.log(`[ORDER UPDATE] Posição encontrada para ordem ${orderId}:`, position);
+                
                 if (position) {
-                    // Atualizar status da posição
+                    // Atualizar a posição
                     position.status = 'ENTRY_FILLED';
                     position.updated_at = new Date().toISOString();
-                    
-                    // Obter detalhes precisão da moeda
-                    const { quantityPrecision } = await getPrecision(symbol);
-                    const qty = parseFloat(orders[0].quantidade);
-                    
-                    // Criar ordem de Stop Loss
-                    const slPrice = parseFloat(position.stop_loss);
-                    const slSide = position.side === 'COMPRA' ? 'SELL' : 'BUY';
-                    
-                    console.log(`[ORDER UPDATE] Criando SL para ${symbol} a ${slPrice}, quantidade ${qty}`);
-                    
-                    const slOrder = await newStopOrder(
-                        symbol, 
-                        qty.toFixed(quantityPrecision), 
-                        slSide, 
-                        slPrice
-                    );
-                    
-                    if (slOrder && slOrder.data && slOrder.data.orderId) {
-                        position.sl_order_id = slOrder.data.orderId;
-                        console.log(`[ORDER UPDATE] SL criado com ID: ${slOrder.data.orderId}`);
-                        
-                        // Registrar ordem SL no banco de dados
-                        await insertNewOrder(db, {
-                            tipo_ordem: 'STOP_MARKET',
-                            preco: slPrice,
-                            quantidade: qty,
-                            id_posicao: orders[0].id_posicao,
-                            status: 'OPEN',
-                            data_hora_criacao: new Date().toISOString(),
-                            id_externo: slOrder.data.orderId,
-                            side: slSide,
-                            simbolo: symbol,
-                            tipo_ordem_bot: 'STOP_LOSS',
-                            target: null,
-                            reduce_only: true,
-                            close_position: true,
-                            last_update: new Date().toISOString()
-                        });
-                    } else {
-                        console.error(`[ORDER UPDATE] Falha ao criar ordem SL para ${symbol}`);
-                    }
-                    
-                    // Criar ordem de Take Profit
-                    const tpPrice = parseFloat(position.tp);
-                    
-                    console.log(`[ORDER UPDATE] Criando TP para ${symbol} a ${tpPrice}, quantidade ${qty}`);
-                    
-                    const tpOrder = await newOrder(
-                        symbol,
-                        qty.toFixed(quantityPrecision),
-                        slSide,
-                        tpPrice,
-                        'LIMIT',
-                        true  // reduceOnly
-                    );
-                    
-                    if (tpOrder && tpOrder.data && tpOrder.data.orderId) {
-                        position.tp_order_id = tpOrder.data.orderId;
-                        console.log(`[ORDER UPDATE] TP criado com ID: ${tpOrder.data.orderId}`);
-                        
-                        // Registrar ordem TP no banco de dados
-                        await insertNewOrder(db, {
-                            tipo_ordem: 'LIMIT',
-                            preco: tpPrice,
-                            quantidade: qty,
-                            id_posicao: orders[0].id_posicao,
-                            status: 'OPEN',
-                            data_hora_criacao: new Date().toISOString(),
-                            id_externo: tpOrder.data.orderId,
-                            side: slSide,
-                            simbolo: symbol,
-                            tipo_ordem_bot: 'TAKE_PROFIT',
-                            target: null,
-                            reduce_only: true,
-                            close_position: false,
-                            last_update: new Date().toISOString()
-                        });
-                    } else {
-                        console.error(`[ORDER UPDATE] Falha ao criar ordem TP para ${symbol}`);
-                    }
-                    
-                    // Atualizar posição no banco de dados
-                    await updatePositionStatus(db, orders[0].id_posicao, 'ABERTA');
-                    
-                    // Salvar posições atualizadas no arquivo
-                    await fs.writeFile(positionsFile, JSON.stringify(positions, null, 2));
-                    
-                    console.log(`[ORDER UPDATE] Posição atualizada para ${symbol}. Ordens SL e TP criadas.`);
+
+                    // Garantir que o arquivo seja atualizado
+                    console.log(`[ORDER UPDATE] Salvando posições atualizadas no arquivo...`);
+                    await fs.writeFile(positionsFile, JSON.stringify(positions, null, 2), 'utf8');
+                    console.log(`[ORDER UPDATE] Arquivo de posições atualizado com sucesso!`);
                 } else {
-                    console.error(`[ORDER UPDATE] Não foi possível encontrar a posição para ordem ${orderId} em ${symbol}`);
+                    console.error(`[ORDER UPDATE] Não foi possível encontrar a posição para ordem ${orderId} em ${symbol}. Entradas no JSON:`, 
+                        positions.map(p => `${p.symbol}: entry_order_id=${p.entry_order_id} (${typeof p.entry_order_id})`));
                 }
+            } else {
+                console.log(`[ORDER UPDATE] Ordem ${orderId} não é uma ordem de entrada ou não foi encontrada no banco`);
             }
+        } else {
+            console.log(`[ORDER UPDATE] Status da ordem ${orderId} para ${symbol}: ${status} - não é FILLED`);
         }
     } catch (error) {
         console.error('[ORDER UPDATE] Erro ao processar atualização de ordem:', error);

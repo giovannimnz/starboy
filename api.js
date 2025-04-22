@@ -122,56 +122,6 @@ async function newReduceOnlyOrder(symbol, quantity, side, price) {
 
   return result;
 }
-/*
-async function newStopOrder(symbol, quantity, side, stopPrice) {
-  try {
-    // Obter o preço atual do mercado
-    const response = await axios.get(`${apiUrl}/v1/ticker/price?symbol=${symbol}`);
-    const currentPrice = parseFloat(response.data.price);
-
-    // Ajustar o preço de stop para garantir que ele não seja imediatamente acionado
-    if ((side === 'SELL' && stopPrice >= currentPrice) || (side === 'BUY' && stopPrice <= currentPrice)) {
-      throw new Error("Order would immediately trigger. Adjust the stop price to be away from the current market price.");
-    }
-
-    stopPrice = await roundPriceToTickSize(symbol, stopPrice);
-    const data = {
-      symbol,
-      side,
-      type: "STOP_MARKET",
-      quantity,
-      stopPrice: parseFloat(stopPrice),
-      newOrderRespType: "ACK",
-      closePosition: true,
-    };
-
-    const timestamp = Date.now();
-    const recvWindow = 60000;
-
-    const signature = crypto
-      .createHmac("sha256", apiSecret)
-      .update(`${new URLSearchParams({ ...data, timestamp, recvWindow }).toString()}`)
-      .digest("hex");
-
-    const newData = { ...data, timestamp, recvWindow, signature };
-    const qs = `?${new URLSearchParams(newData).toString()}`;
-
-    console.log(`Enviando nova ordem de stop loss: symbol=${symbol}, quantity=${quantity}, side=${side}, stopPrice=${stopPrice}, qs=${qs}`);
-
-    const result = await axios({
-      method: "POST",
-      url: `${apiUrl}/v1/order${qs}`,
-      headers: { "X-MBX-APIKEY": apiKey },
-    });
-
-    console.log(`Resultado da nova ordem de stop loss:`, result.data);
-    return result.data;
-  } catch (error) {
-    console.error("Erro ao enviar nova ordem de stop loss:", error.response ? error.response.data : error.message);
-    throw error;
-  }
-}
-*/
 
 async function newStopOrder(symbol, quantity, side, stopPrice) {
   try {
@@ -201,22 +151,20 @@ async function newStopOrder(symbol, quantity, side, stopPrice) {
     const newData = { ...data, timestamp, recvWindow, signature };
     const qs = `?${new URLSearchParams(newData).toString()}`;
 
-    console.log(`Enviando nova ordem de stop loss: symbol=${symbol}, quantity=${quantity}, side=${side}, stopPrice=${stopPrice}, qs=${qs}`);
-
+    console.log(`[API] Enviando ordem de stop: ${symbol}, ${quantity}, ${side}, ${stopPrice}`);
     const result = await axios({
       method: "POST",
       url: `${apiUrl}/v1/order${qs}`,
       headers: { "X-MBX-APIKEY": apiKey },
     });
-
-    console.log(`Resultado da nova ordem de stop loss:`, result.data);
-    return result.data;
+    
+    console.log(`[API] Resposta da ordem de stop:`, result.data);
+    return { data: result.data }; // Garantir estrutura consistente { data: {...} }
   } catch (error) {
     console.error("Erro ao enviar nova ordem de stop loss:", error.response ? error.response.data : error.message);
     throw error;
   }
 }
-
 
 async function newTakeProfitOrder(symbol, quantity, side, price, orderId) {
   price = await roundPriceToTickSize(symbol, price);

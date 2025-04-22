@@ -119,12 +119,13 @@ async function startUserDataStream(getDatabaseInstance) {
         ws.on('message', async (data) => {
             try {
                 const message = JSON.parse(data);
+                console.log('[WEBSOCKET] Mensagem recebida:', JSON.stringify(message)); // Adicione este log
                 const db = getDatabaseInstance();
                 
-                if (message.e === 'executionReport') {
-                    console.log(`[WEBSOCKET] Atualização de ordem: ${message.s} | ${message.i} | ${message.X}`);
+                if (message.e === 'ORDER_TRADE_UPDATE') { // CORREÇÃO AQUI - use ORDER_TRADE_UPDATE em vez de executionReport
+                    console.log(`[WEBSOCKET] Atualização de ordem: ${message.o.s} | ${message.o.i} | ${message.o.X}`);
                     if (handlers.handleOrderUpdate) {
-                        await handlers.handleOrderUpdate(message, db);
+                        await handlers.handleOrderUpdate(message.o, db); // Passe message.o para o handler
                     }
                 } else if (message.e === 'ACCOUNT_UPDATE' || message.e === 'outboundAccountPosition') {
                     console.log('[WEBSOCKET] Atualização de posição na conta');
