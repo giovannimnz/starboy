@@ -712,7 +712,7 @@ async function changeMarginType(symbol, marginType) {
     if (currentMarginType === desiredMarginType) {
       return { 
         code: 200, 
-        msg: 'No need to change margin type.',
+        msg: 'No need to change the margin type.',
         marginType: desiredMarginType.toUpperCase()
       };
     }
