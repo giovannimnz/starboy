@@ -1,0 +1,23 @@
+tests/
+  ├── setup.js              # Configurações iniciais para todos os testes
+  ├── api.test.js           # Testes das funções da API Binance
+  ├── db.test.js            # Testes das funções de banco de dados MySQL
+  ├── monitoramento.test.js # Testes das funções de monitoramento
+  ├── websockets.test.js    # Testes das conexões WebSocket
+  └── integration.test.js   # Testes integrados de fluxos completos
+
+Execução dos Testes
+Para executar os testes:
+
+Instale as dependências necessárias:
+
+npm install --save-dev jest
+
+Execute os testes:
+
+npm test                  # Executa todos os testes
+npm run test:api          # Apenas testes de API
+npm run test:db           # Apenas testes de banco de dados
+npm run test:monitor      # Apenas testes de monitoramento
+npm run test:ws           # Apenas testes de WebSockets
+npm run test:integration  # Apenas testes de integração
