@@ -41,45 +41,29 @@ async function newEntryOrder(symbol, quantity, side) {
   };
 }
 
-async function newOrder(symbol, quantity, side, price) {
-  price = await roundPriceToTickSize(symbol, price);
-  
-  // Verificar o modo de posição atual
-  const isHedgeMode = await getPositionMode();
-  
-  const data = {
-    symbol,
-    side,
-    type: "LIMIT",
-    quantity,
-    price: parseFloat(price),
-    timeInForce: "GTC"
-  };
-  
-  // Adicionar positionSide se estiver em Hedge Mode
-  if (isHedgeMode) {
-    // Se side é BUY, positionSide deve ser LONG; se SELL, deve ser SHORT
-    data.positionSide = side === 'BUY' ? 'LONG' : 'SHORT';
+async function newOrder(symbol, quantity, side, price, type = 'LIMIT', reduceOnly = false) {
+  try {
+    const data = {
+      symbol,
+      side,
+      type: type || 'LIMIT',
+      quantity,
+      price,
+      timeInForce: 'GTC',
+      reduceOnly: reduceOnly,
+      timestamp: Date.now(),
+      recvWindow: 60000
+    };
+
+    const queryString = new URLSearchParams(data).toString();
+    const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
+    const url = `${apiUrl}/v1/order?${queryString}&signature=${signature}`;
+
+    return axios.post(url, null, { headers: { 'X-MBX-APIKEY': apiKey } });
+  } catch (error) {
+    console.error('[API] Erro ao criar nova ordem:', error);
+    throw error;
   }
-
-  const timestamp = Date.now();
-  const recvWindow = 60000;
-
-  const signature = crypto
-    .createHmac("sha256", apiSecret)
-    .update(`${new URLSearchParams({ ...data, timestamp, recvWindow }).toString()}`)
-    .digest("hex");
-
-  const newData = { ...data, timestamp, recvWindow, signature };
-  const qs = `?${new URLSearchParams(newData).toString()}`;
-
-  const result = await axios({
-    method: "POST",
-    url: `${apiUrl}/v1/order${qs}`,
-    headers: { "X-MBX-APIKEY": apiKey },
-  });
-
-  return result;
 }
 
 async function setPositionMode(dualSidePosition) {
