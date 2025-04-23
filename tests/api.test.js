@@ -85,3 +85,58 @@ describe('Testes da API da Binance', () => {
     }
   });
 });
+test('Deve criar uma ordem stop market corretamente', async () => {
+  // Use closePosition sem reduceOnly para evitar erro
+  const symbol = 'BTCUSDT';
+  const quantity = 0.002;  // Quantidade pequena para testes
+  const side = 'SELL';
+  const stopPrice = 90000;  // Um preço de stop razoável para BTC
+  
+  const response = await newStopOrder(symbol, quantity, side, stopPrice, null, false, true);
+  expect(response.data).toHaveProperty('orderId');
+  console.log(`Ordem stop market criada: ${JSON.stringify(response.data)}`);
+  
+  // Limpar - cancelar a ordem criada
+  if (response.data.orderId) {
+    await cancelOrder(response.data.orderId, symbol);
+    console.log(`Ordem stop market cancelada: ${response.data.orderId}`);
+  }
+});
+
+test('Deve criar uma ordem take profit market corretamente', async () => {
+  // Use closePosition sem reduceOnly para evitar erro
+  const symbol = 'BTCUSDT';
+  const quantity = 0.002;  // Quantidade pequena para testes
+  const side = 'SELL';
+  const price = 120000;    // Um preço acima do mercado para take profit
+  const stopPrice = 119000; // Stop price para a ordem take profit
+  
+  const response = await newStopOrder(symbol, quantity, side, stopPrice, price, false, true);
+  expect(response.data).toHaveProperty('orderId');
+  console.log(`Ordem take profit market criada: ${JSON.stringify(response.data)}`);
+  
+  // Limpar - cancelar a ordem criada
+  if (response.data.orderId) {
+    await cancelOrder(response.data.orderId, symbol);
+    console.log(`Ordem take profit market cancelada: ${response.data.orderId}`);
+  }
+});
+
+test('Deve lidar com parâmetros conflitantes em ordens stop/take profit', async () => {
+  // Este teste verifica o comportamento corrigido onde reduceOnly e closePosition
+  // não podem ser usados juntos
+  const symbol = 'BTCUSDT';
+  const quantity = 0.002;
+  const side = 'SELL';
+  const stopPrice = 90000;
+  
+  // Deve usar apenas um dos dois (reduceOnly OU closePosition)
+  // A implementação corrigida deve remover reduceOnly quando closePosition é true
+  const response = await newStopOrder(symbol, quantity, side, stopPrice, null, true, true);
+  expect(response.data).toHaveProperty('orderId');
+  
+  // Limpar - cancelar a ordem criada
+  if (response.data.orderId) {
+    await cancelOrder(response.data.orderId, symbol);
+  }
+});

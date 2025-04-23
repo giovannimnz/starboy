@@ -5,11 +5,12 @@
   "main": "index.js",
   "scripts": {
     "test": "jest",
-    "test:api": "jest api.test.js",
-    "test:db": "jest db.test.js",
-    "test:monitor": "jest monitoramento.test.js",
-    "test:ws": "jest websockets.test.js",
-    "test:integration": "jest integration.test.js"
+    "test:api": "jest tests/api.test.js",
+    "test:db": "jest tests/db.test.js",
+    "test:monitoramento": "jest tests/monitoramento.test.js",
+    "test:ordem": "jest tests/ordem.test.js",
+    "test:ws": "jest tests/websockets.test.js",
+    "test:integration": "jest tests/integration.test.js"
   },
   "keywords": [],
   "author": "",
@@ -25,15 +26,5 @@
     "sqlite3": "^5.1.7",
     "telegraf": "^4.16.3",
     "telegram": "^2.20.10"
-  },
-  "jest": {
-    "testEnvironment": "node",
-    "setupFilesAfterEnv": ["<rootDir>/tests/setup.js"],
-    "testTimeout": 30000
-  },
-  "testSetup": {
-    "start": "// Início padrão para todos os arquivos de teste (api.test.js, db.test.js, etc.)",
-    "path": "const path = require('path');",
-    "dotenv": "require('dotenv').config({ path: path.join(__dirname, '..', '.env.test') });"
   }
 }

@@ -6,7 +6,7 @@ const schedule = require('node-schedule');
 const fs = require('fs').promises;
 const { Telegraf } = require("telegraf");
 const { newOrder, cancelOrder, newStopOrder, cancelAllOpenOrders, getAllLeverageBrackets, getFuturesAccountBalanceDetails, getTickSize, getPrecision, changeInitialLeverage, changeMarginType, getPositionDetails, setPositionMode } = require('../api');
-const {getDatabaseInstance, getPositionIdBySymbol, updatePositionInDb, checkOrderExists, getAllOrdersBySymbol, updatePositionStatus, insertNewOrder, disconnectDatabase, getAllPositionsFromDb, getOpenOrdersFromDb, getOrdersFromDb, updateOrderStatus, getPositionsFromDb, insertPosition, moveClosedPositionsAndOrders, initializeDatabase} = require('../db/conexao');
+const {getDatabaseInstance, getPositionIdBySymbol, updatePositionInDb, checkOrderExists, getAllOrdersBySymbol, updatePositionStatus, insertNewOrder, disconnectDatabase, getAllPositionsFromDb, getOpenOrdersFromDb, getOrdersFromDb, updateOrderStatus, getPositionsFromDb, insertPosition, moveClosedPositionsAndOrders, initializeDatabase, formatDateForMySQL} = require('../db/conexao');
 const websockets = require('../websockets');
 
 // Adicione este conjunto no topo do arquivo para rastrear ordens já canceladas
@@ -15,6 +15,9 @@ const cancelledOrders = new Set();
 // Inicializar o bot do Telegram
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
+// Adicionar variável para armazenar os jobs
+let scheduledJobs = {};
+
 // Função para inicializar o monitoramento
 async function initializeMonitoring() {
   console.log('[MONITOR] Inicializando sistema de monitoramento...');
@@ -22,15 +25,16 @@ async function initializeMonitoring() {
   // Configurar callbacks para WebSockets
   websockets.setMonitoringCallbacks({
     handleOrderUpdate,
-    handleAccountUpdate, // Esta função não estava definida!
-    onPriceUpdate
+    handleAccountUpdate,
+    onPriceUpdate,
+    getDbConnection: getDatabaseInstance
   });
   
   // Iniciar WebSocket para dados do usuário
   await websockets.startUserDataStream(getDatabaseInstance);
   
   // Agendar verificação periódica de novas operações
-  schedule.scheduleJob('*/10 * * * * *', async () => {
+  scheduledJobs.checkNewTrades = schedule.scheduleJob('*/10 * * * * *', async () => {
     try {
       await checkNewTrades();
     } catch (error) {
@@ -319,80 +323,193 @@ async function checkPositionExists(db, symbol) {
   }
 }
 
-// Função para processar atualizações de ordens via WebSocket
-async function handleOrderUpdate(message, db) {
-  const orderId = message.i || message.orderId;
-  const status = message.X || message.status;
-  const symbol = message.s || message.symbol;
-  const executionType = message.x || message.executionType;
-  
-  console.log(`[ORDER UPDATE] Symbol: ${symbol}, OrderID: ${orderId}, Status: ${status}, ExecutionType: ${executionType}`);
-  
+// Substitua a função handleOrderUpdate existente
+async function handleOrderUpdate(orderMsg, db) {
   try {
-    // Se não tiver conexão com o banco, tentar estabelecer
-    if (!db) {
-      db = await getDatabaseInstance();
-      if (!db) {
-        console.error(`[ORDER UPDATE] Não foi possível obter conexão com o banco de dados`);
-        return;
-      }
+    console.log(`[ORDER UPDATE] Symbol: ${orderMsg.s}, OrderID: ${orderMsg.i}, Status: ${orderMsg.X}, ExecutionType: ${orderMsg.x}`);
+    
+    // Buscar a ordem no banco de dados
+    const [orders] = await db.query(
+      'SELECT * FROM ordens WHERE id_externo = ? AND simbolo = ?',
+      [orderMsg.i, orderMsg.s]
+    );
+    
+    if (orders.length === 0) {
+      console.log(`[MONITOR] Ordem ${orderMsg.i} não encontrada no banco de dados`);
+      return;
     }
     
-    // Verificar se esta é uma ordem de ENTRADA que foi PREENCHIDA
-    if (status === 'FILLED') {
-      console.log(`[ORDER UPDATE] Ordem ${orderId} preenchida para ${symbol}`);
+    const order = orders[0];
+    
+    // Se for ordem de entrada e tiver status NEW (recém criada) ou FILLED/PARTIALLY_FILLED
+    if (order.tipo_ordem_bot === 'ENTRADA' && 
+        (orderMsg.X === 'NEW' || orderMsg.X === 'FILLED' || orderMsg.X === 'PARTIALLY_FILLED')) {
       
-      // Buscar a ordem no banco de dados
-      const orders = await getOrdersFromDb(db, { id_externo: orderId });
+      // Verificar se já existem ordens TP/SL para esta posição
+      const [existingOrders] = await db.query(
+        'SELECT * FROM ordens WHERE id_posicao = ? AND tipo_ordem_bot IN ("STOP_LOSS", "TAKE_PROFIT") AND status = "OPEN"',
+        [order.id_posicao]
+      );
       
-      if (!orders || orders.length === 0) {
-        console.log(`[ORDER UPDATE] Ordem ${orderId} não encontrada no banco de dados`);
-        return;
-      }
-      
-      const order = orders[0];
-      console.log(`[ORDER UPDATE] Ordem encontrada: ${JSON.stringify(order)}`);
-      
-      // Atualizar status da ordem no banco
-      await updateOrderStatus(db, order.id, 'FILLED');
-      
-      // Verificar tipo de ordem
-      if (order.tipo_ordem_bot === 'ENTRADA') {
-        // É uma ordem de entrada preenchida - precisa criar SL/TP
-        await handleEntryOrderFilled(db, order, message);
-      } else if (order.tipo_ordem_bot === 'TAKE_PROFIT') {
-        // É uma ordem de TP preenchida - encerrar posição
-        await handleTpOrderFilled(db, order);
-      } else if (order.tipo_ordem_bot === 'STOP_LOSS') {
-        // É uma ordem de SL preenchida - encerrar posição
-        await handleSlOrderFilled(db, order);
-      }
-    } else if (status === 'CANCELED') {
-      // Ordem cancelada - atualizar status no banco
-      const orders = await getOrdersFromDb(db, { id_externo: orderId });
-      
-      if (!orders || orders.length === 0) {
-        console.log(`[ORDER UPDATE] Ordem cancelada ${orderId} não encontrada no banco de dados`);
-        return;
-      }
-      
-      const order = orders[0];
-      await updateOrderStatus(db, order.id, 'CANCELED');
-      
-      // Se é uma ordem de entrada, verificar se precisa cancelar a posição
-      if (order.tipo_ordem_bot === 'ENTRADA') {
-        // Verificar se devemos encerrar a posição inteira
-        const positionId = order.id_posicao;
-        const position = await getPositionById(db, positionId);
+      if (existingOrders.length > 0) {
+        console.log(`[MONITOR] Já existem ordens SL/TP para a posição ${order.id_posicao}, não criando novas`);
         
-        if (position && position.status === 'PENDING') {
-          // Posição ainda está pendente, mover para histórico com status CANCELED
-          await movePositionToHistory(db, positionId, 'CANCELED', 'Ordem de entrada cancelada');
+        // Se a ordem foi preenchida, atualizar o status da posição
+        if (orderMsg.X === 'FILLED' || orderMsg.X === 'PARTIALLY_FILLED') {
+          await updatePositionStatus(db, order.simbolo, { status: 'OPEN' });
+          console.log(`[MONITOR] Posição ${order.id_posicao} atualizada para OPEN após preenchimento da ordem`);
         }
+        
+        return;
+      }
+      
+      console.log(`[MONITOR] Criando ordens SL/TP para posição ${order.id_posicao} após ordem ${orderMsg.X}`);
+      
+      // 1. Obter a posição relacionada
+      const [positions] = await db.query('SELECT * FROM posicoes WHERE id = ?', [order.id_posicao]);
+      if (positions.length === 0) {
+        console.log(`[MONITOR] Posição ${order.id_posicao} não encontrada`);
+        return;
+      }
+      
+      const position = positions[0];
+      
+      // 2. Se a ordem foi preenchida, atualizar status da posição para OPEN
+      if (orderMsg.X === 'FILLED' || orderMsg.X === 'PARTIALLY_FILLED') {
+        await updatePositionStatus(db, position.simbolo, { status: 'OPEN' });
+      }
+      
+      // 3. Obter as configurações de TP/SL do webhook_signals, se existir
+      let tpPrice, slPrice;
+      const [signals] = await db.query(
+        'SELECT * FROM webhook_signals WHERE position_id = ? ORDER BY created_at DESC LIMIT 1',
+        [order.id_posicao]
+      );
+      
+      const entryPrice = parseFloat(position.preco_entrada || order.preco);
+      
+      if (signals.length > 0 && signals[0].tp_price && signals[0].sl_price) {
+        tpPrice = parseFloat(signals[0].tp_price);
+        slPrice = parseFloat(signals[0].sl_price);
+        console.log(`[MONITOR] Usando preços TP/SL do sinal: TP=${tpPrice}, SL=${slPrice}`);
+      } else {
+        // Calcular preços de TP/SL padrão (1% de diferença)
+        if (position.side === 'BUY') {
+          tpPrice = entryPrice * 1.01; // TP 1% acima
+          slPrice = entryPrice * 0.99; // SL 1% abaixo
+        } else {
+          tpPrice = entryPrice * 0.99; // TP 1% abaixo
+          slPrice = entryPrice * 1.01; // SL 1% acima
+        }
+        console.log(`[MONITOR] Calculando preços TP/SL padrão: TP=${tpPrice}, SL=${slPrice}`);
+      }
+      
+      // 4. Determinar o side oposto para as ordens de TP/SL
+      const oppositeSide = position.side === 'BUY' ? 'SELL' : 'BUY';
+      
+      // 5. Criar e enviar ordem de SL para a corretora (usando STOP_MARKET)
+      try {
+        // IMPORTANTE: Aqui enviamos stopPrice sem price para ordem SL
+        const slResponse = await newStopOrder(
+          position.simbolo,
+          parseFloat(position.quantidade || order.quantidade),
+          oppositeSide,
+          slPrice,
+          null,            // price = null para STOP_MARKET
+          true,            // reduceOnly = true
+          false            // closePosition = false
+        );
+        
+        console.log(`[MONITOR] Ordem SL (STOP_MARKET) criada na corretora: ${slResponse.data.orderId}`);
+        
+        // 6. Registrar ordem SL no banco de dados
+        await insertNewOrder(db, {
+          tipo_ordem: 'STOP_MARKET', 
+          preco: slPrice,
+          quantidade: position.quantidade || order.quantidade,
+          id_posicao: position.id,
+          status: 'OPEN',
+          data_hora_criacao: formatDateForMySQL(new Date()),
+          id_externo: slResponse.data.orderId,
+          side: oppositeSide,
+          simbolo: position.simbolo,
+          tipo_ordem_bot: 'STOP_LOSS',
+          target: null,
+          reduce_only: true,
+          close_position: false,
+          last_update: formatDateForMySQL(new Date()),
+          orign_sig: position.orign_sig
+        });
+      } catch (error) {
+        console.error(`[MONITOR] Erro ao criar ordem SL: ${error.message}`);
+      }
+      
+      // 7. Criar e enviar ordem de TP para a corretora (usando TAKE_PROFIT_MARKET)
+      try {
+        const tpResponse = await newStopOrder(
+          position.simbolo,
+          parseFloat(position.quantidade || order.quantidade),
+          oppositeSide,
+          tpPrice,
+          tpPrice,  // stopPrice igual ao price para TP
+          true,     // reduceOnly = true
+          false     // closePosition = false
+        );
+        
+        console.log(`[MONITOR] Ordem TP (TAKE_PROFIT_MARKET) criada na corretora: ${tpResponse.data.orderId}`);
+        
+        // 8. Registrar ordem TP no banco de dados
+        await insertNewOrder(db, {
+          tipo_ordem: 'TAKE_PROFIT_MARKET',
+          preco: tpPrice,
+          quantidade: position.quantidade || order.quantidade,
+          id_posicao: position.id,
+          status: 'OPEN',
+          data_hora_criacao: formatDateForMySQL(new Date()),
+          id_externo: tpResponse.data.orderId,
+          side: oppositeSide,
+          simbolo: position.simbolo,
+          tipo_ordem_bot: 'TAKE_PROFIT',
+          target: null,
+          reduce_only: true,
+          close_position: false,
+          last_update: formatDateForMySQL(new Date()),
+          orign_sig: position.orign_sig
+        });
+      } catch (error) {
+        console.error(`[MONITOR] Erro ao criar ordem TP: ${error.message}`);
+      }
+      
+    } else if ((order.tipo_ordem_bot === 'TAKE_PROFIT' || order.tipo_ordem_bot === 'STOP_LOSS') && orderMsg.X === 'FILLED') {
+      // Lógica para quando TP/SL é preenchido (manter o código original)
+      console.log(`[MONITOR] Ordem ${order.tipo_ordem_bot} executada completamente, fechando posição ${order.id_posicao}`);
+      
+      // Cancelar outras ordens abertas para esta posição
+      const [otherOrders] = await db.query(
+        'SELECT * FROM ordens WHERE id_posicao = ? AND id != ? AND status = "OPEN"',
+        [order.id_posicao, order.id]
+      );
+      
+      for (const otherOrder of otherOrders) {
+        try {
+          await cancelOrder(otherOrder.id_externo, otherOrder.simbolo);
+          await updateOrderStatus(db, otherOrder.id, "CANCELED");
+          console.log(`[MONITOR] Ordem ${otherOrder.id_externo} cancelada`);
+        } catch (error) {
+          console.error(`[MONITOR] Erro ao cancelar ordem ${otherOrder.id_externo}: ${error.message}`);
+        }
+      }
+      
+      // Mover registros para tabelas históricas
+      try {
+        await moveClosedPositionsAndOrders(db, order.id_posicao);
+        console.log(`[MONITOR] Posição ${order.id_posicao} fechada e movida para histórico`);
+      } catch (error) {
+        console.error(`[MONITOR] Erro ao mover registros para histórico: ${error.message}`);
       }
     }
   } catch (error) {
-    console.error(`[ORDER UPDATE] Erro ao processar atualização de ordem:`, error);
+    console.error(`[MONITOR] Erro ao processar atualização de ordem: ${error.message}`);
   }
 }
 
@@ -562,7 +679,7 @@ async function onPriceUpdate(symbol, currentPrice, relevantTrades, positions) {
             }
           }
         } catch (error) {
-          console.error(`[PRICE UPDATE] Erro ao cancelar ordem ${entry.id_externo}:`, error);
+          console.error(`[PRICE UPDATE] Erro ao cancelar ordem ${entry.id_externo}: ${error}`);
         }
       }
     }
@@ -571,5 +688,55 @@ async function onPriceUpdate(symbol, currentPrice, relevantTrades, positions) {
   }
 }
 
+// Função para parar o monitoramento
+async function stopMonitoring() {
+  console.log('[MONITOR] Parando o sistema de monitoramento...');
+  
+  // Cancelar todos os jobs agendados
+  if (scheduledJobs.checkNewTrades) {
+    scheduledJobs.checkNewTrades.cancel();
+    console.log('[MONITOR] Job de verificação de novas operações cancelado');
+  }
+  
+  // Cancelar outros jobs se houver
+  Object.keys(scheduledJobs).forEach(jobName => {
+    if (scheduledJobs[jobName]) {
+      scheduledJobs[jobName].cancel();
+      console.log(`[MONITOR] Job ${jobName} cancelado`);
+    }
+  });
+  
+  // Limpar referências
+  scheduledJobs = {};
+  
+  // Parar bot do Telegram se estiver ativo
+  if (bot && bot.telegram) {
+    try {
+      // Verificar se o bot está realmente em execução
+      if (bot.botInfo) {
+        await bot.stop();
+        console.log('[MONITOR] Bot Telegram parado');
+      } else {
+        console.log('[MONITOR] Bot Telegram não estava em execução');
+      }
+    } catch (error) {
+      console.error('[MONITOR] Erro ao parar bot Telegram:', error);
+    }
+  }
+  
+  // Aguardar um pouco para operações assíncronas terminarem
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  
+  console.log('[MONITOR] Sistema de monitoramento parado com sucesso');
+  return true;
+}
+
 // Inicializar o monitoramento
 initializeMonitoring().catch(console.error);
+
+module.exports = {
+  handleOrderUpdate,
+  onPriceUpdate,
+  initializeMonitoring,
+  stopMonitoring
+};

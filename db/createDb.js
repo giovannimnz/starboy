@@ -70,16 +70,17 @@ async function createDatabase() {
             CREATE TABLE IF NOT EXISTS posicoes (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 simbolo VARCHAR(50) NOT NULL,
-                quantidade DECIMAL(20, 8) NOT NULL,
-                preco_medio DECIMAL(20, 8) NOT NULL,
-                status VARCHAR(50) NOT NULL,
-                data_hora_abertura DATETIME NOT NULL,
-                data_hora_fechamento DATETIME,
-                side VARCHAR(20),
-                leverage INT,
-                data_hora_ultima_atualizacao DATETIME,
-                preco_entrada DECIMAL(20, 8),
-                preco_corrente DECIMAL(20, 8)
+                quantidade DECIMAL(20, 8) NOT NULL DEFAULT 0,
+                preco_medio DECIMAL(20, 8) NOT NULL DEFAULT 0,
+                status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
+                data_hora_abertura DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                data_hora_fechamento DATETIME NULL,
+                side VARCHAR(20) DEFAULT 'BUY',
+                leverage INT DEFAULT 1,
+                data_hora_ultima_atualizacao DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
+                preco_entrada DECIMAL(20, 8) NOT NULL DEFAULT 0,
+                preco_corrente DECIMAL(20, 8) NOT NULL DEFAULT 0,
+                orign_sig VARCHAR(100) NULL
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         `);
         console.log('✅ Tabela "posicoes" criada.');
@@ -89,19 +90,20 @@ async function createDatabase() {
             CREATE TABLE IF NOT EXISTS ordens (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 tipo_ordem VARCHAR(50) NOT NULL,
-                preco DECIMAL(20, 8) NOT NULL,
-                quantidade DECIMAL(20, 8) NOT NULL,
+                preco DECIMAL(20, 8) NOT NULL DEFAULT 0,
+                quantidade DECIMAL(20, 8) NOT NULL DEFAULT 0,
                 id_posicao INT,
-                status VARCHAR(50) NOT NULL,
-                data_hora_criacao DATETIME,
-                id_externo BIGINT,
-                side VARCHAR(20),
-                simbolo VARCHAR(50),
-                tipo_ordem_bot VARCHAR(50),
-                target INT,
-                reduce_only BOOLEAN,
-                close_position BOOLEAN,
-                last_update DATETIME,
+                status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
+                data_hora_criacao DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                id_externo BIGINT NULL,
+                side VARCHAR(20) DEFAULT 'BUY',
+                simbolo VARCHAR(50) NOT NULL,
+                tipo_ordem_bot VARCHAR(50) NULL,
+                target INT NULL,
+                reduce_only BOOLEAN DEFAULT FALSE,
+                close_position BOOLEAN DEFAULT FALSE,
+                last_update DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
+                orign_sig VARCHAR(100) NULL,
                 FOREIGN KEY (id_posicao) REFERENCES posicoes(id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         `);
@@ -218,7 +220,7 @@ async function createDatabase() {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         `);
         console.log('✅ Tabela "posicoes_fechadas" criada.');
-        
+          
         // Tabela ordens_fechadas
         await connection.execute(`
             CREATE TABLE IF NOT EXISTS ordens_fechadas (
@@ -255,6 +257,28 @@ async function createDatabase() {
         if (rows[0].count === 0) {
             await connection.execute('INSERT INTO controle_posicoes (total_abertas, limite_atual) VALUES (0, 5)');
             console.log('✅ Registro inicial de controle_posicoes criado.');
+        }
+
+        // Adicionar coluna orign_sig em posicoes_fechadas se não existir
+        try {
+            await connection.execute(`
+                ALTER TABLE posicoes_fechadas 
+                ADD COLUMN IF NOT EXISTS orign_sig VARCHAR(100) NULL
+            `);
+            console.log('✅ Coluna orign_sig adicionada à tabela posicoes_fechadas.');
+        } catch (error) {
+            console.log('Coluna orign_sig já existe na tabela posicoes_fechadas ou erro:', error.message);
+        }
+
+        // Adicionar coluna orign_sig em ordens_fechadas se não existir
+        try {
+            await connection.execute(`
+                ALTER TABLE ordens_fechadas 
+                ADD COLUMN IF NOT EXISTS orign_sig VARCHAR(100) NULL
+            `);
+            console.log('✅ Coluna orign_sig adicionada à tabela ordens_fechadas.');
+        } catch (error) {
+            console.log('Coluna orign_sig já existe na tabela ordens_fechadas ou erro:', error.message);
         }
         
         console.log('\n🚀 Banco de dados "starboy" criado com sucesso! Todas as tabelas foram criadas.');

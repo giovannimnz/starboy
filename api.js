@@ -123,45 +123,65 @@ async function newReduceOnlyOrder(symbol, quantity, side, price) {
   return result;
 }
 
-async function newStopOrder(symbol, quantity, side, stopPrice) {
+// Substituir a função newStopOrder existente
+
+async function newStopOrder(symbol, quantity, side, stopPrice, price = null, reduceOnly = false, closePosition = false) {
   try {
-    // Adicionando logs para verificar valores antes e depois de roundPriceToTickSize
+    // Definir o tipo de ordem baseado no parâmetro price
+    let orderType;
+    
+    // Se price está definido, é TAKE_PROFIT_MARKET, senão é STOP_MARKET
+    if (price !== null) {
+      orderType = "TAKE_PROFIT_MARKET";
+    } else {
+      orderType = "STOP_MARKET";
+    }
+    
+    // Adicionar logs para verificar valores antes e depois de arredondar
     console.log(`Preço original de stop antes de arredondar: ${stopPrice}`);
     stopPrice = await roundPriceToTickSize(symbol, stopPrice);
     console.log(`Preço de stop após arredondar: ${stopPrice}`);
     
+    // Preparar dados base da ordem
     const data = {
       symbol,
       side,
-      type: "STOP_MARKET",
+      type: orderType,
       quantity,
       stopPrice: parseFloat(stopPrice),
       newOrderRespType: "ACK",
-      closePosition: true,
+      timestamp: Date.now(),
+      recvWindow: 60000
     };
 
-    const timestamp = Date.now();
-    const recvWindow = 60000;
+    // Adicionar closePosition OU reduceOnly, mas nunca ambos
+    if (closePosition) {
+      data.closePosition = true;
+      // Não adicionar reduceOnly quando closePosition é true
+    } else if (reduceOnly) {
+      data.reduceOnly = true;
+    }
 
     const signature = crypto
       .createHmac("sha256", apiSecret)
-      .update(`${new URLSearchParams({ ...data, timestamp, recvWindow }).toString()}`)
+      .update(`${new URLSearchParams(data).toString()}`)
       .digest("hex");
 
-    const newData = { ...data, timestamp, recvWindow, signature };
+    const newData = { ...data, signature };
     const qs = `?${new URLSearchParams(newData).toString()}`;
 
-    console.log(`[API] Enviando ordem de stop: ${symbol}, ${quantity}, ${side}, ${stopPrice}`);
+    console.log(`[API] Enviando ordem ${orderType}: ${symbol}, ${quantity}, ${side}, ${stopPrice}, closePosition: ${closePosition}`);
     const result = await axios({
       method: "POST",
       url: `${apiUrl}/v1/order${qs}`,
       headers: { "X-MBX-APIKEY": apiKey },
     });
     
-    console.log(`[API] Resposta da ordem de stop:`, result.data);
+    console.log(`[API] Resposta da ordem ${orderType}:`, result.data);
     return { data: result.data }; // Garantir estrutura consistente { data: {...} }
   } catch (error) {
-    console.error("Erro ao enviar nova ordem de stop loss:", error.response ? error.response.data : error.message);
+    console.error(`[API] Erro ao enviar ordem ${price ? 'TAKE_PROFIT_MARKET' : 'STOP_MARKET'}:`, 
+                 error.response ? error.response.data : error.message);
     throw error;
   }
 }
@@ -767,34 +787,6 @@ async function encerrarPosicao(symbol) {
   }
 }
 
-// Função para cancelar todas as ordens abertas para um símbolo específico
-async function cancelAllOpenOrders(symbol) {
-  const timestamp = Date.now();
-  const recvWindow = 60000;
-
-  const data = {
-    symbol,
-    timestamp,
-    recvWindow
-  };
-
-  const queryString = new URLSearchParams(data).toString();
-  const signature = crypto
-    .createHmac('sha256', apiSecret)
-    .update(queryString)
-    .digest('hex');
-
-  const url = `${apiUrl}/v1/allOpenOrders?${queryString}&signature=${signature}`;
-
-  try {
-    const result = await axios.delete(url, { headers: { "X-MBX-APIKEY": apiKey } });
-    return result.data;
-  } catch (error) {
-    console.error("Erro ao cancelar todas as ordens abertas:", error.response ? error.response.data : error.message);
-    throw error;
-  }
-}
-
 /**
  * Obtém todos os brackets de alavancagem da API da Binance
  * @returns {Promise<Array>} Array com brackets de alavancagem para todos os símbolos
@@ -825,6 +817,48 @@ async function getAllLeverageBrackets() {
   }
 }
 
+// Adicione esta função antes do module.exports
+
+// Fechar posição existente usando ordem de mercado
+async function closePosition(symbol, quantity, side) {
+  try {
+    // Primeiro verificar se a posição ainda existe
+    const positions = await getPositionDetails(symbol);
+    const positionExists = positions.some(p => Math.abs(p.quantidade) > 0);
+    
+    if (!positionExists) {
+      console.log(`[API] Posição para ${symbol} não encontrada ou já fechada`);
+      return { success: true, message: "Position already closed" };
+    }
+    
+    // Tentar enviar ordem de mercado normal em vez de closePosition
+    const data = {
+      symbol,
+      side,
+      type: "MARKET",
+      quantity,
+      reduceOnly: true, // Usar reduceOnly em vez de closePosition
+      timestamp: Date.now(),
+      recvWindow: 60000
+    };
+
+    const queryString = new URLSearchParams(data).toString();
+    const signature = crypto
+      .createHmac('sha256', apiSecret)
+      .update(queryString)
+      .digest('hex');
+
+    const url = `${apiUrl}/v1/order?${queryString}&signature=${signature}`;
+
+    console.log(`[API] Fechando posição para ${symbol}, side: ${side}, quantidade: ${quantity}`);
+    const result = await axios.post(url, null, { headers: { "X-MBX-APIKEY": apiKey } });
+    return { data: result.data };
+  } catch (error) {
+    console.error(`[API] Erro ao fechar posição: ${error.message}`);
+    throw error;
+  }
+}
+
 // Adicione esta função para verificar o modo de posição atual
 async function getPositionMode() {
   const timestamp = Date.now();
@@ -843,7 +877,18 @@ async function getPositionMode() {
   }
 }
 
-// Modificar o module.exports para incluir a nova função
+// Implemente getPrice se ainda não existir
+async function getPrice(symbol) {
+  try {
+    const response = await axios.get(`${apiUrl}/v1/ticker/price?symbol=${symbol}`);
+    return parseFloat(response.data.price);
+  } catch (error) {
+    console.error(`[API] Erro ao obter preço para ${symbol}: ${error.message}`);
+    throw error;
+  }
+}
+
+// Modificar o module.exports para incluir as novas funções
 module.exports = {
   getFuturesAccountBalanceDetails,
   getMaxLeverage,
@@ -870,5 +915,7 @@ module.exports = {
   encerrarPosicao,
   getAllLeverageBrackets,
   setPositionMode,
-  getPositionMode
+  getPositionMode,
+  closePosition, // Adicione a nova função aqui
+  getPrice // Adicione a função getPrice
 };

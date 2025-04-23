@@ -1,33 +1,9 @@
 const WebSocket = require('ws');
 const axios = require('axios');
 const path = require('path');
-const fs = require('fs').promises;
 
 // Corrigir o caminho do .env
 require('dotenv').config({ path: path.join(__dirname, '.env') });
-
-// Função para obter posições do arquivo
-async function getPositionsFromFile() {
-    try {
-        const positionsFile = path.join(__dirname, 'posicoes', 'posicoes.json');
-        const fileExists = await fs.access(positionsFile).then(() => true).catch(() => false);
-        
-        if (!fileExists) {
-            console.log(`[WEBSOCKET] Arquivo de posições não encontrado: ${positionsFile}`);
-            return [];
-        }
-        
-        const content = await fs.readFile(positionsFile, 'utf8');
-        if (!content.trim()) {
-            return [];
-        }
-        
-        return JSON.parse(content);
-    } catch (error) {
-        console.error(`[WEBSOCKET] Erro ao ler arquivo de posições:`, error);
-        return [];
-    }
-}
 
 // Variáveis de ambiente para API da Binance
 const apiKey = process.env.API_KEY;
@@ -42,8 +18,12 @@ const priceWebsockets = {};
 let handlers = {
     handleOrderUpdate: null,
     handleAccountUpdate: null,
-    onPriceUpdate: null
+    onPriceUpdate: null,
+    getDbConnection: null
 };
+
+// Armazenar a instância de conexão com o banco de dados
+let dbInstance = null;
 
 // Definir handlers de callbacks do monitoramento
 function setMonitoringCallbacks(callbacks) {
@@ -56,8 +36,6 @@ async function createListenKey() {
         // Endpoint correto para API de Futuros da Binance (USDT-M)
         const endpoint = '/v1/listenKey';
         const fullUrl = `${apiUrl}${endpoint}`;
-        
-        //console.log(`[WEBSOCKET] Chamando endpoint para criar listenKey: ${fullUrl}`);
         
         const response = await axios.post(fullUrl, null, {
             headers: {
@@ -100,15 +78,17 @@ async function closeListenKey(listenKey) {
 
 // Função para iniciar o WebSocket de dados do usuário - CORRIGIDO O FORMATO DA URL
 async function startUserDataStream(getDatabaseInstance) {
-    //console.log('[WEBSOCKET] Iniciando conexão com WebSocket de dados do usuário');
-    
     try {
+        // Armazenar a função de obtenção do banco de dados
+        if (!dbInstance && typeof getDatabaseInstance === 'function') {
+            dbInstance = await getDatabaseInstance();
+        }
+        
         const listenKey = await createListenKey();
         
         // URL CORRIGIDA para conexão do WebSocket usando o listenKey
         // Formato correto para Futuros USDT-M: wss://fstream.binance.com/ws/<listenKey>
         const wsUrl = `${ws_apiUrl}/ws/${listenKey}`;
-        //console.log(`[WEBSOCKET] Conectando ao WebSocket URL: ${wsUrl}`);
         
         const ws = new WebSocket(wsUrl);
         
@@ -120,17 +100,16 @@ async function startUserDataStream(getDatabaseInstance) {
             try {
                 const message = JSON.parse(data);
                 console.log('[WEBSOCKET] Mensagem recebida:', JSON.stringify(message)); // Adicione este log
-                const db = getDatabaseInstance();
                 
                 if (message.e === 'ORDER_TRADE_UPDATE') { // CORREÇÃO AQUI - use ORDER_TRADE_UPDATE em vez de executionReport
                     console.log(`[WEBSOCKET] Atualização de ordem: ${message.o.s} | ${message.o.i} | ${message.o.X}`);
                     if (handlers.handleOrderUpdate) {
-                        await handlers.handleOrderUpdate(message.o, db); // Passe message.o para o handler
+                        await handlers.handleOrderUpdate(message.o, dbInstance); // Passe message.o para o handler
                     }
                 } else if (message.e === 'ACCOUNT_UPDATE' || message.e === 'outboundAccountPosition') {
                     console.log('[WEBSOCKET] Atualização de posição na conta');
                     if (handlers.handleAccountUpdate) {
-                        await handlers.handleAccountUpdate(message, db);
+                        await handlers.handleAccountUpdate(message, dbInstance);
                     }
                 } else if (message.e === 'listenKeyExpired') {
                     console.log('[WEBSOCKET] Listen Key expirado - reconectando...');
@@ -155,7 +134,6 @@ async function startUserDataStream(getDatabaseInstance) {
         const keepAliveInterval = setInterval(async () => {
             try {
                 await keepAliveListenKey(listenKey);
-                //console.log('[WEBSOCKET] Keep-alive enviado para o Listen Key');
             } catch (error) {
                 console.error('[WEBSOCKET] Erro ao manter Listen Key:', error);
                 clearInterval(keepAliveInterval);
@@ -209,67 +187,22 @@ function ensurePriceWebsocketExists(symbol) {
     ws.on('close', () => {
         console.log(`[WEBSOCKET] Conexão de preço fechada para ${symbol}`);
         delete priceWebsockets[symbol];
-        
-        // Tentar reconectar após um breve intervalo
-        setTimeout(() => {
-            needsMonitoring(symbol).then(needed => {
-                if (needed) {
-                    ensurePriceWebsocketExists(symbol);
-                }
-            });
-        }, 5000);
     });
     
     priceWebsockets[symbol] = ws;
 }
 
-// Função para verificar se um símbolo ainda precisa ser monitorado - CORRIGIDO CAMINHO DO ARQUIVO
-async function needsMonitoring(symbol) {
-    try {
-        // CORRIGIDO: usa posicoes/posicoes.json em vez de posicoes.json na raiz
-        const positionsFile = path.join(__dirname, 'posicoes', 'posicoes.json');
-        const fileExists = await fs.access(positionsFile).then(() => true).catch(() => false);
-        
-        if (!fileExists) {
-            console.log(`[WEBSOCKET] Arquivo de posições não encontrado: ${positionsFile}`);
-            return false;
-        }
-        
-        const content = await fs.readFile(positionsFile, 'utf8');
-        if (!content.trim()) {
-            return false;
-        }
-        
-        const positions = JSON.parse(content);
-        
-        return positions.some(pos => 
-            pos.symbol === symbol && 
-            (pos.status === 'ENTRY_CREATED' || pos.status === 'ENTRY_FILLED')
-        );
-    } catch (error) {
-        console.error(`[MONITOR] Erro ao verificar necessidade de monitoramento para ${symbol}:`, error);
-        return false;
-    }
-}
-
-// Função para lidar com atualizações de preço - Modificada para fechar o websocket após o processamento
+// Função para lidar com atualizações de preço - Modificada para usar o banco de dados
 async function handlePriceUpdate(symbol, tickerData) {
     try {
-        const positions = await getPositionsFromFile();
+        // Usar a instância armazenada ou tentar obter via handlers
+        let db = dbInstance;
+        if (!db && handlers.getDbConnection) {
+            db = await handlers.getDbConnection();
+        }
         
-        // Encontrar trades para este símbolo que precisam ser monitorados
-        const relevantTrades = positions.filter(pos => 
-            pos.symbol === symbol && 
-            (pos.status === 'ENTRY_CREATED' || pos.status === 'ENTRY_FILLED')
-        );
-        
-        if (relevantTrades.length === 0) {
-            // Não há mais trades relevantes para este símbolo
-            if (priceWebsockets[symbol]) {
-                console.log(`[WEBSOCKET] Fechando websocket de preço para ${symbol} - não há mais trades relevantes`);
-                priceWebsockets[symbol].close();
-                delete priceWebsockets[symbol];
-            }
+        if (!db) {
+            console.error(`[WEBSOCKET] Não foi possível obter conexão com o banco de dados para ${symbol}`);
             return;
         }
         
@@ -277,23 +210,8 @@ async function handlePriceUpdate(symbol, tickerData) {
         const bestAsk = parseFloat(tickerData.a);
         const currentPrice = (bestBid + bestAsk) / 2;
         
-        // Exportar a lógica da análise de preço para o monitoramento.js
-        // Chamar a função exportada do monitoramento.js
         if (handlers.onPriceUpdate) {
-            await handlers.onPriceUpdate(symbol, currentPrice, relevantTrades, positions);
-        }
-        
-        // Após chamar onPriceUpdate, verificar novamente se o websocket deve continuar
-        const updatedPositions = await getPositionsFromFile(); // Recarregar as posições após possíveis mudanças
-        const stillRelevant = updatedPositions.some(pos => 
-            pos.symbol === symbol && 
-            (pos.status === 'ENTRY_CREATED' || pos.status === 'ENTRY_FILLED')
-        );
-        
-        if (!stillRelevant && priceWebsockets[symbol]) {
-            console.log(`[WEBSOCKET] Fechando websocket de preço para ${symbol} - trade cancelado ou concluído`);
-            priceWebsockets[symbol].close();
-            delete priceWebsockets[symbol];
+            await handlers.onPriceUpdate(symbol, currentPrice, db);
         }
     } catch (error) {
         console.error(`[WEBSOCKET] Erro ao processar atualização de preço para ${symbol}:`, error);
@@ -316,5 +234,10 @@ module.exports = {
     startUserDataStream,
     setMonitoringCallbacks,
     ensurePriceWebsocketExists,
-    stopPriceMonitoring
+    stopPriceMonitoring,
+    priceWebsockets,
+    // Adicionar função para limpar recursos
+    reset: function() {
+        dbInstance = null;
+    }
 };

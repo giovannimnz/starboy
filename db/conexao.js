@@ -177,7 +177,8 @@ async function checkPositionExists(db, symbol) {
   }
 }
 
-// Inserir nova posição no banco de dados
+// Atualizar função insertPosition para usar formatDateForMySQL
+
 async function insertPosition(db, position) {
   try {
     const exists = await checkPositionExists(db, position.simbolo);
@@ -185,24 +186,63 @@ async function insertPosition(db, position) {
       console.log(`Posição já existe para o símbolo: ${position.simbolo}`);
       return null;
     } else {
-      const [result] = await db.query(
-        `INSERT INTO posicoes (
+      // Verificar se a coluna orign_sig existe na tabela
+      const [columns] = await db.query(
+        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
+         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'posicoes' AND COLUMN_NAME = 'orign_sig'`, 
+        [process.env.DB_NAME]
+      );
+      
+      const hasOrignSigColumn = columns.length > 0;
+      
+      // Formatar datas
+      const formattedOpenTime = formatDateForMySQL(position.data_hora_abertura);
+      const formattedUpdateTime = formatDateForMySQL(position.data_hora_ultima_atualizacao);
+      
+      let query, params;
+      
+      if (hasOrignSigColumn) {
+        // Se a coluna existir, incluí-la na consulta
+        query = `INSERT INTO posicoes (
           simbolo, quantidade, preco_medio, status, data_hora_abertura, 
-          side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
+          side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente, orign_sig
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+        
+        params = [
           position.simbolo,
           position.quantidade,
           position.preco_medio,
           'OPEN', // O status é sempre OPEN para posições novas
-          position.data_hora_abertura,
+          formattedOpenTime,
           position.side,
           position.leverage,
-          position.data_hora_ultima_atualizacao,
+          formattedUpdateTime,
+          position.preco_entrada,
+          position.preco_corrente,
+          position.orign_sig || null
+        ];
+      } else {
+        // Se a coluna não existir, omití-la da consulta
+        query = `INSERT INTO posicoes (
+          simbolo, quantidade, preco_medio, status, data_hora_abertura, 
+          side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+        
+        params = [
+          position.simbolo,
+          position.quantidade,
+          position.preco_medio,
+          'OPEN', // O status é sempre OPEN para posições novas
+          formattedOpenTime,
+          position.side,
+          position.leverage,
+          formattedUpdateTime,
           position.preco_entrada,
           position.preco_corrente
-        ]
-      );
+        ];
+      }
+      
+      const [result] = await db.query(query, params);
       
       console.log(`Posição inserida com sucesso com ID: ${result.insertId}`);
       return result.insertId;
@@ -224,22 +264,27 @@ async function checkOrderExists(db, id_externo) {
   }
 }
 
-// Inserir uma nova ordem
+// Atualizar função insertNewOrder para usar formatDateForMySQL
+
 async function insertNewOrder(db, orderDetails) {
   try {
-    const { tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao, id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only, close_position, last_update } = orderDetails;
+    const { tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao, id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only, close_position, last_update, orign_sig } = orderDetails;
     
     const reduceOnlyValue = reduce_only ? 1 : 0; // MySQL usa 1/0 para boolean
     const closePositionValue = close_position ? 1 : 0;
     
+    // Formatar datas antes da inserção
+    const formattedCreationTime = formatDateForMySQL(data_hora_criacao);
+    const formattedUpdateTime = formatDateForMySQL(last_update);
+    
     const [result] = await db.query(
       `INSERT INTO ordens (
         tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao, 
-        id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only, close_position, last_update
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only, close_position, last_update, orign_sig
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao,
-        id_externo, side, simbolo, tipo_ordem_bot, target, reduceOnlyValue, closePositionValue, last_update
+        tipo_ordem, preco, quantidade, id_posicao, status, formattedCreationTime,
+        id_externo, side, simbolo, tipo_ordem_bot, target, reduceOnlyValue, closePositionValue, formattedUpdateTime, orign_sig
       ]
     );
     
@@ -399,23 +444,44 @@ async function updateOrderStatus(db, orderId, newStatus) {
   }
 }
 
-// Atualizar dados de posição
-async function updatePositionStatus(db, symbol, data) {
+// Corrigir a função updatePositionStatus
+async function updatePositionStatus(db, symbol, updates) {
   try {
-    const { quantidade, preco_entrada, preco_corrente, leverage } = data;
+    // Primeiro obter os dados atuais da posição para não substituir com NULL
+    const [rows] = await db.query(
+      'SELECT * FROM posicoes WHERE simbolo = ? AND status != "CLOSED" LIMIT 1',
+      [symbol]
+    );
+
+    if (rows.length === 0) {
+      console.error(`Posição não encontrada para o símbolo: ${symbol}`);
+      return false;
+    }
+
+    const posicaoAtual = rows[0];
     const data_hora_ultima_atualizacao = getCurrentDateTimeAsString();
+    
+    // Atualizar apenas os campos fornecidos, mantendo os valores existentes para os demais
+    const status = updates.status || posicaoAtual.status;
+    const quantidade = updates.quantidade !== undefined ? updates.quantidade : posicaoAtual.quantidade;
+    const preco_entrada = updates.preco_entrada !== undefined ? updates.preco_entrada : posicaoAtual.preco_entrada;
+    const preco_corrente = updates.preco_corrente !== undefined ? updates.preco_corrente : posicaoAtual.preco_corrente;
+    const preco_medio = updates.preco_medio !== undefined ? updates.preco_medio : posicaoAtual.preco_medio;
     
     await db.query(
       `UPDATE posicoes SET 
        quantidade = ?, 
        preco_entrada = ?, 
        preco_corrente = ?,
-       leverage = ?,
-       data_hora_ultima_atualizacao = ?
-       WHERE simbolo = ?`,
-      [quantidade, preco_entrada, preco_corrente, leverage, data_hora_ultima_atualizacao, symbol]
+       preco_medio = ?, 
+       status = ?, 
+       data_hora_ultima_atualizacao = ? 
+       WHERE simbolo = ? AND status != "CLOSED"`,
+      [quantidade, preco_entrada, preco_corrente, preco_medio, status, data_hora_ultima_atualizacao, symbol]
     );
+    
     console.log(`Dados da posição atualizados para o símbolo: ${symbol}`);
+    return true;
   } catch (error) {
     console.error(`Erro ao atualizar dados da posição: ${error.message}`);
     throw error;
@@ -445,40 +511,82 @@ async function updatePositionInDb(db, positionId, quantidade, preco_entrada, pre
   }
 }
 
-// Mover posições e ordens fechadas para tabelas históricas
+// Atualizar a função moveClosedPositionsAndOrders para usar formatDateForMySQL
+
 async function moveClosedPositionsAndOrders(db, positionId) {
   let connection;
   try {
-    const now = new Date().toISOString();
+    // Usar formatDateForMySQL para formatar a data atual
+    const nowFormatted = formatDateForMySQL(new Date());
     
     // Iniciar transação
     connection = await db.getConnection();
     await connection.beginTransaction();
     
-    // Copiar posição para tabela histórica
-    await connection.query(
-      `INSERT INTO posicoes_fechadas 
-       (simbolo, quantidade, preco_medio, status, data_hora_abertura, data_hora_fechamento, 
-        side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente, orign_sig)
-       SELECT simbolo, quantidade, preco_medio, status, data_hora_abertura, ?, 
-        side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente, orign_sig
-       FROM posicoes WHERE id = ?`,
-      [now, positionId]
-    );
+    // Verificar se a coluna orign_sig existe na tabela posicoes
+    const [columns] = await connection.query(`SHOW COLUMNS FROM posicoes LIKE 'orign_sig'`);
+    const hasOrignSig = columns.length > 0;
+    
+    // Copiar posição para tabela histórica com consulta dinâmica
+    if (hasOrignSig) {
+      // Se a coluna existir, incluir na consulta
+      await connection.query(
+        `INSERT INTO posicoes_fechadas 
+         (simbolo, quantidade, preco_medio, status, data_hora_abertura, data_hora_fechamento, 
+          side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente, orign_sig)
+         SELECT simbolo, quantidade, preco_medio, status, data_hora_abertura, ?, 
+          side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente, orign_sig
+         FROM posicoes WHERE id = ?`,
+        [nowFormatted, positionId] // Usar a data formatada aqui
+      );
+    } else {
+      // Se a coluna não existir, omitir da consulta
+      await connection.query(
+        `INSERT INTO posicoes_fechadas 
+         (simbolo, quantidade, preco_medio, status, data_hora_abertura, data_hora_fechamento, 
+          side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente)
+         SELECT simbolo, quantidade, preco_medio, status, data_hora_abertura, ?, 
+          side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente
+         FROM posicoes WHERE id = ?`,
+        [nowFormatted, positionId] // Usar a data formatada aqui
+      );
+    }
+    
     console.log(`Posição com id ${positionId} movida para posicoes_fechadas.`);
     
+    // Resto da função permanece igual...
+    
+    // Fazer o mesmo para a tabela de ordens
+    const [orderColumns] = await connection.query(`SHOW COLUMNS FROM ordens LIKE 'orign_sig'`);
+    const hasOrderOrignSig = orderColumns.length > 0;
+    
     // Copiar ordens para tabela histórica
-    await connection.query(
-      `INSERT INTO ordens_fechadas 
-       (tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao, 
-        id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only, close_position, 
-        last_update, renew_sl_firs, renew_sl_seco, orign_sig)
-       SELECT tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao, 
-        id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only, close_position, 
-        last_update, renew_sl_firs, renew_sl_seco, orign_sig 
-       FROM ordens WHERE id_posicao = ?`,
-      [positionId]
-    );
+    if (hasOrderOrignSig) {
+      await connection.query(
+        `INSERT INTO ordens_fechadas 
+         (tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao, 
+          id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only, close_position, 
+          last_update, renew_sl_firs, renew_sl_seco, orign_sig)
+         SELECT tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao, 
+          id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only, close_position, 
+          last_update, renew_sl_firs, renew_sl_seco, orign_sig
+         FROM ordens WHERE id_posicao = ?`,
+        [positionId]
+      );
+    } else {
+      await connection.query(
+        `INSERT INTO ordens_fechadas 
+         (tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao, 
+          id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only, close_position, 
+          last_update, renew_sl_firs, renew_sl_seco)
+         SELECT tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao, 
+          id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only, close_position, 
+          last_update, renew_sl_firs, renew_sl_seco
+         FROM ordens WHERE id_posicao = ?`,
+        [positionId]
+      );
+    }
+    
     console.log(`Ordens com id_posicao ${positionId} movidas para ordens_fechadas.`);
     
     // Excluir posição original
@@ -551,6 +659,71 @@ async function updateOrderRenewFlag(db, orderId) {
   }
 }
 
+// Inserir novo sinal de webhook
+async function insertWebhookSignal(db, signalData) {
+  try {
+    const { symbol, side, leverage, capital_pct, status, created_at, chat_id } = signalData;
+    
+    const [result] = await db.query(
+      `INSERT INTO webhook_signals 
+       (symbol, side, leverage, capital_pct, status, created_at, chat_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [symbol, side, leverage, capital_pct, status, created_at, chat_id]
+    );
+    
+    console.log(`Sinal de webhook inserido com sucesso: ${result.insertId}`);
+    return result.insertId;
+  } catch (error) {
+    console.error(`Erro ao inserir webhook signal: ${error.message}`);
+    throw error;
+  }
+}
+
+// Nos webhooks (onde o erro continua)
+async function insertWebhookSignalWithDetails(db, testSymbol, positionId, orderId, tpPrice, slPrice) {
+  try {
+    await db.query(`
+      INSERT INTO webhook_signals 
+      (symbol, side, leverage, capital_pct, status, created_at, position_id, entry_order_id, tp_price, sl_price) 
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [testSymbol, 'COMPRA', 100, 1, 'PROCESSED', formatDateForMySQL(new Date()), positionId, orderId, tpPrice, slPrice]);
+    console.log('Webhook signal with details inserted successfully.');
+  } catch (error) {
+    console.error(`Erro ao inserir webhook signal com detalhes: ${error.message}`);
+    throw error;
+  }
+}
+
+// Função auxiliar para formatar a data para MySQL
+/**
+ * Formata uma data para o formato aceito pelo MySQL (YYYY-MM-DD HH:MM:SS)
+ * Corrige também datas futuras (ano 2025) para o ano atual
+ * @param {Date|string|null} date - Data a ser formatada
+ * @returns {string|null} - Data formatada para MySQL ou null se a entrada for null/undefined
+ */
+function formatDateForMySQL(date) {
+  if (!date) return null;
+  
+  // Converter para objeto Date se for string
+  let dateObj = date instanceof Date ? date : new Date(date);
+  
+  // Corrigir ano se estiver no futuro (provavelmente um bug)
+  const currentYear = new Date().getFullYear();
+  if (dateObj.getFullYear() > currentYear) {
+    dateObj.setFullYear(currentYear);
+  }
+  
+  // Formatar para YYYY-MM-DD HH:MM:SS (formato aceito pelo MySQL)
+  const year = dateObj.getFullYear();
+  const month = String(dateObj.getMonth() + 1).padStart(2, '0');
+  const day = String(dateObj.getDate()).padStart(2, '0');
+  const hours = String(dateObj.getHours()).padStart(2, '0');
+  const minutes = String(dateObj.getMinutes()).padStart(2, '0');
+  const seconds = String(dateObj.getSeconds()).padStart(2, '0');
+  
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+}
+
 // Exportar as funções
 module.exports = {
   getDatabaseInstance,
@@ -573,5 +746,8 @@ module.exports = {
   getPositionById,
   getDataHoraFormatada,
   initializeDatabase,
-  updateOrderRenewFlag
+  updateOrderRenewFlag,
+  insertWebhookSignal,
+  insertWebhookSignalWithDetails,
+  formatDateForMySQL  // Adicione esta linha
 };

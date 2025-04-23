@@ -1,109 +1,115 @@
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '..', '.env.test') });
+
 const {
   startUserDataStream,
   ensurePriceWebsocketExists,
   stopPriceMonitoring,
   setMonitoringCallbacks
 } = require('../websockets');
-const fs = require('fs').promises;
-const path = require('path');
+const { getDatabaseInstance, insertPosition, formatDateForMySQL } = require('../db/conexao');
 
 describe('Testes das Funções de WebSocket', () => {
+  let db;
   const testSymbol = 'BTCUSDT';
-  const positionsFile = path.join(__dirname, '..', 'posicoes', 'posicoes.json');
-  
+
   // Mock das funções de callback para testar setMonitoringCallbacks
   const mockCallbacks = {
     handleOrderUpdate: jest.fn(),
     handleAccountUpdate: jest.fn(),
     onPriceUpdate: jest.fn()
   };
-  
+
   beforeAll(async () => {
+    db = await getDatabaseInstance();
+    // Limpar tabelas relevantes para o teste
+    await db.query('DELETE FROM posicoes WHERE simbolo = ?', [testSymbol]);
+
     // Configurar callbacks
     setMonitoringCallbacks(mockCallbacks);
+
+    // Log das URLs de WebSocket usadas nos testes
+    console.log(`Usando WS_URL: ${process.env.WS_URL}`);
+    console.log(`Usando WS_API_URL: ${process.env.WS_API_URL}`);
   });
-  
+
   beforeEach(async () => {
-    // Resetar arquivo posicoes.json para cada teste
-    await fs.writeFile(positionsFile, '[]');
+    // Limpar qualquer posição de teste anterior
+    await db.query('DELETE FROM posicoes WHERE simbolo = ?', [testSymbol]);
   });
-  
+
   test('Deve iniciar uma conexão WebSocket de userDataStream', async () => {
-    // Esta função retorna uma Promise que resolve para um objeto WebSocket
-    const getDatabaseInstance = jest.fn().mockResolvedValue({});
-    const ws = await startUserDataStream(getDatabaseInstance);
+    const ws = await startUserDataStream(db);
     expect(ws).toBeDefined();
-    
+
     if (ws && typeof ws.close === 'function') {
       console.log('WebSocket userDataStream iniciado com sucesso');
       ws.close();
     }
   });
-  
+
   test('Deve criar um WebSocket para monitoramento de preço', async () => {
-    // Criar uma posição no arquivo posicoes.json para ativar o monitoramento
+    // Criar uma posição no banco de dados para ativar o monitoramento
     const testPosition = {
-      id: Date.now().toString(),
-      symbol: testSymbol,
-      side: 'COMPRA',
+      simbolo: testSymbol,
+      quantidade: 0.001,
+      preco_medio: 40000,
+      preco_entrada: 40000,
+      preco_corrente: 40000,
+      status: 'PENDING',
+      data_hora_abertura: formatDateForMySQL(new Date()),
+      side: 'BUY',
       leverage: 10,
-      entry: '40000',
-      tp: '44000',
-      stop_loss: '38000',
-      timestamp: new Date().toLocaleString('pt-BR'),
-      status: 'ENTRY_CREATED',
-      updated_at: new Date().toISOString(),
-      entry_order_id: '123456789'
+      data_hora_ultima_atualizacao: formatDateForMySQL(new Date())
     };
-    
-    await fs.writeFile(positionsFile, JSON.stringify([testPosition], null, 2));
-    
+
+    await insertPosition(db, testPosition);
+
     // Testar a criação do WebSocket de preço
     ensurePriceWebsocketExists(testSymbol);
     console.log(`WebSocket para monitoramento de preço de ${testSymbol} criado`);
-    
+
     // Dar tempo para estabelecer a conexão
     await new Promise(resolve => setTimeout(resolve, 2000));
-    
+
     // Testar a parada do WebSocket
     const stopped = stopPriceMonitoring(testSymbol);
     expect(stopped).toBe(true);
     console.log(`WebSocket de monitoramento de preço para ${testSymbol} parado`);
   });
-  
+
   test('Deve parar WebSocket quando não há mais trades relevantes', async () => {
     // Primeiro criar uma posição para ativar o monitoramento
     const testPosition = {
-      id: Date.now().toString(),
-      symbol: testSymbol,
-      side: 'COMPRA',
+      simbolo: testSymbol,
+      quantidade: 0.001,
+      preco_medio: 40000,
+      preco_entrada: 40000,
+      preco_corrente: 40000,
+      status: 'PENDING',
+      data_hora_abertura: formatDateForMySQL(new Date()),
+      side: 'BUY',
       leverage: 10,
-      entry: '40000',
-      tp: '44000',
-      stop_loss: '38000',
-      timestamp: new Date().toLocaleString('pt-BR'),
-      status: 'ENTRY_CREATED',
-      updated_at: new Date().toISOString(),
-      entry_order_id: '123456789'
+      data_hora_ultima_atualizacao: formatDateForMySQL(new Date())
     };
-    
-    await fs.writeFile(positionsFile, JSON.stringify([testPosition], null, 2));
-    
+
+    await insertPosition(db, testPosition);
+
     // Iniciar o WebSocket
     ensurePriceWebsocketExists(testSymbol);
     console.log(`WebSocket para monitoramento de preço de ${testSymbol} criado`);
-    
+
     // Dar tempo para estabelecer a conexão
     await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    // Agora limpar o arquivo para remover trades relevantes
-    await fs.writeFile(positionsFile, '[]');
-    
+
+    // Agora limpar a tabela para remover trades relevantes
+    await db.query('DELETE FROM posicoes WHERE simbolo = ?', [testSymbol]);
+
     // Verificar se o WebSocket foi fechado automaticamente após a próxima atualização de preço
     // Isso é difícil de testar diretamente, mas podemos verificar se o método 
     // stopPriceMonitoring retorna false após um tempo
     await new Promise(resolve => setTimeout(resolve, 5000));
-    
+
     const stillActive = stopPriceMonitoring(testSymbol);
     console.log(`WebSocket ainda ativo: ${stillActive ? 'Sim' : 'Não'}`);
   });
