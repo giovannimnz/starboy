@@ -163,6 +163,93 @@ async function createDatabase() {
         `);
         console.log('✅ Tabela "monitoramento" criada.');
         
+        // Tabela webhook_signals
+        await connection.execute(`
+            CREATE TABLE IF NOT EXISTS webhook_signals (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                symbol VARCHAR(50) NOT NULL,
+                side VARCHAR(10) NOT NULL,
+                leverage INT NOT NULL,
+                capital_pct DECIMAL(5,2) NOT NULL,
+                entry_price DECIMAL(20,8) NOT NULL,
+                tp_price DECIMAL(20,8) NOT NULL,
+                sl_price DECIMAL(20,8) NOT NULL,
+                status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
+                error_message TEXT,
+                position_id INT,
+                entry_order_id BIGINT,
+                tp_order_id BIGINT,
+                sl_order_id BIGINT,
+                chat_id BIGINT,
+                message_id BIGINT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                
+                INDEX idx_status (status),
+                INDEX idx_symbol (symbol),
+                INDEX idx_position_id (position_id),
+                FOREIGN KEY (position_id) REFERENCES posicoes(id) ON DELETE SET NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+        console.log('✅ Tabela "webhook_signals" criada.');
+        
+        // Tabela posicoes_fechadas
+        await connection.execute(`
+            CREATE TABLE IF NOT EXISTS posicoes_fechadas (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                id_original INT,
+                simbolo VARCHAR(50) NOT NULL,
+                quantidade DECIMAL(20,8) NOT NULL,
+                preco_medio DECIMAL(20,8) NOT NULL,
+                status VARCHAR(50) NOT NULL,
+                data_hora_abertura DATETIME NOT NULL,
+                data_hora_fechamento DATETIME,
+                motivo_fechamento VARCHAR(100),
+                side VARCHAR(20),
+                leverage INT,
+                data_hora_ultima_atualizacao DATETIME,
+                preco_entrada DECIMAL(20,8),
+                preco_corrente DECIMAL(20,8),
+                orign_sig VARCHAR(100),
+                
+                INDEX idx_simbolo (simbolo),
+                INDEX idx_status (status),
+                INDEX idx_id_original (id_original)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+        console.log('✅ Tabela "posicoes_fechadas" criada.');
+        
+        // Tabela ordens_fechadas
+        await connection.execute(`
+            CREATE TABLE IF NOT EXISTS ordens_fechadas (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                id_original INT,
+                tipo_ordem VARCHAR(50) NOT NULL,
+                preco DECIMAL(20,8) NOT NULL,
+                quantidade DECIMAL(20,8) NOT NULL,
+                id_posicao INT,
+                status VARCHAR(50) NOT NULL,
+                data_hora_criacao DATETIME,
+                id_externo BIGINT,
+                side VARCHAR(20),
+                simbolo VARCHAR(50),
+                tipo_ordem_bot VARCHAR(50),
+                target INT,
+                reduce_only BOOLEAN,
+                close_position BOOLEAN,
+                last_update DATETIME,
+                renew_sl_firs VARCHAR(20),
+                renew_sl_seco VARCHAR(20),
+                orign_sig VARCHAR(100),
+                
+                INDEX idx_simbolo (simbolo),
+                INDEX idx_status (status),
+                INDEX idx_id_posicao (id_posicao),
+                INDEX idx_id_original (id_original)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+        console.log('✅ Tabela "ordens_fechadas" criada.');
+        
         // Inserir registro inicial na tabela controle_posicoes se não existir
         const [rows] = await connection.execute('SELECT COUNT(*) as count FROM controle_posicoes');
         if (rows[0].count === 0) {

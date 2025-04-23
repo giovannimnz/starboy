@@ -9,11 +9,22 @@ tests/
 Execução dos Testes
 Para executar os testes:
 
-Instale as dependências necessárias:
+Primeiro, execute o verificador de configuração:
 
+node tests/testnetCheck.js
+
+Depois, execute os testes:
+
+# Instalar jest se necessário
 npm install --save-dev jest
 
-Execute os testes:
+# Executar todos os testes
+npm test
+
+# Ou executar testes específicos
+npm run test:api
+
+testes:
 
 npm test                  # Executa todos os testes
 npm run test:api          # Apenas testes de API

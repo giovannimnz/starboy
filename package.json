@@ -5,7 +5,6 @@
   "main": "index.js",
   "scripts": {
     "test": "jest",
-    "test:watch": "jest --watchAll",
     "test:api": "jest api.test.js",
     "test:db": "jest db.test.js",
     "test:monitor": "jest monitoramento.test.js",
@@ -31,5 +30,10 @@
     "testEnvironment": "node",
     "setupFilesAfterEnv": ["<rootDir>/tests/setup.js"],
     "testTimeout": 30000
+  },
+  "testSetup": {
+    "start": "// Início padrão para todos os arquivos de teste (api.test.js, db.test.js, etc.)",
+    "path": "const path = require('path');",
+    "dotenv": "require('dotenv').config({ path: path.join(__dirname, '..', '.env.test') });"
   }
 }

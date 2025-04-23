@@ -6,8 +6,25 @@ import asyncio
 import json
 import os
 import math
+import mysql.connector
+from dotenv import load_dotenv
+import pathlib
+
+# Carregar variáveis de ambiente do arquivo .env na raiz do projeto
+env_path = pathlib.Path(__file__).parents[1] / '.env'
+load_dotenv(dotenv_path=env_path)
 
 app = Quart(__name__)
+
+# Configurações do banco de dados do arquivo .env
+DB_HOST = os.getenv('DB_HOST')
+DB_PORT = os.getenv('DB_PORT')
+DB_USER = os.getenv('DB_USER')
+DB_PASSWORD = os.getenv('DB_PASSWORD')
+DB_NAME = os.getenv('DB_NAME')
+
+# Log das configurações do banco para debug (opcional)
+print(f"[DB] Configurações carregadas - Host: {DB_HOST}, Porta: {DB_PORT}, DB: {DB_NAME}")
 
 # Grupos do Telegram para diferentes tipos de mensagens
 entry_group_id    = 4217341650
@@ -168,44 +185,55 @@ def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent):
     # Retorna alavancagem como número inteiro
     return max_safe_leverage
 
-# Modificar a função save_to_positions_file para incluir estado
-def save_to_positions_file(trade_data):
+# Em vez de salvar no arquivo, inserir no banco de dados MySQL
+def save_to_database(trade_data):
     """
-    Salva informações de uma operação no arquivo posicoes.json
+    Salva informações da operação no banco de dados MySQL
     
     Args:
-        trade_data (dict): Dicionário contendo informações da operação
+        trade_data (dict): Dicionário com informações da operação
     """
-    # Definir o caminho do arquivo
-    positions_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'posicoes', 'posicoes.json')
-    
-    # Garantir que a pasta exista
-    os.makedirs(os.path.dirname(positions_file), exist_ok=True)
-    
-    # Ler arquivo existente ou criar uma lista vazia
     try:
-        with open(positions_file, 'r') as file:
-            content = file.read()
-            positions = json.loads(content) if content.strip() else []
-    except (FileNotFoundError, json.JSONDecodeError):
-        positions = []
-    
-    # Adicionar status e timestamp
-    trade_data["status"] = "PENDING_ENTRY"  # Status inicial para monitoramento
-    trade_data["updated_at"] = datetime.now().strftime("%d-%m-%Y | %H:%M:%S")
-    trade_data["entry_order_id"] = None
-    trade_data["tp_order_id"] = None
-    trade_data["sl_order_id"] = None
-    trade_data["position_qty"] = 0
-    
-    # Adicionar nova operação à lista
-    positions.append(trade_data)
-    
-    # Salvar arquivo atualizado
-    with open(positions_file, 'w') as file:
-        json.dump(positions, file, indent=2)
-    
-    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Operação salva no arquivo posicoes.json: {trade_data['symbol']}")
+        # Configurar conexão MySQL usando variáveis do .env
+        conn = mysql.connector.connect(
+            host=DB_HOST,
+            port=DB_PORT,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            database=DB_NAME
+        )
+        cursor = conn.cursor()
+        
+        # Inserir na tabela webhook_signals
+        sql = """
+        INSERT INTO webhook_signals
+        (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price, chat_id, status)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
+        
+        values = (
+            trade_data["symbol"],
+            trade_data["side"],
+            trade_data["leverage"],
+            trade_data["capital_pct"],
+            trade_data["entry"],
+            trade_data["tp"],
+            trade_data["stop_loss"],
+            trade_data["chat_id"],
+            "PENDING"  # Status inicial
+        )
+        
+        cursor.execute(sql, values)
+        conn.commit()
+        
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Operação salva no banco de dados: {trade_data['symbol']}")
+        
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Erro ao salvar no banco: {e}")
+    finally:
+        if 'conn' in locals() and conn.is_connected():
+            cursor.close()
+            conn.close()
 
 @app.route('/webhook', methods=['POST'])
 async def webhook():
@@ -270,7 +298,7 @@ async def webhook():
         await send_telegram_message(entry_group_id, text)
         print(f"[{now}] Entrada enviada: {symbol} | id={trade_id}")
 
-        # Salvar operação no arquivo posicoes.json com status PENDING
+        # Salvar operação no banco de dados com status PENDING
         trade_data = {
             "id": trade_id,
             "symbol": symbol,
@@ -280,11 +308,9 @@ async def webhook():
             "entry": entry,
             "tp": tp,
             "stop_loss": stop_loss,
-            "timestamp": now,
-            "message_id": None,  # Será preenchido pelo monitoramento.js após enviar confirmação
-            "chat_id": entry_group_id  # Para poder atualizar/apagar a mensagem posteriormente
+            "chat_id": entry_group_id
         }
-        save_to_positions_file(trade_data)
+        save_to_database(trade_data)
 
     elif message_type.startswith('update') or message_type.startswith('stop_update'):
         text = (

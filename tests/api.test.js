@@ -1,8 +1,13 @@
+const path = require('path');
+require('dotenv').config({ path: path.join(__dirname, '..', '.env.test') });
 const { 
   getMaxLeverage, changeInitialLeverage, changeMarginType, 
   newOrder, newStopOrder, cancelOrder, getOpenOrders,
   getPositionDetails, getAllOpenPositions, setPositionMode, getPositionMode
 } = require('../api');
+
+// Log inicial para verificar configuração do testnet
+console.log(`Testando API com URL: ${process.env.API_URL}`);
 
 // Configuração antes de todos os testes
 beforeAll(async () => {
