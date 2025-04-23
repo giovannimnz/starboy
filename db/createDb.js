@@ -280,6 +280,28 @@ async function createDatabase() {
         } catch (error) {
             console.log('Coluna orign_sig já existe na tabela ordens_fechadas ou erro:', error.message);
         }
+
+                // Adicionar coluna orign_sig em posicoes se não existir
+                try {
+                    await connection.execute(`
+                        ALTER TABLE posicoes 
+                        ADD COLUMN IF NOT EXISTS orign_sig VARCHAR(100) NULL
+                    `);
+                    console.log('✅ Coluna orign_sig adicionada à tabela posicoes.');
+                } catch (error) {
+                    console.log('Coluna orign_sig já existe na tabela posicoes ou erro:', error.message);
+                }
+        
+                // Adicionar coluna orign_sig em ordens se não existir
+                try {
+                    await connection.execute(`
+                        ALTER TABLE ordens 
+                        ADD COLUMN IF NOT EXISTS orign_sig VARCHAR(100) NULL
+                    `);
+                    console.log('✅ Coluna orign_sig adicionada à tabela ordens.');
+                } catch (error) {
+                    console.log('Coluna orign_sig já existe na tabela ordens ou erro:', error.message);
+                }
         
         console.log('\n🚀 Banco de dados "starboy" criado com sucesso! Todas as tabelas foram criadas.');
         
