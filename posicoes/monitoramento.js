@@ -22,7 +22,7 @@ async function initializeMonitoring() {
   // Configurar callbacks para WebSockets
   websockets.setMonitoringCallbacks({
     handleOrderUpdate,
-    handleAccountUpdate,
+    handleAccountUpdate, // Esta função não estava definida!
     onPriceUpdate
   });
   
@@ -393,6 +393,181 @@ async function handleOrderUpdate(message, db) {
     }
   } catch (error) {
     console.error(`[ORDER UPDATE] Erro ao processar atualização de ordem:`, error);
+  }
+}
+
+// Função para processar atualizações de conta via WebSocket
+async function handleAccountUpdate(message, db) {
+  try {
+    console.log('[ACCOUNT UPDATE] Recebido atualização de conta');
+    
+    // Se não houver conexão com o banco, tentar estabelecer
+    if (!db) {
+      db = await getDatabaseInstance();
+      if (!db) {
+        console.error('[ACCOUNT UPDATE] Não foi possível obter conexão com o banco de dados');
+        return;
+      }
+    }
+    
+    // Verificar se há atualizações de posição no evento
+    if (message.a && message.a.P) {
+      const positions = message.a.P;
+      
+      for (const position of positions) {
+        const symbol = position.s;
+        const amount = parseFloat(position.pa);
+        
+        // Ignorar posições zeradas ou muito pequenas
+        if (Math.abs(amount) <= 0.000001) {
+          continue;
+        }
+        
+        console.log(`[ACCOUNT UPDATE] Posição atualizada: ${symbol}, quantidade: ${amount}`);
+        
+        // Atualizar posição no banco de dados
+        try {
+          // Obter ID da posição
+          const positionId = await getPositionIdBySymbol(db, symbol);
+          
+          if (positionId) {
+            const entryPrice = parseFloat(position.ep);
+            const markPrice = parseFloat(position.mp);
+            const leverage = parseInt(position.l);
+            
+            // Atualizar dados da posição
+            await updatePositionInDb(db, positionId, amount, entryPrice, markPrice, leverage);
+          }
+        } catch (error) {
+          console.error(`[ACCOUNT UPDATE] Erro ao atualizar posição ${symbol}:`, error);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('[ACCOUNT UPDATE] Erro ao processar atualização da conta:', error);
+  }
+}
+
+// Função para mover posição para histórico se não existir
+async function movePositionToHistory(db, positionId, status, reason) {
+  const connection = await db.getConnection();
+  
+  try {
+    await connection.beginTransaction();
+    
+    // 1. Atualizar status da posição
+    await connection.query(
+      `UPDATE posicoes 
+       SET status = ?, 
+           data_hora_fechamento = ?,
+           data_hora_ultima_atualizacao = ?
+       WHERE id = ?`,
+      [status, new Date().toISOString(), new Date().toISOString(), positionId]
+    );
+    
+    // 2. Mover posição e ordens para histórico
+    await moveClosedPositionsAndOrders(db, positionId);
+    
+    // 3. Registrar o motivo em uma tabela de logs
+    await connection.query(
+      `INSERT INTO historico_posicoes 
+       (id_posicao, tipo_evento, data_hora_evento, resultado) 
+       VALUES (?, ?, ?, ?)`,
+      [positionId, 'CLOSE', new Date().toISOString(), reason]
+    );
+    
+    await connection.commit();
+    console.log(`[MONITOR] Posição ${positionId} movida para histórico: ${reason}`);
+    
+  } catch (error) {
+    await connection.rollback();
+    console.error(`[MONITOR] Erro ao mover posição ${positionId} para histórico:`, error);
+  } finally {
+    connection.release();
+  }
+}
+
+// Verifique também se a função onPriceUpdate está definida
+async function onPriceUpdate(symbol, currentPrice, relevantTrades, positions) {
+  try {
+    // Em vez de usar o parâmetro relevantTrades, buscar do banco de dados
+    const db = await getDatabaseInstance();
+    if (!db) {
+      console.error(`[PRICE UPDATE] Não foi possível obter conexão com o banco de dados`);
+      return;
+    }
+    
+    // 1. Buscar ordens de entrada pendentes para este símbolo
+    const [pendingEntries] = await db.query(`
+      SELECT o.*, p.id as position_id, p.status as position_status, 
+             w.tp_price, w.sl_price, w.side, w.chat_id
+      FROM ordens o
+      JOIN posicoes p ON o.id_posicao = p.id
+      LEFT JOIN webhook_signals w ON w.position_id = p.id
+      WHERE o.simbolo = ?
+        AND o.tipo_ordem_bot = 'ENTRADA'
+        AND o.status = 'OPEN'
+        AND (p.status = 'PENDING' OR p.status = 'OPEN')
+      ORDER BY o.data_hora_criacao DESC
+    `, [symbol]);
+    
+    // 2. Para cada ordem de entrada, verificar se TP foi atingido antes da entrada
+    for (const entry of pendingEntries) {
+      const entryPrice = parseFloat(entry.preco);
+      const tpPrice = parseFloat(entry.tp_price);
+      const side = entry.side === 'COMPRA' ? 'BUY' : 'SELL';
+      
+      // Verificar se o TP foi atingido antes da entrada
+      if ((side === 'BUY' && currentPrice >= tpPrice) || 
+          (side === 'SELL' && currentPrice <= tpPrice)) {
+        
+        console.log(`[PRICE UPDATE] TP atingido antes da entrada para ${symbol}`);
+        console.log(`[PRICE UPDATE] Preço atual: ${currentPrice}, TP: ${tpPrice}, Entrada: ${entryPrice}`);
+        
+        // Verificar se já processamos esta ordem
+        if (cancelledOrders.has(entry.id_externo)) {
+          console.log(`[PRICE UPDATE] Ordem ${entry.id_externo} já cancelada anteriormente`);
+          continue;
+        }
+        
+        // Cancelar a ordem na corretora
+        try {
+          await cancelOrder(entry.id_externo, symbol);
+          cancelledOrders.add(entry.id_externo);
+          
+          // Atualizar status da ordem para CANCELED
+          await updateOrderStatus(db, entry.id, 'CANCELED');
+          
+          // Mover para histórico com motivo
+          await movePositionToHistory(db, entry.position_id, 'CANCELED', 'TP_REACHED_BEFORE_ENTRY');
+          
+          // Atualizar webhook_signal
+          await db.query(`
+            UPDATE webhook_signals 
+            SET status = 'CANCELED', 
+                error_message = 'TP atingido antes da entrada' 
+            WHERE position_id = ?
+          `, [entry.position_id]);
+          
+          // Enviar notificação ao Telegram (se configurado)
+          if (entry.chat_id) {
+            try {
+              await bot.telegram.sendMessage(entry.chat_id,
+                `⚠️ Ordem para ${symbol} CANCELADA ⚠️\n\n` +
+                `O preço-alvo (${tpPrice}) foi atingido antes do ponto de entrada (${entryPrice}).\n\n` +
+                `Preço atual: ${currentPrice}`
+              );
+            } catch (telegramError) {
+              console.error(`[PRICE UPDATE] Erro ao enviar notificação Telegram:`, telegramError);
+            }
+          }
+        } catch (error) {
+          console.error(`[PRICE UPDATE] Erro ao cancelar ordem ${entry.id_externo}:`, error);
+        }
+      }
+    }
+  } catch (error) {
+    console.error(`[PRICE UPDATE] Erro ao processar atualização de preço:`, error);
   }
 }
 
