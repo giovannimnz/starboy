@@ -302,11 +302,28 @@ function calculateOrderSize(availableBalance, capitalPercentage, entryPrice, lev
   return parseFloat(size.toFixed(precision));
 }
 
-// Função para obter saldo disponível (ajuste conforme sua implementação)
+// Substitua a função getAvailableBalance atual pela seguinte:
+
 async function getAvailableBalance() {
-  // Implementar com sua lógica de obtenção de saldo
-  // Exemplo: retornar um valor padrão por enquanto
-  return 1000.0;
+  try {
+    // Obter saldo da conta Futures
+    const balanceDetails = await getFuturesAccountBalanceDetails();
+    // Encontrar o saldo USDT
+    const usdtBalance = balanceDetails.find(item => item.asset === 'USDT');
+    
+    if (!usdtBalance) {
+      console.error('[MONITOR] Saldo USDT não encontrado');
+      return 0;
+    }
+    
+    // Usar availableBalance que já considera posições abertas e requisitos de margem
+    const availableAmount = parseFloat(usdtBalance.availableBalance);
+    console.log(`[MONITOR] Saldo disponível: ${availableAmount} USDT`);
+    return availableAmount;
+  } catch (error) {
+    console.error(`[MONITOR] Erro ao obter saldo disponível: ${error.message}`);
+    return 0;
+  }
 }
 
 // Verificar se existe uma posição aberta para um símbolo
