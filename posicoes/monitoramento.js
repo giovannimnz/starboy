@@ -694,25 +694,29 @@ async function movePositionToHistory(db, positionId, status, reason) {
   try {
     await connection.beginTransaction();
     
-    // 1. Atualizar status da posição
+    // Usar formatDateForMySQL para formatar corretamente a data
+    const currentDate = new Date();
+    const formattedDate = formatDateForMySQL(currentDate);
+    
+    // 1. Atualizar status da posição com data formatada
     await connection.query(
       `UPDATE posicoes 
        SET status = ?, 
            data_hora_fechamento = ?,
            data_hora_ultima_atualizacao = ?
        WHERE id = ?`,
-      [status, new Date().toISOString(), new Date().toISOString(), positionId]
+      [status, formattedDate, formattedDate, positionId]
     );
     
     // 2. Mover posição e ordens para histórico
     await moveClosedPositionsAndOrders(db, positionId);
     
-    // 3. Registrar o motivo em uma tabela de logs
+    // 3. Registrar o motivo em uma tabela de logs (também usando formatDateForMySQL)
     await connection.query(
       `INSERT INTO historico_posicoes 
        (id_posicao, tipo_evento, data_hora_evento, resultado) 
        VALUES (?, ?, ?, ?)`,
-      [positionId, 'CLOSE', new Date().toISOString(), reason]
+      [positionId, 'CLOSE', formattedDate, reason]
     );
     
     await connection.commit();
@@ -721,6 +725,7 @@ async function movePositionToHistory(db, positionId, status, reason) {
   } catch (error) {
     await connection.rollback();
     console.error(`[MONITOR] Erro ao mover posição ${positionId} para histórico:`, error);
+    throw error; // Re-lançar o erro para evitar mensagens de sucesso falsas
   } finally {
     connection.release();
   }
