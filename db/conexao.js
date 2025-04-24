@@ -523,55 +523,33 @@ async function moveClosedPositionsAndOrders(db, positionId) {
     connection = await db.getConnection();
     await connection.beginTransaction();
     
-    // Verificar se a coluna orign_sig existe na tabela posicoes
-    const [posColumns] = await connection.query(`SHOW COLUMNS FROM posicoes LIKE 'orign_sig'`);
-    const hasOrignSig = posColumns.length > 0;
-    
-    // Copiar posição para tabela histórica com consulta dinâmica
-    if (hasOrignSig) {
-      // Se a coluna existir, incluir na consulta
-      await connection.query(
-        `INSERT INTO posicoes_fechadas 
-         (simbolo, quantidade, preco_medio, status, data_hora_abertura, data_hora_fechamento, 
-          side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente, orign_sig)
-         SELECT simbolo, quantidade, preco_medio, status, data_hora_abertura, ?, 
-          side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente, orign_sig
-         FROM posicoes WHERE id = ?`,
-        [nowFormatted, positionId]
-      );
-    } else {
-      // Se a coluna não existir, omitir da consulta
-      await connection.query(
-        `INSERT INTO posicoes_fechadas 
-         (simbolo, quantidade, preco_medio, status, data_hora_abertura, data_hora_fechamento, 
-          side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente)
-         SELECT simbolo, quantidade, preco_medio, status, data_hora_abertura, ?, 
-          side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente
-         FROM posicoes WHERE id = ?`,
-        [nowFormatted, positionId]
-      );
+    // 1. Verificar se a posição existe
+    const [positionResult] = await connection.query("SELECT * FROM posicoes WHERE id = ?", [positionId]);
+    if (positionResult.length === 0) {
+      console.log(`Posição com ID ${positionId} não encontrada.`);
+      await connection.commit();
+      return;
     }
     
-    console.log(`Posição com id ${positionId} movida para posicoes_fechadas.`);
+    // 2. Verificar todas as ordens que referenciam esta posição
+    const [orderResult] = await connection.query("SELECT * FROM ordens WHERE id_posicao = ?", [positionId]);
+    console.log(`Encontradas ${orderResult.length} ordens para posição ${positionId}.`);
     
-    // Verificar as colunas específicas na tabela de ordens
+    // 3. Construir esquemas dinâmicos para mover ordens
     const [renew_sl_firs] = await connection.query(`SHOW COLUMNS FROM ordens LIKE 'renew_sl_firs'`);
     const [renew_sl_seco] = await connection.query(`SHOW COLUMNS FROM ordens LIKE 'renew_sl_seco'`);
     const [orign_sig] = await connection.query(`SHOW COLUMNS FROM ordens LIKE 'orign_sig'`);
     
-    // Verificar se as mesmas colunas existem na tabela de destino
     const [dest_renew_sl_firs] = await connection.query(`SHOW COLUMNS FROM ordens_fechadas LIKE 'renew_sl_firs'`);
     const [dest_renew_sl_seco] = await connection.query(`SHOW COLUMNS FROM ordens_fechadas LIKE 'renew_sl_seco'`);
     const [dest_orign_sig] = await connection.query(`SHOW COLUMNS FROM ordens_fechadas LIKE 'orign_sig'`);
     
-    // Construir consultas dinâmicas para ordens com base nas colunas existentes
     let sourceCols = "tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao, " +
-                    "id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only, close_position, " +
-                    "last_update";
+                     "id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only, close_position, " +
+                     "last_update";
     
     let destCols = sourceCols;
     
-    // Adicionar colunas extras somente se existirem TANTO na origem quanto no destino
     if (renew_sl_firs.length > 0 && dest_renew_sl_firs.length > 0) {
       sourceCols += ", renew_sl_firs";
       destCols += ", renew_sl_firs";
@@ -587,26 +565,64 @@ async function moveClosedPositionsAndOrders(db, positionId) {
       destCols += ", orign_sig";
     }
     
-    // Inserir ordens com as colunas verificadas
-    await connection.query(
-      `INSERT INTO ordens_fechadas (${destCols})
-       SELECT ${sourceCols} FROM ordens WHERE id_posicao = ?`,
-      [positionId]
-    );
+    // 4. Inserir ordens na tabela de histórico
+    if (orderResult.length > 0) {
+      await connection.query(
+        `INSERT INTO ordens_fechadas (${destCols})
+         SELECT ${sourceCols} FROM ordens WHERE id_posicao = ?`,
+        [positionId]
+      );
+      console.log(`Ordens com id_posicao ${positionId} movidas para ordens_fechadas.`);
+    }
     
-    console.log(`Ordens com id_posicao ${positionId} movidas para ordens_fechadas.`);
-    
-    // Excluir posição original
-    await connection.query("DELETE FROM posicoes WHERE id = ?", [positionId]);
-    console.log(`Posição com id ${positionId} excluída de posicoes.`);
-    
-    // Excluir ordens originais
+    // 5. IMPORTANTE: Excluir ordens ANTES de excluir a posição
     await connection.query("DELETE FROM ordens WHERE id_posicao = ?", [positionId]);
     console.log(`Ordens com id_posicao ${positionId} excluídas de ordens.`);
     
-    // Commit da transação
+    // 6. Verificar se ainda existem ordens referenciando esta posição (garantia extra)
+    const [remainingOrders] = await connection.query(
+      "SELECT COUNT(*) AS count FROM ordens WHERE id_posicao = ?", 
+      [positionId]
+    );
+    
+    if (remainingOrders[0].count > 0) {
+      throw new Error(`Ainda existem ${remainingOrders[0].count} ordens vinculadas à posição ${positionId}.`);
+    }
+    
+    // 7. Verificar se posição tem coluna orign_sig
+    const [posColumns] = await connection.query(`SHOW COLUMNS FROM posicoes LIKE 'orign_sig'`);
+    const hasOrignSig = posColumns.length > 0;
+    
+    // 8. Copiar posição para tabela histórica com consulta dinâmica
+    if (hasOrignSig) {
+      await connection.query(
+        `INSERT INTO posicoes_fechadas 
+         (simbolo, quantidade, preco_medio, status, data_hora_abertura, data_hora_fechamento, 
+          side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente, orign_sig)
+         SELECT simbolo, quantidade, preco_medio, status, data_hora_abertura, ?, 
+          side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente, orign_sig
+         FROM posicoes WHERE id = ?`,
+        [nowFormatted, positionId]
+      );
+    } else {
+      await connection.query(
+        `INSERT INTO posicoes_fechadas 
+         (simbolo, quantidade, preco_medio, status, data_hora_abertura, data_hora_fechamento, 
+          side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente)
+         SELECT simbolo, quantidade, preco_medio, status, data_hora_abertura, ?, 
+          side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente
+         FROM posicoes WHERE id = ?`,
+        [nowFormatted, positionId]
+      );
+    }
+    console.log(`Posição com id ${positionId} movida para posicoes_fechadas.`);
+    
+    // 9. Agora é seguro excluir a posição
+    await connection.query("DELETE FROM posicoes WHERE id = ?", [positionId]);
+    console.log(`Posição com id ${positionId} excluída de posicoes.`);
+    
     await connection.commit();
-    console.log(`Posição e ordens associadas com id_posicao ${positionId} movidas e excluídas com sucesso.`);
+    console.log(`Posição ${positionId} e suas ordens movidas para histórico com sucesso.`);
     
   } catch (error) {
     if (connection) {
