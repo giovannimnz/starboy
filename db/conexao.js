@@ -524,8 +524,8 @@ async function moveClosedPositionsAndOrders(db, positionId) {
     await connection.beginTransaction();
     
     // Verificar se a coluna orign_sig existe na tabela posicoes
-    const [columns] = await connection.query(`SHOW COLUMNS FROM posicoes LIKE 'orign_sig'`);
-    const hasOrignSig = columns.length > 0;
+    const [posColumns] = await connection.query(`SHOW COLUMNS FROM posicoes LIKE 'orign_sig'`);
+    const hasOrignSig = posColumns.length > 0;
     
     // Copiar posição para tabela histórica com consulta dinâmica
     if (hasOrignSig) {
@@ -537,7 +537,7 @@ async function moveClosedPositionsAndOrders(db, positionId) {
          SELECT simbolo, quantidade, preco_medio, status, data_hora_abertura, ?, 
           side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente, orign_sig
          FROM posicoes WHERE id = ?`,
-        [nowFormatted, positionId] // Usar a data formatada aqui
+        [nowFormatted, positionId]
       );
     } else {
       // Se a coluna não existir, omitir da consulta
@@ -548,44 +548,51 @@ async function moveClosedPositionsAndOrders(db, positionId) {
          SELECT simbolo, quantidade, preco_medio, status, data_hora_abertura, ?, 
           side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente
          FROM posicoes WHERE id = ?`,
-        [nowFormatted, positionId] // Usar a data formatada aqui
+        [nowFormatted, positionId]
       );
     }
     
     console.log(`Posição com id ${positionId} movida para posicoes_fechadas.`);
     
-    // Resto da função permanece igual...
+    // Verificar as colunas específicas na tabela de ordens
+    const [renew_sl_firs] = await connection.query(`SHOW COLUMNS FROM ordens LIKE 'renew_sl_firs'`);
+    const [renew_sl_seco] = await connection.query(`SHOW COLUMNS FROM ordens LIKE 'renew_sl_seco'`);
+    const [orign_sig] = await connection.query(`SHOW COLUMNS FROM ordens LIKE 'orign_sig'`);
     
-    // Fazer o mesmo para a tabela de ordens
-    const [orderColumns] = await connection.query(`SHOW COLUMNS FROM ordens LIKE 'orign_sig'`);
-    const hasOrderOrignSig = orderColumns.length > 0;
+    // Verificar se as mesmas colunas existem na tabela de destino
+    const [dest_renew_sl_firs] = await connection.query(`SHOW COLUMNS FROM ordens_fechadas LIKE 'renew_sl_firs'`);
+    const [dest_renew_sl_seco] = await connection.query(`SHOW COLUMNS FROM ordens_fechadas LIKE 'renew_sl_seco'`);
+    const [dest_orign_sig] = await connection.query(`SHOW COLUMNS FROM ordens_fechadas LIKE 'orign_sig'`);
     
-    // Copiar ordens para tabela histórica
-    if (hasOrderOrignSig) {
-      await connection.query(
-        `INSERT INTO ordens_fechadas 
-         (tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao, 
-          id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only, close_position, 
-          last_update, renew_sl_firs, renew_sl_seco, orign_sig)
-         SELECT tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao, 
-          id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only, close_position, 
-          last_update, renew_sl_firs, renew_sl_seco, orign_sig
-         FROM ordens WHERE id_posicao = ?`,
-        [positionId]
-      );
-    } else {
-      await connection.query(
-        `INSERT INTO ordens_fechadas 
-         (tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao, 
-          id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only, close_position, 
-          last_update, renew_sl_firs, renew_sl_seco)
-         SELECT tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao, 
-          id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only, close_position, 
-          last_update, renew_sl_firs, renew_sl_seco
-         FROM ordens WHERE id_posicao = ?`,
-        [positionId]
-      );
+    // Construir consultas dinâmicas para ordens com base nas colunas existentes
+    let sourceCols = "tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao, " +
+                    "id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only, close_position, " +
+                    "last_update";
+    
+    let destCols = sourceCols;
+    
+    // Adicionar colunas extras somente se existirem TANTO na origem quanto no destino
+    if (renew_sl_firs.length > 0 && dest_renew_sl_firs.length > 0) {
+      sourceCols += ", renew_sl_firs";
+      destCols += ", renew_sl_firs";
     }
+    
+    if (renew_sl_seco.length > 0 && dest_renew_sl_seco.length > 0) {
+      sourceCols += ", renew_sl_seco";
+      destCols += ", renew_sl_seco";
+    }
+    
+    if (orign_sig.length > 0 && dest_orign_sig.length > 0) {
+      sourceCols += ", orign_sig";
+      destCols += ", orign_sig";
+    }
+    
+    // Inserir ordens com as colunas verificadas
+    await connection.query(
+      `INSERT INTO ordens_fechadas (${destCols})
+       SELECT ${sourceCols} FROM ordens WHERE id_posicao = ?`,
+      [positionId]
+    );
     
     console.log(`Ordens com id_posicao ${positionId} movidas para ordens_fechadas.`);
     

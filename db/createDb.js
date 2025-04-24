@@ -281,27 +281,49 @@ async function createDatabase() {
             console.log('Coluna orign_sig já existe na tabela ordens_fechadas ou erro:', error.message);
         }
 
-                // Adicionar coluna orign_sig em posicoes se não existir
-                try {
-                    await connection.execute(`
-                        ALTER TABLE posicoes 
-                        ADD COLUMN IF NOT EXISTS orign_sig VARCHAR(100) NULL
-                    `);
-                    console.log('✅ Coluna orign_sig adicionada à tabela posicoes.');
-                } catch (error) {
-                    console.log('Coluna orign_sig já existe na tabela posicoes ou erro:', error.message);
-                }
+        // Adicionar coluna renew_sl_firs em ordens_fechadas se não existir
+        try {
+            await connection.execute(`
+                ALTER TABLE ordens_fechadas 
+                ADD COLUMN IF NOT EXISTS renew_sl_firs VARCHAR(20)
+            `);
+            console.log('✅ Coluna renew_sl_firs adicionada à tabela ordens_fechadas.');
+        } catch (error) {
+            console.log('Coluna renew_sl_firs já existe na tabela ordens_fechadas ou erro:', error.message);
+        }
+
+        // Adicionar coluna renew_sl_seco em ordens_fechadas se não existir
+        try {
+            await connection.execute(`
+                ALTER TABLE ordens_fechadas 
+                ADD COLUMN IF NOT EXISTS renew_sl_seco VARCHAR(20)
+            `);
+            console.log('✅ Coluna renew_sl_seco adicionada à tabela ordens_fechadas.');
+        } catch (error) {
+            console.log('Coluna renew_sl_seco já existe na tabela ordens_fechadas ou erro:', error.message);
+        }
+
+        // Adicionar coluna orign_sig em posicoes se não existir
+        try {
+            await connection.execute(`
+                ALTER TABLE posicoes 
+                ADD COLUMN IF NOT EXISTS orign_sig VARCHAR(100) NULL
+            `);
+            console.log('✅ Coluna orign_sig adicionada à tabela posicoes.');
+        } catch (error) {
+            console.log('Coluna orign_sig já existe na tabela posicoes ou erro:', error.message);
+        }
         
-                // Adicionar coluna orign_sig em ordens se não existir
-                try {
-                    await connection.execute(`
-                        ALTER TABLE ordens 
-                        ADD COLUMN IF NOT EXISTS orign_sig VARCHAR(100) NULL
-                    `);
-                    console.log('✅ Coluna orign_sig adicionada à tabela ordens.');
-                } catch (error) {
-                    console.log('Coluna orign_sig já existe na tabela ordens ou erro:', error.message);
-                }
+        // Adicionar coluna orign_sig em ordens se não existir
+        try {
+            await connection.execute(`
+                ALTER TABLE ordens 
+                ADD COLUMN IF NOT EXISTS orign_sig VARCHAR(100) NULL
+            `);
+            console.log('✅ Coluna orign_sig adicionada à tabela ordens.');
+        } catch (error) {
+            console.log('Coluna orign_sig já existe na tabela ordens ou erro:', error.message);
+        }
         
         console.log('\n🚀 Banco de dados "starboy" criado com sucesso! Todas as tabelas foram criadas.');
         
