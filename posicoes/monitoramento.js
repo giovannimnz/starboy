@@ -689,46 +689,84 @@ async function handleAccountUpdate(message, db) {
 
 // Função para mover posição para histórico se não existir
 async function movePositionToHistory(db, positionId, status, reason) {
-  const connection = await db.getConnection();
-  
-  try {
-    await connection.beginTransaction();
+  let attempts = 0;
+  const maxAttempts = 3;
+  let lastError = null;
+
+  while (attempts < maxAttempts) {
+    const connection = await db.getConnection();
     
-    // Usar formatDateForMySQL para formatar corretamente a data
-    const currentDate = new Date();
-    const formattedDate = formatDateForMySQL(currentDate);
-    
-    // 1. Atualizar status da posição com data formatada
-    await connection.query(
-      `UPDATE posicoes 
-       SET status = ?, 
-           data_hora_fechamento = ?,
-           data_hora_ultima_atualizacao = ?
-       WHERE id = ?`,
-      [status, formattedDate, formattedDate, positionId]
-    );
-    
-    // 2. Mover posição e ordens para histórico
-    await moveClosedPositionsAndOrders(db, positionId);
-    
-    // 3. Registrar o motivo em uma tabela de logs (também usando formatDateForMySQL)
-    await connection.query(
-      `INSERT INTO historico_posicoes 
-       (id_posicao, tipo_evento, data_hora_evento, resultado) 
-       VALUES (?, ?, ?, ?)`,
-      [positionId, 'CLOSE', formattedDate, reason]
-    );
-    
-    await connection.commit();
-    console.log(`[MONITOR] Posição ${positionId} movida para histórico: ${reason}`);
-    
-  } catch (error) {
-    await connection.rollback();
-    console.error(`[MONITOR] Erro ao mover posição ${positionId} para histórico:`, error);
-    throw error; // Re-lançar o erro para evitar mensagens de sucesso falsas
-  } finally {
-    connection.release();
+    try {
+      await connection.beginTransaction();
+      
+      // Formatar a data corretamente
+      const currentDate = new Date();
+      const formattedDate = formatDateForMySQL(currentDate);
+      
+      // 1. Atualizar status da posição com data formatada
+      await connection.query(
+        `UPDATE posicoes 
+         SET status = ?, 
+             data_hora_fechamento = ?,
+             data_hora_ultima_atualizacao = ?
+         WHERE id = ?`,
+        [status, formattedDate, formattedDate, positionId]
+      );
+      
+      // 2. Mover posição e ordens para histórico - com timeout mais longo
+      try {
+        await Promise.race([
+          moveClosedPositionsAndOrders(db, positionId),
+          new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Timeout ao mover registros')), 20000)
+          )
+        ]);
+      } catch (moveError) {
+        // Se for timeout ou erro de lock, fazer rollback e tentar novamente
+        if (moveError.code === 'ER_LOCK_WAIT_TIMEOUT' || 
+            moveError.message === 'Timeout ao mover registros') {
+          throw moveError; // Propagar para ser tratado no catch externo
+        }
+        // Outros erros, registrar mas continuar
+        console.error(`[MONITOR] Aviso ao mover registros: ${moveError.message}`);
+      }
+      
+      // 3. Registrar o motivo em uma tabela de logs
+      await connection.query(
+        `INSERT INTO historico_posicoes 
+         (id_posicao, tipo_evento, data_hora_evento, resultado) 
+         VALUES (?, ?, ?, ?)`,
+        [positionId, 'CLOSE', formattedDate, reason]
+      );
+      
+      await connection.commit();
+      console.log(`[MONITOR] Posição ${positionId} movida para histórico: ${reason}`);
+      return true;
+      
+    } catch (error) {
+      await connection.rollback();
+      lastError = error;
+      
+      // Se for um erro de lock ou timeout, tentar novamente
+      if (error.code === 'ER_LOCK_WAIT_TIMEOUT' || 
+          error.message === 'Timeout ao mover registros') {
+        attempts++;
+        const waitTime = Math.pow(2, attempts) * 1000; // Backoff exponencial: 2s, 4s, 8s...
+        console.log(`[MONITOR] Bloqueio ao mover posição ${positionId}. Tentativa ${attempts}/${maxAttempts} - Aguardando ${waitTime/1000}s`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+      } else {
+        // Se for outro tipo de erro, não tentar novamente
+        console.error(`[MONITOR] Erro ao mover posição ${positionId} para histórico:`, error);
+        throw error;
+      }
+    } finally {
+      connection.release();
+    }
   }
+  
+  // Se chegou aqui, é porque excedeu as tentativas
+  console.error(`[MONITOR] Erro ao mover posição ${positionId} após ${maxAttempts} tentativas: ${lastError.message}`);
+  throw lastError;
 }
 
 // Verifique também se a função onPriceUpdate está definida
