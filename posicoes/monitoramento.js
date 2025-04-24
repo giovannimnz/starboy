@@ -5,7 +5,7 @@ const axios = require('axios');
 const schedule = require('node-schedule');
 const fs = require('fs').promises;
 const { Telegraf } = require("telegraf");
-const { newOrder, cancelOrder, newStopOrder, cancelAllOpenOrders, getAllLeverageBrackets, getFuturesAccountBalanceDetails, getTickSize, getPrecision, changeInitialLeverage, changeMarginType, getPositionDetails, setPositionMode } = require('../api');
+const { newOrder, cancelOrder, newStopOrder, cancelAllOpenOrders, getAllLeverageBrackets, getFuturesAccountBalanceDetails, getTickSize, getPrecision, changeInitialLeverage, changeMarginType, getPositionDetails, setPositionMode, getOpenOrders, getOrderStatus, getAllOpenPositions } = require('../api');
 const {getDatabaseInstance, getPositionIdBySymbol, updatePositionInDb, checkOrderExists, getAllOrdersBySymbol, updatePositionStatus, insertNewOrder, disconnectDatabase, getAllPositionsFromDb, getOpenOrdersFromDb, getOrdersFromDb, updateOrderStatus, getPositionsFromDb, insertPosition, moveClosedPositionsAndOrders, initializeDatabase, formatDateForMySQL} = require('../db/conexao');
 const websockets = require('../websockets');
 
@@ -39,6 +39,15 @@ async function initializeMonitoring() {
       await checkNewTrades();
     } catch (error) {
       console.error('[MONITOR] Erro ao verificar novas operações:', error);
+    }
+  });
+
+  // Adicionar job de sincronização a cada 1 minuto
+  scheduledJobs.syncWithExchange = schedule.scheduleJob('*/1 * * * *', async () => {
+    try {
+      await syncWithExchange();
+    } catch (error) {
+      console.error('[MONITOR] Erro na sincronização periódica:', error);
     }
   });
 
@@ -103,14 +112,23 @@ async function checkNewTrades() {
       return;
     }
     
-    // Verificar webhook pendentes na tabela 'webhook_signals' (supondo que você tenha essa tabela)
+    // Verificar apenas sinais PENDING na tabela webhook_signals
     const [pendingSignals] = await db.query(`
       SELECT * FROM webhook_signals 
       WHERE status = 'PENDING' 
       ORDER BY created_at ASC
     `);
     
+    console.log(`[MONITOR] Encontrados ${pendingSignals.length} sinais pendentes para processar`);
+    
     for (const signal of pendingSignals) {
+      // Atualizar status para PROCESSANDO antes de processar para evitar duplicação
+      await db.query(
+        'UPDATE webhook_signals SET status = "PROCESSANDO" WHERE id = ?',
+        [signal.id]
+      );
+      
+      // Processar o sinal
       await processSignal(db, signal);
     }
     
@@ -335,7 +353,7 @@ async function processSignal(db, signal) {
       // 7. Atualizar status do sinal no webhook
       await connection.query(
         `UPDATE webhook_signals SET 
-         status = 'PROCESSED', 
+         status = 'ENVIADO', 
          position_id = ?, 
          entry_order_id = ? 
          WHERE id = ?`, 
@@ -789,6 +807,216 @@ async function onPriceUpdate(symbol, currentPrice, relevantTrades, positions) {
     }
   } catch (error) {
     console.error(`[PRICE UPDATE] Erro ao processar atualização de preço:`, error);
+  }
+}
+
+// Função para sincronizar ordens e posições
+async function syncWithExchange() {
+  console.log('[MONITOR] Iniciando sincronização com a corretora...');
+  try {
+    const db = await getDatabaseInstance();
+    if (!db) {
+      console.error('[MONITOR] Falha ao obter instância do banco de dados');
+      return;
+    }
+    
+    // 1. Sincronizar ordens (orders com mais de 1 minuto)
+    await syncOrders(db);
+    
+    // 2. Sincronizar posições (após sincronizar ordens)
+    await syncPositions(db);
+    
+    console.log('[MONITOR] Sincronização com corretora concluída');
+  } catch (error) {
+    console.error('[MONITOR] Erro na sincronização com a corretora:', error);
+  }
+}
+
+// Sincronização de ordens
+async function syncOrders(db) {
+  try {
+    // Buscar ordens no banco com mais de 1 minuto
+    const [dbOrders] = await db.query(`
+      SELECT * FROM ordens 
+      WHERE status = 'OPEN' 
+      AND data_hora_criacao < DATE_SUB(NOW(), INTERVAL 1 MINUTE)
+    `);
+    
+    if (dbOrders.length === 0) {
+      console.log('[MONITOR] Nenhuma ordem antiga para verificar');
+      return;
+    }
+    
+    console.log(`[MONITOR] Verificando ${dbOrders.length} ordens antigas no banco`);
+    
+    // Agrupar ordens por símbolo para otimizar chamadas à API
+    const ordersBySymbol = dbOrders.reduce((acc, order) => {
+      if (!acc[order.simbolo]) acc[order.simbolo] = [];
+      acc[order.simbolo].push(order);
+      return acc;
+    }, {});
+    
+    // Processar cada símbolo
+    for (const symbol of Object.keys(ordersBySymbol)) {
+      // Obter ordens abertas deste símbolo na corretora
+      const exchangeOrders = await getOpenOrders(symbol);
+      const exchangeOrdersMap = new Map(
+        exchangeOrders.map(order => [order.orderId.toString(), order])
+      );
+      
+      // Verificar cada ordem do banco
+      for (const dbOrder of ordersBySymbol[symbol]) {
+        // Se a ordem não existe na corretora ou tem status terminal
+        if (!exchangeOrdersMap.has(dbOrder.id_externo)) {
+          console.log(`[SYNC] Ordem ${dbOrder.id_externo} não encontrada na corretora ou já concluída`);
+          
+          // Verificar status real na corretora (para ordens recentes)
+          try {
+            const orderStatus = await getOrderStatus(dbOrder.id_externo, symbol);
+            if (orderStatus && ['FILLED', 'CANCELED', 'EXPIRED', 'REJECTED'].includes(orderStatus)) {
+              console.log(`[SYNC] Ordem ${dbOrder.id_externo} com status ${orderStatus} na corretora`);
+              
+              // Atualizar status no banco
+              await updateOrderStatus(db, dbOrder.id, orderStatus);
+              
+              // Se preenchida e ordem de entrada, atualizar status da posição
+              if (orderStatus === 'FILLED' && dbOrder.tipo_ordem_bot === 'ENTRADA') {
+                await updatePositionStatus(db, symbol, { status: 'OPEN' });
+              }
+              
+              // Se posição associada estiver fechada ou ordem não for de entrada, mover para histórico
+              const [positionInfo] = await db.query(
+                'SELECT status FROM posicoes WHERE id = ?', 
+                [dbOrder.id_posicao]
+              );
+              
+              if (positionInfo.length > 0 && 
+                  (positionInfo[0].status === 'CLOSED' || dbOrder.tipo_ordem_bot !== 'ENTRADA')) {
+                await moveOrderToHistory(db, dbOrder.id);
+              }
+            } else {
+              // Ordem não existe mais e não tem status definido, marcar como cancelada
+              await updateOrderStatus(db, dbOrder.id, 'CANCELED');
+              await moveOrderToHistory(db, dbOrder.id);
+            }
+          } catch (error) {
+            console.error(`[SYNC] Erro ao verificar status da ordem ${dbOrder.id_externo}:`, error);
+          }
+        }
+      }
+    }
+  } catch (error) {
+    console.error('[SYNC] Erro ao sincronizar ordens:', error);
+  }
+}
+
+// Sincronização de posições
+async function syncPositions(db) {
+  try {
+    // Buscar posições abertas no banco com mais de 1 minuto
+    const [dbPositions] = await db.query(`
+      SELECT * FROM posicoes 
+      WHERE status = 'OPEN' 
+      AND data_hora_abertura < DATE_SUB(NOW(), INTERVAL 1 MINUTE)
+    `);
+    
+    if (dbPositions.length === 0) {
+      console.log('[MONITOR] Nenhuma posição antiga para verificar');
+      return;
+    }
+    
+    console.log(`[MONITOR] Verificando ${dbPositions.length} posições antigas no banco`);
+    
+    // Obter posições abertas da corretora
+    const exchangePositions = await getAllOpenPositions();
+    const exchangePositionsMap = new Map(
+      exchangePositions.map(pos => [pos.simbolo, pos])
+    );
+    
+    // Verificar cada posição do banco
+    for (const dbPosition of dbPositions) {
+      const symbol = dbPosition.simbolo;
+      
+      // Se a posição não existe na corretora
+      if (!exchangePositionsMap.has(symbol)) {
+        console.log(`[SYNC] Posição para ${symbol} não encontrada na corretora`);
+        
+        // Verificar se todas as ordens desta posição estão fechadas ou podem ser fechadas
+        const [activeOrders] = await db.query(
+          'SELECT id, id_externo FROM ordens WHERE id_posicao = ? AND status = "OPEN"',
+          [dbPosition.id]
+        );
+        
+        if (activeOrders.length > 0) {
+          console.log(`[SYNC] Posição ${dbPosition.id} ainda tem ${activeOrders.length} ordens ativas`);
+          
+          // Verificar cada ordem ativa
+          for (const order of activeOrders) {
+            try {
+              await moveOrderToHistory(db, order.id);
+              console.log(`[SYNC] Ordem ${order.id} movida para histórico`);
+            } catch (error) {
+              console.error(`[SYNC] Erro ao mover ordem ${order.id}:`, error);
+            }
+          }
+        }
+        
+        // Agora podemos mover a posição para histórico
+        try {
+          await movePositionToHistory(db, dbPosition.id, 'CLOSED', 'CLOSED_ON_EXCHANGE');
+          console.log(`[SYNC] Posição ${dbPosition.id} (${symbol}) movida para histórico`);
+        } catch (error) {
+          console.error(`[SYNC] Erro ao mover posição ${dbPosition.id}:`, error);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('[SYNC] Erro ao sincronizar posições:', error);
+  }
+}
+
+// Função auxiliar para mover uma ordem para histórico
+async function moveOrderToHistory(db, orderId) {
+  const connection = await db.getConnection();
+  
+  try {
+    await connection.beginTransaction();
+    
+    // 1. Obter dados da ordem
+    const [orderData] = await connection.query('SELECT * FROM ordens WHERE id = ?', [orderId]);
+    if (orderData.length === 0) {
+      throw new Error(`Ordem ${orderId} não encontrada`);
+    }
+    
+    // 2. Inserir na tabela histórica
+    const order = orderData[0];
+    await connection.query(
+      `INSERT INTO ordens_fechadas 
+       (tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao, 
+        id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only, close_position, 
+        last_update, renew_sl_firs, renew_sl_seco, orign_sig)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        order.tipo_ordem, order.preco, order.quantidade, order.id_posicao, 
+        order.status === 'OPEN' ? 'CANCELED' : order.status, // Se ainda OPEN, marcar como CANCELED
+        order.data_hora_criacao, order.id_externo, order.side, order.simbolo, 
+        order.tipo_ordem_bot, order.target, order.reduce_only, order.close_position, 
+        formatDateForMySQL(new Date()), // Atualizar last_update
+        order.renew_sl_firs, order.renew_sl_seco, order.orign_sig
+      ]
+    );
+    
+    // 3. Remover da tabela original
+    await connection.query('DELETE FROM ordens WHERE id = ?', [orderId]);
+    
+    await connection.commit();
+    return true;
+  } catch (error) {
+    await connection.rollback();
+    console.error(`[SYNC] Erro ao mover ordem ${orderId} para histórico:`, error);
+    throw error;
+  } finally {
+    connection.release();
   }
 }
 

@@ -291,7 +291,7 @@ async def webhook():
             f"ALAVANCAGEM: {leverage}x\n"
             "MARGEM: ISOLADA\n"
             f"CAPITAL: {capital_pct}%\n\n"
-            f"ENTRADA: {entry} (Aguardando execução)\n\n"  # Modificado para indicar aguardando execução
+            f"ENTRADA: {entry}\n\n"  # Modificado para indicar aguardando execução
             f"ALVO: {tp}\n\n"
             f"STOP LOSS: {stop_loss}"
         )
