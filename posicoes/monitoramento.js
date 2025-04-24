@@ -245,6 +245,93 @@ async function processSignal(db, signal) {
       
       await insertNewOrder(connection, orderData);
       
+      // 7.1. Criar e enviar ordens de SL/TP imediatamente após a entrada
+      const binanceOppositeSide = binanceSide === 'BUY' ? 'SELL' : 'BUY';
+      const tpPriceVal = parseFloat(tp_price);
+      const slPriceVal = parseFloat(sl_price);
+
+      // Criar ordem SL
+      try {
+        const slResponse = await newStopOrder(
+          symbol,
+          parseFloat(orderSize),
+          binanceOppositeSide,
+          slPriceVal,
+          null,           // price = null para STOP_MARKET
+          true,           // reduceOnly = true
+          false           // closePosition = false
+        );
+        
+        console.log(`[MONITOR] Ordem SL (STOP_MARKET) criada na corretora: ${slResponse.data.orderId}`);
+        
+        // Registrar ordem SL no banco
+        const slOrderData = {
+          tipo_ordem: 'STOP_MARKET', 
+          preco: slPriceVal,
+          quantidade: parseFloat(orderSize),
+          id_posicao: positionId,
+          status: 'OPEN',
+          data_hora_criacao: new Date().toISOString(),
+          id_externo: slResponse.data.orderId,
+          side: binanceOppositeSide,
+          simbolo: symbol,
+          tipo_ordem_bot: 'STOP_LOSS',
+          target: null,
+          reduce_only: true,
+          close_position: false,
+          last_update: new Date().toISOString(),
+          orign_sig: `WEBHOOK_${id}`
+        };
+        
+        await insertNewOrder(connection, slOrderData);
+      } catch (slError) {
+        console.error(`[MONITOR] Erro ao criar ordem SL: ${slError.message}`);
+      }
+
+      // Criar ordem TP
+      try {
+        const tpResponse = await newStopOrder(
+          symbol,
+          parseFloat(orderSize),
+          binanceOppositeSide,
+          tpPriceVal,
+          tpPriceVal,      // price igual a stopPrice para TAKE_PROFIT_MARKET
+          true,            // reduceOnly = true
+          false            // closePosition = false
+        );
+        
+        console.log(`[MONITOR] Ordem TP (TAKE_PROFIT_MARKET) criada na corretora: ${tpResponse.data.orderId}`);
+        
+        // Registrar ordem TP no banco
+        const tpOrderData = {
+          tipo_ordem: 'TAKE_PROFIT_MARKET',
+          preco: tpPriceVal,
+          quantidade: parseFloat(orderSize),
+          id_posicao: positionId,
+          status: 'OPEN',
+          data_hora_criacao: new Date().toISOString(),
+          id_externo: tpResponse.data.orderId,
+          side: binanceOppositeSide,
+          simbolo: symbol,
+          tipo_ordem_bot: 'TAKE_PROFIT',
+          target: null,
+          reduce_only: true,
+          close_position: false,
+          last_update: new Date().toISOString(),
+          orign_sig: `WEBHOOK_${id}`
+        };
+        
+        await insertNewOrder(connection, tpOrderData);
+      } catch (tpError) {
+        console.error(`[MONITOR] Erro ao criar ordem TP: ${tpError.message}`);
+      }
+
+      // Criar variável para contar ordens criadas (opcional)
+      let createdOrdersCount = 1; // Já temos a ordem de entrada
+      if (slResponse && slResponse.data) createdOrdersCount++;
+      if (tpResponse && tpResponse.data) createdOrdersCount++;
+      console.log(`[MONITOR] Total de ordens criadas: ${createdOrdersCount}`);
+
       // 7. Atualizar status do sinal no webhook
       await connection.query(
         `UPDATE webhook_signals SET 
