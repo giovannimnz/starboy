@@ -324,6 +324,36 @@ async function createDatabase() {
         } catch (error) {
             console.log('Coluna orign_sig já existe na tabela ordens ou erro:', error.message);
         }
+
+        // Modificar coluna resultado em historico_posicoes apenas se não for VARCHAR
+        try {
+            // Primeiro verificamos o tipo atual da coluna
+            const [columns] = await connection.execute(`
+                SELECT DATA_TYPE 
+                FROM INFORMATION_SCHEMA.COLUMNS 
+                WHERE TABLE_SCHEMA = ? 
+                  AND TABLE_NAME = 'historico_posicoes' 
+                  AND COLUMN_NAME = 'resultado'
+            `, [process.env.DB_NAME]);
+            
+            if (columns.length > 0) {
+                const currentType = columns[0].DATA_TYPE.toLowerCase();
+                
+                // Se não for varchar ou algum tipo de texto similar, fazemos a alteração
+                if (currentType !== 'varchar' && currentType !== 'text' && currentType !== 'char') {
+                    await connection.execute(`
+                        ALTER TABLE historico_posicoes MODIFY COLUMN resultado VARCHAR(100)
+                    `);
+                    console.log('✅ Coluna resultado modificada de', currentType, 'para VARCHAR(100) na tabela historico_posicoes.');
+                } else {
+                    console.log('✅ Coluna resultado já é do tipo', currentType, 'na tabela historico_posicoes. Nenhuma alteração necessária.');
+                }
+            } else {
+                console.log('❌ Coluna resultado não encontrada na tabela historico_posicoes.');
+            }
+        } catch (error) {
+            console.log('Erro ao verificar/modificar coluna resultado na tabela historico_posicoes:', error.message);
+        }
         
         console.log('\n🚀 Banco de dados "starboy" criado com sucesso! Todas as tabelas foram criadas.');
         
