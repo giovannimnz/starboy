@@ -119,7 +119,7 @@ async function checkNewTrades() {
       ORDER BY created_at ASC
     `);
     
-    console.log(`[MONITOR] Encontrados ${pendingSignals.length} sinais pendentes para processar`);
+    //console.log(`[MONITOR] Encontrados ${pendingSignals.length} sinais pendentes para processar`);
     
     for (const signal of pendingSignals) {
       // Atualizar status para PROCESSANDO antes de processar para evitar duplicação
@@ -855,7 +855,7 @@ async function onPriceUpdate(symbol, currentPrice, relevantTrades, positions) {
 
 // Função para sincronizar ordens e posições
 async function syncWithExchange() {
-  console.log('[MONITOR] Iniciando sincronização com a corretora...');
+  //console.log('[MONITOR] Iniciando sincronização com a corretora...');
   try {
     const db = await getDatabaseInstance();
     if (!db) {
@@ -869,7 +869,7 @@ async function syncWithExchange() {
     // 2. Sincronizar posições (após sincronizar ordens)
     await syncPositions(db);
     
-    console.log('[MONITOR] Sincronização com corretora concluída');
+    //console.log('[MONITOR] Sincronização com corretora concluída');
   } catch (error) {
     console.error('[MONITOR] Erro na sincronização com a corretora:', error);
   }
@@ -886,7 +886,7 @@ async function syncOrders(db) {
     `);
     
     if (dbOrders.length === 0) {
-      console.log('[MONITOR] Nenhuma ordem antiga para verificar');
+      //console.log('[MONITOR] Nenhuma ordem antiga para verificar');
       return;
     }
     
@@ -964,7 +964,7 @@ async function syncPositions(db) {
     `);
     
     if (dbPositions.length === 0) {
-      console.log('[MONITOR] Nenhuma posição antiga para verificar');
+      //console.log('[MONITOR] Nenhuma posição antiga para verificar');
       return;
     }
     
