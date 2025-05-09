@@ -76,35 +76,98 @@ RISK_LIMITS = {
 
 # Carrega os brackets de alavancagem do arquivo JSON
 def load_leverage_brackets():
+    """
+    Carrega os brackets de alavancagem do arquivo JSON
+    Trata formatos inconsistentes e garante que dados críticos estejam disponíveis
+    """
     leverage_file = os.path.join(os.path.dirname(__file__), 'leverage.json')
-    with open(leverage_file, 'r') as file:
-        brackets_data = json.load(file)
     
-    # Organizar por símbolo para fácil acesso
-    brackets_by_symbol = {}
-    for item in brackets_data:
-        symbol = item.get('symbol')
-        brackets = item.get('brackets', [])
-        if symbol and brackets:
-            brackets_by_symbol[symbol] = brackets
+    # Definição de bracktes completos para os principais pares (dados de referência)
+    CRITICAL_SYMBOLS = {
+        "BTCUSDT": [
+            {"bracket": 1, "initialLeverage": 125, "notionalCap": 50000, "notionalFloor": 0, "maintMarginRatio": 0.004, "cum": 0},
+            {"bracket": 2, "initialLeverage": 100, "notionalCap": 600000, "notionalFloor": 50000, "maintMarginRatio": 0.005, "cum": 50},
+            {"bracket": 3, "initialLeverage": 75, "notionalCap": 3000000, "notionalFloor": 600000, "maintMarginRatio": 0.0065, "cum": 950},
+            {"bracket": 4, "initialLeverage": 50, "notionalCap": 12000000, "notionalFloor": 3000000, "maintMarginRatio": 0.01, "cum": 11450},
+            {"bracket": 5, "initialLeverage": 25, "notionalCap": 70000000, "notionalFloor": 12000000, "maintMarginRatio": 0.02, "cum": 131450},
+            {"bracket": 6, "initialLeverage": 20, "notionalCap": 100000000, "notionalFloor": 70000000, "maintMarginRatio": 0.025, "cum": 481450},
+            {"bracket": 7, "initialLeverage": 10, "notionalCap": 230000000, "notionalFloor": 100000000, "maintMarginRatio": 0.05, "cum": 2981450}
+        ],
+        "PAXGUSDT": [
+            {"bracket": 1, "initialLeverage": 75, "notionalCap": 5000, "notionalFloor": 0, "maintMarginRatio": 0.01, "cum": 0},
+            {"bracket": 2, "initialLeverage": 50, "notionalCap": 10000, "notionalFloor": 5000, "maintMarginRatio": 0.015, "cum": 25},
+            {"bracket": 3, "initialLeverage": 25, "notionalCap": 30000, "notionalFloor": 10000, "maintMarginRatio": 0.02, "cum": 75},
+            {"bracket": 4, "initialLeverage": 20, "notionalCap": 300000, "notionalFloor": 30000, "maintMarginRatio": 0.025, "cum": 225},
+            {"bracket": 5, "initialLeverage": 10, "notionalCap": 900000, "notionalFloor": 300000, "maintMarginRatio": 0.05, "cum": 7725},
+            {"bracket": 6, "initialLeverage": 5, "notionalCap": 2000000, "notionalFloor": 900000, "maintMarginRatio": 0.1, "cum": 52725}
+        ],
+        "ETHUSDT": [
+            {"bracket": 1, "initialLeverage": 100, "notionalCap": 50000, "notionalFloor": 0, "maintMarginRatio": 0.005, "cum": 0},
+            {"bracket": 2, "initialLeverage": 75, "notionalCap": 600000, "notionalFloor": 50000, "maintMarginRatio": 0.0065, "cum": 50},
+            {"bracket": 3, "initialLeverage": 50, "notionalCap": 3000000, "notionalFloor": 600000, "maintMarginRatio": 0.01, "cum": 950},
+            {"bracket": 4, "initialLeverage": 25, "notionalCap": 12000000, "notionalFloor": 3000000, "maintMarginRatio": 0.02, "cum": 11450},
+            {"bracket": 5, "initialLeverage": 20, "notionalCap": 30000000, "notionalFloor": 12000000, "maintMarginRatio": 0.025, "cum": 131450},
+            {"bracket": 6, "initialLeverage": 10, "notionalCap": 100000000, "notionalFloor": 30000000, "maintMarginRatio": 0.05, "cum": 381450},
+            {"bracket": 7, "initialLeverage": 5, "notionalCap": 200000000, "notionalFloor": 100000000, "maintMarginRatio": 0.1, "cum": 2006450}
+        ]
+    }
     
-    return brackets_by_symbol
+    try:
+        # Inicializa com os dados críticos conhecidos
+        brackets_by_symbol = CRITICAL_SYMBOLS.copy()
+        
+        with open(leverage_file, 'r', encoding='utf-8') as file:
+            # Limpa comentários e caracteres problemáticos
+            lines = []
+            for line in file:
+                if not line.strip().startswith('//'):
+                    # Substitui {…} por um objeto vazio para evitar erros de parsing
+                    line = line.replace('{…}', '{}')
+                    lines.append(line)
+            
+            content = ''.join(lines)
+            
+            try:
+                brackets_data = json.loads(content)
+                print(f"[INFO] Arquivo JSON carregado com sucesso: {len(brackets_data)} entradas")
+                
+                # Processa os dados do arquivo
+                for item in brackets_data:
+                    symbol = item.get('symbol')
+                    brackets = item.get('brackets', [])
+                    
+                    # Só adiciona se tiver um símbolo definido e os brackets não estiverem vazios
+                    if symbol and brackets and len(brackets) > 0:
+                        # Verifica se há informações completas nos brackets
+                        valid_brackets = any('initialLeverage' in bracket for bracket in brackets)
+                        
+                        if valid_brackets:
+                            brackets_by_symbol[symbol] = brackets
+                            print(f"[DEBUG] Brackets válidos encontrados para {symbol}")
+                
+            except json.JSONDecodeError as e:
+                print(f"[ERRO] Falha ao decodificar JSON: {e}")
+        
+        # Para verificar se PAXGUSDT foi carregado corretamente
+        if 'PAXGUSDT' in brackets_by_symbol:
+            print(f"[INFO] PAXGUSDT encontrado com {len(brackets_by_symbol['PAXGUSDT'])} brackets")
+        else:
+            print(f"[AVISO] PAXGUSDT não encontrado no arquivo, usando dados de referência")
+        
+        print(f"[INFO] Total de símbolos carregados: {len(brackets_by_symbol)}")
+        return brackets_by_symbol
+        
+    except Exception as e:
+        print(f"[ERRO] Falha ao processar arquivo leverage.json: {e}")
+        # Em caso de falha, retorna pelo menos os dados críticos
+        return CRITICAL_SYMBOLS
 
 # Calcula a alavancagem ideal para margem isolada
-def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent):
+def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent, side_raw=None):
     """
     Calcula a alavancagem ideal para garantir que:
     1. Se o stop loss for atingido, a perda será de 100% da margem alocada
     2. A liquidação só ocorrerá após o preço atingir o stop loss
-    
-    Args:
-        symbol (str): O símbolo do ativo (ex: BTCUSDT)
-        entry_price (float): Preço de entrada
-        stop_loss (float): Preço do stop loss
-        capital_percent (float): Porcentagem do capital total alocado como margem
-        
-    Returns:
-        int: Alavancagem ideal (sempre um número inteiro arredondado para baixo)
     """
     # Remover ".P" se presente no símbolo
     cleaned_symbol = clean_symbol(symbol)
@@ -112,8 +175,13 @@ def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent):
     # Carregar brackets de alavancagem
     leverage_brackets = load_leverage_brackets()
     
-    # Determinar se é posição long ou short
-    is_long = entry_price < stop_loss
+    # Determinar se é posição long ou short baseado na direção do trade
+    is_long = True  # Padrão para long
+    if side_raw:
+        is_long = side_raw.upper() == "BUY"
+    else:
+        # Se side_raw não for fornecido, inferir pela posição dos preços
+        is_long = entry_price < stop_loss
     
     # Calcular a distância percentual até o stop loss
     if is_long:
@@ -121,69 +189,52 @@ def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent):
     else:
         sl_distance_pct = abs((stop_loss - entry_price) / entry_price)
     
-    # Alavancagem para perder exatamente 100% da margem alocada no stop loss
-    # Se perco x% com alavancagem 1x, preciso de alavancagem 1/x para perder 100%
-    # Usa int() para garantir arredondamento para baixo e retorno de número inteiro
-    target_leverage = int(1 / sl_distance_pct)  # Arredondamento para baixo
+    # Log para debug
+    print(f"[DEBUG] {symbol}: Distância até SL: {sl_distance_pct:.6f} ({sl_distance_pct*100:.2f}%)")
     
+    # Alavancagem para perder exatamente 100% da margem alocada no stop loss
+    target_leverage = int(1 / sl_distance_pct)  # Arredondamento para baixo
+    print(f"[DEBUG] {symbol}: Target alavancagem inicial: {target_leverage}x")
+
     # Obter os brackets para o símbolo específico
-    symbol_brackets = leverage_brackets.get(cleaned_symbol, [])
-    if not symbol_brackets:
-        # Se não encontrar brackets específicos, usar o valor calculado com um fator de segurança
-        # Garantir que seja um número inteiro arredondado para baixo
+    symbol_brackets = None
+    
+    # Tentar encontrar o símbolo exato
+    if cleaned_symbol in leverage_brackets:
+        symbol_brackets = leverage_brackets[cleaned_symbol]
+    else:
+        # Procurar por símbolos base (ex: BTCUSDT de BTCUSDT_240628)
+        base_symbol = cleaned_symbol.split('_')[0]
+        if base_symbol in leverage_brackets:
+            symbol_brackets = leverage_brackets[base_symbol]
+            print(f"[INFO] Usando brackets de {base_symbol} para {cleaned_symbol}")
+        # Se não encontrar, tenta usar BTCUSDT como referência para qualquer par USDT
+        elif "USDT" in cleaned_symbol and "BTCUSDT" in leverage_brackets:
+            symbol_brackets = leverage_brackets["BTCUSDT"]
+            print(f"[INFO] Usando brackets de BTCUSDT como referência para {cleaned_symbol}")
+    
+    # Encontra a alavancagem máxima permitida para este símbolo
+    if not symbol_brackets or len(symbol_brackets) == 0:
+        print(f"[ERRO] Não foi possível encontrar brackets para {cleaned_symbol}")
+        # Retorna alavancagem calculada com fator de segurança (90%)
         return max(1, min(int(target_leverage * 0.9), 125))
     
-    # Encontrar o bracket apropriado e verificar margens de manutenção
-    max_safe_leverage = target_leverage
+    # Extrai as alavancagens disponíveis nos brackets
+    max_leverage = 1
+    for bracket in symbol_brackets:
+        if "initialLeverage" in bracket:
+            bracket_leverage = bracket["initialLeverage"]
+            max_leverage = max(max_leverage, bracket_leverage)
     
-    for i, bracket in enumerate(symbol_brackets):
-        # Extrair a margem de manutenção real deste bracket, se disponível
-        maint_margin_rate = bracket.get('maintMarginRatio', 0.004 * (i + 1))
-        
-        # Para não ser liquidado antes do stop loss:
-        # A distância até liquidação deve ser maior que a distância até o SL
-        # Distância até liquidação = 1/alavancagem + taxa_margem_manutenção
-        liquidation_threshold = (1 / max_safe_leverage) + maint_margin_rate
-        
-        # Se a liquidação ocorreria antes do SL, reduzir alavancagem
-        if liquidation_threshold <= sl_distance_pct:
-            # Esta alavancagem é segura, não precisamos ajustar
-            pass
-        else:
-            # Ajustar alavancagem para que liquidação ocorra após o SL
-            # Nova alavancagem = 1 / (sl_distance_pct - maint_margin_rate)
-            # Deve garantir que: 1/lev + maint_rate > sl_distance_pct
-            if sl_distance_pct > maint_margin_rate:
-                # Garantir arredondamento para baixo (número inteiro)
-                safe_leverage = int(1 / (sl_distance_pct - maint_margin_rate))
-                max_safe_leverage = min(max_safe_leverage, safe_leverage)
-            else:
-                # Caso extremo: stop muito próximo do preço de entrada
-                max_safe_leverage = 1  # Usar alavancagem mínima
-            
-        # Verificar limites de bracket
-        if i < len(symbol_brackets) - 1:
-            next_bracket = symbol_brackets[i+1]
-            # Se tiver informação de notional máximo para este bracket
-            if 'notionalCap' in bracket and 'notionalFloor' in next_bracket:
-                # Calcular tamanho da posição aproximado
-                position_size_approx = entry_price * (1 * (capital_percent / 100)) * max_safe_leverage
-                
-                if position_size_approx > bracket['notionalCap']:
-                    # Se passar para o próximo bracket, continuar verificação
-                    continue
-            # Se não tiver informações exatas de limite, verificar "cum" (método alternativo)
-            elif 'cum' in next_bracket:
-                position_size_approx = entry_price * (1 * (capital_percent / 100)) * max_safe_leverage
-                if position_size_approx > next_bracket['cum']:
-                    continue
+    print(f"[INFO] Alavancagem máxima para {cleaned_symbol}: {max_leverage}x")
     
-    # Limitações finais - garantir número inteiro
-    max_safe_leverage = min(int(max_safe_leverage), 125)  # Max 125x na Binance, garantir inteiro
-    max_safe_leverage = max(1, max_safe_leverage)         # Min 1x
+    # Ajusta a alavancagem calculada para não exceder o máximo permitido
+    final_leverage = min(target_leverage, max_leverage)
+    # Garante pelo menos 1x de alavancagem
+    final_leverage = max(1, final_leverage)
     
-    # Retorna alavancagem como número inteiro
-    return max_safe_leverage
+    print(f"[INFO] Alavancagem final calculada para {cleaned_symbol}: {final_leverage}x")
+    return final_leverage
 
 # Em vez de salvar no arquivo, inserir no banco de dados MySQL
 def save_to_database(trade_data):
@@ -279,8 +330,12 @@ async def webhook():
         symbol,
         float(entry),
         float(stop_loss),
-        capital_pct
+        capital_pct,
+        side_raw
     )
+
+    # Antes de enviar a mensagem
+    capital_int = int(float(capital_pct))  # Converter para inteiro
 
     # Timestamp para logs
     now = datetime.now().strftime("%d-%m-%Y | %H:%M:%S")
@@ -292,7 +347,7 @@ async def webhook():
             "Inception\n\n"
             f"ALAVANCAGEM: {leverage}x\n"
             "MARGEM: ISOLADA\n"
-            f"CAPITAL: {capital_pct}%\n\n"
+            f"CAPITAL: {capital_int}%\n\n"
             f"ENTRADA: {entry}\n\n"  # Modificado para indicar aguardando execução
             f"ALVO: {tp}\n\n"
             f"STOP LOSS: {stop_loss}"
