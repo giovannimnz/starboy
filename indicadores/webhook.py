@@ -280,7 +280,7 @@ def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent, si
                 symbol_brackets = all_brackets["BTCUSDT"]
         
         # Encontrar a alavancagem máxima permitida para este símbolo
-        max_leverage = 125  # Valor padrão máximo da Binance
+        max_leverage = 1  # Inicializar com valor mínimo em vez de valor máximo
         for bracket in symbol_brackets:
             if "initialLeverage" in bracket:
                 bracket_leverage = int(bracket.get("initialLeverage", 1))
