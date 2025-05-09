@@ -267,18 +267,20 @@ async def webhook():
     tp         = normalize_number(str(tp_raw))
     stop_loss  = normalize_number(str(stop_raw))
     
-    # 4) Calcular alavancagem ideal (se não foi fornecida)
-    if not leverage:
-        # Usar valor padrão se capital_pct não foi fornecido
-        capital_pct = float(capital_pct or 10.0)  # Default: 10% do capital
-        
-        # Calcular alavancagem para perder exatamente o capital alocado no SL
-        leverage = calculate_ideal_leverage(
-            symbol,
-            float(entry),
-            float(stop_loss),
-            capital_pct
-        )
+    # 4) Verificar se capital_pct foi fornecido
+    if not capital_pct:
+        return jsonify({'status': 'error', 'message': 'Percentual de capital não fornecido'}), 400
+    
+    # Sempre calcular alavancagem, ignorando o valor recebido
+    capital_pct = float(capital_pct)
+    
+    # Calcular alavancagem para perder exatamente o capital alocado no SL
+    leverage = calculate_ideal_leverage(
+        symbol,
+        float(entry),
+        float(stop_loss),
+        capital_pct
+    )
 
     # Timestamp para logs
     now = datetime.now().strftime("%d-%m-%Y | %H:%M:%S")
