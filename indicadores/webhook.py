@@ -283,37 +283,59 @@ def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent, si
         print(f"[AVISO] Não foi possível obter brackets para {cleaned_symbol}, usando valores padrão")
         return max(1, min(int(target_leverage * 0.9), 125))
     
+    # Ordenar brackets por notionalFloor para processá-los corretamente
+    symbol_brackets = sorted(symbol_brackets, key=lambda x: x.get('notionalFloor', 0))
+    
     # Encontrar a alavancagem máxima permitida para este símbolo
     max_leverage = 1
     for bracket in symbol_brackets:
         if "initialLeverage" in bracket:
-            bracket_leverage = bracket.get("initialLeverage", 1)
+            bracket_leverage = int(bracket.get("initialLeverage", 1))
             max_leverage = max(max_leverage, bracket_leverage)
     
     print(f"[INFO] Alavancagem máxima para {cleaned_symbol}: {max_leverage}x")
     
-    # Encontrar o bracket apropriado e verificar margens de manutenção
-    max_safe_leverage = min(target_leverage, max_leverage)
+    # Estimar o tamanho da posição
+    capital_usd = 1000  # Valor estimado de capital total em USD para cálculos
+    position_size = (capital_usd * (capital_percent / 100))  # Tamanho da posição em USD
     
-    for i, bracket in enumerate(symbol_brackets):
-        # Extrair a margem de manutenção deste bracket
-        maint_margin_rate = bracket.get('maintMarginRatio', 0.004 * (i + 1))
+    # Encontrar o bracket apropriado para o tamanho estimado da posição
+    appropriate_bracket = symbol_brackets[0]  # Começa com o menor bracket
+    
+    for bracket in symbol_brackets:
+        if position_size <= bracket.get('notionalCap', float('inf')):
+            appropriate_bracket = bracket
+            break
+    
+    # Extrair a margem de manutenção do bracket apropriado
+    maint_margin_rate = appropriate_bracket.get('maintMarginRatio', 0.01)
+    print(f"[DEBUG] Usando margem de manutenção: {maint_margin_rate:.6f} ({maint_margin_rate*100:.2f}%)")
+    
+    # Verificar se a liquidação ocorreria antes do SL com a target alavancagem
+    initial_max_safe_leverage = min(target_leverage, max_leverage)
+    liquidation_threshold = (1 / initial_max_safe_leverage) + maint_margin_rate
+    
+    print(f"[DEBUG] Thresholds - Dist. SL: {sl_distance_pct*100:.4f}%, Liquidação: {liquidation_threshold*100:.4f}%")
+    
+    # Ajustar alavancagem se necessário
+    if liquidation_threshold > sl_distance_pct:
+        print(f"[AVISO] Liquidação ({liquidation_threshold*100:.4f}%) ocorreria antes do SL ({sl_distance_pct*100:.4f}%)")
         
-        # Verificar se a liquidação ocorreria antes do SL
-        liquidation_threshold = (1 / max_safe_leverage) + maint_margin_rate
-        
-        if liquidation_threshold > sl_distance_pct:
-            # Ajustar alavancagem para que liquidação ocorra após o SL
-            if sl_distance_pct > maint_margin_rate:
-                safe_leverage = int(1 / (sl_distance_pct - maint_margin_rate))
-                max_safe_leverage = min(max_safe_leverage, safe_leverage)
-            else:
-                # Stop muito próximo do preço de entrada
-                max_safe_leverage = 1
+        if sl_distance_pct > maint_margin_rate:
+            # Recalcular alavancagem para que a liquidação ocorra após o SL
+            adjusted_leverage = int(1 / (sl_distance_pct - maint_margin_rate))
+            max_safe_leverage = min(adjusted_leverage, max_leverage)
+            print(f"[DEBUG] Alavancagem ajustada para {adjusted_leverage}x (máx: {max_leverage}x)")
+        else:
+            # Stop muito próximo - usar alavancagem segura
+            max_safe_leverage = min(int(max_leverage * 0.2), 10)  # 20% da máx, no máximo 10x
+            print(f"[AVISO] SL muito próximo do preço de entrada. Usando alavancagem conservadora: {max_safe_leverage}x")
+    else:
+        max_safe_leverage = initial_max_safe_leverage
+        print(f"[DEBUG] Thresholds OK. Mantendo alavancagem de {max_safe_leverage}x")
     
     # Garantir que esteja dentro dos limites
-    final_leverage = min(int(max_safe_leverage), max_leverage)
-    final_leverage = max(1, final_leverage)
+    final_leverage = max(1, max_safe_leverage)
     
     print(f"[INFO] Alavancagem final calculada para {cleaned_symbol}: {final_leverage}x")
     return final_leverage
