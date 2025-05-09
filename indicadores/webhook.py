@@ -409,9 +409,9 @@ async def webhook():
             f"#{symbol}   {side}\n"
             "Inception\n\n"
             f"ALAVANCAGEM: {leverage}x\n"
-            "MARGEM: ISOLADA\n"
+            "MARGEM: CRUZADA\n"  # Alterado de ISOLADA para CRUZADA
             f"CAPITAL: {capital_int}%\n\n"
-            f"ENTRADA: {entry}\n\n"  # Modificado para indicar aguardando execução
+            f"ENTRADA: {entry}\n\n"
             f"ALVO: {tp}\n\n"
             f"STOP LOSS: {stop_loss}"
         )
