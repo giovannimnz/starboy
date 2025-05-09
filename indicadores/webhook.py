@@ -145,20 +145,37 @@ def get_leverage_brackets_from_binance(symbol=None):
         response.raise_for_status()  # Levanta exceção para códigos de erro HTTP
         
         data = response.json()
+        print(f"[DEBUG] Resposta da API Binance: {json.dumps(data)[:200]}...")
         
         # Organiza os dados por símbolo para fácil acesso
         brackets_by_symbol = {}
         
-        # Se for um único símbolo, ajusta o formato da resposta
+        # IMPORTANTE: A resposta para um único símbolo é diferente de múltiplos símbolos
         if symbol:
-            brackets_by_symbol[symbol] = data
+            # Se for um único símbolo, a resposta é uma lista com um único item
+            if isinstance(data, list) and len(data) > 0:
+                for item in data:
+                    sym = item.get('symbol')
+                    if sym:
+                        brackets_by_symbol[sym] = item.get('brackets', [])
+            else:
+                # Ou pode ser diretamente um objeto
+                sym = data.get('symbol', symbol)
+                brackets_by_symbol[sym] = data.get('brackets', [])
         else:
-            # Para múltiplos símbolos, a resposta é uma lista
+            # Para múltiplos símbolos, a resposta é sempre uma lista
             for item in data:
                 sym = item.get('symbol')
-                brackets = item.get('brackets', [])
                 if sym:
-                    brackets_by_symbol[sym] = brackets
+                    brackets_by_symbol[sym] = item.get('brackets', [])
+        
+        # Depuração para verificar o que foi processado
+        for sym, brackets in brackets_by_symbol.items():
+            max_lev = 1
+            for bracket in brackets:
+                if "initialLeverage" in bracket:
+                    max_lev = max(max_lev, bracket["initialLeverage"])
+            print(f"[DEBUG] Símbolo: {sym}, Brackets: {len(brackets)}, Max Leverage: {max_lev}x")
         
         # Salva no cache
         leverage_brackets_cache[cache_key] = brackets_by_symbol
