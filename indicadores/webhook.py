@@ -410,7 +410,7 @@ async def webhook():
             "Inception\n\n"
             f"ALAVANCAGEM: {leverage}x\n"
             "MARGEM: CRUZADA\n"  # Alterado de ISOLADA para CRUZADA
-            f"CAPITAL: {capital_int}%\n\n"
+            f"CAPITAL: 5%\n\n"
             f"ENTRADA: {entry}\n\n"
             f"ALVO: {tp}\n\n"
             f"STOP LOSS: {stop_loss}"
@@ -424,7 +424,7 @@ async def webhook():
             "symbol": symbol,
             "side": side,
             "leverage": leverage,
-            "capital_pct": capital_pct,
+            "capital_pct": "5%",  # Capital fixo de 5%
             "entry": entry,
             "tp": tp,
             "stop_loss": stop_loss,
