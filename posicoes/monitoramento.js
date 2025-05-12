@@ -268,6 +268,9 @@ async function processSignal(db, signal) {
       const tpPriceVal = parseFloat(tp_price);
       const slPriceVal = parseFloat(sl_price);
 
+      let slResponse = null;
+      let tpResponse = null;
+
       // Criar ordem SL
       try {
         const slResponse = await newStopOrder(
@@ -403,8 +406,18 @@ async function processSignal(db, signal) {
 function calculateOrderSize(availableBalance, capitalPercentage, entryPrice, leverage, precision) {
   const capital = availableBalance * capitalPercentage;
   const size = (capital * leverage) / entryPrice;
-  // Arredondar para a precisão correta
-  return parseFloat(size.toFixed(precision));
+  
+  // Converter para string com a precisão correta
+  const sizeString = size.toFixed(precision);
+  
+  // Remover zeros à direita desnecessários e converter de volta para número
+  // Isso evita problemas com a precisão exata
+  const formattedSize = parseFloat(sizeString);
+  
+  // Log adicional para depuração
+  console.log(`[MONITOR] Tamanho calculado: ${size}, Precisão: ${precision}, Formatado: ${formattedSize}`);
+  
+  return formattedSize;
 }
 
 // Substitua a função getAvailableBalance atual pela seguinte:
@@ -1056,7 +1069,7 @@ async function moveOrderToHistory(db, orderId) {
     return true;
   } catch (error) {
     await connection.rollback();
-    console.error(`[SYNC] Erro ao mover ordem ${orderId} para histórico:`, error);
+    console.error(`[SYNC] Erro ao mover ordem ${orderId} para histórico: ${error.message}`);
     throw error;
   } finally {
     connection.release();
