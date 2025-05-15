@@ -173,7 +173,19 @@ async function processSignal(db, signal) {
     // 2. Configurar alavancagem e tipo de margem
     try {
       await changeInitialLeverage(symbol, parseInt(leverage));
-      await changeMarginType(symbol, 'CROSSED'); // CORRIGIDO: Sempre usar margem cruzada
+      try {
+        await changeMarginType(symbol, 'CROSSED');
+      } catch (marginError) {
+        // Verificar se é o erro específico de "já está configurado"
+        if (marginError.response && 
+            marginError.response.data && 
+            marginError.response.data.code === -4046) {
+          console.log(`[MONITOR] Margem já configurada como CROSSED para ${symbol}, continuando...`);
+        } else {
+          // Se for outro erro, propagar
+          throw marginError;
+        }
+      }
     } catch (error) {
       console.error(`[MONITOR] Erro ao configurar alavancagem/margem para ${symbol}:`, error);
       await connection.query(
