@@ -1,6 +1,7 @@
 const axios = require("axios");
 const crypto = require("crypto");
 require('dotenv').config();
+const { getDatabaseInstance } = require('./db/conexao');
 
 const apiKey = process.env.API_KEY;
 const apiSecret = process.env.API_SECRET;
@@ -888,6 +889,213 @@ async function getPrice(symbol) {
   }
 }
 
+/**
+ * Atualiza informações de alavancagem (leverage brackets) no banco de dados
+ * @param {boolean} forceUpdate - Se true, força atualização mesmo se dados recentes existirem
+ * @returns {Promise<number>} - Número de registros processados
+ */
+async function updateLeverageBracketsInDatabase(forceUpdate = false) {
+  try {
+    console.log('[API] Atualizando dados de alavancagem no banco de dados...');
+    
+    // 1. Obter conexão com o banco de dados
+    const db = await getDatabaseInstance();
+    if (!db) {
+      throw new Error('Não foi possível conectar ao banco de dados');
+    }
+
+    // 2. Verificar última atualização (evitar chamadas excessivas à API)
+    if (!forceUpdate) {
+      const [lastUpdate] = await db.query(`
+        SELECT MAX(UNIX_TIMESTAMP(updated_at)) as last_update 
+        FROM alavancagem
+        WHERE corretora = 'binance'
+      `);
+      
+      const currentTime = Math.floor(Date.now() / 1000);
+      const lastUpdateTime = lastUpdate[0].last_update || 0;
+      
+      // Se dados foram atualizados nas últimas 24 horas, retornar
+      if (lastUpdateTime > 0 && (currentTime - lastUpdateTime) < 24 * 60 * 60) {
+        console.log('[API] Dados de alavancagem já atualizados nas últimas 24 horas');
+        
+        // Verificar número de registros já existentes
+        const [count] = await db.query(`
+          SELECT COUNT(*) as total FROM alavancagem WHERE corretora = 'binance'
+        `);
+        return count[0].total;
+      }
+    }
+
+    // 3. Buscar dados da API da Binance
+    const brackets = await getAllLeverageBrackets();
+    if (!brackets || brackets.length === 0) {
+      throw new Error('Não foi possível obter dados de alavancagem da Binance');
+    }
+
+    console.log(`[API] Recebidos dados de ${brackets.length} símbolos`);
+    
+    // 4. Iniciar transação para inserções em massa
+    const connection = await db.getConnection();
+    await connection.beginTransaction();
+    
+    let recordCount = 0;
+    
+    try {
+      // 5. Processar cada símbolo e seus brackets
+      for (const item of brackets) {
+        const symbol = item.symbol;
+        
+        if (!symbol || !item.brackets || !Array.isArray(item.brackets)) {
+          console.log(`[API] Dados inválidos ou incompletos para símbolo: ${symbol || 'desconhecido'}`);
+          continue;
+        }
+        
+        for (const bracket of item.brackets) {
+          // Verificar se todos os campos necessários existem
+          if (
+            bracket.bracket === undefined || 
+            bracket.initialLeverage === undefined || 
+            bracket.notionalCap === undefined || 
+            bracket.notionalFloor === undefined || 
+            bracket.maintMarginRatio === undefined || 
+            bracket.cum === undefined
+          ) {
+            console.log(`[API] Dados de bracket incompletos para ${symbol}`, bracket);
+            continue;
+          }
+          
+          // Prepare the query with placeholders (? for each value)
+          const query = `
+            INSERT INTO alavancagem 
+            (symbol, corretora, bracket, initial_leverage, notional_cap, 
+             notional_floor, maint_margin_ratio, cum, updated_at) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+            ON DUPLICATE KEY UPDATE 
+              initial_leverage = VALUES(initial_leverage), 
+              notional_cap = VALUES(notional_cap), 
+              notional_floor = VALUES(notional_floor), 
+              maint_margin_ratio = VALUES(maint_margin_ratio), 
+              cum = VALUES(cum),
+              updated_at = NOW()
+          `;
+          
+          // Execute a inserção/atualização
+          await connection.query(query, [
+            symbol,
+            'binance',
+            bracket.bracket,
+            bracket.initialLeverage,
+            bracket.notionalCap,
+            bracket.notionalFloor,
+            bracket.maintMarginRatio,
+            bracket.cum
+          ]);
+          
+          recordCount++;
+        }
+      }
+      
+      // 6. Confirmar transação
+      await connection.commit();
+      console.log(`[API] ${recordCount} registros de alavancagem atualizados no banco de dados`);
+      
+      return recordCount;
+    } catch (error) {
+      // Em caso de erro, reverter transação
+      await connection.rollback();
+      console.error('[API] Erro ao atualizar dados de alavancagem no banco:', error);
+      throw error;
+    } finally {
+      connection.release();
+    }
+  } catch (error) {
+    console.error('[API] Falha na atualização de dados de alavancagem:', error);
+    throw error;
+  }
+}
+
+/**
+ * Obtem informações de alavancagem do banco para um símbolo específico
+ * @param {string} symbol - Símbolo para consultar (ex: BTCUSDT)
+ * @returns {Promise<Array>} - Array de brackets para o símbolo
+ */
+async function getLeverageBracketsFromDb(symbol) {
+  try {
+    const db = await getDatabaseInstance();
+    if (!db) {
+      throw new Error('Não foi possível conectar ao banco de dados');
+    }
+    
+    // Verificar se o símbolo existe no banco
+    const [rows] = await db.query(`
+      SELECT * FROM alavancagem 
+      WHERE symbol = ? AND corretora = 'binance'
+      ORDER BY bracket ASC
+    `, [symbol]);
+    
+    // Se não encontrar dados para o símbolo, tentar atualizar o banco
+    if (rows.length === 0) {
+      console.log(`[API] Não foram encontrados dados de alavancagem para ${symbol}, atualizando banco...`);
+      await updateLeverageBracketsInDatabase(true);
+      
+      // Consultar novamente após atualização
+      const [updatedRows] = await db.query(`
+        SELECT * FROM alavancagem 
+        WHERE symbol = ? AND corretora = 'binance'
+        ORDER BY bracket ASC
+      `, [symbol]);
+      
+      // Mapear para o formato esperado pelo sistema
+      return formatBracketsFromDb(updatedRows);
+    }
+    
+    // Mapear para o formato esperado pelo sistema
+    return formatBracketsFromDb(rows);
+  } catch (error) {
+    console.error(`[API] Erro ao obter dados de alavancagem para ${symbol}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Formata dados do banco para o formato esperado pelo sistema
+ * @param {Array} dbRows - Linhas do banco de dados
+ * @returns {Array} - Dados formatados
+ */
+function formatBracketsFromDb(dbRows) {
+  if (!dbRows || dbRows.length === 0) return [];
+  
+  // Agrupar por símbolo
+  const symbolsMap = {};
+  
+  for (const row of dbRows) {
+    if (!symbolsMap[row.symbol]) {
+      symbolsMap[row.symbol] = {
+        symbol: row.symbol,
+        brackets: []
+      };
+    }
+    
+    symbolsMap[row.symbol].brackets.push({
+      bracket: row.bracket,
+      initialLeverage: row.initial_leverage,
+      notionalCap: parseFloat(row.notional_cap),
+      notionalFloor: parseFloat(row.notional_floor),
+      maintMarginRatio: parseFloat(row.maint_margin_ratio),
+      cum: parseFloat(row.cum)
+    });
+  }
+  
+  // Converter o mapa em array
+  return Object.values(symbolsMap);
+}
+
+// Atualizar função load_leverage_brackets para usar o banco de dados
+function load_leverage_brackets(symbol = null) {
+  return getLeverageBracketsFromDb(symbol);
+}
+
 // Modificar o module.exports para incluir as novas funções
 module.exports = {
   getFuturesAccountBalanceDetails,
@@ -917,5 +1125,8 @@ module.exports = {
   setPositionMode,
   getPositionMode,
   closePosition, // Adicione a nova função aqui
-  getPrice // Adicione a função getPrice
+  getPrice, // Adicione a função getPrice
+  updateLeverageBracketsInDatabase, // Adicione a função updateLeverageBracketsInDatabase
+  getLeverageBracketsFromDb, // Adicione a função getLeverageBracketsFromDb
+  load_leverage_brackets // Adicione a função load_leverage_brackets
 };

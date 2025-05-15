@@ -5,7 +5,7 @@ const axios = require('axios');
 const schedule = require('node-schedule');
 const fs = require('fs').promises;
 const { Telegraf } = require("telegraf");
-const { newOrder, cancelOrder, newStopOrder, cancelAllOpenOrders, getAllLeverageBrackets, getFuturesAccountBalanceDetails, getTickSize, getPrecision, changeInitialLeverage, changeMarginType, getPositionDetails, setPositionMode, getOpenOrders, getOrderStatus, getAllOpenPositions } = require('../api');
+const { newOrder, cancelOrder, newStopOrder, cancelAllOpenOrders, getAllLeverageBrackets, getFuturesAccountBalanceDetails, getTickSize, getPrecision, changeInitialLeverage, changeMarginType, getPositionDetails, setPositionMode, getOpenOrders, getOrderStatus, getAllOpenPositions, updateLeverageBracketsInDatabase } = require('../api');
 const {getDatabaseInstance, getPositionIdBySymbol, updatePositionInDb, checkOrderExists, getAllOrdersBySymbol, updatePositionStatus, insertNewOrder, disconnectDatabase, getAllPositionsFromDb, getOpenOrdersFromDb, getOrdersFromDb, updateOrderStatus, getPositionsFromDb, insertPosition, moveClosedPositionsAndOrders, initializeDatabase, formatDateForMySQL} = require('../db/conexao');
 const websockets = require('../websockets');
 
@@ -17,6 +17,16 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 
 // Adicionar variável para armazenar os jobs
 let scheduledJobs = {};
+
+// Atualizar dados de alavancagem ao iniciar o sistema
+(async () => {
+  try {
+    await updateLeverageBracketsInDatabase();
+    console.log('Dados de alavancagem atualizados com sucesso.');
+  } catch (error) {
+    console.error('Erro ao atualizar dados de alavancagem:', error);
+  }
+})();
 
 // Função para inicializar o monitoramento
 async function initializeMonitoring() {
@@ -48,6 +58,17 @@ async function initializeMonitoring() {
       await syncWithExchange();
     } catch (error) {
       console.error('[MONITOR] Erro na sincronização periódica:', error);
+    }
+  });
+  
+  // NOVO JOB: Atualização diária dos dados de alavancagem às 2:00 da manhã
+  scheduledJobs.updateLeverageBrackets = schedule.scheduleJob('0 2 * * *', async () => {
+    try {
+      console.log('[MONITOR] Iniciando atualização diária dos dados de alavancagem...');
+      const recordsUpdated = await updateLeverageBracketsInDatabase(true); // true = forçar atualização
+      console.log(`[MONITOR] Atualização diária concluída. ${recordsUpdated} registros de alavancagem atualizados.`);
+    } catch (error) {
+      console.error('[MONITOR] Erro na atualização diária de dados de alavancagem:', error);
     }
   });
 
@@ -1075,6 +1096,17 @@ async function stopMonitoring() {
   if (scheduledJobs.checkNewTrades) {
     scheduledJobs.checkNewTrades.cancel();
     console.log('[MONITOR] Job de verificação de novas operações cancelado');
+  }
+  
+  if (scheduledJobs.syncWithExchange) {
+    scheduledJobs.syncWithExchange.cancel();
+    console.log('[MONITOR] Job de sincronização cancelado');
+  }
+  
+  // Adicionar cancelamento do novo job
+  if (scheduledJobs.updateLeverageBrackets) {
+    scheduledJobs.updateLeverageBrackets.cancel();
+    console.log('[MONITOR] Job de atualização diária de alavancagem cancelado');
   }
   
   // Cancelar outros jobs se houver
