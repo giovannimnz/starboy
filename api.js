@@ -178,7 +178,7 @@ async function newStopOrder(symbol, quantity, side, stopPrice, price = null, red
       headers: { "X-MBX-APIKEY": apiKey },
     });
     
-    console.log(`[API] Resposta da ordem ${orderType}:`, result.data);
+    //console.log(`[API] Resposta da ordem ${orderType}:`, result.data);
     return { data: result.data }; // Garantir estrutura consistente { data: {...} }
   } catch (error) {
     console.error(`[API] Erro ao enviar ordem ${price ? 'TAKE_PROFIT_MARKET' : 'STOP_MARKET'}:`, 
@@ -685,9 +685,9 @@ async function changeMarginType(symbol, marginType) {
     const response = await axios.post(url, null, { headers: { 'X-MBX-APIKEY': apiKey } });
     return response.data;
   } catch (error) {
-    console.error('[API] Erro ao alterar o tipo de margem:', error.message);
+    //console.error('[API] Erro ao alterar o tipo de margem:', error.message);
     if (error.response && error.response.data) {
-      console.error('[API] Detalhes do erro:', error.response.data);
+      //console.error('[API] Detalhes do erro:', error.response.data);
     }
     throw error;
   }
