@@ -1142,57 +1142,6 @@ async function moveOrderToHistory(db, orderId) {
   }
 }
 
-// Função para mover posições e ordens fechadas
-async function moveClosedPositionsAndOrders(db, positionId) {
-  const connection = await db.getConnection();
-  
-  try {
-    await connection.beginTransaction();
-    
-    // 1. Obter contagem de ordens para log
-    const [orderCount] = await connection.query(
-      'SELECT COUNT(*) as count FROM ordens WHERE id_posicao = ?', 
-      [positionId]
-    );
-    console.log(`Encontradas ${orderCount[0].count} ordens para posição ${positionId}.`);
-    
-    // 2. Mover ordens para ordens_fechadas
-    await connection.query(`
-      INSERT INTO ordens_fechadas 
-      SELECT * FROM ordens WHERE id_posicao = ?
-    `, [positionId]);
-    
-    console.log(`Ordens com id_posicao ${positionId} movidas para ordens_fechadas.`);
-    
-    // 3. Excluir ordens originais
-    await connection.query('DELETE FROM ordens WHERE id_posicao = ?', [positionId]);
-    console.log(`Ordens com id_posicao ${positionId} excluídas de ordens.`);
-    
-    // 4. Mover posição para posicoes_fechadas
-    await connection.query(`
-      INSERT INTO posicoes_fechadas 
-      SELECT * FROM posicoes WHERE id = ?
-    `, [positionId]);
-    
-    console.log(`Posição com id ${positionId} movida para posicoes_fechadas.`);
-    
-    // 5. Excluir posição original
-    await connection.query('DELETE FROM posicoes WHERE id = ?', [positionId]);
-    console.log(`Posição com id ${positionId} excluída de posicoes.`);
-    
-    await connection.commit();
-    console.log(`Posição ${positionId} e suas ordens movidas para fechadas com sucesso.`);
-    
-    return true;
-  } catch (error) {
-    await connection.rollback();
-    console.error(`Erro ao mover posições fechadas: ${error.message}`);
-    throw error;
-  } finally {
-    connection.release();
-  }
-}
-
 // Função para parar o monitoramento
 async function stopMonitoring() {
   console.log('[MONITOR] Parando o sistema de monitoramento...');
