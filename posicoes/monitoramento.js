@@ -850,6 +850,11 @@ async function movePositionToHistory(db, positionId, status, reason) {
       await connection.commit();
       console.log(`[SYNC] Posição ${positionId} movida para fechadas com status: ${status}, motivo: ${reason}`);
       
+      // 9. Verificar se precisamos fechar o WebSocket de monitoramento de preço
+      // Obter o símbolo da posição que foi movida
+      const symbol = positionResult[0].simbolo;
+      await checkAndCloseWebsocket(db, symbol);
+
       connection.release();
       return true;
       
@@ -958,6 +963,40 @@ async function onPriceUpdate(symbol, currentPrice, relevantTrades, positions) {
     }
   } catch (error) {
     console.error(`[PRICE UPDATE] Erro ao processar atualização de preço: ${error}`);
+  }
+}
+
+// Função para verificar e fechar o WebSocket se não houver mais posições/ordens para um símbolo
+async function checkAndCloseWebsocket(db, symbol) {
+  try {
+    // Verificar se ainda existem posições abertas para este símbolo
+    const [openPositions] = await db.query(
+      `SELECT COUNT(*) as count FROM posicoes 
+       WHERE simbolo = ? AND (status = 'OPEN' OR status = 'PENDING')`,
+      [symbol]
+    );
+    
+    // Verificar se ainda existem ordens abertas para este símbolo
+    const [openOrders] = await db.query(
+      `SELECT COUNT(*) as count FROM ordens 
+       WHERE simbolo = ? AND status = 'OPEN'`,
+      [symbol]
+    );
+    
+    const hasOpenPositions = openPositions[0].count > 0;
+    const hasOpenOrders = openOrders[0].count > 0;
+    
+    // Se não houver posições ou ordens abertas, podemos fechar o WebSocket
+    if (!hasOpenPositions && !hasOpenOrders) {
+      console.log(`[MONITOR] Fechando monitoramento de preço para ${symbol} - não há mais posições/ordens ativas`);
+      websockets.stopPriceMonitoring(symbol);
+      return true; // Monitoramento encerrado
+    }
+    
+    return false; // Monitoramento mantido
+  } catch (error) {
+    console.error(`[MONITOR] Erro ao verificar monitoramento para ${symbol}:`, error);
+    return false;
   }
 }
 
@@ -1294,5 +1333,6 @@ module.exports = {
   handleOrderUpdate,
   onPriceUpdate,
   initializeMonitoring,
-  stopMonitoring
+  stopMonitoring,
+  checkAndCloseWebsocket  // Adicione esta linha
 };
