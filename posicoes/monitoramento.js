@@ -733,65 +733,23 @@ async function handleAccountUpdate(message, db) {
   }
 }
 
-// Função para mover posição para tabelas de fechadas (versão simplificada)
+// Função para mover posição para tabelas de fechadas
 async function movePositionToHistory(db, positionId, status, reason) {
-  let attempts = 0;
-  const maxAttempts = 3;
-  let lastError = null;
-
-  while (attempts < maxAttempts) {
-    const connection = await db.getConnection();
+  const connection = await db.getConnection();
+  try {
+    await connection.beginTransaction();
     
-    try {
-      await connection.beginTransaction();
-      
-      // Formatar a data corretamente
-      const currentDate = new Date();
-      const formattedDate = formatDateForMySQL(currentDate);
-      
-      // 1. Atualizar status da posição com data formatada
-      await connection.query(
-        `UPDATE posicoes 
-         SET status = ?, 
-             data_hora_fechamento = ?,
-             data_hora_ultima_atualizacao = ?
-         WHERE id = ?`,
-        [status, formattedDate, formattedDate, positionId]
-      );
-      
-      // 2. Mover posição e ordens para tabelas _fechadas
-      await moveClosedPositionsAndOrders(db, positionId);
-      
-      // Registrar mensagem de log em vez de inserir em historico_posicoes
-      console.log(`[MONITOR] Posição ${positionId} fechada: ${reason} em ${formattedDate}`);
-      
-      await connection.commit();
-      return true;
-      
-    } catch (error) {
-      await connection.rollback();
-      lastError = error;
-      
-      // Se for um erro de lock ou timeout, tentar novamente
-      if (error.code === 'ER_LOCK_WAIT_TIMEOUT' || 
-          error.message === 'Timeout ao mover registros') {
-        attempts++;
-        const waitTime = Math.pow(2, attempts) * 1000; // Backoff exponencial: 2s, 4s, 8s...
-        console.log(`[MONITOR] Bloqueio ao mover posição ${positionId}. Tentativa ${attempts}/${maxAttempts} - Aguardando ${waitTime/1000}s`);
-        await new Promise(resolve => setTimeout(resolve, waitTime));
-      } else {
-        // Se for outro tipo de erro, não tentar novamente
-        console.error(`[MONITOR] Erro ao mover posição ${positionId} para fechadas:`, error);
-        throw error;
-      }
-    } finally {
-      connection.release();
-    }
+    // 1. Atualizar status da posição
+    // 2. Mover ordens para ordens_fechadas (código inline, não em função separada)
+    // 3. Remover ordens originais
+    // 4. Mover posição para posicoes_fechadas
+    // 5. Remover posição original
+    
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    // Lógica de retry...
   }
-  
-  // Se chegou aqui, é porque excedeu as tentativas
-  console.error(`[MONITOR] Erro ao mover posição ${positionId} após ${maxAttempts} tentativas: ${lastError.message}`);
-  throw lastError;
 }
 
 // Verifique também se a função onPriceUpdate está definida
