@@ -452,22 +452,22 @@ async function getAllOpenPositions(symbol = null) {
   try {
     const response = await axios.get(url, { headers: { "X-MBX-APIKEY": apiKey } });
 
+    // Filtrar posições com quantidade diferente de zero e formatar resposta
     let positions = response.data.filter(pos => parseFloat(pos.positionAmt) !== 0).map(pos => {
-      /*console.log(`Dados brutos da posição retornados pela API para ${pos.symbol}:`, pos);
       return {
         simbolo: pos.symbol,
-        quantidade: Math.abs(parseFloat(pos.positionAmt)), // Sempre positivo
+        quantidade: Math.abs(parseFloat(pos.positionAmt)),
         preco_entrada: parseFloat(pos.entryPrice),
         preco_corrente: parseFloat(pos.markPrice),
         data_hora_abertura: new Date(pos.updateTime),
         side: pos.positionSide,
         leverage: parseFloat(pos.leverage),
-        maint_margin: Math.abs(parseFloat(pos.notional) / parseFloat(pos.leverage)), // Sempre positivo
-        isolated_margin: Math.abs(parseFloat(pos.isolatedMargin || 0)), // Sempre positivo
-        margin_type: pos.marginType, // Capturando o tipo de margem (crossed ou isolada)
+        maint_margin: Math.abs(parseFloat(pos.notional) / parseFloat(pos.leverage)),
+        isolated_margin: Math.abs(parseFloat(pos.isolatedMargin || 0)),
+        margin_type: pos.marginType,
         data_hora_ultima_atualizacao: new Date().toISOString(),
         preco_medio: parseFloat(pos.entryPrice)
-      };*/
+      };
     });
 
     if (symbol) {

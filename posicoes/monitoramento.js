@@ -989,57 +989,119 @@ async function syncPositions(db) {
     `);
     
     if (dbPositions.length === 0) {
-      //console.log('[MONITOR] Nenhuma posição antiga para verificar');
       return;
     }
     
     console.log(`[MONITOR] Verificando ${dbPositions.length} posições antigas no banco`);
     
-    // Obter posições abertas da corretora
-    const exchangePositions = await getAllOpenPositions();
-    const exchangePositionsMap = new Map(
-      exchangePositions.map(pos => [pos.simbolo, pos])
-    );
-    
     // Verificar cada posição do banco
     for (const dbPosition of dbPositions) {
       const symbol = dbPosition.simbolo;
       
-      // Se a posição não existe na corretora
-      if (!exchangePositionsMap.has(symbol)) {
-        console.log(`[SYNC] Posição para ${symbol} não encontrada na corretora`);
+      try {
+        // Verificar se a posição existe na corretora
+        const exchangePositions = await getAllOpenPositions(symbol);
+        const positionExists = exchangePositions && exchangePositions.length > 0;
         
-        // Verificar se todas as ordens desta posição estão fechadas ou podem ser fechadas
-        const [activeOrders] = await db.query(
-          'SELECT id, id_externo FROM ordens WHERE id_posicao = ? AND status = "OPEN"',
+        // Verificar se há uma ordem de entrada preenchida
+        const [entryOrders] = await db.query(
+          `SELECT * FROM ordens 
+           WHERE id_posicao = ? AND tipo_ordem_bot = 'ENTRADA' 
+           AND status = 'FILLED' AND reduce_only = 0`,
           [dbPosition.id]
         );
         
-        if (activeOrders.length > 0) {
-          console.log(`[SYNC] Posição ${dbPosition.id} ainda tem ${activeOrders.length} ordens ativas`);
+        const hasFilledEntry = entryOrders.length > 0;
+        
+        // Se há uma ordem de entrada preenchida mas a posição não existe na corretora
+        if (hasFilledEntry && !positionExists) {
+          console.log(`[SYNC] Posição ${symbol} (ID: ${dbPosition.id}) foi encerrada manualmente na corretora`);
           
-          // Verificar cada ordem ativa
-          for (const order of activeOrders) {
-            try {
-              await moveOrderToHistory(db, order.id);
-              console.log(`[SYNC] Ordem ${order.id} movida para histórico`);
-            } catch (error) {
-              console.error(`[SYNC] Erro ao mover ordem ${order.id}:`, error);
+          // 1. Verificar ordens abertas na corretora para este símbolo
+          const exchangeOrders = await getOpenOrders(symbol);
+          
+          // 2. Cancelar ordens abertas na corretora
+          if (exchangeOrders && exchangeOrders.length > 0) {
+            console.log(`[SYNC] Cancelando ${exchangeOrders.length} ordens abertas na corretora para ${symbol}`);
+            
+            for (const order of exchangeOrders) {
+              try {
+                await cancelOrder(order.orderId, symbol);
+                console.log(`[SYNC] Ordem ${order.orderId} cancelada com sucesso`);
+              } catch (cancelError) {
+                console.error(`[SYNC] Erro ao cancelar ordem ${order.orderId}: ${cancelError.message}`);
+              }
             }
           }
+          
+          // 3. Verificar e atualizar status de ordens no banco de dados
+          const [activeOrders] = await db.query(
+            'SELECT id, id_externo FROM ordens WHERE id_posicao = ? AND status = "OPEN"',
+            [dbPosition.id]
+          );
+          
+          if (activeOrders.length > 0) {
+            console.log(`[SYNC] Atualizando ${activeOrders.length} ordens ativas no banco para ${symbol}`);
+            
+            for (const order of activeOrders) {
+              try {
+                await moveOrderToHistory(db, order.id);
+                console.log(`[SYNC] Ordem ${order.id} movida para histórico`);
+              } catch (error) {
+                console.error(`[SYNC] Erro ao mover ordem ${order.id}: ${error.message}`);
+              }
+            }
+          }
+          
+          // 4. Mover a posição para fechadas
+          try {
+            await movePositionToHistory(db, dbPosition.id, 'CLOSED', 'MANUALLY_CLOSED_ON_EXCHANGE');
+            console.log(`[SYNC] Posição ${dbPosition.id} (${symbol}) movida para histórico - fechada manualmente`);
+          } catch (error) {
+            console.error(`[SYNC] Erro ao mover posição ${dbPosition.id}: ${error.message}`);
+          }
         }
-        
-        // Agora podemos mover a posição para histórico
-        try {
-          await movePositionToHistory(db, dbPosition.id, 'CLOSED', 'CLOSED_ON_EXCHANGE');
-          console.log(`[SYNC] Posição ${dbPosition.id} (${symbol}) movida para histórico`);
-        } catch (error) {
-          console.error(`[SYNC] Erro ao mover posição ${dbPosition.id}:`, error);
+        // Verificar posições que não existem na corretora (lógica original)
+        else if (!positionExists) {
+          console.log(`[SYNC] Posição para ${symbol} não encontrada na corretora`);
+          
+          // Verificar se todas as ordens desta posição estão fechadas ou podem ser fechadas
+          const [activeOrders] = await db.query(
+            'SELECT id, id_externo FROM ordens WHERE id_posicao = ? AND status = "OPEN"',
+            [dbPosition.id]
+          );
+          
+          if (activeOrders.length > 0) {
+            console.log(`[SYNC] Posição ${dbPosition.id} ainda tem ${activeOrders.length} ordens ativas`);
+            
+            // Verificar cada ordem ativa
+            for (const order of activeOrders) {
+              try {
+                await moveOrderToHistory(db, order.id);
+                console.log(`[SYNC] Ordem ${order.id} movida para histórico`);
+              } catch (error) {
+                console.error(`[SYNC] Erro ao mover ordem ${order.id}: ${error.message}`);
+              }
+            }
+          }
+          
+          // Agora podemos mover a posição para histórico
+          try {
+            await movePositionToHistory(db, dbPosition.id, 'CLOSED', 'CLOSED_ON_EXCHANGE');
+            console.log(`[SYNC] Posição ${dbPosition.id} (${symbol}) movida para histórico`);
+          } catch (error) {
+            console.error(`[SYNC] Erro ao mover posição ${dbPosition.id}: ${error.message}`);
+          }
         }
+      } catch (error) {
+        console.error(`[SYNC] Erro ao processar símbolo ${symbol}: ${error.message}`);
+        // Continuar com o próximo símbolo em vez de interromper toda a sincronização
+        continue;
       }
     }
   } catch (error) {
     console.error('[SYNC] Erro ao sincronizar posições:', error);
+    throw error;
   }
 }
 
