@@ -747,6 +747,93 @@ function formatDateForMySQL(date) {
   return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }
 
+/**
+ * Atualiza o saldo da conta e possivelmente o saldo_base_calculo
+ * @param {Object} db - Conexão com o banco de dados
+ * @param {number} saldo - Novo valor de saldo
+ * @param {number} accountId - ID da conta (padrão: 1)
+ * @returns {Promise<Object>} - Objeto com os valores atualizados
+ */
+async function updateAccountBalance(db, saldo, accountId = 1) {
+  try {
+    const connection = await db.getConnection();
+    await connection.beginTransaction();
+    
+    try {
+      // 1. Buscar saldo atual e saldo_base_calculo
+      const [currentAccount] = await connection.query(
+        'SELECT saldo, saldo_base_calculo FROM conta WHERE id = ?',
+        [accountId]
+      );
+      
+      if (currentAccount.length === 0) {
+        throw new Error(`Conta com ID ${accountId} não encontrada`);
+      }
+      
+      const currentSaldo = parseFloat(currentAccount[0].saldo || 0);
+      let baseCalculo = parseFloat(currentAccount[0].saldo_base_calculo || 0);
+      
+      // 2. Se o saldo_base_calculo ainda não existe ou é zero, inicializar com o saldo atual
+      if (baseCalculo === 0) {
+        baseCalculo = saldo;
+      } 
+      // 3. Se o novo saldo for maior que o saldo_base_calculo atual, atualizar o saldo_base_calculo
+      else if (saldo > baseCalculo) {
+        baseCalculo = saldo;
+        console.log(`[DB] Saldo base de cálculo atualizado para: ${baseCalculo.toFixed(2)} USDT`);
+      } else {
+        console.log(`[DB] Saldo diminuiu de ${currentSaldo.toFixed(2)} para ${saldo.toFixed(2)}, mantendo saldo base: ${baseCalculo.toFixed(2)} USDT`);
+      }
+      
+      // 4. Atualizar o saldo e possivelmente o saldo_base_calculo
+      await connection.query(
+        'UPDATE conta SET saldo = ?, saldo_base_calculo = ? WHERE id = ?',
+        [saldo, baseCalculo, accountId]
+      );
+      
+      await connection.commit();
+      
+      return {
+        saldo: saldo,
+        saldo_base_calculo: baseCalculo
+      };
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  } catch (error) {
+    console.error(`[DB] Erro ao atualizar saldo da conta: ${error.message}`);
+    throw error;
+  }
+}
+
+/**
+ * Obtém o saldo_base_calculo do banco de dados
+ * @param {Object} db - Conexão com o banco de dados
+ * @param {number} accountId - ID da conta (padrão: 1)
+ * @returns {Promise<number>} - Valor do saldo_base_calculo
+ */
+async function getBaseCalculoBalance(db, accountId = 1) {
+  try {
+    const [rows] = await db.query(
+      'SELECT saldo_base_calculo FROM conta WHERE id = ?',
+      [accountId]
+    );
+    
+    if (rows.length === 0) {
+      throw new Error(`Conta com ID ${accountId} não encontrada`);
+    }
+    
+    const baseCalculo = parseFloat(rows[0].saldo_base_calculo || 0);
+    return baseCalculo;
+  } catch (error) {
+    console.error(`[DB] Erro ao obter saldo base de cálculo: ${error.message}`);
+    throw error;
+  }
+}
+
 // Exportar as funções
 module.exports = {
   getDatabaseInstance,
@@ -772,5 +859,7 @@ module.exports = {
   updateOrderRenewFlag,
   insertWebhookSignal,
   insertWebhookSignalWithDetails,
-  formatDateForMySQL  // Adicione esta linha
+  formatDateForMySQL,
+  updateAccountBalance,
+  getBaseCalculoBalance
 };

@@ -6,7 +6,7 @@ const schedule = require('node-schedule');
 const fs = require('fs').promises;
 const { Telegraf } = require("telegraf");
 const { newOrder, cancelOrder, newStopOrder, cancelAllOpenOrders, getAllLeverageBrackets, getFuturesAccountBalanceDetails, getTickSize, getPrecision, changeInitialLeverage, changeMarginType, getPositionDetails, setPositionMode, getOpenOrders, getOrderStatus, getAllOpenPositions, updateLeverageBracketsInDatabase } = require('../api');
-const {getDatabaseInstance, getPositionIdBySymbol, updatePositionInDb, checkOrderExists, getAllOrdersBySymbol, updatePositionStatus, insertNewOrder, disconnectDatabase, getAllPositionsFromDb, getOpenOrdersFromDb, getOrdersFromDb, updateOrderStatus, getPositionsFromDb, insertPosition, moveClosedPositionsAndOrders, initializeDatabase, formatDateForMySQL} = require('../db/conexao');
+const {getDatabaseInstance, getPositionIdBySymbol, updatePositionInDb, checkOrderExists, getAllOrdersBySymbol, updatePositionStatus, insertNewOrder, disconnectDatabase, getAllPositionsFromDb, getOpenOrdersFromDb, getOrdersFromDb, updateOrderStatus, getPositionsFromDb, insertPosition, moveClosedPositionsAndOrders, initializeDatabase, formatDateForMySQL, getBaseCalculoBalance, syncAccountBalance, updateAccountBalance} = require('../db/conexao');
 const websockets = require('../websockets');
 
 // Adicione este conjunto no topo do arquivo para rastrear ordens já canceladas
@@ -31,6 +31,17 @@ let scheduledJobs = {};
 // Função para inicializar o monitoramento
 async function initializeMonitoring() {
   console.log('[MONITOR] Inicializando sistema de monitoramento...');
+  
+  // Sincronizar saldo da conta - ADICIONADO
+  try {
+    console.log('[MONITOR] Sincronizando saldo da conta com a corretora...');
+    const result = await syncAccountBalance();
+    if (result) {
+      console.log(`[MONITOR] Saldo da conta atualizado: ${result.saldo.toFixed(2)} USDT (Base: ${result.saldo_base_calculo.toFixed(2)} USDT)`);
+    }
+  } catch (error) {
+    console.error('[MONITOR] Erro ao sincronizar saldo da conta:', error);
+  }
   
   // Configurar callbacks para WebSockets
   websockets.setMonitoringCallbacks({
@@ -418,6 +429,13 @@ async function processSignal(db, signal) {
       await connection.commit();
       console.log(`[MONITOR] Ordem de entrada para ${symbol} criada com sucesso. ID: ${orderId}`);
       
+      // Sincronizar saldo após criar ordem - ADICIONADO
+      try {
+        await syncAccountBalance();
+      } catch (syncError) {
+        console.error('[MONITOR] Erro ao sincronizar saldo após criar ordem:', syncError);
+      }
+      
     } catch (orderError) {
       console.error(`[MONITOR] Erro ao criar ordem para ${symbol}:`, orderError);
       await connection.query(
@@ -453,26 +471,32 @@ function calculateOrderSize(availableBalance, capitalPercentage, entryPrice, lev
   return formattedSize;
 }
 
-// Substitua a função getAvailableBalance atual pela seguinte:
-
+/**
+ * Obtém o saldo disponível para cálculo de novas operações
+ * Usa o saldo_base_calculo em vez do saldo real da corretora
+ * @returns {Promise<number>} Saldo base para cálculos
+ */
 async function getAvailableBalance() {
   try {
-    // Obter saldo da conta Futures
-    const balanceDetails = await getFuturesAccountBalanceDetails();
-    // Encontrar o saldo USDT
-    const usdtBalance = balanceDetails.find(item => item.asset === 'USDT');
-    
-    if (!usdtBalance) {
-      console.error('[MONITOR] Saldo USDT não encontrado');
+    const db = await getDatabaseInstance();
+    if (!db) {
+      console.error('[MONITOR] Falha ao obter instância do banco de dados');
       return 0;
     }
     
-    // Usar availableBalance que já considera posições abertas e requisitos de margem
-    const availableAmount = parseFloat(usdtBalance.availableBalance);
-    console.log(`[MONITOR] Saldo disponível: ${availableAmount} USDT`);
-    return availableAmount;
+    // Obter saldo_base_calculo do banco de dados
+    const baseCalculo = await getBaseCalculoBalance(db);
+    
+    if (baseCalculo <= 0) {
+      console.log('[MONITOR] Saldo base de cálculo não encontrado, buscando saldo real...');
+      await syncAccountBalance(); // Atualizar o saldo se o base de cálculo não existe
+      return await getBaseCalculoBalance(db); // Tentar novamente após atualização
+    }
+    
+    console.log(`[MONITOR] Usando saldo base de cálculo: ${baseCalculo.toFixed(2)} USDT`);
+    return baseCalculo;
   } catch (error) {
-    console.error(`[MONITOR] Erro ao obter saldo disponível: ${error.message}`);
+    console.error(`[MONITOR] Erro ao obter saldo base de cálculo: ${error.message}`);
     return 0;
   }
 }
@@ -672,6 +696,13 @@ async function handleOrderUpdate(orderMsg, db) {
       try {
         await moveClosedPositionsAndOrders(db, order.id_posicao);
         console.log(`[MONITOR] Posição ${order.id_posicao} fechada e movida para histórico`);
+        
+        // Sincronizar saldo após fechamento de posição - ADICIONADO
+        try {
+          await syncAccountBalance();
+        } catch (syncError) {
+          console.error('[MONITOR] Erro ao sincronizar saldo após fechamento de posição:', syncError);
+        }
       } catch (error) {
         console.error(`[MONITOR] Erro ao mover registros para histórico: ${error.message}`);
       }
@@ -1269,6 +1300,42 @@ async function moveOrderToHistory(db, orderId) {
     throw error;
   } finally {
     connection.release();
+  }
+}
+
+/**
+ * Sincroniza o saldo da conta no banco de dados com o saldo real da corretora
+ * @returns {Promise<Object>} Objeto com os saldos atualizados
+ */
+async function syncAccountBalance() {
+  try {
+    const db = await getDatabaseInstance();
+    if (!db) {
+      console.error('[MONITOR] Falha ao obter instância do banco de dados');
+      return null;
+    }
+    
+    // Obter saldo real da corretora
+    const balanceDetails = await getFuturesAccountBalanceDetails();
+    const usdtBalance = balanceDetails.find(item => item.asset === 'USDT');
+    
+    if (!usdtBalance) {
+      throw new Error('Saldo USDT não encontrado na corretora');
+    }
+    
+    // Obter o valor do saldo disponível (inclui lucro não realizado)
+    const realSaldo = parseFloat(usdtBalance.balance);
+    console.log(`[MONITOR] Saldo atual na corretora: ${realSaldo.toFixed(2)} USDT`);
+    
+    // Obter margem de manutenção e lucro não realizado
+    const maintenanceMargin = parseFloat(usdtBalance.crossWalletBalance);
+    const unrealizedPnL = parseFloat(usdtBalance.crossUnPnl);
+    
+    // Atualizar saldo no banco de dados e possivelmente o saldo_base_calculo
+    return await updateAccountBalance(db, realSaldo);
+  } catch (error) {
+    console.error(`[MONITOR] Erro ao sincronizar saldo da conta: ${error.message}`);
+    return null;
   }
 }
 
