@@ -37,7 +37,7 @@ async function initializeMonitoring() {
     console.log('[MONITOR] Sincronizando saldo da conta com a corretora...');
     const result = await syncAccountBalance();
     if (result) {
-      console.log(`[MONITOR] Saldo da conta atualizado: ${result.saldo.toFixed(2)} USDT (Base: ${result.saldo_base_calculo.toFixed(2)} USDT)`);
+      console.log(`[MONITOR] Saldo: ${result.saldo.toFixed(2)} USDT Saldo Base Calculo: ${result.saldo_base_calculo.toFixed(2)} USDT`);
     }
   } catch (error) {
     console.error('[MONITOR] Erro ao sincronizar saldo da conta:', error);
@@ -1325,7 +1325,7 @@ async function syncAccountBalance() {
     
     // Obter o valor do saldo disponível (inclui lucro não realizado)
     const realSaldo = parseFloat(usdtBalance.balance);
-    console.log(`[MONITOR] Saldo atual na corretora: ${realSaldo.toFixed(2)} USDT`);
+    //console.log(`[MONITOR] Saldo atual na corretora: ${realSaldo.toFixed(2)} USDT`);
     
     // Atualizar saldo no banco de dados e possivelmente o saldo_base_calculo
     return await updateAccountBalance(db, realSaldo);

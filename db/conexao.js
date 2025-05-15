@@ -780,9 +780,9 @@ async function updateAccountBalance(db, saldo, accountId = 1) {
       // 3. Se o novo saldo for maior que o saldo_base_calculo atual, atualizar o saldo_base_calculo
       else if (saldo > baseCalculo) {
         baseCalculo = saldo;
-        console.log(`[DB] Saldo base de cálculo atualizado para: ${baseCalculo.toFixed(2)} USDT`);
+        //console.log(`[DB] Saldo base de cálculo atualizado para: ${baseCalculo.toFixed(2)} USDT`);
       } else {
-        console.log(`[DB] Saldo diminuiu de ${currentSaldo.toFixed(2)} para ${saldo.toFixed(2)}, mantendo saldo base: ${baseCalculo.toFixed(2)} USDT`);
+        //console.log(`[DB] Saldo diminuiu de ${currentSaldo.toFixed(2)} para ${saldo.toFixed(2)}, mantendo saldo base: ${baseCalculo.toFixed(2)} USDT`);
       }
       
       // 4. Atualizar o saldo e possivelmente o saldo_base_calculo
