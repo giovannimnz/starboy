@@ -6,7 +6,7 @@ const schedule = require('node-schedule');
 const fs = require('fs').promises;
 const { Telegraf } = require("telegraf");
 const { newOrder, cancelOrder, newStopOrder, cancelAllOpenOrders, getAllLeverageBrackets, getFuturesAccountBalanceDetails, getTickSize, getPrecision, changeInitialLeverage, changeMarginType, getPositionDetails, setPositionMode, getOpenOrders, getOrderStatus, getAllOpenPositions, updateLeverageBracketsInDatabase } = require('../api');
-const {getDatabaseInstance, getPositionIdBySymbol, updatePositionInDb, checkOrderExists, getAllOrdersBySymbol, updatePositionStatus, insertNewOrder, disconnectDatabase, getAllPositionsFromDb, getOpenOrdersFromDb, getOrdersFromDb, updateOrderStatus, getPositionsFromDb, insertPosition, moveClosedPositionsAndOrders, initializeDatabase, formatDateForMySQL, getBaseCalculoBalance, syncAccountBalance, updateAccountBalance} = require('../db/conexao');
+const {getDatabaseInstance, getPositionIdBySymbol, updatePositionInDb, checkOrderExists, getAllOrdersBySymbol, updatePositionStatus, insertNewOrder, disconnectDatabase, getAllPositionsFromDb, getOpenOrdersFromDb, getOrdersFromDb, updateOrderStatus, getPositionsFromDb, insertPosition, moveClosedPositionsAndOrders, initializeDatabase, formatDateForMySQL, getBaseCalculoBalance, updateAccountBalance} = require('../db/conexao');
 const websockets = require('../websockets');
 
 // Adicione este conjunto no topo do arquivo para rastrear ordens já canceladas
@@ -1026,7 +1026,7 @@ async function checkAndCloseWebsocket(db, symbol) {
     
     return false; // Monitoramento mantido
   } catch (error) {
-    console.error(`[MONITOR] Erro ao verificar monitoramento para ${symbol}:`, error);
+    console.error(`[MONITOR] Erro ao verificar monitoramento para ${symbol}: ${error}`);
     return false;
   }
 }
@@ -1326,10 +1326,6 @@ async function syncAccountBalance() {
     // Obter o valor do saldo disponível (inclui lucro não realizado)
     const realSaldo = parseFloat(usdtBalance.balance);
     console.log(`[MONITOR] Saldo atual na corretora: ${realSaldo.toFixed(2)} USDT`);
-    
-    // Obter margem de manutenção e lucro não realizado
-    const maintenanceMargin = parseFloat(usdtBalance.crossWalletBalance);
-    const unrealizedPnL = parseFloat(usdtBalance.crossUnPnl);
     
     // Atualizar saldo no banco de dados e possivelmente o saldo_base_calculo
     return await updateAccountBalance(db, realSaldo);
