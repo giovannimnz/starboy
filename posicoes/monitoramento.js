@@ -735,21 +735,55 @@ async function handleAccountUpdate(message, db) {
 
 // Função para mover posição para tabelas de fechadas
 async function movePositionToHistory(db, positionId, status, reason) {
-  const connection = await db.getConnection();
-  try {
-    await connection.beginTransaction();
+  let attempts = 0;
+  const maxAttempts = 3;
+  
+  while (attempts < maxAttempts) {
+    attempts++;
+    const connection = await db.getConnection();
     
-    // 1. Atualizar status da posição
-    // 2. Mover ordens para ordens_fechadas (código inline, não em função separada)
-    // 3. Remover ordens originais
-    // 4. Mover posição para posicoes_fechadas
-    // 5. Remover posição original
-    
-    await connection.commit();
-  } catch (error) {
-    await connection.rollback();
-    // Lógica de retry...
+    try {
+      await connection.beginTransaction();
+      
+      // 1. Atualizar status da posição
+      const formattedDate = formatDateForMySQL(new Date());
+      await connection.query(
+        `UPDATE posicoes 
+         SET status = ?, 
+             data_hora_fechamento = ?,
+             data_hora_ultima_atualizacao = ?
+         WHERE id = ?`,
+        [status, formattedDate, formattedDate, positionId]
+      );
+      
+      // 2. Mover todos os registros usando a função existente
+      await moveClosedPositionsAndOrders(db, positionId);
+      
+      console.log(`[SYNC] Posição ${positionId} movida para fechadas com status: ${status}, motivo: ${reason}`);
+      
+      await connection.commit();
+      return true;
+    } catch (error) {
+      await connection.rollback();
+      
+      // Se for erro de bloqueio, tentar novamente com backoff exponencial
+      if (error.code === 'ER_LOCK_WAIT_TIMEOUT' || 
+          error.message.includes('Lock wait timeout') || 
+          error.message.includes('Deadlock')) {
+        
+        const waitTime = Math.pow(2, attempts) * 1000; // 2s, 4s, 8s
+        console.log(`[MONITOR] Bloqueio ao mover posição ${positionId}. Tentativa ${attempts}/${maxAttempts} - Aguardando ${waitTime/1000}s`);
+        await new Promise(resolve => setTimeout(resolve, waitTime));
+      } else {
+        console.error(`[MONITOR] Erro ao mover posição ${positionId} para fechadas:`, error);
+        throw error;
+      }
+    } finally {
+      connection.release();
+    }
   }
+  
+  throw new Error(`Falha ao mover posição ${positionId} após ${maxAttempts} tentativas`);
 }
 
 // Verifique também se a função onPriceUpdate está definida
@@ -832,7 +866,7 @@ async function onPriceUpdate(symbol, currentPrice, relevantTrades, positions) {
       }
     }
   } catch (error) {
-    console.error(`[PRICE UPDATE] Erro ao processar atualização de preço:`, error);
+    console.error(`[PRICE UPDATE] Erro ao processar atualização de preço: ${error}`);
   }
 }
 
@@ -1102,6 +1136,57 @@ async function moveOrderToHistory(db, orderId) {
   } catch (error) {
     await connection.rollback();
     console.error(`[SYNC] Erro ao mover ordem ${orderId} para histórico: ${error.message}`);
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
+// Função para mover posições e ordens fechadas
+async function moveClosedPositionsAndOrders(db, positionId) {
+  const connection = await db.getConnection();
+  
+  try {
+    await connection.beginTransaction();
+    
+    // 1. Obter contagem de ordens para log
+    const [orderCount] = await connection.query(
+      'SELECT COUNT(*) as count FROM ordens WHERE id_posicao = ?', 
+      [positionId]
+    );
+    console.log(`Encontradas ${orderCount[0].count} ordens para posição ${positionId}.`);
+    
+    // 2. Mover ordens para ordens_fechadas
+    await connection.query(`
+      INSERT INTO ordens_fechadas 
+      SELECT * FROM ordens WHERE id_posicao = ?
+    `, [positionId]);
+    
+    console.log(`Ordens com id_posicao ${positionId} movidas para ordens_fechadas.`);
+    
+    // 3. Excluir ordens originais
+    await connection.query('DELETE FROM ordens WHERE id_posicao = ?', [positionId]);
+    console.log(`Ordens com id_posicao ${positionId} excluídas de ordens.`);
+    
+    // 4. Mover posição para posicoes_fechadas
+    await connection.query(`
+      INSERT INTO posicoes_fechadas 
+      SELECT * FROM posicoes WHERE id = ?
+    `, [positionId]);
+    
+    console.log(`Posição com id ${positionId} movida para posicoes_fechadas.`);
+    
+    // 5. Excluir posição original
+    await connection.query('DELETE FROM posicoes WHERE id = ?', [positionId]);
+    console.log(`Posição com id ${positionId} excluída de posicoes.`);
+    
+    await connection.commit();
+    console.log(`Posição ${positionId} e suas ordens movidas para fechadas com sucesso.`);
+    
+    return true;
+  } catch (error) {
+    await connection.rollback();
+    console.error(`Erro ao mover posições fechadas: ${error.message}`);
     throw error;
   } finally {
     connection.release();
