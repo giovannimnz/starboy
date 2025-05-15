@@ -195,10 +195,101 @@ def get_leverage_brackets_from_binance(symbol=None):
         # Se não houver cache, propaga o erro
         raise Exception(f"Não foi possível obter informações de alavancagem para {symbol or 'todos os símbolos'}")
 
-# Substituir a função de carregamento de arquivo JSON
+def get_leverage_brackets_from_database(symbol=None):
+    """
+    Busca informações de leverage brackets do banco de dados MySQL
+    
+    Args:
+        symbol (str, optional): Símbolo específico para consultar. Se None, retorna todos.
+        
+    Returns:
+        dict: Dicionário com os brackets de alavancagem por símbolo
+    """
+    try:
+        # Configurar conexão MySQL usando variáveis do .env
+        conn = mysql.connector.connect(
+            host=DB_HOST,
+            port=int(DB_PORT),
+            user=DB_USER,
+            password=DB_PASSWORD,
+            database=DB_NAME
+        )
+        cursor = conn.cursor(dictionary=True)
+        
+        # Preparar a consulta SQL
+        sql = """
+        SELECT symbol, bracket, initial_leverage, notional_cap, 
+               notional_floor, maint_margin_ratio, cum
+        FROM alavancagem
+        WHERE corretora = 'binance'
+        """
+        
+        # Adicionar filtro por símbolo se fornecido
+        params = []
+        if symbol:
+            sql += " AND symbol = %s"
+            params.append(symbol)
+        
+        # Ordenar por símbolo e bracket
+        sql += " ORDER BY symbol, bracket ASC"
+        
+        # Executar a consulta
+        cursor.execute(sql, params)
+        
+        # Buscar todos os resultados
+        results = cursor.fetchall()
+        
+        # Organizar os dados por símbolo para fácil acesso
+        brackets_by_symbol = {}
+        
+        for row in results:
+            symbol = row['symbol']
+            
+            # Inicializar o formato apropriado para o símbolo
+            if symbol not in brackets_by_symbol:
+                brackets_by_symbol[symbol] = []
+            
+            # Adicionar o bracket à lista do símbolo
+            bracket_data = {
+                'bracket': row['bracket'],
+                'initialLeverage': row['initial_leverage'],
+                'notionalCap': float(row['notional_cap']),
+                'notionalFloor': float(row['notional_floor']),
+                'maintMarginRatio': float(row['maint_margin_ratio']),
+                'cum': float(row['cum'])
+            }
+            
+            brackets_by_symbol[symbol].append(bracket_data)
+        
+        # Log de depuração para os símbolos encontrados
+        symbol_count = len(brackets_by_symbol)
+        if symbol_count > 0:
+            print(f"[INFO] Encontrados dados de alavancagem para {symbol_count} símbolos no banco de dados")
+            
+            # Exemplo de log detalhado para o símbolo específico se solicitado
+            if symbol and symbol in brackets_by_symbol:
+                brackets = brackets_by_symbol[symbol]
+                max_lev = max([b.get('initialLeverage', 1) for b in brackets], default=1)
+                print(f"[DEBUG] Símbolo: {symbol}, Brackets: {len(brackets)}, Max Leverage: {max_lev}x")
+        else:
+            print(f"[AVISO] Nenhum dado de alavancagem encontrado no banco de dados para {symbol or 'qualquer símbolo'}")
+            # Se não encontrar no banco, tentar na API como fallback
+            return get_leverage_brackets_from_binance(symbol)
+        
+        return brackets_by_symbol
+        
+    except Exception as e:
+        print(f"[ERRO] Falha ao buscar dados de alavancagem do banco de dados: {e}")
+        # Usar API como fallback em caso de erro no banco
+        return get_leverage_brackets_from_binance(symbol)
+    finally:
+        if 'conn' in locals() and conn.is_connected():
+            cursor.close()
+            conn.close()
+
 def load_leverage_brackets(symbol=None):
     """
-    Carrega os brackets de alavancagem da API da Binance
+    Carrega os brackets de alavancagem do banco de dados MySQL
     
     Args:
         symbol (str, optional): Símbolo específico para buscar
@@ -206,8 +297,8 @@ def load_leverage_brackets(symbol=None):
     Returns:
         dict: Dicionário com os brackets de alavancagem por símbolo
     """
-    # Chama a função que busca da API
-    brackets_data = get_leverage_brackets_from_binance(symbol)
+    # Chama a função que busca do banco de dados
+    brackets_data = get_leverage_brackets_from_database(symbol)
     
     # Se foi solicitado um símbolo específico e ele não existir nos dados
     if symbol and symbol not in brackets_data:
