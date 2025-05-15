@@ -745,7 +745,16 @@ async function movePositionToHistory(db, positionId, status, reason) {
     try {
       await connection.beginTransaction();
       
-      // 1. Atualizar status da posição
+      // 1. Verificar se a posição existe
+      const [positionResult] = await connection.query("SELECT * FROM posicoes WHERE id = ?", [positionId]);
+      if (positionResult.length === 0) {
+        console.log(`Posição com ID ${positionId} não encontrada.`);
+        await connection.commit();
+        connection.release();
+        return true;
+      }
+      
+      // 2. Atualizar status e tempo de fechamento
       const formattedDate = formatDateForMySQL(new Date());
       await connection.query(
         `UPDATE posicoes 
@@ -756,13 +765,94 @@ async function movePositionToHistory(db, positionId, status, reason) {
         [status, formattedDate, formattedDate, positionId]
       );
       
-      // 2. Mover todos os registros usando a função existente
-      await moveClosedPositionsAndOrders(db, positionId);
+      // 3. Verificar todas as ordens que referenciam esta posição
+      const [orderResult] = await connection.query("SELECT * FROM ordens WHERE id_posicao = ?", [positionId]);
+      console.log(`Encontradas ${orderResult.length} ordens para posição ${positionId}.`);
       
+      // 4. Se houver ordens, movê-las para fechadas
+      if (orderResult.length > 0) {
+        // Construir esquemas dinâmicos para mover ordens
+        const [renew_sl_firs] = await connection.query(`SHOW COLUMNS FROM ordens LIKE 'renew_sl_firs'`);
+        const [renew_sl_seco] = await connection.query(`SHOW COLUMNS FROM ordens LIKE 'renew_sl_seco'`);
+        const [orign_sig] = await connection.query(`SHOW COLUMNS FROM ordens LIKE 'orign_sig'`);
+        
+        const [dest_renew_sl_firs] = await connection.query(`SHOW COLUMNS FROM ordens_fechadas LIKE 'renew_sl_firs'`);
+        const [dest_renew_sl_seco] = await connection.query(`SHOW COLUMNS FROM ordens_fechadas LIKE 'renew_sl_seco'`);
+        const [dest_orign_sig] = await connection.query(`SHOW COLUMNS FROM ordens_fechadas LIKE 'orign_sig'`);
+        
+        let sourceCols = "tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao, " +
+                       "id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only, close_position, " +
+                       "last_update";
+        
+        let destCols = sourceCols;
+        
+        if (renew_sl_firs.length > 0 && dest_renew_sl_firs.length > 0) {
+          sourceCols += ", renew_sl_firs";
+          destCols += ", renew_sl_firs";
+        }
+        
+        if (renew_sl_seco.length > 0 && dest_renew_sl_seco.length > 0) {
+          sourceCols += ", renew_sl_seco";
+          destCols += ", renew_sl_seco";
+        }
+        
+        if (orign_sig.length > 0 && dest_orign_sig.length > 0) {
+          sourceCols += ", orign_sig";
+          destCols += ", orign_sig";
+        }
+        
+        // Inserir ordens na tabela de histórico
+        await connection.query(
+          `INSERT INTO ordens_fechadas (${destCols})
+           SELECT ${sourceCols} FROM ordens WHERE id_posicao = ?`,
+          [positionId]
+        );
+        console.log(`Ordens com id_posicao ${positionId} movidas para ordens_fechadas.`);
+        
+        // Excluir ordens originais
+        await connection.query("DELETE FROM ordens WHERE id_posicao = ?", [positionId]);
+        console.log(`Ordens com id_posicao ${positionId} excluídas de ordens.`);
+      }
+      
+      // 5. Verificar se posição tem coluna orign_sig
+      const [posColumns] = await connection.query(`SHOW COLUMNS FROM posicoes LIKE 'orign_sig'`);
+      const hasOrignSig = posColumns.length > 0;
+      
+      // 6. Copiar posição para tabela histórica
+      if (hasOrignSig) {
+        await connection.query(
+          `INSERT INTO posicoes_fechadas 
+           (simbolo, quantidade, preco_medio, status, data_hora_abertura, data_hora_fechamento, 
+            side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente, orign_sig)
+           SELECT simbolo, quantidade, preco_medio, status, data_hora_abertura, ?, 
+            side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente, orign_sig
+           FROM posicoes WHERE id = ?`,
+          [formattedDate, positionId]
+        );
+      } else {
+        await connection.query(
+          `INSERT INTO posicoes_fechadas 
+           (simbolo, quantidade, preco_medio, status, data_hora_abertura, data_hora_fechamento, 
+            side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente)
+           SELECT simbolo, quantidade, preco_medio, status, data_hora_abertura, ?, 
+            side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente
+           FROM posicoes WHERE id = ?`,
+          [formattedDate, positionId]
+        );
+      }
+      console.log(`Posição com id ${positionId} movida para posicoes_fechadas.`);
+      
+      // 7. Excluir posição original
+      await connection.query("DELETE FROM posicoes WHERE id = ?", [positionId]);
+      console.log(`Posição com id ${positionId} excluída de posicoes.`);
+      
+      // 8. Finalizar transação
+      await connection.commit();
       console.log(`[SYNC] Posição ${positionId} movida para fechadas com status: ${status}, motivo: ${reason}`);
       
-      await connection.commit();
+      connection.release();
       return true;
+      
     } catch (error) {
       await connection.rollback();
       
@@ -773,13 +863,14 @@ async function movePositionToHistory(db, positionId, status, reason) {
         
         const waitTime = Math.pow(2, attempts) * 1000; // 2s, 4s, 8s
         console.log(`[MONITOR] Bloqueio ao mover posição ${positionId}. Tentativa ${attempts}/${maxAttempts} - Aguardando ${waitTime/1000}s`);
+        
+        connection.release();
         await new Promise(resolve => setTimeout(resolve, waitTime));
       } else {
         console.error(`[MONITOR] Erro ao mover posição ${positionId} para fechadas:`, error);
+        connection.release();
         throw error;
       }
-    } finally {
-      connection.release();
     }
   }
   
