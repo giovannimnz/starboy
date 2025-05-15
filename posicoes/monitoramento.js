@@ -30,14 +30,14 @@ let scheduledJobs = {};
 
 // Função para inicializar o monitoramento
 async function initializeMonitoring() {
-  console.log('[MONITOR] Inicializando sistema de monitoramento...');
+  //console.log('[MONITOR] Inicializando sistema de monitoramento...');
   
   // Sincronizar saldo da conta - ADICIONADO
   try {
-    console.log('[MONITOR] Sincronizando saldo da conta com a corretora...');
+    //console.log('[MONITOR] Sincronizando saldo da conta com a corretora...');
     const result = await syncAccountBalance();
     if (result) {
-      console.log(`[MONITOR] Saldo: ${result.saldo.toFixed(2)} USDT Saldo Base Calculo: ${result.saldo_base_calculo.toFixed(2)} USDT`);
+      console.log(`[MONITOR] Saldo: ${result.saldo.toFixed(2)} USDT | Saldo Base Calculo: ${result.saldo_base_calculo.toFixed(2)} USDT`);
     }
   } catch (error) {
     console.error('[MONITOR] Erro ao sincronizar saldo da conta:', error);

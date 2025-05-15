@@ -896,7 +896,7 @@ async function getPrice(symbol) {
  */
 async function updateLeverageBracketsInDatabase(forceUpdate = false) {
   try {
-    console.log('[API] Atualizando dados de alavancagem no banco de dados...');
+    //console.log('[API] Atualizando dados de alavancagem no banco de dados...');
     
     // 1. Obter conexão com o banco de dados
     const db = await getDatabaseInstance();
