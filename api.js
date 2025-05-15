@@ -452,7 +452,7 @@ async function getAllOpenPositions(symbol = null) {
     const response = await axios.get(url, { headers: { "X-MBX-APIKEY": apiKey } });
 
     let positions = response.data.filter(pos => parseFloat(pos.positionAmt) !== 0).map(pos => {
-      console.log(`Dados brutos da posição retornados pela API para ${pos.symbol}:`, pos);
+      /*console.log(`Dados brutos da posição retornados pela API para ${pos.symbol}:`, pos);
       return {
         simbolo: pos.symbol,
         quantidade: Math.abs(parseFloat(pos.positionAmt)), // Sempre positivo
@@ -466,7 +466,7 @@ async function getAllOpenPositions(symbol = null) {
         margin_type: pos.marginType, // Capturando o tipo de margem (crossed ou isolada)
         data_hora_ultima_atualizacao: new Date().toISOString(),
         preco_medio: parseFloat(pos.entryPrice)
-      };
+      };*/
     });
 
     if (symbol) {

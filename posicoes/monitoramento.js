@@ -647,7 +647,7 @@ async function handleOrderUpdate(orderMsg, db) {
         }
       }
       
-      // Mover registros para tabelas históricas
+      // Mover registros para tabelas fechadas
       try {
         await moveClosedPositionsAndOrders(db, order.id_posicao);
         console.log(`[MONITOR] Posição ${order.id_posicao} fechada e movida para histórico`);
@@ -712,7 +712,7 @@ async function handleAccountUpdate(message, db) {
   }
 }
 
-// Função para mover posição para histórico se não existir
+// Função para mover posição para tabelas de fechadas (versão simplificada)
 async function movePositionToHistory(db, positionId, status, reason) {
   let attempts = 0;
   const maxAttempts = 3;
@@ -738,34 +738,13 @@ async function movePositionToHistory(db, positionId, status, reason) {
         [status, formattedDate, formattedDate, positionId]
       );
       
-      // 2. Mover posição e ordens para histórico - com timeout mais longo
-      try {
-        await Promise.race([
-          moveClosedPositionsAndOrders(db, positionId),
-          new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Timeout ao mover registros')), 20000)
-          )
-        ]);
-      } catch (moveError) {
-        // Se for timeout ou erro de lock, fazer rollback e tentar novamente
-        if (moveError.code === 'ER_LOCK_WAIT_TIMEOUT' || 
-            moveError.message === 'Timeout ao mover registros') {
-          throw moveError; // Propagar para ser tratado no catch externo
-        }
-        // Outros erros, registrar mas continuar
-        console.error(`[MONITOR] Aviso ao mover registros: ${moveError.message}`);
-      }
+      // 2. Mover posição e ordens para tabelas _fechadas
+      await moveClosedPositionsAndOrders(db, positionId);
       
-      // 3. Registrar o motivo em uma tabela de logs
-      await connection.query(
-        `INSERT INTO historico_posicoes 
-         (id_posicao, tipo_evento, data_hora_evento, resultado) 
-         VALUES (?, ?, ?, ?)`,
-        [positionId, 'CLOSE', formattedDate, reason]
-      );
+      // Registrar mensagem de log em vez de inserir em historico_posicoes
+      console.log(`[MONITOR] Posição ${positionId} fechada: ${reason} em ${formattedDate}`);
       
       await connection.commit();
-      console.log(`[MONITOR] Posição ${positionId} movida para histórico: ${reason}`);
       return true;
       
     } catch (error) {
@@ -781,7 +760,7 @@ async function movePositionToHistory(db, positionId, status, reason) {
         await new Promise(resolve => setTimeout(resolve, waitTime));
       } else {
         // Se for outro tipo de erro, não tentar novamente
-        console.error(`[MONITOR] Erro ao mover posição ${positionId} para histórico:`, error);
+        console.error(`[MONITOR] Erro ao mover posição ${positionId} para fechadas:`, error);
         throw error;
       }
     } finally {
