@@ -18,7 +18,7 @@ async function initPool() {
       connectionLimit: 10,
       queueLimit: 0
     });
-    console.log(`Conexão com banco de dados MySQL estabelecida em: ${process.env.DB_HOST}:${process.env.DB_PORT}`);
+    //console.log(`Conexão com banco de dados MySQL estabelecida em: ${process.env.DB_HOST}:${process.env.DB_PORT}`);
   }
   return dbPool;
 }
