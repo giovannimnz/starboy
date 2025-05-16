@@ -264,13 +264,13 @@ def get_leverage_brackets_from_database(symbol=None):
         # Log de depuração para os símbolos encontrados
         symbol_count = len(brackets_by_symbol)
         if symbol_count > 0:
-            print(f"[INFO] Encontrados dados de alavancagem para {symbol_count} símbolos no banco de dados")
+            #print(f"[INFO] Encontrados dados de alavancagem para {symbol_count} símbolos no banco de dados")
             
             # Exemplo de log detalhado para o símbolo específico se solicitado
             if symbol and symbol in brackets_by_symbol:
                 brackets = brackets_by_symbol[symbol]
                 max_lev = max([b.get('initialLeverage', 1) for b in brackets], default=1)
-                print(f"[DEBUG] Símbolo: {symbol}, Brackets: {len(brackets)}, Max Leverage: {max_lev}x")
+                #print(f"[DEBUG] Símbolo: {symbol}, Brackets: {len(brackets)}, Max Leverage: {max_lev}x")
         else:
             print(f"[AVISO] Nenhum dado de alavancagem encontrado no banco de dados para {symbol or 'qualquer símbolo'}")
             # Se não encontrar no banco, tentar na API como fallback
@@ -346,7 +346,7 @@ def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent, si
     
     # Alavancagem para perder exatamente 100% da margem alocada no stop loss
     target_leverage = int(1 / sl_distance_pct)
-    print(f"[DEBUG] {symbol}: Target alavancagem inicial: {target_leverage}x")
+    #print(f"[DEBUG] {symbol}: Target alavancagem inicial: {target_leverage}x")
     
     # Buscar os brackets específicos para este símbolo apenas para conhecer a alavancagem máxima
     try:
@@ -377,7 +377,7 @@ def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent, si
                 bracket_leverage = int(bracket.get("initialLeverage", 1))
                 max_leverage = max(max_leverage, bracket_leverage)
         
-        print(f"[INFO] Alavancagem máxima para {cleaned_symbol}: {max_leverage}x")
+        #print(f"[INFO] Alavancagem máxima para {cleaned_symbol}: {max_leverage}x")
         
     except Exception as e:
         print(f"[AVISO] Erro ao obter alavancagem máxima: {e}. Usando valor padrão 125x.")
@@ -431,7 +431,7 @@ def save_to_database(trade_data):
         cursor.execute(sql, values)
         conn.commit()
         
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Operação salva no banco de dados: {trade_data['symbol']}")
+        #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Operação salva no banco de dados: {trade_data['symbol']}")
         
     except Exception as e:
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Erro ao salvar no banco: {e}")
