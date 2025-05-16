@@ -1,16 +1,10 @@
 from quart import Quart, request, jsonify
 from telethon import TelegramClient
 from datetime import datetime
-from senhas import api_hash, api_id, Bearer_Token, API_KEY, API_SECRET, API_URL
+from senhas import api_hash, api_id, Bearer_Token
 import asyncio
-import json
 import os
-import math
 import mysql.connector
-import requests
-import hmac
-import hashlib
-import time
 from urllib.parse import urlencode
 from dotenv import load_dotenv
 import pathlib
@@ -75,125 +69,6 @@ def clean_symbol(symbol):
 async def send_telegram_message(chat_id, message):
     entity = await client.get_entity(chat_id)
     await client.send_message(entity, message, parse_mode='markdown')
-
-# Definir limites de risco por símbolo (em porcentagem do capital total)
-RISK_LIMITS = {
-    "BTCUSDT": 0.25,  # 25% para BTCUSDT
-    "PAXGUSDT": 0.50,  # 50% para PAXGUSDT
-    "default": 0.10   # 10% para outros símbolos
-}
-
-def get_binance_signature(query_string):
-    """
-    Gera a assinatura HMAC-SHA256 necessária para autenticar requisições à API Binance
-    """
-    signature = hmac.new(
-        API_SECRET.encode('utf-8'),
-        query_string.encode('utf-8'),
-        hashlib.sha256
-    ).hexdigest()
-    return signature
-
-def get_leverage_brackets_from_binance(symbol=None):
-    """
-    Busca informações de leverage brackets diretamente da API da Binance
-    
-    Args:
-        symbol (str, optional): Símbolo específico para consultar. Se None, retorna todos.
-        
-    Returns:
-        dict: Dicionário com os brackets de alavancagem por símbolo
-    """
-    # Cache TTL (Time To Live) em segundos - 3600 = 1 hora
-    CACHE_TTL = 3600
-    
-    # Verificar se os dados estão em cache e se ainda são válidos
-    current_time = time.time()
-    cache_key = symbol if symbol else "ALL_SYMBOLS"
-    
-    if cache_key in leverage_brackets_cache:
-        if current_time < cache_expiry.get(cache_key, 0):
-            print(f"[INFO] Usando dados de brackets de alavancagem em cache para {cache_key}")
-            return leverage_brackets_cache[cache_key]
-    
-    # Prepara a requisição para a API da Binance
-    endpoint = f"{API_URL}/v1/leverageBracket"
-    timestamp = int(time.time() * 1000)
-    params = {'timestamp': timestamp}
-    
-    # Adiciona o símbolo se especificado
-    if symbol:
-        params['symbol'] = symbol
-    
-    # Cria a string de consulta para assinatura
-    query_string = urlencode(params)
-    
-    # Gera a assinatura
-    signature = get_binance_signature(query_string)
-    
-    # Adiciona a assinatura à query string
-    full_url = f"{endpoint}?{query_string}&signature={signature}"
-    
-    # Configura os headers com a API key
-    headers = {
-        'X-MBX-APIKEY': API_KEY
-    }
-    
-    try:
-        # Faz a requisição para a API
-        response = requests.get(full_url, headers=headers)
-        response.raise_for_status()  # Levanta exceção para códigos de erro HTTP
-        
-        data = response.json()
-        print(f"[DEBUG] Resposta da API Binance: {json.dumps(data)[:200]}...")
-        
-        # Organiza os dados por símbolo para fácil acesso
-        brackets_by_symbol = {}
-        
-        # IMPORTANTE: A resposta para um único símbolo é diferente de múltiplos símbolos
-        if symbol:
-            # Se for um único símbolo, a resposta é uma lista com um único item
-            if isinstance(data, list) and len(data) > 0:
-                for item in data:
-                    sym = item.get('symbol')
-                    if sym:
-                        brackets_by_symbol[sym] = item.get('brackets', [])
-            else:
-                # Ou pode ser diretamente um objeto
-                sym = data.get('symbol', symbol)
-                brackets_by_symbol[sym] = data.get('brackets', [])
-        else:
-            # Para múltiplos símbolos, a resposta é sempre uma lista
-            for item in data:
-                sym = item.get('symbol')
-                if sym:
-                    brackets_by_symbol[sym] = item.get('brackets', [])
-        
-        # Depuração para verificar o que foi processado
-        for sym, brackets in brackets_by_symbol.items():
-            max_lev = 1
-            for bracket in brackets:
-                if "initialLeverage" in bracket:
-                    max_lev = max(max_lev, bracket["initialLeverage"])
-            print(f"[DEBUG] Símbolo: {sym}, Brackets: {len(brackets)}, Max Leverage: {max_lev}x")
-        
-        # Salva no cache
-        leverage_brackets_cache[cache_key] = brackets_by_symbol
-        cache_expiry[cache_key] = current_time + CACHE_TTL
-        
-        print(f"[INFO] Dados de alavancagem da Binance atualizados para {cache_key}")
-        return brackets_by_symbol
-        
-    except Exception as e:
-        print(f"[ERRO] Falha ao buscar dados de alavancagem da Binance: {e}")
-        
-        # Caso tenha dados em cache, mesmo vencidos, use-os como fallback
-        if cache_key in leverage_brackets_cache:
-            print(f"[INFO] Usando dados em cache vencidos como fallback para {cache_key}")
-            return leverage_brackets_cache[cache_key]
-        
-        # Se não houver cache, propaga o erro
-        raise Exception(f"Não foi possível obter informações de alavancagem para {symbol or 'todos os símbolos'}")
 
 def get_leverage_brackets_from_database(symbol=None):
     """
@@ -264,24 +139,20 @@ def get_leverage_brackets_from_database(symbol=None):
         # Log de depuração para os símbolos encontrados
         symbol_count = len(brackets_by_symbol)
         if symbol_count > 0:
-            #print(f"[INFO] Encontrados dados de alavancagem para {symbol_count} símbolos no banco de dados")
             
             # Exemplo de log detalhado para o símbolo específico se solicitado
             if symbol and symbol in brackets_by_symbol:
                 brackets = brackets_by_symbol[symbol]
                 max_lev = max([b.get('initialLeverage', 1) for b in brackets], default=1)
-                #print(f"[DEBUG] Símbolo: {symbol}, Brackets: {len(brackets)}, Max Leverage: {max_lev}x")
         else:
             print(f"[AVISO] Nenhum dado de alavancagem encontrado no banco de dados para {symbol or 'qualquer símbolo'}")
-            # Se não encontrar no banco, tentar na API como fallback
-            return get_leverage_brackets_from_binance(symbol)
         
         return brackets_by_symbol
         
     except Exception as e:
         print(f"[ERRO] Falha ao buscar dados de alavancagem do banco de dados: {e}")
         # Usar API como fallback em caso de erro no banco
-        return get_leverage_brackets_from_binance(symbol)
+
     finally:
         if 'conn' in locals() and conn.is_connected():
             cursor.close()
