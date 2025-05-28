@@ -324,8 +324,8 @@ async function processSignal(db, signal) {
     if (chat_id) {
       try {
         const triggerCondition = side.toUpperCase() === 'COMPRA' || side.toUpperCase() === 'BUY'
-            ? `preço acima de ${entry_price}`
-            : `preço abaixo de ${entry_price}`;
+            ? `Acima de ${entry_price}`
+            : `Abaixo de ${entry_price}`;
 
         // Opções de envio com reply_to_message_id se originalMessageId (vindo de signal.message_id) estiver disponível
         const telegramOptions = originalMessageId ? { reply_to_message_id: originalMessageId } : {};
@@ -333,11 +333,11 @@ async function processSignal(db, signal) {
         const sentMessage = await bot.telegram.sendMessage(chat_id,
             `🔄 Sinal Registrado para ${symbol}!\n\n` +
             `🆔 Sinal Ref: WEBHOOK_${id}\n` +
-            `Direction: ${side}\n` +
-            `Entry: ${triggerCondition.replace(entry_price, formatDecimal(entry_price))}\n` +
+            `Direção: ${side}\n` +
+            `Alavancagem: ${leverage}x\n` +
+            `Entrada: ${triggerCondition.replace(entry_price, formatDecimal(entry_price))}\n` +
             `TP: ${formatDecimal(tp_price)}\n` +
-            `SL: ${formatDecimal(sl_price)}\n` +
-            `Leverage: ${leverage}x\n\n` +
+            `SL: ${formatDecimal(sl_price)}\n\n` +
             `Aguardando gatilho de preço...`,
             telegramOptions
         );
@@ -560,8 +560,8 @@ async function handleOrderUpdate(orderMsg, db) {
             oppositeSide,
             slPrice,
             null,            // price = null para STOP_MARKET
-            true,            // reduceOnly = true
-            false            // closePosition = false
+            false,            // reduceOnly = true
+            true            // closePosition = false
         );
 
         console.log(`[MONITOR] Ordem SL (STOP_MARKET) criada na corretora: ${slResponse.data.orderId}`);
@@ -596,8 +596,8 @@ async function handleOrderUpdate(orderMsg, db) {
             oppositeSide,
             tpPrice,
             tpPrice,  // stopPrice igual ao price para TP
-            true,     // reduceOnly = true
-            false     // closePosition = false
+            false,     // reduceOnly = true
+            true     // closePosition = false
         );
 
         console.log(`[MONITOR] Ordem TP (TAKE_PROFIT_MARKET) criada na corretora: ${tpResponse.data.orderId}`);
@@ -869,8 +869,8 @@ async function onPriceUpdate(symbol, currentPrice, db) {
   try {
     // Busca sinais pendentes para o símbolo atual
     // Assumindo que db.query retorna [rows, fields] ou similar, onde rows é o primeiro elemento.
-    const [pendingSignalsResult] = await db.query(` 
-      SELECT id, symbol, side, leverage, capital_pct, entry_price, 
+    const [pendingSignalsResult] = await db.query(`
+      SELECT id, symbol, side, leverage, capital_pct, entry_price,
              tp_price, sl_price, chat_id, timeframe, created_at
       FROM webhook_signals
       WHERE symbol = ?
@@ -879,37 +879,36 @@ async function onPriceUpdate(symbol, currentPrice, db) {
     // Se pendingSignalsResult for undefined (nenhuma linha), trate como array vazio.
     const pendingSignals = pendingSignalsResult || [];
 
-
     console.log(`[PRICE UPDATE] Encontrados ${pendingSignals.length} sinais pendentes para ${symbol}`);
 
-    // --- INÍCIO DAS MODIFICAÇÕES SUGERIDAS ---
+    // --- INÍCIO DAS MODIFICAÇÕES SUGERIDAS (do seu código original) ---
     if (pendingSignals.length === 0) {
       // Adicionar um contador para controlar quantas vezes vimos "0 sinais" para este símbolo
-      if (!websocketEmptyCheckCounter[symbol]) {
+      if (!websocketEmptyCheckCounter[symbol]) { // websocketEmptyCheckCounter deve estar definido no escopo acessível
         websocketEmptyCheckCounter[symbol] = 1;
       } else {
         websocketEmptyCheckCounter[symbol]++;
       }
-      
+
       console.log(`[MONITOR] Símbolo ${symbol} sem sinais pendentes, verificação ${websocketEmptyCheckCounter[symbol]}/3.`);
 
       // Após 3 verificações sem sinais, tentar fechar o WebSocket
       if (websocketEmptyCheckCounter[symbol] >= 3) {
         console.log(`[MONITOR] Símbolo ${symbol} sem sinais pendentes por 3 verificações consecutivas. Tentando fechar WebSocket.`);
         // A função checkAndCloseWebsocket precisa ser definida em outro lugar
-        await checkAndCloseWebsocket(db, symbol); 
+        await checkAndCloseWebsocket(db, symbol);
         delete websocketEmptyCheckCounter[symbol]; // Limpar o contador após tentar fechar
       }
-      
+
       return; // Retornar cedo para evitar processamento desnecessário
     } else {
       // Reiniciar o contador se encontrarmos sinais
-      if (websocketEmptyCheckCounter[symbol]) {
+      if (websocketEmptyCheckCounter && websocketEmptyCheckCounter[symbol]) { // Adicionada verificação de existência de websocketEmptyCheckCounter
         console.log(`[MONITOR] Sinais pendentes encontrados para ${symbol}. Resetando contador de WebSocket.`);
         delete websocketEmptyCheckCounter[symbol];
       }
     }
-    // --- FIM DAS MODIFICAÇÕES SUGERIDAS ---
+    // --- FIM DAS MODIFICAÇÕES SUGERIDAS (do seu código original) ---
 
     // Para cada sinal pendente, verifica os gatilhos (Restante do código original)
     for (const signal of pendingSignals) {
@@ -927,14 +926,15 @@ async function onPriceUpdate(symbol, currentPrice, db) {
                             (isSell && currentPrice <= entryPrice);
 
       // Verificar se SL foi atingido (cancelar a entrada)
-      const slHit = (isBuy && currentPrice <= slPrice) || 
+      const slHit = (isBuy && currentPrice <= slPrice) ||
                     (isSell && currentPrice >= slPrice);
 
       // Verificar se o tempo máximo foi excedido (timeout)
       const createdAt = new Date(signal.created_at);
       const now = new Date();
       const signalAgeMs = now.getTime() - createdAt.getTime();
-      const timeframeMs = timeframeToMs(signal.timeframe); // Certifique-se que timeframeToMs está definida
+      // timeframeToMs deve estar definida no escopo acessível
+      const timeframeMs = timeframeToMs(signal.timeframe);
       const maxLifetimeMs = timeframeMs > 0 ? timeframeMs * 3 : 0; // Evitar NaN se timeframeMs for 0
       const timeoutHit = maxLifetimeMs > 0 && signalAgeMs > maxLifetimeMs;
 
@@ -942,22 +942,24 @@ async function onPriceUpdate(symbol, currentPrice, db) {
       const elapsedMin = Math.floor(signalAgeMs / (60 * 1000));
       const maxLifetimeMin = maxLifetimeMs > 0 ? Math.floor(maxLifetimeMs / (60 * 1000)) : 0;
       const timeRemainingMin = timeoutHit || maxLifetimeMs === 0 ? 0 : Math.floor((maxLifetimeMs - signalAgeMs) / (60 * 1000));
-      
+
       console.log(`[PRICE UPDATE] Sinal ${signal.id} (${symbol}): Preço Atual=${currentPrice}, Entrada=${entryPrice}, SL=${slPrice}. Gatilhos: Trigger=${shouldTrigger}, SLHit=${slHit}, Timeout=${timeoutHit} | Tempo: ${elapsedMin}/${maxLifetimeMin} min`);
 
       if (shouldTrigger) {
         const signalKey = `${signal.id}_${signal.symbol}`;
-        
+
+        // processingSignals deve estar definido no escopo acessível
         if (processingSignals.has(signalKey)) {
           console.log(`[PRICE UPDATE] Sinal ${signalKey} já está sendo processado, aguardando...`);
           continue;
         }
-        
+
         processingSignals.add(signalKey);
-        
+
         try {
           console.log(`[PRICE UPDATE] ACIONANDO entrada para sinal ${signalKey} a ${currentPrice}`);
-          await executeEntryOrder(db, signal, currentPrice); // executeEntryOrder deve lidar com a mudança de status do sinal
+          // executeEntryOrder deve estar definida no escopo acessível e lidar com a mudança de status do sinal
+          await executeEntryOrder(db, signal, currentPrice);
         } catch (error) {
           console.error(`[PRICE UPDATE] Erro ao executar entrada para ${signalKey}: ${error.message}`);
           // Considere se precisa atualizar o status do sinal para ERRO aqui também ou se executeEntryOrder já faz
@@ -967,14 +969,19 @@ async function onPriceUpdate(symbol, currentPrice, db) {
           setTimeout(() => {
             processingSignals.delete(signalKey);
             console.log(`[PRICE UPDATE] Sinal ${signalKey} removido do processamento após timeout.`);
-          }, 5000); 
+          }, 5000);
         }
+      // ***** INÍCIO DA IMPLEMENTAÇÃO SOLICITADA *****
       } else if (slHit) {
-        console.log(`[PRICE UPDATE] ❌ SL ${slPrice} atingido antes da entrada para ${signal.id} (${symbol}). Preço atual: ${currentPrice}. Cancelando sinal.`);
-        await cancelSignal(db, signal.id, 'SL_BEFORE_ENTRY', `Stop loss (${slPrice}) atingido antes da entrada. Preço: ${currentPrice}`);
+        console.log(`[PRICE UPDATE] ❌ SL ${formatDecimal(slPrice, 4)} atingido antes da entrada para ${signal.id} (${symbol}).`); // Linha modificada conforme sua solicitação
+        // cancelSignal deve estar definida no escopo acessível
+        await cancelSignal(db, signal.id, 'SL_BEFORE_ENTRY',
+          `Stop loss (${formatDecimal(slPrice, 4)}) atingido antes da entrada. Preço: ${formatDecimal(currentPrice, 4)}`); // Linha modificada conforme sua solicitação
+      // ***** FIM DA IMPLEMENTAÇÃO SOLICITADA *****
       } else if (timeoutHit) {
         console.log(`[PRICE UPDATE] ⏱️ TIMEOUT para sinal ${signal.id} (${symbol}). Ativo por ${elapsedMin} min (máx: ${maxLifetimeMin} min). Cancelando.`);
-        await cancelSignal(db, signal.id, 'TIMEOUT_ENTRY', 
+        // cancelSignal deve estar definida no escopo acessível
+        await cancelSignal(db, signal.id, 'TIMEOUT_ENTRY',
           `Entrada não acionada dentro do limite de tempo (${signal.timeframe} * 3 = ${maxLifetimeMin} min)`);
       } else {
         if (maxLifetimeMs > 0) {
@@ -1107,8 +1114,8 @@ async function triggerMarketEntry(db, entry, currentPrice) {
             binanceOppositeSide,
             slPriceVal,
             null,           // price = null para STOP_MARKET
-            true,           // reduceOnly = true
-            false           // closePosition = false
+            false,           // reduceOnly = true
+            true           // closePosition = false
         );
 
         console.log(`[MONITOR] Ordem SL (STOP_MARKET) criada: ${slResponse.data.orderId}`);
@@ -1126,8 +1133,8 @@ async function triggerMarketEntry(db, entry, currentPrice) {
           simbolo: entry.simbolo,
           tipo_ordem_bot: 'STOP_LOSS',
           target: null,
-          reduce_only: true,
-          close_position: false,
+          reduce_only: false,
+          close_position: true,
           last_update: new Date().toISOString(),
           orign_sig: `WEBHOOK_${entry.webhook_id}`
         };
@@ -1151,8 +1158,8 @@ async function triggerMarketEntry(db, entry, currentPrice) {
             binanceOppositeSide,
             tpPriceVal,
             tpPriceVal,      // price igual a stopPrice para TAKE_PROFIT_MARKET
-            true,            // reduceOnly = true
-            false            // closePosition = false
+            false,            // reduceOnly = true
+            true            // closePosition = false
         );
 
         console.log(`[MONITOR] Ordem TP (TAKE_PROFIT_MARKET) criada: ${tpResponse.data.orderId}`);
@@ -1191,13 +1198,14 @@ async function triggerMarketEntry(db, entry, currentPrice) {
       if (entry.chat_id) {
         try {
           await bot.telegram.sendMessage(entry.chat_id,
-              `✅ Entrada EXECUTADA para ${entry.simbolo}\n\n` +
+              `✅ Entrada executada para ${entry.simbolo}\n\n` +
               `Direção: ${position.side}\n` +
+              `Alavancagem: ${entry.leverage}x\n` +
               `Preço de execução: ${executedPrice}\n` +
               `TP: ${tpPriceVal}\n` +
               `SL: ${slPriceVal}\n` +
-              `Quantidade: ${executedQty}\n` +
-              `Alavancagem: ${entry.leverage}x`
+              `Quantidade: ${executedQty}\n`,
+              
           );
         } catch (telegramError) {
           console.error(`[MONITOR] Erro ao enviar mensagem Telegram:`, telegramError);
@@ -1554,9 +1562,9 @@ async function executeEntryOrder(db, signal, currentPrice) {
 
       // Criar ordem SL
       try {
-        const slResponse = await newStopOrder(signal.symbol, executedQty, oppositeSide, slPrice, null, true, false); // Ajustar parâmetros conforme sua newStopOrder
+        const slResponse = await newStopOrder(signal.symbol, executedQty, oppositeSide, slPrice, null, false, true); // Ajustar parâmetros conforme sua newStopOrder
         if (slResponse && slResponse.data && slResponse.data.orderId) {
-            const slOrderData = { /* ... dados da ordem SL ... */ tipo_ordem_bot: 'STOP_LOSS', id_posicao: positionId, id_externo: slResponse.data.orderId, orign_sig: `WEBHOOK_${signal.id}` };
+            const slOrderData = { simbolo: signal.symbol, side: oppositeSide, quantidade: executedQty, preco: slPrice, status: 'NEW', tipo_ordem: 'STOP_MARKET', tipo_ordem_bot: 'STOP_LOSS', id_posicao: positionId, id_externo: slResponse.data.orderId, data_hora_criacao: (slResponse.data && slResponse.data.transactTime) ? new Date(slResponse.data.transactTime).toISOString() : new Date().toISOString(), last_update: new Date().toISOString(), orign_sig: `WEBHOOK_${signal.id}`, reduce_only: true, close_position: true };
             await insertNewOrder(connection, slOrderData);
             await connection.query(`UPDATE webhook_signals SET sl_order_id = ? WHERE id = ?`, [slResponse.data.orderId, signal.id]);
             console.log(`[MONITOR] Ordem SL criada e registrada para Sinal ID ${signal.id}. ID Externo: ${slResponse.data.orderId}`);
@@ -1575,9 +1583,9 @@ async function executeEntryOrder(db, signal, currentPrice) {
       }
 
       try {
-        const tpResponse = await newStopOrder(signal.symbol, executedQty, oppositeSide, tpPrice, tpPrice, true, false); // Ajustar parâmetros
+        const tpResponse = await newStopOrder(signal.symbol, executedQty, oppositeSide, tpPrice, tpPrice, false, true); // Ajustar parâmetros
         if (tpResponse && tpResponse.data && tpResponse.data.orderId) {
-            const tpOrderData = { /* ... dados da ordem TP ... */ tipo_ordem_bot: 'TAKE_PROFIT', id_posicao: positionId, id_externo: tpResponse.data.orderId, orign_sig: `WEBHOOK_${signal.id}` };
+            const tpOrderData = { simbolo: signal.symbol, side: oppositeSide, quantidade: executedQty, preco: tpPrice, status: 'NEW', tipo_ordem: 'TAKE_PROFIT_MARKET', tipo_ordem_bot: 'TAKE_PROFIT', id_posicao: positionId, id_externo: tpResponse.data.orderId, data_hora_criacao: (tpResponse.data && tpResponse.data.transactTime) ? new Date(tpResponse.data.transactTime).toISOString() : new Date().toISOString(), last_update: new Date().toISOString(), orign_sig: `WEBHOOK_${signal.id}`, reduce_only: true, close_position: true };
             await insertNewOrder(connection, tpOrderData);
             await connection.query(`UPDATE webhook_signals SET tp_order_id = ? WHERE id = ?`, [tpResponse.data.orderId, signal.id]);
             console.log(`[MONITOR] Ordem TP criada e registrada para Sinal ID ${signal.id}. ID Externo: ${tpResponse.data.orderId}`);
@@ -1615,13 +1623,13 @@ async function executeEntryOrder(db, signal, currentPrice) {
           const amountInUsdt = executedQty * executedPrice;
 
           await bot.telegram.sendMessage(signal.chat_id,
-              `✅ Entrada EXECUTADA para ${signal.symbol} (Sinal ID ${signal.id})\n\n` +
+              `✅ Entrada EXECUTADA para ${signal.symbol} \n(Sinal ID ${signal.id})\n\n` +
               `Direção: ${signal.side}\n` +
-              `Preço de Execução: ${executedPrice.toFixed(pricePrecision || 2)}\n` +
+              `Alavancagem: ${signal.leverage}x` +
+              `Entrada: ${executedPrice.toFixed(pricePrecision || 2)}\n` +
               `Take Profit: ${tpPrice.toFixed(pricePrecision || 2)}\n` +
               `Stop Loss: ${slPrice.toFixed(pricePrecision || 2)}\n` +
-              `Quantidade: ${formatDecimal(amountInUsdt, 2)} USDT\n` +
-              `Alavancagem: ${signal.leverage}x`,
+              `Quantidade: ${formatDecimal(amountInUsdt, 2)} USDT\n`,
               telegramOptions
           );
           console.log(`[MONITOR] Notificação de execução enviada para Sinal ID ${signal.id} (reply to: ${replyToMessageId || 'N/A'}).`);
@@ -1715,9 +1723,32 @@ async function executeEntryOrder(db, signal, currentPrice) {
   }
 }
 
-async function cancelSignal(db, signalId, statusParam, reason) { 
+const cancelingSignals = new Set();
+
+async function cancelSignal(db, signalId, statusParam, reason) {
+  // Verificar se este sinal já está sendo cancelado
+  const lockKey = `cancel_${signalId}`;
+  if (cancelingSignals.has(lockKey)) {
+    console.log(`[MONITOR] Sinal ID ${signalId} já está sendo cancelado, ignorando chamada duplicada.`);
+    return false; // Evitar processamento duplicado
+  }
+
   try {
-    console.log(`[MONITOR] Cancelando sinal ID ${signalId} (Status informado no parâmetro: ${statusParam}): ${reason}`);
+    // Adicionar à lista de sinais em processamento
+    cancelingSignals.add(lockKey);
+
+    console.log(`[MONITOR] Iniciando cancelamento do sinal ID ${signalId} (Status informado no parâmetro: ${statusParam}): ${reason}`);
+
+    // Verificar se o sinal já não está cancelado no banco de dados
+    const [currentStatusRows] = await db.query(`
+      SELECT status FROM webhook_signals WHERE id = ?
+    `, [signalId]);
+
+    if (currentStatusRows.length === 0) {
+      console.warn(`[MONITOR] Sinal ID ${signalId} não encontrado no banco de dados para cancelamento.`);
+    } else if (currentStatusRows[0].status === 'CANCELED') {
+      console.log(`[MONITOR] Sinal ID ${signalId} já está com status CANCELED no banco de dados.`);
+    }
 
     const [updateResult] = await db.query(`
       UPDATE webhook_signals
@@ -1727,45 +1758,62 @@ async function cancelSignal(db, signalId, statusParam, reason) {
     `, [reason, signalId]);
 
     if (updateResult.affectedRows === 0) {
-        console.warn(`[MONITOR] Tentativa de cancelar sinal ID ${signalId}, mas nenhum registro foi afetado. O sinal já poderia estar cancelado ou não existir.`);
+      console.warn(`[MONITOR] Tentativa de atualizar sinal ID ${signalId} para CANCELED, mas nenhum registro foi afetado. O sinal pode não existir ou já estar cancelado.`);
     } else {
-        console.log(`[MONITOR] Sinal ID ${signalId} atualizado para CANCELED no banco de dados.`);
+      console.log(`[MONITOR] Sinal ID ${signalId} atualizado para CANCELED no banco de dados.`);
     }
-    
+
     let signalData = null;
-    let symbolToVerify = null; // Para a lógica de fechar websocket
-    
+    let symbolToVerify = null;
+
     const [signalInfoRows] = await db.query(`
-      SELECT symbol, chat_id, registry_message_id 
-      FROM webhook_signals 
+      SELECT symbol, chat_id, registry_message_id
+      FROM webhook_signals
       WHERE id = ? LIMIT 1
     `, [signalId]);
 
     if (signalInfoRows && signalInfoRows.length > 0) {
-        signalData = signalInfoRows[0];
-        symbolToVerify = signalData.symbol; // Guardar símbolo para verificação do websocket
+      signalData = signalInfoRows[0];
+      symbolToVerify = signalData.symbol;
     }
-    
-    if (signalData && signalData.chat_id && bot) { // Adicionado 'bot' na condição
+
+    // Início da implementação da formatação de preço
+    if (signalData && signalData.chat_id && bot) { // Assumindo que 'bot' é uma variável global/acessível
       try {
-        const telegramOptions = signalData.registry_message_id 
-            ? { reply_to_message_id: signalData.registry_message_id } 
-            : {};
-        
+        const telegramOptions = signalData.registry_message_id
+          ? { reply_to_message_id: signalData.registry_message_id }
+          : {};
+
+        // Extrair preço do motivo se existir para formatar corretamente
+        let formattedReason = reason;
+        if (reason && reason.includes('\nPreço:')) { // Adicionada verificação se 'reason' existe
+          // Extrair valores numéricos para formatação
+          formattedReason = reason.replace(/(\d+\.\d+)/g, match => {
+            // Certifique-se que formatDecimal está definida e funciona como esperado
+            return formatDecimal(parseFloat(match), 4); // Usando 4 casas decimais como no seu exemplo
+          });
+        }
+
         await bot.telegram.sendMessage(signalData.chat_id,
-          `⚠️ Sinal para ${signalData.symbol || 'N/A'} CANCELADO ⚠️ (ID: ${signalId})\n\n` +
-          `Motivo: ${reason}`,
+          `⚠️ Sinal para ${signalData.symbol || 'N/A'} Cancelado ⚠️ \n(ID: ${signalId})\n\n` +
+          `Motivo: ${formattedReason}`, // Usando formattedReason aqui
           telegramOptions
         );
         console.log(`[MONITOR] Notificação de cancelamento enviada para Sinal ID ${signalId} (reply to: ${signalData.registry_message_id || 'N/A'}).`);
       } catch (telegramError) {
-        console.error(`[MONITOR] Erro ao enviar notificação Telegram para cancelamento do sinal ID ${signalId}:`, telegramError);
+        // Atualizado o log de erro para ser mais consistente com o seu exemplo
+        console.error(`[MONITOR] Erro ao enviar notificação Telegram para cancelamento do sinal ID ${signalId}: ${telegramError.message}`, telegramError);
       }
     } else {
-        console.log(`[MONITOR] Não foi possível enviar notificação de cancelamento para o sinal ID ${signalId}: chat_id ou informações do sinal não encontradas, ou bot não disponível.`);
+      let logMessage = `[MONITOR] Não foi possível enviar notificação de cancelamento para o sinal ID ${signalId}: `;
+      if (!signalData) logMessage += "informações do sinal não encontradas (pode ter sido deletado). ";
+      if (signalData && !signalData.chat_id) logMessage += "chat_id não encontrado. ";
+      if (!bot) logMessage += "instância do bot não disponível. ";
+      console.log(logMessage.trim());
     }
+    // Fim da implementação da formatação de preço
 
-    if (symbolToVerify) { 
+    if (symbolToVerify) {
       try {
         const [remainingSignalsRows] = await db.query(`
           SELECT COUNT(*) as count
@@ -1773,15 +1821,23 @@ async function cancelSignal(db, signalId, statusParam, reason) {
           WHERE symbol = ?
             AND status = 'AGUARDANDO_ACIONAMENTO'
         `, [symbolToVerify]);
-        
+
         const count = (remainingSignalsRows && remainingSignalsRows[0]) ? remainingSignalsRows[0].count : 0;
 
         if (count === 0) {
           console.log(`[MONITOR] Não há mais sinais 'AGUARDANDO_ACIONAMENTO' para ${symbolToVerify} após cancelamento do sinal ID ${signalId}. Agendando verificação de websocket.`);
           setTimeout(async () => {
-            console.log(`[MONITOR] Executando checkAndCloseWebsocket para ${symbolToVerify} (agendado após cancelamento do sinal ID ${signalId}).`);
-            await checkAndCloseWebsocket(db, symbolToVerify);
-          }, 5000); // Delay de 5 segundos
+            try {
+                console.log(`[MONITOR] Executando checkAndCloseWebsocket para ${symbolToVerify} (agendado após cancelamento do sinal ID ${signalId}).`);
+                if (typeof checkAndCloseWebsocket === 'function') {
+                    await checkAndCloseWebsocket(db, symbolToVerify);
+                } else {
+                    console.error(`[MONITOR] Função checkAndCloseWebsocket não está definida ou não é uma função.`);
+                }
+            } catch (websocketCheckError) {
+                console.error(`[MONITOR] Erro dentro do setTimeout ao executar checkAndCloseWebsocket para ${symbolToVerify} (Sinal ID ${signalId}):`, websocketCheckError);
+            }
+          }, 5000);
         } else {
           console.log(`[MONITOR] Ainda existem ${count} sinais 'AGUARDANDO_ACIONAMENTO' para ${symbolToVerify} após cancelamento do sinal ID ${signalId}. Websocket para ${symbolToVerify} permanecerá ativo.`);
         }
@@ -1789,13 +1845,14 @@ async function cancelSignal(db, signalId, statusParam, reason) {
         console.error(`[MONITOR] Erro ao verificar sinais restantes para ${symbolToVerify} (referente ao sinal cancelado ID ${signalId}):`, checkError);
       }
     } else {
-      // Este log já existia e é útil se signalInfo não for encontrado ou não tiver símbolo.
-      console.log(`[MONITOR] Símbolo não encontrado para o sinal ID ${signalId} (pode já ter sido removido ou não existir). Não foi possível verificar o estado do websocket para este símbolo com base neste cancelamento.`);
+      console.log(`[MONITOR] Símbolo não encontrado para o sinal ID ${signalId}. Não foi possível verificar o estado do websocket com base neste cancelamento.`);
     }
-    
+
+    cancelingSignals.delete(lockKey);
     return true;
   } catch (error) {
     console.error(`[MONITOR] Erro geral ao cancelar sinal ID ${signalId}: ${error.message}`, error);
+    cancelingSignals.delete(lockKey);
     return false;
   }
 }

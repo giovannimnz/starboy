@@ -152,8 +152,6 @@ async function newReduceOnlyOrder(symbol, quantity, side, price) {
   return result;
 }
 
-// Substituir a função newStopOrder existente
-
 async function newStopOrder(symbol, quantity, side, stopPrice, price = null, reduceOnly = false, closePosition = false) {
   try {
     // Definir o tipo de ordem baseado no parâmetro price
