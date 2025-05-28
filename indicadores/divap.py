@@ -237,11 +237,12 @@ def save_to_database(trade_data):
         )
         cursor = conn.cursor()
 
-        # Verificar se já existe a coluna timeframe na tabela
+        # SQL query incluindo a nova coluna message_id
         sql = """
               INSERT INTO webhook_signals
-              (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price, chat_id, status, timeframe)
-              VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) \
+              (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price,
+               chat_id, status, timeframe, message_id)
+              VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
               """
 
         values = (
@@ -250,11 +251,12 @@ def save_to_database(trade_data):
             trade_data["leverage"],
             trade_data["capital_pct"],
             trade_data["entry"],
-            trade_data["tp"],
+            trade_data["tp"],  # Já contém o selected_tp
             trade_data["stop_loss"],
             trade_data["chat_id"],
             "PENDING",
-            trade_data.get("timeframe", "")  # Novo campo timeframe
+            trade_data.get("timeframe", ""),
+            trade_data.get("message_id")  # Novo campo message_id
         )
 
         cursor.execute(sql, values)
@@ -264,16 +266,19 @@ def save_to_database(trade_data):
 
     except Exception as e:
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Erro ao salvar no banco: {e}")
-        # Verificar se o erro é por falta da coluna timeframe
+        # O fallback existente para 'timeframe' permanece.
+        # Se a coluna 'message_id' não existir no banco, este INSERT primário falhará.
+        # Se o erro for especificamente "Unknown column 'timeframe'", o fallback abaixo será tentado.
+        # Note que o fallback atual não inclui 'message_id'.
         if "Unknown column 'timeframe'" in str(e):
             try:
-                # Tentar salvar sem o timeframe
-                sql = """
-                      INSERT INTO webhook_signals
-                      (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price, chat_id, status)
-                      VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) \
-                      """
-                values = (
+                # Tentar salvar sem o timeframe (e sem message_id, conforme este SQL)
+                sql_fallback = """
+                       INSERT INTO webhook_signals
+                       (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price, chat_id, status)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                       """
+                values_fallback = (
                     trade_data["symbol"],
                     trade_data["side"],
                     trade_data["leverage"],
@@ -284,11 +289,11 @@ def save_to_database(trade_data):
                     trade_data["chat_id"],
                     "PENDING"
                 )
-                cursor.execute(sql, values)
+                cursor.execute(sql_fallback, values_fallback)
                 conn.commit()
-                print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Operação salva sem timeframe")
+                print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Operação salva sem timeframe (e sem message_id via fallback)")
             except Exception as e2:
-                print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Erro na segunda tentativa: {e2}")
+                print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Erro na segunda tentativa de salvar (fallback): {e2}")
     finally:
         if 'conn' in locals() and conn.is_connected():
             cursor.close()
@@ -451,11 +456,13 @@ async def handle_new_message(event):
         print("-" * 50)
 
         # Enviar para o grupo de destino
-        await client.send_message(GRUPO_DESTINO_ID, message_text)
-        print(f"[INFO] Mensagem encaminhada para o grupo de destino")
+        sent_message = await client.send_message(GRUPO_DESTINO_ID, message_text)
+        message_id = sent_message.id  # Captura o ID da mensagem enviada
+        print(f"[INFO] Mensagem encaminhada para o grupo de destino (ID: {message_id})")
 
-        # Atualizar o valor de TP para salvar no banco de dados
+        # Atualizar o trade_info com as informações necessárias
         trade_info['tp'] = selected_tp
+        trade_info['message_id'] = message_id  # Adiciona o message_id ao dicionário
 
         # Salvar no banco de dados
         save_to_database(trade_info)

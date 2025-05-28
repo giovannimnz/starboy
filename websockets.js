@@ -262,7 +262,6 @@ module.exports = {
     ensurePriceWebsocketExists,
     stopPriceMonitoring,
     priceWebsockets,
-    // Adicionar função para limpar recursos
     reset: function() {
         dbInstance = null;
     }

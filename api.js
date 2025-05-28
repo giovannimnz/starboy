@@ -10,6 +10,13 @@ const apiUrlSpot = process.env.API_URL_SPOT;
 
 async function newEntryOrder(symbol, quantity, side) {
   try {
+    console.log(`[API] Enviando ordem: ${symbol}, ${quantity}, ${side}`);
+    
+    // Validar quantidade
+    if (quantity <= 0 || isNaN(quantity)) {
+      throw new Error(`Quantidade inválida: ${quantity}`);
+    }
+    
     const data = {
       symbol,
       side,
@@ -36,6 +43,9 @@ async function newEntryOrder(symbol, quantity, side) {
       headers: { "X-MBX-APIKEY": apiKey },
     });
 
+    // Log da resposta completa
+    console.log(`[API] Resposta da ordem: ${JSON.stringify(result.data)}`);
+
     // Processar a resposta para extrair preço e quantidade executada
     const avgPrice = result.data.avgPrice
         ? parseFloat(result.data.avgPrice)
@@ -50,9 +60,11 @@ async function newEntryOrder(symbol, quantity, side) {
       price: avgPrice // Garantir que o preço seja retornado
     };
   } catch (error) {
-    console.error(`[API] Erro ao criar ordem de entrada a mercado: ${error.message}`);
-    if (error.response && error.response.data) {
-      console.error(`[API] Detalhes: ${JSON.stringify(error.response.data)}`);
+    console.error(`[API] ERRO DETALHADO ao criar ordem de entrada a mercado:`);
+    console.error(`[API] Mensagem: ${error.message}`);
+    if (error.response) {
+      console.error(`[API] Status: ${error.response.status}`);
+      console.error(`[API] Dados: ${JSON.stringify(error.response.data)}`);
     }
     throw error;
   }
@@ -933,7 +945,7 @@ async function updateLeverageBracketsInDatabase(forceUpdate = false) {
 
       // Se dados foram atualizados nas últimas 24 horas, retornar
       if (lastUpdateTime > 0 && (currentTime - lastUpdateTime) < 24 * 60 * 60) {
-        console.log('[API] Dados de alavancagem já atualizados nas últimas 24 horas');
+        //console.log('[API] Dados de alavancagem já atualizados nas últimas 24 horas');
 
         // Verificar número de registros já existentes
         const [count] = await db.query(`
@@ -1107,6 +1119,53 @@ function formatBracketsFromDb(dbRows) {
   return Object.values(symbolsMap);
 }
 
+async function cancelPendingEntry(db, positionId, status, reason) {
+  try {
+    console.log(`[MONITOR] Cancelando entrada pendente ID ${positionId}: ${status} - ${reason}`);
+    
+    // 1. Obter informações para notificação antes de mover a posição
+    const [webhookInfo] = await db.query(`
+      SELECT w.id as webhook_id, w.chat_id, p.simbolo as symbol 
+      FROM webhook_signals w
+      JOIN posicoes p ON w.position_id = p.id
+      WHERE w.position_id = ? LIMIT 1
+    `, [positionId]);
+    
+    if (webhookInfo.length === 0) {
+      console.error(`[MONITOR] Não foi possível encontrar informações do webhook para posição ${positionId}`);
+      return false;
+    }
+    
+    // 2. Atualizar status no webhook_signals ANTES de mover a posição
+    await db.query(`
+      UPDATE webhook_signals
+      SET status = 'CANCELED',
+          error_message = ?
+      WHERE id = ?
+    `, [reason, webhookInfo[0].webhook_id]);
+    
+    // 3. Mover posição para histórico
+    await movePositionToHistory(db, positionId, 'CANCELED', reason);
+    
+    // 4. Enviar notificação ao Telegram se chat_id estiver disponível
+    if (webhookInfo[0].chat_id) {
+      try {
+        await bot.telegram.sendMessage(webhookInfo[0].chat_id,
+          `⚠️ Ordem para ${webhookInfo[0].symbol} CANCELADA ⚠️\n\n` +
+          `Motivo: ${reason}`
+        );
+      } catch (telegramError) {
+        console.error(`[MONITOR] Erro ao enviar notificação Telegram:`, telegramError);
+      }
+    }
+    
+    return true;
+  } catch (error) {
+    console.error(`[MONITOR] Erro ao cancelar entrada pendente: ${error.message}`);
+    return false;
+  }
+}
+
 // Atualizar função load_leverage_brackets para usar o banco de dados
 function load_leverage_brackets(symbol = null) {
   return getLeverageBracketsFromDb(symbol);
@@ -1144,5 +1203,7 @@ module.exports = {
   getPrice, // Adicione a função getPrice
   updateLeverageBracketsInDatabase, // Adicione a função updateLeverageBracketsInDatabase
   getLeverageBracketsFromDb, // Adicione a função getLeverageBracketsFromDb
-  load_leverage_brackets // Adicione a função load_leverage_brackets
+  load_leverage_brackets, // Adicione a função load_leverage_brackets
+  cancelPendingEntry
 };
+
