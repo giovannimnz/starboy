@@ -108,15 +108,13 @@ async function initializeMonitoring() {
   // Sincronizar saldo a cada hora
   scheduledJobs.syncAccountBalance = schedule.scheduleJob('0 * * * *', async () => {
     try {
-      console.log('[MONITOR] Sincronizando saldo (job periódico)...');
+      //console.log('[MONITOR] Sincronizando saldo (job periódico)...');
       await syncAccountBalance();
     } catch (error) {
       console.error('[MONITOR] Erro na sincronização periódica de saldo:', error);
     }
   });
 
-  // ***** INÍCIO DA IMPLEMENTAÇÃO SOLICITADA *****
-  // Adicionar este job na função initializeMonitoring:
   scheduledJobs.syncPositionsWithExchange = schedule.scheduleJob('*/30 * * * * *', async () => {
     try {
       //console.log('[MONITOR] Sincronizando posições com a corretora (job periódico)...'); // Adicionado log para identificar a chamada do job
@@ -136,7 +134,7 @@ async function initializeMonitoring() {
     console.error('[MONITOR] Erro ao iniciar monitoramento de preços:', error);
   }
 
-  console.log('[MONITOR] Sistema de monitoramento inicializado com sucesso!');
+  //console.log('[MONITOR] Sistema de monitoramento inicializado com sucesso!');
 }
 
 // ***** INÍCIO DA IMPLEMENTAÇÃO SOLICITADA *****
@@ -158,7 +156,7 @@ async function syncPositionsWithExchange() {
     // console.log('[SYNC] Buscando posições abertas na corretora...');
     const exchangePositions = await getAllOpenPositions(); // Presume que getAllOpenPositions() está definida
 
-    console.log(`[SYNC] Verificando ${dbPositions.length} posições abertas no banco vs ${exchangePositions.length} na corretora...`);
+    //console.log(`[SYNC] Verificando ${dbPositions.length} posições abertas no banco vs ${exchangePositions.length} na corretora...`);
 
     // 3. Mapear posições da corretora por símbolo
     const exchangePositionsMap = {};
@@ -241,7 +239,7 @@ async function startPriceMonitoring() {
       WHERE status = 'AGUARDANDO_ACIONAMENTO'
     `);
 
-    console.log(`[MONITOR] Encontrados ${pendingSignals.length} sinais pendentes para monitoramento`);
+    //console.log(`[MONITOR] Encontrados ${pendingSignals.length} sinais pendentes para monitoramento`);
 
     const symbols = new Set();
 
@@ -420,7 +418,7 @@ async function processSignal(db, signal) {
             `🆔 Sinal Ref: WEBHOOK_${id}\n` +
             `Direção: ${side}\n` +
             `Alavancagem: ${leverage}x\n` +
-            `Entrada: ${triggerCondition.replace(entry_price, formatDecimal(entry_price))}\n` +
+            `\nEntrada: ${triggerCondition.replace(entry_price, formatDecimal(entry_price))}\n` +
             `TP: ${formatDecimal(tp_price)}\n` +
             `SL: ${formatDecimal(sl_price)}\n\n` +
             `Aguardando gatilho de preço...`,
@@ -1421,7 +1419,7 @@ async function triggerMarketEntry(db, entry, currentPrice) {
               `✅ Entrada executada para ${entry.simbolo}\n\n` +
               `Direção: ${position.side}\n` +
               `Alavancagem: ${entry.leverage}x\n` +
-              `Preço de execução: ${executedPrice}\n` +
+              `\nEntrada: ${executedPrice}\n` +
               `TP: ${tpPriceVal}\n` +
               `SL: ${slPriceVal}\n` +
               `Quantidade: ${executedQty}\n`,
@@ -1476,7 +1474,7 @@ async function checkExpiredOrders() {
         AND timeframe IS NOT NULL AND timeframe != ''
     `);
 
-    console.log(`[MONITOR] Verificando ${pendingSignals.length} sinais pendentes com timeframe`);
+    //console.log(`[MONITOR] Verificando ${pendingSignals.length} sinais pendentes com timeframe`);
     const now = new Date();
     let cancelCount = 0;
 
@@ -1850,7 +1848,7 @@ async function executeEntryOrder(db, signal, currentPrice) {
               `✅ Entrada EXECUTADA para ${signal.symbol} \n(Sinal ID ${signal.id})\n\n` +
               `Direção: ${signal.side}\n` +
               `Alavancagem: ${signal.leverage}x` +
-              `Entrada: ${executedPrice.toFixed(pricePrecision || 2)}\n` +
+              `\nEntrada: ${executedPrice.toFixed(pricePrecision || 2)}\n` +
               `Take Profit: ${tpPrice.toFixed(pricePrecision || 2)}\n` +
               `Stop Loss: ${slPrice.toFixed(pricePrecision || 2)}\n` +
               `Quantidade: ${formatDecimal(amountInUsdt, 2)} USDT\n`,
@@ -1861,7 +1859,6 @@ async function executeEntryOrder(db, signal, currentPrice) {
           console.error(`[MONITOR] Erro ao enviar mensagem Telegram de execução para Sinal ID ${signal.id}:`, telegramError);
         }
       }
-      // --- FIM DA LÓGICA DE NOTIFICAÇÃO TELEGRAM MODIFICADA ---
 
       await connection.commit();
       console.log(`[MONITOR] Entrada a mercado executada e transação commitada com sucesso para ${signal.symbol} (Sinal ID: ${signal.id})`);
