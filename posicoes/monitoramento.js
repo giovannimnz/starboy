@@ -117,9 +117,9 @@ async function initializeMonitoring() {
 
   // ***** INÍCIO DA IMPLEMENTAÇÃO SOLICITADA *****
   // Adicionar este job na função initializeMonitoring:
-  scheduledJobs.syncPositionsWithExchange = schedule.scheduleJob('*/5 * * * *', async () => {
+  scheduledJobs.syncPositionsWithExchange = schedule.scheduleJob('*/30 * * * * *', async () => {
     try {
-      console.log('[MONITOR] Sincronizando posições com a corretora (job periódico)...'); // Adicionado log para identificar a chamada do job
+      //console.log('[MONITOR] Sincronizando posições com a corretora (job periódico)...'); // Adicionado log para identificar a chamada do job
       await syncPositionsWithExchange();
     } catch (error) {
       // O erro já é logado dentro de syncPositionsWithExchange ou no catch mais específico dele
@@ -1005,8 +1005,10 @@ async function movePositionToHistory(db, positionId, status, reason) {
 
 async function onPriceUpdate(symbol, currentPrice, db) {
   try {
-    // Busca sinais pendentes para o símbolo atual
-    // Assumindo que db.query retorna [rows, fields] ou similar, onde rows é o primeiro elemento.
+    // 1. Atualizar preços das posições abertas para este símbolo
+    await updatePositionPrices(db, symbol, currentPrice);
+
+    // 2. Buscar sinais pendentes para este símbolo
     const [pendingSignalsResult] = await db.query(`
       SELECT id, symbol, side, leverage, capital_pct, entry_price,
              tp_price, sl_price, chat_id, timeframe, created_at
@@ -1014,69 +1016,75 @@ async function onPriceUpdate(symbol, currentPrice, db) {
       WHERE symbol = ?
         AND status = 'AGUARDANDO_ACIONAMENTO'
     `, [symbol]);
-    // Se pendingSignalsResult for undefined (nenhuma linha), trate como array vazio.
+    
     const pendingSignals = pendingSignalsResult || [];
-
+    // Log da nova estrutura:
     console.log(`[PRICE UPDATE] Encontrados ${pendingSignals.length} sinais pendentes para ${symbol}`);
 
-    // --- INÍCIO DAS MODIFICAÇÕES SUGERIDAS (do seu código original) ---
-    if (pendingSignals.length === 0) {
-      // Adicionar um contador para controlar quantas vezes vimos "0 sinais" para este símbolo
-      if (!websocketEmptyCheckCounter[symbol]) { // websocketEmptyCheckCounter deve estar definido no escopo acessível
-        websocketEmptyCheckCounter[symbol] = 1;
-      } else {
-        websocketEmptyCheckCounter[symbol]++;
+    // 3. Verificar se há posições abertas ou ordens pendentes
+    const [openPositionsResult] = await db.query(`
+      SELECT COUNT(*) as count FROM posicoes 
+      WHERE simbolo = ? AND status = 'OPEN'
+    `, [symbol]);
+    
+    const [pendingOrdersResult] = await db.query(`
+      SELECT COUNT(*) as count FROM ordens
+      WHERE simbolo = ? AND status = 'OPEN' 
+    `, [symbol]); // Presume-se que ordens 'OPEN' são as que justificam manter o WS
+
+    const openPositionsCount = (openPositionsResult && openPositionsResult[0] && openPositionsResult[0].count) || 0;
+    const pendingOrdersCount = (pendingOrdersResult && pendingOrdersResult[0] && pendingOrdersResult[0].count) || 0;
+
+    // 4. Verificar se precisamos manter o WebSocket ativo
+    if (pendingSignals.length === 0 && openPositionsCount === 0 && pendingOrdersCount === 0) {
+      console.log(`[MONITOR] Símbolo ${symbol} sem atividade (sinais=${pendingSignals.length}, posições=${openPositionsCount}, ordens=${pendingOrdersCount}). Tentando fechar WebSocket.`);
+      
+      // Fechar WebSocket diretamente, sem usar contador
+      await checkAndCloseWebsocket(db, symbol);
+      
+      // Limpar o contador antigo, caso exista, por segurança/higiene.
+      if (websocketEmptyCheckCounter && websocketEmptyCheckCounter[symbol]) {
+        delete websocketEmptyCheckCounter[symbol];
       }
-
-      console.log(`[MONITOR] Símbolo ${symbol} sem sinais pendentes, verificação ${websocketEmptyCheckCounter[symbol]}/3.`);
-
-      // Após 3 verificações sem sinais, tentar fechar o WebSocket
-      if (websocketEmptyCheckCounter[symbol] >= 3) {
-        console.log(`[MONITOR] Símbolo ${symbol} sem sinais pendentes por 3 verificações consecutivas. Tentando fechar WebSocket.`);
-        // A função checkAndCloseWebsocket precisa ser definida em outro lugar
-        await checkAndCloseWebsocket(db, symbol);
-        delete websocketEmptyCheckCounter[symbol]; // Limpar o contador após tentar fechar
-      }
-
-      return; // Retornar cedo para evitar processamento desnecessário
+      // Não é necessário retornar aqui, pois o loop de pendingSignals não executará se pendingSignals.length === 0.
     } else {
-      // Reiniciar o contador se encontrarmos sinais
-      if (websocketEmptyCheckCounter && websocketEmptyCheckCounter[symbol]) { // Adicionada verificação de existência de websocketEmptyCheckCounter
-        console.log(`[MONITOR] Sinais pendentes encontrados para ${symbol}. Resetando contador de WebSocket.`);
+      let reasons = [];
+      if (pendingSignals.length > 0) reasons.push(`${pendingSignals.length} sinais pendentes`);
+      if (openPositionsCount > 0) reasons.push(`${openPositionsCount} posições abertas`);
+      if (pendingOrdersCount > 0) reasons.push(`${pendingOrdersCount} ordens pendentes`);
+      
+      console.log(`[MONITOR] Mantendo WebSocket para ${symbol}. Motivo: ${reasons.join(', ')}.`);
+      
+      // Se houver websocketEmptyCheckCounter para este símbolo, remover, pois a nova lógica o substitui.
+      if (websocketEmptyCheckCounter && websocketEmptyCheckCounter[symbol]) {
+        console.log(`[MONITOR] Removendo contador antigo websocketEmptyCheckCounter para ${symbol}.`);
         delete websocketEmptyCheckCounter[symbol];
       }
     }
-    // --- FIM DAS MODIFICAÇÕES SUGERIDAS (do seu código original) ---
 
-    // Para cada sinal pendente, verifica os gatilhos (Restante do código original)
+    // 5. Processar sinais pendentes (se houver) - Lógica interna mantida da sua versão original
     for (const signal of pendingSignals) {
       const entryPrice = parseFloat(signal.entry_price);
       const slPrice = parseFloat(signal.sl_price);
       const side = signal.side;
 
-      // Define gatilhos com base na direção
       const normalizedSide = side.toUpperCase();
       const isBuy = normalizedSide === 'BUY' || normalizedSide === 'COMPRA';
       const isSell = normalizedSide === 'SELL' || normalizedSide === 'VENDA';
 
-      // GATILHO DE ENTRADA: verifica se preço ultrapassou nível de entrada
-      const shouldTrigger = (isBuy && currentPrice >= entryPrice) || // Ajuste para >= em BUY e <= em SELL se a entrada é no toque/rompimento
+      const shouldTrigger = (isBuy && currentPrice >= entryPrice) ||
                             (isSell && currentPrice <= entryPrice);
 
-      // Verificar se SL foi atingido (cancelar a entrada)
       const slHit = (isBuy && currentPrice <= slPrice) ||
                     (isSell && currentPrice >= slPrice);
 
-      // Verificar se o tempo máximo foi excedido (timeout)
       const createdAt = new Date(signal.created_at);
       const now = new Date();
       const signalAgeMs = now.getTime() - createdAt.getTime();
-      // timeframeToMs deve estar definida no escopo acessível
-      const timeframeMs = timeframeToMs(signal.timeframe);
-      const maxLifetimeMs = timeframeMs > 0 ? timeframeMs * 3 : 0; // Evitar NaN se timeframeMs for 0
+      const timeframeMs = timeframeToMs(signal.timeframe); // Precisa estar definida
+      const maxLifetimeMs = timeframeMs > 0 ? timeframeMs * 3 : 0;
       const timeoutHit = maxLifetimeMs > 0 && signalAgeMs > maxLifetimeMs;
 
-      // Calcular o tempo restante em minutos (para log)
       const elapsedMin = Math.floor(signalAgeMs / (60 * 1000));
       const maxLifetimeMin = maxLifetimeMs > 0 ? Math.floor(maxLifetimeMs / (60 * 1000)) : 0;
       const timeRemainingMin = timeoutHit || maxLifetimeMs === 0 ? 0 : Math.floor((maxLifetimeMs - signalAgeMs) / (60 * 1000));
@@ -1085,42 +1093,31 @@ async function onPriceUpdate(symbol, currentPrice, db) {
 
       if (shouldTrigger) {
         const signalKey = `${signal.id}_${signal.symbol}`;
-
-        // processingSignals deve estar definido no escopo acessível
         if (processingSignals.has(signalKey)) {
           console.log(`[PRICE UPDATE] Sinal ${signalKey} já está sendo processado, aguardando...`);
           continue;
         }
-
         processingSignals.add(signalKey);
 
         try {
           console.log(`[PRICE UPDATE] ACIONANDO entrada para sinal ${signalKey} a ${currentPrice}`);
-          // executeEntryOrder deve estar definida no escopo acessível e lidar com a mudança de status do sinal
-          await executeEntryOrder(db, signal, currentPrice);
+          await executeEntryOrder(db, signal, currentPrice); // Precisa estar definida
         } catch (error) {
           console.error(`[PRICE UPDATE] Erro ao executar entrada para ${signalKey}: ${error.message}`);
-          // Considere se precisa atualizar o status do sinal para ERRO aqui também ou se executeEntryOrder já faz
         } finally {
-          // Remover da lista de processamento após um tempo para permitir nova tentativa ou liberar
-          // Ajuste o tempo conforme necessidade. 5 segundos pode ser muito curto ou muito longo.
           setTimeout(() => {
             processingSignals.delete(signalKey);
             console.log(`[PRICE UPDATE] Sinal ${signalKey} removido do processamento após timeout.`);
           }, 5000);
         }
-      // ***** INÍCIO DA IMPLEMENTAÇÃO SOLICITADA *****
       } else if (slHit) {
-        console.log(`[PRICE UPDATE] ❌ SL ${formatDecimal(slPrice, 4)} atingido antes da entrada para ${signal.id} (${symbol}).`); // Linha modificada conforme sua solicitação
-        // cancelSignal deve estar definida no escopo acessível
+        console.log(`[PRICE UPDATE] ❌ SL ${formatDecimal(slPrice, 4)} atingido antes da entrada para ${signal.id} (${symbol}).`);
         await cancelSignal(db, signal.id, 'SL_BEFORE_ENTRY',
-          `Stop loss (${formatDecimal(slPrice, 4)}) atingido antes da entrada. \nEntrada: ${formatDecimal(currentPrice, 4)}`); // Linha modificada conforme sua solicitação
-      // ***** FIM DA IMPLEMENTAÇÃO SOLICITADA *****
+          `Stop loss (${formatDecimal(slPrice, 4)}) atingido antes da entrada. \nEntrada: ${formatDecimal(currentPrice, 4)}`); // Precisa estar definida
       } else if (timeoutHit) {
         console.log(`[PRICE UPDATE] ⏱️ TIMEOUT para sinal ${signal.id} (${symbol}). Ativo por ${elapsedMin} min (máx: ${maxLifetimeMin} min). Cancelando.`);
-        // cancelSignal deve estar definida no escopo acessível
         await cancelSignal(db, signal.id, 'TIMEOUT_ENTRY',
-          `Entrada não acionada dentro do limite de tempo (${signal.timeframe} * 3 = ${maxLifetimeMin} min)`);
+          `Entrada não acionada dentro do limite de tempo (${signal.timeframe} * 3 = ${maxLifetimeMin} min)`); // Precisa estar definida
       } else {
         if (maxLifetimeMs > 0) {
           console.log(`[PRICE UPDATE] ⏳ Sinal ${signal.id} (${symbol}) aguardando. Tempo restante: ${timeRemainingMin} min (${elapsedMin}/${maxLifetimeMin} min)`);
@@ -1130,7 +1127,92 @@ async function onPriceUpdate(symbol, currentPrice, db) {
       }
     }
   } catch (error) {
-    console.error(`[PRICE UPDATE] Erro fatal ao processar atualização de preço para ${symbol}:`, error);
+    // Catch da nova estrutura
+    console.error(`[PRICE UPDATE] Erro no processamento para ${symbol}:`, error);
+  }
+}
+
+// ***** INÍCIO DAS NOVAS FUNÇÕES *****
+
+// Nova função para atualizar preços das posições
+async function updatePositionPrices(db, symbol, currentPrice) {
+  try {
+    // 1. Buscar posições abertas para o símbolo
+    const [positions] = await db.query(
+      'SELECT * FROM posicoes WHERE simbolo = ? AND status = "OPEN"', // Aspas duplas em "OPEN" para consistência com SQL
+      [symbol]
+    );
+
+    if (positions.length === 0) {
+        // console.log(`[PRICE UPDATE] Nenhuma posição aberta encontrada para ${symbol} para atualizar preços.`);
+        return; // Não há posições para atualizar
+    }
+
+    // console.log(`[PRICE UPDATE] Encontradas ${positions.length} posições abertas para ${symbol}. Atualizando preços...`);
+
+    // 2. Para cada posição, atualizar o preço corrente
+    for (const position of positions) {
+      const positionId = position.id;
+      
+      // Evitar log excessivo se a função for chamada muito frequentemente. Pode ser útil para debug inicial.
+      // console.log(`[PRICE UPDATE] Atualizando preço da posição ${positionId} (${symbol}) para ${currentPrice}`);
+      
+      await db.query(
+        `UPDATE posicoes SET 
+         preco_corrente = ?, 
+         data_hora_ultima_atualizacao = ? 
+         WHERE id = ?`, // Removido espaço extra antes de preco_corrente e data_hora_ultima_atualizacao
+        [currentPrice, formatDateForMySQL(new Date()), positionId] // Usa o placeholder formatDateForMySQL
+      );
+      
+      // 3. Verificar se há ordens SL/TP ativas que precisam ser monitoradas
+      await checkOrderTriggers(db, position, currentPrice);
+    }
+  } catch (error) {
+    console.error(`[PRICE UPDATE] Erro ao atualizar preços das posições para ${symbol}: ${error.message}`, error);
+    // Considerar se este erro deve ser propagado para onPriceUpdate ou tratado aqui.
+    // Se propagar, onPriceUpdate pode parar o processamento de sinais pendentes.
+  }
+}
+
+// Nova função para verificar gatilhos de ordens
+async function checkOrderTriggers(db, position, currentPrice) {
+  try {
+    // Buscar ordens SL/TP ativas para esta posição
+    const [orders] = await db.query(
+      `SELECT * FROM ordens 
+       WHERE id_posicao = ? 
+       AND status = "OPEN" 
+       AND tipo_ordem_bot IN ("STOP_LOSS", "TAKE_PROFIT")`, // Aspas duplas para consistência
+      [position.id]
+    );
+    
+    if (orders.length === 0) {
+        // console.log(`[PRICE UPDATE] Nenhuma ordem SL/TP ativa para posição ${position.id} (${position.simbolo}).`);
+        return; // Não há ordens para verificar
+    }
+    
+    // Se a posição tiver um PnL >= X% ou <= Y%, enviar notificação
+    const entryPrice = parseFloat(position.preco_entrada);
+    if (isNaN(entryPrice) || entryPrice === 0) { // Adicionada verificação para evitar divisão por zero ou NaN
+        console.warn(`[PRICE UPDATE] Preço de entrada inválido ou zero para posição ${position.id} (${position.simbolo}). PnL não calculado.`);
+        return;
+    }
+
+    const side = position.side.toUpperCase(); // Normalizar para maiúsculas
+    let pnlPercent = 0;
+
+    if (side === 'BUY' || side === 'COMPRA') { // Assumindo que 'COMPRA' também pode ser um valor
+      pnlPercent = ((currentPrice - entryPrice) / entryPrice) * 100;
+    } else if (side === 'SELL' || side === 'VENDA') { // Assumindo que 'VENDA' também pode ser um valor
+      pnlPercent = ((entryPrice - currentPrice) / entryPrice) * 100;
+    } else {
+        console.warn(`[PRICE UPDATE] Lado (side) desconhecido para posição ${position.id}: ${position.side}`);
+        return;
+    }
+
+  } catch (error) {
+    console.error(`[PRICE UPDATE] Erro ao verificar gatilhos de ordens para posição ${position.id || 'desconhecida'}: ${error.message}`, error);
   }
 }
 
@@ -1530,56 +1612,60 @@ function timeframeToMs(timeframe) {
 // NOVA FUNÇÃO: Verificar e encerrar websocket se não houver posições ou ordens ativas
 async function checkAndCloseWebsocket(db, symbol) {
   try {
-    console.log(`[MONITOR] Iniciando verificação para encerrar websocket do símbolo: ${symbol}`);
+    console.log(`[MONITOR] Verificando se o WebSocket para ${symbol} pode ser fechado...`);
 
     // 1. Verificar se ainda existem sinais pendentes para o símbolo
     const [pendingSignalsRows] = await db.query(`
       SELECT COUNT(*) as count FROM webhook_signals 
       WHERE symbol = ? AND status = 'AGUARDANDO_ACIONAMENTO'
     `, [symbol]);
-    const pendingSignalsCount = (pendingSignalsRows && pendingSignalsRows[0]) ? pendingSignalsRows[0].count : 0;
+    // Acesso direto à contagem - assume que pendingSignalsRows[0] sempre existirá.
+    // A versão anterior era: const pendingSignalsCount = (pendingSignalsRows && pendingSignalsRows[0]) ? pendingSignalsRows[0].count : 0;
+    const pendingSignalsCount = pendingSignalsRows[0].count;
 
     // 2. Verificar se ainda existem posições abertas para o símbolo
     const [activePositionsRows] = await db.query(`
       SELECT COUNT(*) as count FROM posicoes 
-      WHERE simbolo = ? AND status = 'OPEN' 
-    `, [symbol]); 
-                 
-    const activePositionsCount = (activePositionsRows && activePositionsRows[0]) ? activePositionsRows[0].count : 0;
+      WHERE simbolo = ? AND status = 'OPEN'
+    `, [symbol]);
+    // Acesso direto à contagem
+    const activePositionsCount = activePositionsRows[0].count;
     
-    // 3. Verificar se ainda existem ordens (SL/TP) pendentes/abertas
+    // 3. Verificar se ainda existem ordens pendentes
     const [pendingOrdersRows] = await db.query(`
       SELECT COUNT(*) as count FROM ordens
-      WHERE simbolo = ? AND status = 'OPEN' 
+      WHERE simbolo = ? AND status = 'OPEN'
     `, [symbol]);
-    const pendingOrdersCount = (pendingOrdersRows && pendingOrdersRows[0]) ? pendingOrdersRows[0].count : 0;
+    // Acesso direto à contagem
+    const pendingOrdersCount = pendingOrdersRows[0].count;
     
-    console.log(`[MONITOR] Estado para ${symbol}: Sinais Pendentes=${pendingSignalsCount}, Posições Abertas=${activePositionsCount}, Ordens Abertas=${pendingOrdersCount}`);
+    console.log(`[MONITOR] Estado para ${symbol}: Sinais=${pendingSignalsCount}, Posições=${activePositionsCount}, Ordens=${pendingOrdersCount}`);
 
     if (pendingSignalsCount === 0 && 
         activePositionsCount === 0 && 
         pendingOrdersCount === 0) {
         
-      console.log(`[MONITOR] Nenhuma atividade (sinais, posições, ordens) para ${symbol}. Tentando encerrar websocket.`);
+      console.log(`[MONITOR] Nenhuma atividade para ${symbol}. Fechando WebSocket.`);
       
       // Verificar se o websocket para este símbolo existe no nosso gerenciador
+      // (Assumindo que 'websockets' é um objeto acessível que gerencia os websockets)
       if (websockets.priceWebsockets && websockets.priceWebsockets[symbol]) {
-        if (websockets.stopPriceMonitoring(symbol)) {
-          console.log(`[MONITOR] Websocket para ${symbol} encerrado com sucesso.`);
+        if (websockets.stopPriceMonitoring(symbol)) { // Assumindo que esta função existe e retorna boolean
+          console.log(`[MONITOR] WebSocket para ${symbol} fechado com sucesso.`);
           return true;
         } else {
-          console.warn(`[MONITOR] Tentativa de encerrar websocket para ${symbol} falhou (método stopPriceMonitoring retornou false).`);
+          console.warn(`[MONITOR] Falha ao fechar WebSocket para ${symbol}.`); // Mensagem de log alterada
         }
       } else {
-        console.log(`[MONITOR] Websocket para ${symbol} já não estava ativo ou não é gerenciado aqui.`);
+        console.log(`[MONITOR] WebSocket para ${symbol} já não existe.`); // Mensagem de log alterada
       }
     } else {
-      console.log(`[MONITOR] Websocket para ${symbol} mantido ativo devido a: Sinais Pendentes=${pendingSignalsCount}, Posições Abertas=${activePositionsCount}, Ordens Abertas=${pendingOrdersCount}.`);
+      console.log(`[MONITOR] Mantendo WebSocket para ${symbol} devido a: Sinais=${pendingSignalsCount}, Posições=${activePositionsCount}, Ordens=${pendingOrdersCount}`);
     }
     
-    return false;
+    return false; // Retorna false se o websocket não foi fechado ou se deveria ser mantido
   } catch (error) {
-    console.error(`[MONITOR] Erro ao verificar e encerrar websocket para ${symbol}: ${error.message}`, error);
+    console.error(`[MONITOR] Erro ao verificar WebSocket para ${symbol}: ${error.message}`); // Mensagem de log alterada
     return false; // Erro durante o processo
   }
 }
