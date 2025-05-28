@@ -3,7 +3,7 @@ from telethon import TelegramClient
 from senhas import api_hash, api_id
 
 '''PRODUÇÃO'''
-sessao = 'webhook'
+sessao = 'login'
 
 '''DESENVOLVIMENTO
 sessao = 'webhook-dev'

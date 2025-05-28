@@ -36,15 +36,15 @@ async function getDatabaseInstance() {
 // Função para inicializar as tabelas do banco de dados
 async function initializeDatabase() {
   console.log('Inicializando banco de dados MySQL com tabelas...');
-  
+
   try {
     const db = await getDatabaseInstance();
-    
+
     // As tabelas já foram criadas pelo script createDb.js
     // Vamos apenas verificar se as colunas adicionais estão presentes em ordens
-    
+
     await checkAndAddColumns();
-    
+
     console.log('Inicialização do banco de dados concluída!');
   } catch (error) {
     console.error('Erro ao inicializar banco de dados:', error);
@@ -55,59 +55,59 @@ async function initializeDatabase() {
 async function checkAndAddColumns() {
   try {
     const db = await getDatabaseInstance();
-    
+
     // Verificar se coluna 'renew_sl_firs' existe na tabela 'ordens'
     let [columns] = await db.query(`
       SELECT COLUMN_NAME 
       FROM INFORMATION_SCHEMA.COLUMNS 
-      WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'ordens' AND COLUMN_NAME = 'renew_sl_firs'`, 
-      [process.env.DB_NAME]);
-    
+      WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'ordens' AND COLUMN_NAME = 'renew_sl_firs'`,
+        [process.env.DB_NAME]);
+
     if (columns.length === 0) {
       console.log("Coluna renew_sl_firs não encontrada na tabela ordens. Adicionando...");
       await db.query("ALTER TABLE ordens ADD COLUMN renew_sl_firs VARCHAR(20)");
       console.log("Coluna renew_sl_firs adicionada à tabela ordens com sucesso.");
     }
-    
+
     // Verificar se coluna 'renew_sl_seco' existe
     [columns] = await db.query(`
       SELECT COLUMN_NAME 
       FROM INFORMATION_SCHEMA.COLUMNS 
-      WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'ordens' AND COLUMN_NAME = 'renew_sl_seco'`, 
-      [process.env.DB_NAME]);
-    
+      WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'ordens' AND COLUMN_NAME = 'renew_sl_seco'`,
+        [process.env.DB_NAME]);
+
     if (columns.length === 0) {
       console.log("Coluna renew_sl_seco não encontrada na tabela ordens. Adicionando...");
       await db.query("ALTER TABLE ordens ADD COLUMN renew_sl_seco VARCHAR(20)");
       console.log("Coluna renew_sl_seco adicionada à tabela ordens com sucesso.");
     }
-    
+
     // Verificar se coluna 'orign_sig' existe
     [columns] = await db.query(`
       SELECT COLUMN_NAME 
       FROM INFORMATION_SCHEMA.COLUMNS 
-      WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'ordens' AND COLUMN_NAME = 'orign_sig'`, 
-      [process.env.DB_NAME]);
-    
+      WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'ordens' AND COLUMN_NAME = 'orign_sig'`,
+        [process.env.DB_NAME]);
+
     if (columns.length === 0) {
       console.log("Coluna orign_sig não encontrada na tabela ordens. Adicionando...");
       await db.query("ALTER TABLE ordens ADD COLUMN orign_sig VARCHAR(100)");
       console.log("Coluna orign_sig adicionada à tabela ordens com sucesso.");
     }
-    
+
     // Verificar se coluna 'orign_sig' existe em posicoes
     [columns] = await db.query(`
       SELECT COLUMN_NAME 
       FROM INFORMATION_SCHEMA.COLUMNS 
-      WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'posicoes' AND COLUMN_NAME = 'orign_sig'`, 
-      [process.env.DB_NAME]);
-    
+      WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'posicoes' AND COLUMN_NAME = 'orign_sig'`,
+        [process.env.DB_NAME]);
+
     if (columns.length === 0) {
       console.log("Coluna orign_sig não encontrada na tabela posicoes. Adicionando...");
       await db.query("ALTER TABLE posicoes ADD COLUMN orign_sig VARCHAR(100)");
       console.log("Coluna orign_sig adicionada à tabela posicoes com sucesso.");
     }
-    
+
   } catch (error) {
     console.error("Erro ao verificar e adicionar colunas:", error);
     throw error;
@@ -153,8 +153,8 @@ async function getAllPositionsFromDb(db) {
 async function getPositionIdBySymbol(db, symbol) {
   try {
     const [rows] = await db.query(
-      "SELECT id FROM posicoes WHERE simbolo = ? AND status = 'OPEN' ORDER BY data_hora_abertura DESC LIMIT 1", 
-      [symbol]
+        "SELECT id FROM posicoes WHERE simbolo = ? AND status = 'OPEN' ORDER BY data_hora_abertura DESC LIMIT 1",
+        [symbol]
     );
     return rows.length > 0 ? rows[0].id : null;
   } catch (error) {
@@ -167,8 +167,8 @@ async function getPositionIdBySymbol(db, symbol) {
 async function checkPositionExists(db, symbol) {
   try {
     const [rows] = await db.query(
-      "SELECT id FROM posicoes WHERE simbolo = ? AND data_hora_fechamento IS NULL", 
-      [symbol]
+        "SELECT id FROM posicoes WHERE simbolo = ? AND data_hora_fechamento IS NULL",
+        [symbol]
     );
     return rows.length > 0;
   } catch (error) {
@@ -179,47 +179,53 @@ async function checkPositionExists(db, symbol) {
 
 // Atualizar função insertPosition para usar formatDateForMySQL
 
-async function insertPosition(db, position) {
+async function insertPosition(connection, positionData) {
   try {
-    const exists = await checkPositionExists(db, position.simbolo);
+    // Verificar se o status é válido
+    const validStatus = ['PENDING', 'OPEN', 'CLOSED', 'CANCELED', 'PENDING_ENTRY'];
+    if (!validStatus.includes(positionData.status)) {
+      throw new Error(`Status inválido: ${positionData.status}`);
+    }
+
+    const exists = await checkPositionExists(connection, positionData.simbolo);
     if (exists) {
-      console.log(`Posição já existe para o símbolo: ${position.simbolo}`);
+      console.log(`Posição já existe para o símbolo: ${positionData.simbolo}`);
       return null;
     } else {
       // Verificar se a coluna orign_sig existe na tabela
-      const [columns] = await db.query(
-        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
-         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'posicoes' AND COLUMN_NAME = 'orign_sig'`, 
-        [process.env.DB_NAME]
+      const [columns] = await connection.query(
+          `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
+         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'posicoes' AND COLUMN_NAME = 'orign_sig'`,
+          [process.env.DB_NAME]
       );
-      
+
       const hasOrignSigColumn = columns.length > 0;
-      
+
       // Formatar datas
-      const formattedOpenTime = formatDateForMySQL(position.data_hora_abertura);
-      const formattedUpdateTime = formatDateForMySQL(position.data_hora_ultima_atualizacao);
-      
+      const formattedOpenTime = formatDateForMySQL(positionData.data_hora_abertura);
+      const formattedUpdateTime = formatDateForMySQL(positionData.data_hora_ultima_atualizacao);
+
       let query, params;
-      
+
       if (hasOrignSigColumn) {
         // Se a coluna existir, incluí-la na consulta
         query = `INSERT INTO posicoes (
           simbolo, quantidade, preco_medio, status, data_hora_abertura, 
           side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente, orign_sig
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-        
+
         params = [
-          position.simbolo,
-          position.quantidade,
-          position.preco_medio,
+          positionData.simbolo,
+          positionData.quantidade,
+          positionData.preco_medio,
           'OPEN', // O status é sempre OPEN para posições novas
           formattedOpenTime,
-          position.side,
-          position.leverage,
+          positionData.side,
+          positionData.leverage,
           formattedUpdateTime,
-          position.preco_entrada,
-          position.preco_corrente,
-          position.orign_sig || null
+          positionData.preco_entrada,
+          positionData.preco_corrente,
+          positionData.orign_sig || null
         ];
       } else {
         // Se a coluna não existir, omití-la da consulta
@@ -227,23 +233,23 @@ async function insertPosition(db, position) {
           simbolo, quantidade, preco_medio, status, data_hora_abertura, 
           side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-        
+
         params = [
-          position.simbolo,
-          position.quantidade,
-          position.preco_medio,
+          positionData.simbolo,
+          positionData.quantidade,
+          positionData.preco_medio,
           'OPEN', // O status é sempre OPEN para posições novas
           formattedOpenTime,
-          position.side,
-          position.leverage,
+          positionData.side,
+          positionData.leverage,
           formattedUpdateTime,
-          position.preco_entrada,
-          position.preco_corrente
+          positionData.preco_entrada,
+          positionData.preco_corrente
         ];
       }
-      
-      const [result] = await db.query(query, params);
-      
+
+      const [result] = await connection.query(query, params);
+
       console.log(`Posição inserida com sucesso com ID: ${result.insertId}`);
       return result.insertId;
     }
@@ -269,31 +275,31 @@ async function checkOrderExists(db, id_externo) {
 async function insertNewOrder(db, orderDetails) {
   try {
     const { tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao, id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only, close_position, last_update, orign_sig } = orderDetails;
-    
+
     const reduceOnlyValue = reduce_only ? 1 : 0; // MySQL usa 1/0 para boolean
     const closePositionValue = close_position ? 1 : 0;
-    
+
     // Formatar datas antes da inserção
     const formattedCreationTime = formatDateForMySQL(data_hora_criacao);
     const formattedUpdateTime = formatDateForMySQL(last_update);
-    
+
     const [result] = await db.query(
-      `INSERT INTO ordens (
+        `INSERT INTO ordens (
         tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao, 
         id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only, close_position, last_update, orign_sig
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        tipo_ordem, preco, quantidade, id_posicao, status, formattedCreationTime,
-        id_externo, side, simbolo, tipo_ordem_bot, target, reduceOnlyValue, closePositionValue, formattedUpdateTime, orign_sig
-      ]
+        [
+          tipo_ordem, preco, quantidade, id_posicao, status, formattedCreationTime,
+          id_externo, side, simbolo, tipo_ordem_bot, target, reduceOnlyValue, closePositionValue, formattedUpdateTime, orign_sig
+        ]
     );
-    
+
     if (tipo_ordem_bot === "REDUCAO PARCIAL" && target) {
       console.log(`Ordem de ${tipo_ordem_bot} ${target} inserida com sucesso: ${result.insertId}`);
     } else {
       console.log(`Ordem de ${tipo_ordem_bot} inserida com sucesso: ${result.insertId}`);
     }
-    
+
     return result.insertId;
   } catch (error) {
     console.error(`Erro ao inserir ordem: ${error.message}`);
@@ -318,18 +324,18 @@ async function insertOrder(db, tipo_ordem, preco, quantidade, status, data_hora_
     } else {
       const reduceOnlyValue = reduce_only ? 1 : 0;
       const closePositionValue = close_position ? 1 : 0;
-      
+
       const [result] = await db.query(
-        `INSERT INTO ordens (
+          `INSERT INTO ordens (
           tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao, 
           id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only, close_position, last_update
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao,
-          id_externo, side, simbolo, tipo_ordem_bot, target, reduceOnlyValue, closePositionValue, last_update
-        ]
+          [
+            tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao,
+            id_externo, side, simbolo, tipo_ordem_bot, target, reduceOnlyValue, closePositionValue, last_update
+          ]
       );
-      
+
       console.log(`Nova ordem inserida com ID ${result.insertId}.`);
       return result.insertId;
     }
@@ -355,29 +361,29 @@ async function getOrdersFromDb(db, params) {
   try {
     // Construir a consulta SQL base
     let sql = "SELECT id, id_externo, simbolo, tipo_ordem, preco, quantidade, " +
-              "id_posicao, status, data_hora_criacao, side, tipo_ordem_bot, " +
-              "target, reduce_only, close_position, last_update";
-    
+        "id_posicao, status, data_hora_criacao, side, tipo_ordem_bot, " +
+        "target, reduce_only, close_position, last_update";
+
     // Verificar se as colunas adicionais existem
     const [columns] = await db.query(
-      `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
+        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
        WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'ordens'`,
-      [process.env.DB_NAME]
+        [process.env.DB_NAME]
     );
-    
+
     const columnNames = columns.map(col => col.COLUMN_NAME);
-    
+
     // Adicionar colunas extras se existirem
     if (columnNames.includes("renew_sl_firs")) sql += ", renew_sl_firs";
     if (columnNames.includes("renew_sl_seco")) sql += ", renew_sl_seco";
     if (columnNames.includes("orign_sig")) sql += ", orign_sig";
-    
+
     sql += " FROM ordens";
-    
+
     // Adicionar condições WHERE
     let conditions = [];
     let sqlValues = [];
-    
+
     if (params.status) {
       conditions.push("status = ?");
       sqlValues.push(params.status);
@@ -394,19 +400,19 @@ async function getOrdersFromDb(db, params) {
       conditions.push("id_externo = ?");
       sqlValues.push(params.id_externo);
     }
-    
+
     // Adicionar condição para renew_sl_firs se existir
     if (params.renew_sl_firs !== undefined && columnNames.includes("renew_sl_firs")) {
       conditions.push("renew_sl_firs IS ?");
       sqlValues.push(params.renew_sl_firs);
     }
-    
+
     if (conditions.length > 0) {
       sql += " WHERE " + conditions.join(" AND ");
     }
-    
+
     const [rows] = await db.query(sql, sqlValues);
-    
+
     // Preencher propriedades ausentes para manter consistência
     const completeRows = rows.map(row => {
       if (!row.hasOwnProperty('renew_sl_firs')) row.renew_sl_firs = null;
@@ -414,7 +420,7 @@ async function getOrdersFromDb(db, params) {
       if (!row.hasOwnProperty('orign_sig')) row.orign_sig = null;
       return row;
     });
-    
+
     return completeRows;
   } catch (error) {
     console.error(`Erro ao consultar ordens: ${error.message}`);
@@ -449,8 +455,8 @@ async function updatePositionStatus(db, symbol, updates) {
   try {
     // Primeiro obter os dados atuais da posição para não substituir com NULL
     const [rows] = await db.query(
-      'SELECT * FROM posicoes WHERE simbolo = ? AND status != "CLOSED" LIMIT 1',
-      [symbol]
+        'SELECT * FROM posicoes WHERE simbolo = ? AND status != "CLOSED" LIMIT 1',
+        [symbol]
     );
 
     if (rows.length === 0) {
@@ -460,16 +466,16 @@ async function updatePositionStatus(db, symbol, updates) {
 
     const posicaoAtual = rows[0];
     const data_hora_ultima_atualizacao = getCurrentDateTimeAsString();
-    
+
     // Atualizar apenas os campos fornecidos, mantendo os valores existentes para os demais
     const status = updates.status || posicaoAtual.status;
     const quantidade = updates.quantidade !== undefined ? updates.quantidade : posicaoAtual.quantidade;
     const preco_entrada = updates.preco_entrada !== undefined ? updates.preco_entrada : posicaoAtual.preco_entrada;
     const preco_corrente = updates.preco_corrente !== undefined ? updates.preco_corrente : posicaoAtual.preco_corrente;
     const preco_medio = updates.preco_medio !== undefined ? updates.preco_medio : posicaoAtual.preco_medio;
-    
+
     await db.query(
-      `UPDATE posicoes SET 
+        `UPDATE posicoes SET 
        quantidade = ?, 
        preco_entrada = ?, 
        preco_corrente = ?,
@@ -477,9 +483,9 @@ async function updatePositionStatus(db, symbol, updates) {
        status = ?, 
        data_hora_ultima_atualizacao = ? 
        WHERE simbolo = ? AND status != "CLOSED"`,
-      [quantidade, preco_entrada, preco_corrente, preco_medio, status, data_hora_ultima_atualizacao, symbol]
+        [quantidade, preco_entrada, preco_corrente, preco_medio, status, data_hora_ultima_atualizacao, symbol]
     );
-    
+
     console.log(`Dados da posição atualizados para o símbolo: ${symbol}`);
     return true;
   } catch (error) {
@@ -494,15 +500,15 @@ async function updatePositionInDb(db, positionId, quantidade, preco_entrada, pre
     if (!positionId) {
       throw new Error('ID da posição é undefined');
     }
-    
+
     const data_hora_ultima_atualizacao = new Date().toISOString();
-    
+
     await db.query(
-      `UPDATE posicoes 
+        `UPDATE posicoes 
        SET quantidade = ?, preco_entrada = ?, preco_corrente = ?, 
        leverage = ?, data_hora_ultima_atualizacao = ?
        WHERE id = ?`,
-      [quantidade, preco_entrada, preco_corrente, leverage, data_hora_ultima_atualizacao, positionId]
+        [quantidade, preco_entrada, preco_corrente, leverage, data_hora_ultima_atualizacao, positionId]
     );
     console.log(`Posição com ID ${positionId} atualizada com sucesso.`);
   } catch (error) {
@@ -518,11 +524,11 @@ async function moveClosedPositionsAndOrders(db, positionId) {
   try {
     // Usar formatDateForMySQL para formatar a data atual
     const nowFormatted = formatDateForMySQL(new Date());
-    
+
     // Iniciar transação
     connection = await db.getConnection();
     await connection.beginTransaction();
-    
+
     // 1. Verificar se a posição existe
     const [positionResult] = await connection.query("SELECT * FROM posicoes WHERE id = ?", [positionId]);
     if (positionResult.length === 0) {
@@ -530,100 +536,100 @@ async function moveClosedPositionsAndOrders(db, positionId) {
       await connection.commit();
       return;
     }
-    
+
     // 2. Verificar todas as ordens que referenciam esta posição
     const [orderResult] = await connection.query("SELECT * FROM ordens WHERE id_posicao = ?", [positionId]);
     console.log(`Encontradas ${orderResult.length} ordens para posição ${positionId}.`);
-    
+
     // 3. Construir esquemas dinâmicos para mover ordens
     const [renew_sl_firs] = await connection.query(`SHOW COLUMNS FROM ordens LIKE 'renew_sl_firs'`);
     const [renew_sl_seco] = await connection.query(`SHOW COLUMNS FROM ordens LIKE 'renew_sl_seco'`);
     const [orign_sig] = await connection.query(`SHOW COLUMNS FROM ordens LIKE 'orign_sig'`);
-    
+
     const [dest_renew_sl_firs] = await connection.query(`SHOW COLUMNS FROM ordens_fechadas LIKE 'renew_sl_firs'`);
     const [dest_renew_sl_seco] = await connection.query(`SHOW COLUMNS FROM ordens_fechadas LIKE 'renew_sl_seco'`);
     const [dest_orign_sig] = await connection.query(`SHOW COLUMNS FROM ordens_fechadas LIKE 'orign_sig'`);
-    
+
     let sourceCols = "tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao, " +
-                     "id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only, close_position, " +
-                     "last_update";
-    
+        "id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only, close_position, " +
+        "last_update";
+
     let destCols = sourceCols;
-    
+
     if (renew_sl_firs.length > 0 && dest_renew_sl_firs.length > 0) {
       sourceCols += ", renew_sl_firs";
       destCols += ", renew_sl_firs";
     }
-    
+
     if (renew_sl_seco.length > 0 && dest_renew_sl_seco.length > 0) {
       sourceCols += ", renew_sl_seco";
       destCols += ", renew_sl_seco";
     }
-    
+
     if (orign_sig.length > 0 && dest_orign_sig.length > 0) {
       sourceCols += ", orign_sig";
       destCols += ", orign_sig";
     }
-    
+
     // 4. Inserir ordens na tabela de histórico
     if (orderResult.length > 0) {
       await connection.query(
-        `INSERT INTO ordens_fechadas (${destCols})
+          `INSERT INTO ordens_fechadas (${destCols})
          SELECT ${sourceCols} FROM ordens WHERE id_posicao = ?`,
-        [positionId]
+          [positionId]
       );
       console.log(`Ordens com id_posicao ${positionId} movidas para ordens_fechadas.`);
     }
-    
+
     // 5. IMPORTANTE: Excluir ordens ANTES de excluir a posição
     await connection.query("DELETE FROM ordens WHERE id_posicao = ?", [positionId]);
     console.log(`Ordens com id_posicao ${positionId} excluídas de ordens.`);
-    
+
     // 6. Verificar se ainda existem ordens referenciando esta posição (garantia extra)
     const [remainingOrders] = await connection.query(
-      "SELECT COUNT(*) AS count FROM ordens WHERE id_posicao = ?", 
-      [positionId]
+        "SELECT COUNT(*) AS count FROM ordens WHERE id_posicao = ?",
+        [positionId]
     );
-    
+
     if (remainingOrders[0].count > 0) {
       throw new Error(`Ainda existem ${remainingOrders[0].count} ordens vinculadas à posição ${positionId}.`);
     }
-    
+
     // 7. Verificar se posição tem coluna orign_sig
     const [posColumns] = await connection.query(`SHOW COLUMNS FROM posicoes LIKE 'orign_sig'`);
     const hasOrignSig = posColumns.length > 0;
-    
+
     // 8. Copiar posição para tabela histórica com consulta dinâmica
     if (hasOrignSig) {
       await connection.query(
-        `INSERT INTO posicoes_fechadas 
+          `INSERT INTO posicoes_fechadas 
          (simbolo, quantidade, preco_medio, status, data_hora_abertura, data_hora_fechamento, 
           side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente, orign_sig)
          SELECT simbolo, quantidade, preco_medio, status, data_hora_abertura, ?, 
           side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente, orign_sig
          FROM posicoes WHERE id = ?`,
-        [nowFormatted, positionId]
+          [nowFormatted, positionId]
       );
     } else {
       await connection.query(
-        `INSERT INTO posicoes_fechadas 
+          `INSERT INTO posicoes_fechadas 
          (simbolo, quantidade, preco_medio, status, data_hora_abertura, data_hora_fechamento, 
           side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente)
          SELECT simbolo, quantidade, preco_medio, status, data_hora_abertura, ?, 
           side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente
          FROM posicoes WHERE id = ?`,
-        [nowFormatted, positionId]
+          [nowFormatted, positionId]
       );
     }
     console.log(`Posição com id ${positionId} movida para posicoes_fechadas.`);
-    
+
     // 9. Agora é seguro excluir a posição
     await connection.query("DELETE FROM posicoes WHERE id = ?", [positionId]);
     console.log(`Posição com id ${positionId} excluída de posicoes.`);
-    
+
     await connection.commit();
     console.log(`Posição ${positionId} e suas ordens movidas para histórico com sucesso.`);
-    
+
   } catch (error) {
     if (connection) {
       await connection.rollback();
@@ -659,15 +665,15 @@ function getCurrentDateTimeAsString() {
 // Formatar data e hora
 function getDataHoraFormatada() {
   const data = new Date();
-  
+
   const dia = String(data.getDate()).padStart(2, '0');
   const mes = String(data.getMonth() + 1).padStart(2, '0');
   const ano = data.getFullYear();
-  
+
   const horas = String(data.getHours()).padStart(2, '0');
   const minutos = String(data.getMinutes()).padStart(2, '0');
   const segundos = String(data.getSeconds()).padStart(2, '0');
-  
+
   return `${dia}-${mes}-${ano} | ${horas}:${minutos}:${segundos}`;
 }
 
@@ -686,14 +692,14 @@ async function updateOrderRenewFlag(db, orderId) {
 async function insertWebhookSignal(db, signalData) {
   try {
     const { symbol, side, leverage, capital_pct, status, created_at, chat_id } = signalData;
-    
+
     const [result] = await db.query(
-      `INSERT INTO webhook_signals 
+        `INSERT INTO webhook_signals 
        (symbol, side, leverage, capital_pct, status, created_at, chat_id)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [symbol, side, leverage, capital_pct, status, created_at, chat_id]
+        [symbol, side, leverage, capital_pct, status, created_at, chat_id]
     );
-    
+
     console.log(`Sinal de webhook inserido com sucesso: ${result.insertId}`);
     return result.insertId;
   } catch (error) {
@@ -726,16 +732,25 @@ async function insertWebhookSignalWithDetails(db, testSymbol, positionId, orderI
  */
 function formatDateForMySQL(date) {
   if (!date) return null;
-  
+
   // Converter para objeto Date se for string
   let dateObj = date instanceof Date ? date : new Date(date);
-  
-  // Corrigir ano se estiver no futuro (provavelmente um bug)
+
+  // Corrigir ano se estiver no futuro (bug comum em alguns sistemas)
   const currentYear = new Date().getFullYear();
+  const currentDate = new Date();
+
   if (dateObj.getFullYear() > currentYear) {
+    console.log(`[DB] Corrigindo data futura: ${dateObj.toISOString()} → ano atual`);
     dateObj.setFullYear(currentYear);
   }
-  
+
+  // Verificar se a data ainda está no futuro (mesmo após corrigir o ano)
+  if (dateObj > currentDate) {
+    console.log(`[DB] Data ainda no futuro após correção do ano, ajustando para data atual`);
+    dateObj = new Date(); // Usar data atual
+  }
+
   // Formatar para YYYY-MM-DD HH:MM:SS (formato aceito pelo MySQL)
   const year = dateObj.getFullYear();
   const month = String(dateObj.getMonth() + 1).padStart(2, '0');
@@ -743,7 +758,7 @@ function formatDateForMySQL(date) {
   const hours = String(dateObj.getHours()).padStart(2, '0');
   const minutes = String(dateObj.getMinutes()).padStart(2, '0');
   const seconds = String(dateObj.getSeconds()).padStart(2, '0');
-  
+
   return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 }
 
@@ -758,25 +773,25 @@ async function updateAccountBalance(db, saldo, accountId = 1) {
   try {
     const connection = await db.getConnection();
     await connection.beginTransaction();
-    
+
     try {
       // 1. Buscar saldo atual e saldo_base_calculo
       const [currentAccount] = await connection.query(
-        'SELECT saldo, saldo_base_calculo FROM conta WHERE id = ?',
-        [accountId]
+          'SELECT saldo, saldo_base_calculo FROM conta WHERE id = ?',
+          [accountId]
       );
-      
+
       if (currentAccount.length === 0) {
         throw new Error(`Conta com ID ${accountId} não encontrada`);
       }
-      
+
       const currentSaldo = parseFloat(currentAccount[0].saldo || 0);
       let baseCalculo = parseFloat(currentAccount[0].saldo_base_calculo || 0);
-      
+
       // 2. Se o saldo_base_calculo ainda não existe ou é zero, inicializar com o saldo atual
       if (baseCalculo === 0) {
         baseCalculo = saldo;
-      } 
+      }
       // 3. Se o novo saldo for maior que o saldo_base_calculo atual, atualizar o saldo_base_calculo
       else if (saldo > baseCalculo) {
         baseCalculo = saldo;
@@ -784,15 +799,15 @@ async function updateAccountBalance(db, saldo, accountId = 1) {
       } else {
         //console.log(`[DB] Saldo diminuiu de ${currentSaldo.toFixed(2)} para ${saldo.toFixed(2)}, mantendo saldo base: ${baseCalculo.toFixed(2)} USDT`);
       }
-      
+
       // 4. Atualizar o saldo e possivelmente o saldo_base_calculo
       await connection.query(
-        'UPDATE conta SET saldo = ?, saldo_base_calculo = ? WHERE id = ?',
-        [saldo, baseCalculo, accountId]
+          'UPDATE conta SET saldo = ?, saldo_base_calculo = ? WHERE id = ?',
+          [saldo, baseCalculo, accountId]
       );
-      
+
       await connection.commit();
-      
+
       return {
         saldo: saldo,
         saldo_base_calculo: baseCalculo
@@ -818,14 +833,14 @@ async function updateAccountBalance(db, saldo, accountId = 1) {
 async function getBaseCalculoBalance(db, accountId = 1) {
   try {
     const [rows] = await db.query(
-      'SELECT saldo_base_calculo FROM conta WHERE id = ?',
-      [accountId]
+        'SELECT saldo_base_calculo FROM conta WHERE id = ?',
+        [accountId]
     );
-    
+
     if (rows.length === 0) {
       throw new Error(`Conta com ID ${accountId} não encontrada`);
     }
-    
+
     const baseCalculo = parseFloat(rows[0].saldo_base_calculo || 0);
     return baseCalculo;
   } catch (error) {

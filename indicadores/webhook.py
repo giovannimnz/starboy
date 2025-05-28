@@ -30,7 +30,7 @@ entry_group_id    = 4217341650
 stoploss_group_id = 4263252665
 
 # Cliente Telegram
-client = TelegramClient('webhook', api_id, api_hash)
+client = TelegramClient('divap', api_id, api_hash)
 
 # Cache para armazenar os resultados das chamadas à API
 leverage_brackets_cache = {}

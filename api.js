@@ -9,37 +9,53 @@ const apiUrl = process.env.API_URL;
 const apiUrlSpot = process.env.API_URL_SPOT;
 
 async function newEntryOrder(symbol, quantity, side) {
-  const data = {
-    symbol,
-    side,
-    type: "MARKET",
-    quantity,
-    newOrderRespType: "RESULT" // Isso garante que o preço de execução seja retornado
-  };
+  try {
+    const data = {
+      symbol,
+      side,
+      type: "MARKET",
+      quantity,
+      newOrderRespType: "RESULT" // Isso garante que o preço de execução seja retornado
+    };
 
-  const timestamp = Date.now();
-  const recvWindow = 60000;
+    const timestamp = Date.now();
+    const recvWindow = 60000;
 
-  const signature = crypto
-    .createHmac("sha256", apiSecret)
-    .update(`${new URLSearchParams({ ...data, timestamp, recvWindow }).toString()}`)
-    .digest("hex");
+    const signature = crypto
+        .createHmac("sha256", apiSecret)
+        .update(`${new URLSearchParams({ ...data, timestamp, recvWindow }).toString()}`)
+        .digest("hex");
 
-  const newData = { ...data, timestamp, recvWindow, signature };
-  const qs = `?${new URLSearchParams(newData).toString()}`;
+    const newData = { ...data, timestamp, recvWindow, signature };
+    const qs = `?${new URLSearchParams(newData).toString()}`;
 
-  const result = await axios({
-    method: "POST",
-    url: `${apiUrl}/v1/order${qs}`,
-    headers: { "X-MBX-APIKEY": apiKey },
-  });
+    console.log(`[API] Enviando ordem de entrada a mercado: ${symbol}, ${quantity}, ${side}`);
+    const result = await axios({
+      method: "POST",
+      url: `${apiUrl}/v1/order${qs}`,
+      headers: { "X-MBX-APIKEY": apiKey },
+    });
 
-  return {
-    orderId: result.data.orderId,
-    executedQty: result.data.executedQty,
-    cummulativeQuoteQty: result.data.cummulativeQuoteQty,
-    price: result.data.avgPrice ? result.data.avgPrice : result.data.fills ? result.data.fills[0].price : null // Captura o preço médio de execução
-  };
+    // Processar a resposta para extrair preço e quantidade executada
+    const avgPrice = result.data.avgPrice
+        ? parseFloat(result.data.avgPrice)
+        : result.data.fills && result.data.fills.length > 0
+            ? parseFloat(result.data.fills[0].price)
+            : null;
+
+    return {
+      orderId: result.data.orderId,
+      executedQty: result.data.executedQty,
+      cummulativeQuoteQty: result.data.cummulativeQuoteQty,
+      price: avgPrice // Garantir que o preço seja retornado
+    };
+  } catch (error) {
+    console.error(`[API] Erro ao criar ordem de entrada a mercado: ${error.message}`);
+    if (error.response && error.response.data) {
+      console.error(`[API] Detalhes: ${JSON.stringify(error.response.data)}`);
+    }
+    throw error;
+  }
 }
 
 async function newOrder(symbol, quantity, side, price, type = 'LIMIT', reduceOnly = false) {
@@ -108,9 +124,9 @@ async function newReduceOnlyOrder(symbol, quantity, side, price) {
   const recvWindow = 60000;
 
   const signature = crypto
-    .createHmac("sha256", apiSecret)
-    .update(`${new URLSearchParams({ ...data, timestamp, recvWindow }).toString()}`)
-    .digest("hex");
+      .createHmac("sha256", apiSecret)
+      .update(`${new URLSearchParams({ ...data, timestamp, recvWindow }).toString()}`)
+      .digest("hex");
 
   const newData = { ...data, timestamp, recvWindow, signature };
   const qs = `?${new URLSearchParams(newData).toString()}`;
@@ -130,19 +146,19 @@ async function newStopOrder(symbol, quantity, side, stopPrice, price = null, red
   try {
     // Definir o tipo de ordem baseado no parâmetro price
     let orderType;
-    
+
     // Se price está definido, é TAKE_PROFIT_MARKET, senão é STOP_MARKET
     if (price !== null) {
       orderType = "TAKE_PROFIT_MARKET";
     } else {
       orderType = "STOP_MARKET";
     }
-    
+
     // Adicionar logs para verificar valores antes e depois de arredondar
     console.log(`Preço original de stop antes de arredondar: ${stopPrice}`);
     stopPrice = await roundPriceToTickSize(symbol, stopPrice);
     console.log(`Preço de stop após arredondar: ${stopPrice}`);
-    
+
     // Preparar dados base da ordem
     const data = {
       symbol,
@@ -164,9 +180,9 @@ async function newStopOrder(symbol, quantity, side, stopPrice, price = null, red
     }
 
     const signature = crypto
-      .createHmac("sha256", apiSecret)
-      .update(`${new URLSearchParams(data).toString()}`)
-      .digest("hex");
+        .createHmac("sha256", apiSecret)
+        .update(`${new URLSearchParams(data).toString()}`)
+        .digest("hex");
 
     const newData = { ...data, signature };
     const qs = `?${new URLSearchParams(newData).toString()}`;
@@ -177,12 +193,12 @@ async function newStopOrder(symbol, quantity, side, stopPrice, price = null, red
       url: `${apiUrl}/v1/order${qs}`,
       headers: { "X-MBX-APIKEY": apiKey },
     });
-    
+
     //console.log(`[API] Resposta da ordem ${orderType}:`, result.data);
     return { data: result.data }; // Garantir estrutura consistente { data: {...} }
   } catch (error) {
-    console.error(`[API] Erro ao enviar ordem ${price ? 'TAKE_PROFIT_MARKET' : 'STOP_MARKET'}:`, 
-                 error.response ? error.response.data : error.message);
+    console.error(`[API] Erro ao enviar ordem ${price ? 'TAKE_PROFIT_MARKET' : 'STOP_MARKET'}:`,
+        error.response ? error.response.data : error.message);
     throw error;
   }
 }
@@ -204,9 +220,9 @@ async function newTakeProfitOrder(symbol, quantity, side, price, orderId) {
   const recvWindow = 60000;
 
   const signature = crypto
-    .createHmac("sha256", apiSecret)
-    .update(`${new URLSearchParams({ ...data, timestamp, recvWindow }).toString()}`)
-    .digest("hex");
+      .createHmac("sha256", apiSecret)
+      .update(`${new URLSearchParams({ ...data, timestamp, recvWindow }).toString()}`)
+      .digest("hex");
 
   const newData = { ...data, timestamp, recvWindow, signature };
   const qs = `?${new URLSearchParams(newData).toString()}`;
@@ -229,7 +245,7 @@ async function getMaxLeverage(symbol) {
     const signature = crypto.createHmac('sha256', apiSecret).update(queryString).digest('hex');
 
     const url = `${apiUrl}/v1/leverageBracket?${queryString}&signature=${signature}`;
-    
+
     const response = await axios.get(url, {
       headers: { 'X-MBX-APIKEY': apiKey }
     });
@@ -294,10 +310,10 @@ async function roundPriceToTickSize(symbol, price) {
 async function getPrecision(symbol) {
   try {
     const response = await axios.get(`${apiUrl}/v1/exchangeInfo?symbol=${symbol}`);
-    
+
     if (response.data && response.data.symbols) {
       const symbolInfo = response.data.symbols.find(
-        (symbolInfo) => symbolInfo.symbol === symbol
+          (symbolInfo) => symbolInfo.symbol === symbol
       );
 
       if (!symbolInfo) {
@@ -346,15 +362,15 @@ async function getMultipleOrderStatus(symbol, orderIds) {
   const recvWindow = 10000;
 
   const data = {
-      symbol,
-      timestamp,
-      recvWindow
+    symbol,
+    timestamp,
+    recvWindow
   };
 
   const queryString = new URLSearchParams(data).toString();
   const signature = crypto.createHmac("sha256", apiSecret)
-                          .update(queryString)
-                          .digest("hex");
+      .update(queryString)
+      .digest("hex");
   const url = `${apiUrl}/v1/allOrders?${queryString}&signature=${signature}`;
 
   try {
@@ -362,78 +378,78 @@ async function getMultipleOrderStatus(symbol, orderIds) {
     const filteredOrders = response.data.filter(order => orderIds.includes(order.orderId.toString()));
     filteredOrders.forEach(order => results.push({ orderId: order.orderId, status: order.status }));
     //console.log(`Ordens filtradas para o símbolo ${symbol}:`, filteredOrders); // Log para verificar as ordens
-} catch (error) {
+  } catch (error) {
     console.error(`Erro ao obter status das ordens para o símbolo ${symbol}:`, error.response?.status, error.response?.statusText);
     console.error(`Detalhes do erro:`, error.message);
     results.push({ error: "Failed to fetch order status", details: error.message });
-}
-return results;
+  }
+  return results;
 }
 
 async function getOrderStatus(orderId, symbol) {
   const data = {
-      orderId,
-      symbol,
-      timestamp: Date.now(),
-      recvWindow: 60000
+    orderId,
+    symbol,
+    timestamp: Date.now(),
+    recvWindow: 60000
   };
 
   const queryString = new URLSearchParams(data).toString();
   const signature = crypto.createHmac("sha256", apiSecret)
-                          .update(queryString)
-                          .digest("hex");
+      .update(queryString)
+      .digest("hex");
   const url = `${apiUrl}/v1/order?${queryString}&signature=${signature}`;
 
   try {
-      const response = await axios.get(url, { headers: { 'X-MBX-APIKEY': apiKey } });
-      return response.data.status; // Retorna apenas o status da ordem
+    const response = await axios.get(url, { headers: { 'X-MBX-APIKEY': apiKey } });
+    return response.data.status; // Retorna apenas o status da ordem
   } catch (error) {
-      console.error(`Erro ao obter status da ordem ${orderId} para o símbolo ${symbol}: ${error.message}`);
-      return null; // Retorna null em caso de erro
+    console.error(`Erro ao obter status da ordem ${orderId} para o símbolo ${symbol}: ${error.message}`);
+    return null; // Retorna null em caso de erro
   }
 }
 
 async function getPositionDetails(symbol) {
   console.log(`\nConsultando detalhes da posição para o símbolo: ${symbol}`);
   const data = {
-      symbol: String(symbol),
-      timestamp: Date.now(),
-      recvWindow: 60000
+    symbol: String(symbol),
+    timestamp: Date.now(),
+    recvWindow: 60000
   };
 
   const queryString = new URLSearchParams(data).toString();
   const signature = crypto.createHmac("sha256", apiSecret)
-                          .update(queryString)
-                          .digest("hex");
+      .update(queryString)
+      .digest("hex");
   const url = `${apiUrl}/v2/positionRisk?${queryString}&signature=${signature}`;
 
   try {
     const response = await axios.get(url, { headers: { 'X-MBX-APIKEY': apiKey } });
     if (response.data && response.data.length > 0) {
-        const positions = response.data.map(pos => ({
-            simbolo: pos.symbol,
-            quantidade: parseFloat(pos.positionAmt),
-            preco_entrada: parseFloat(pos.entryPrice),
-            preco_corrente: parseFloat(pos.markPrice),
-            leverage: parseFloat(pos.leverage)
-        }));
+      const positions = response.data.map(pos => ({
+        simbolo: pos.symbol,
+        quantidade: parseFloat(pos.positionAmt),
+        preco_entrada: parseFloat(pos.entryPrice),
+        preco_corrente: parseFloat(pos.markPrice),
+        leverage: parseFloat(pos.leverage)
+      }));
 
-        if (positions.every(pos => pos.quantidade === 0)) {
-            console.log(`Não há posição aberta para ${symbol}`);
-            return [];
-        }
-        
-        return positions;
-    }
-      return [];
-    } catch (error) {
-      if (error.response && error.response.status === 400) {
-          console.error(`Símbolo inválido: ${symbol}`);
-          throw new Error(`Símbolo inválido: ${symbol}`);
-      } else {
-          //console.error('Erro ao obter detalhes da posição:', error.message);
-          throw error;
+      if (positions.every(pos => pos.quantidade === 0)) {
+        console.log(`Não há posição aberta para ${symbol}`);
+        return [];
       }
+
+      return positions;
+    }
+    return [];
+  } catch (error) {
+    if (error.response && error.response.status === 400) {
+      console.error(`Símbolo inválido: ${symbol}`);
+      throw new Error(`Símbolo inválido: ${symbol}`);
+    } else {
+      //console.error('Erro ao obter detalhes da posição:', error.message);
+      throw error;
+    }
   }
 }
 
@@ -445,8 +461,8 @@ async function getAllOpenPositions(symbol = null) {
 
   const queryString = new URLSearchParams(data).toString();
   const signature = crypto.createHmac("sha256", apiSecret)
-                          .update(queryString)
-                          .digest("hex");
+      .update(queryString)
+      .digest("hex");
   const url = `${apiUrl}/v2/positionRisk?${queryString}&signature=${signature}`;
 
   try {
@@ -513,9 +529,9 @@ async function cancelOrder(orderId, symbol) {
 
   const queryString = new URLSearchParams(data).toString();
   const signature = crypto
-    .createHmac('sha256', apiSecret)
-    .update(queryString)
-    .digest('hex');
+      .createHmac('sha256', apiSecret)
+      .update(queryString)
+      .digest('hex');
 
   const url = `${apiUrl}/v1/order?${queryString}&signature=${signature}`;
 
@@ -538,10 +554,10 @@ async function cancelOrder(orderId, symbol) {
         symbol: symbol
       };
     }
-    
+
     // Outros erros
-    console.error(`[API] Erro ao cancelar a ordem ${orderId} para ${symbol}:`, 
-      error.response ? error.response.data : error.message);
+    console.error(`[API] Erro ao cancelar a ordem ${orderId} para ${symbol}:`,
+        error.response ? error.response.data : error.message);
     throw error;
   }
 }
@@ -657,19 +673,19 @@ async function changeMarginType(symbol, marginType) {
   try {
     // Primeiro verificar o tipo de margem atual
     const currentMarginType = await getCurrentMarginType(symbol);
-    
+
     // Normalizar para comparação (converter para minúsculas)
     const desiredMarginType = marginType.toLowerCase();
-    
+
     // Se o tipo de margem já é o desejado, retornar sem fazer chamada à API
     if (currentMarginType === desiredMarginType) {
-      return { 
-        code: 200, 
+      return {
+        code: 200,
         msg: 'No need to change the margin type.',
         marginType: desiredMarginType.toUpperCase()
       };
     }
-    
+
     // Se chegou aqui, precisamos alterar o tipo de margem
     const data = {
       symbol,
@@ -727,9 +743,9 @@ async function cancelAllOpenOrders(symbol) {
 
   const queryString = new URLSearchParams(data).toString();
   const signature = crypto
-    .createHmac('sha256', apiSecret)
-    .update(queryString)
-    .digest('hex');
+      .createHmac('sha256', apiSecret)
+      .update(queryString)
+      .digest('hex');
 
   const url = `${apiUrl}/v1/allOpenOrders?${queryString}&signature=${signature}`;
 
@@ -773,9 +789,9 @@ async function encerrarPosicao(symbol) {
 
   const queryString = new URLSearchParams(data).toString();
   const signature = crypto
-    .createHmac('sha256', apiSecret)
-    .update(queryString)
-    .digest('hex');
+      .createHmac('sha256', apiSecret)
+      .update(queryString)
+      .digest('hex');
 
   const url = `${apiUrl}/v1/order?${queryString}&signature=${signature}`;
 
@@ -798,18 +814,18 @@ async function getAllLeverageBrackets() {
 
   const queryString = `timestamp=${timestamp}&recvWindow=${recvWindow}`;
   const signature = crypto
-    .createHmac('sha256', apiSecret)
-    .update(queryString)
-    .digest('hex');
+      .createHmac('sha256', apiSecret)
+      .update(queryString)
+      .digest('hex');
 
   const url = `${apiUrl}/v1/leverageBracket?${queryString}&signature=${signature}`;
 
   try {
     //console.log('[API] Buscando todos os brackets de alavancagem da Binance...');
-    const response = await axios.get(url, { 
+    const response = await axios.get(url, {
       headers: { 'X-MBX-APIKEY': apiKey }
     });
-    
+
     //console.log(`[API] Brackets obtidos com sucesso. Total de símbolos: ${response.data.length}`);
     return response.data;
   } catch (error) {
@@ -826,12 +842,12 @@ async function closePosition(symbol, quantity, side) {
     // Primeiro verificar se a posição ainda existe
     const positions = await getPositionDetails(symbol);
     const positionExists = positions.some(p => Math.abs(p.quantidade) > 0);
-    
+
     if (!positionExists) {
       console.log(`[API] Posição para ${symbol} não encontrada ou já fechada`);
       return { success: true, message: "Position already closed" };
     }
-    
+
     // Tentar enviar ordem de mercado normal em vez de closePosition
     const data = {
       symbol,
@@ -845,9 +861,9 @@ async function closePosition(symbol, quantity, side) {
 
     const queryString = new URLSearchParams(data).toString();
     const signature = crypto
-      .createHmac('sha256', apiSecret)
-      .update(queryString)
-      .digest('hex');
+        .createHmac('sha256', apiSecret)
+        .update(queryString)
+        .digest('hex');
 
     const url = `${apiUrl}/v1/order?${queryString}&signature=${signature}`;
 
@@ -897,7 +913,7 @@ async function getPrice(symbol) {
 async function updateLeverageBracketsInDatabase(forceUpdate = false) {
   try {
     //console.log('[API] Atualizando dados de alavancagem no banco de dados...');
-    
+
     // 1. Obter conexão com o banco de dados
     const db = await getDatabaseInstance();
     if (!db) {
@@ -911,14 +927,14 @@ async function updateLeverageBracketsInDatabase(forceUpdate = false) {
         FROM alavancagem
         WHERE corretora = 'binance'
       `);
-      
+
       const currentTime = Math.floor(Date.now() / 1000);
       const lastUpdateTime = lastUpdate[0].last_update || 0;
-      
+
       // Se dados foram atualizados nas últimas 24 horas, retornar
       if (lastUpdateTime > 0 && (currentTime - lastUpdateTime) < 24 * 60 * 60) {
         console.log('[API] Dados de alavancagem já atualizados nas últimas 24 horas');
-        
+
         // Verificar número de registros já existentes
         const [count] = await db.query(`
           SELECT COUNT(*) as total FROM alavancagem WHERE corretora = 'binance'
@@ -934,37 +950,37 @@ async function updateLeverageBracketsInDatabase(forceUpdate = false) {
     }
 
     console.log(`[API] Recebidos dados de ${brackets.length} símbolos`);
-    
+
     // 4. Iniciar transação para inserções em massa
     const connection = await db.getConnection();
     await connection.beginTransaction();
-    
+
     let recordCount = 0;
-    
+
     try {
       // 5. Processar cada símbolo e seus brackets
       for (const item of brackets) {
         const symbol = item.symbol;
-        
+
         if (!symbol || !item.brackets || !Array.isArray(item.brackets)) {
           console.log(`[API] Dados inválidos ou incompletos para símbolo: ${symbol || 'desconhecido'}`);
           continue;
         }
-        
+
         for (const bracket of item.brackets) {
           // Verificar se todos os campos necessários existem
           if (
-            bracket.bracket === undefined || 
-            bracket.initialLeverage === undefined || 
-            bracket.notionalCap === undefined || 
-            bracket.notionalFloor === undefined || 
-            bracket.maintMarginRatio === undefined || 
-            bracket.cum === undefined
+              bracket.bracket === undefined ||
+              bracket.initialLeverage === undefined ||
+              bracket.notionalCap === undefined ||
+              bracket.notionalFloor === undefined ||
+              bracket.maintMarginRatio === undefined ||
+              bracket.cum === undefined
           ) {
             console.log(`[API] Dados de bracket incompletos para ${symbol}`, bracket);
             continue;
           }
-          
+
           // Prepare the query with placeholders (? for each value)
           const query = `
             INSERT INTO alavancagem 
@@ -979,7 +995,7 @@ async function updateLeverageBracketsInDatabase(forceUpdate = false) {
               cum = VALUES(cum),
               updated_at = NOW()
           `;
-          
+
           // Execute a inserção/atualização
           await connection.query(query, [
             symbol,
@@ -991,15 +1007,15 @@ async function updateLeverageBracketsInDatabase(forceUpdate = false) {
             bracket.maintMarginRatio,
             bracket.cum
           ]);
-          
+
           recordCount++;
         }
       }
-      
+
       // 6. Confirmar transação
       await connection.commit();
       console.log(`[API] ${recordCount} registros de alavancagem atualizados no banco de dados`);
-      
+
       return recordCount;
     } catch (error) {
       // Em caso de erro, reverter transação
@@ -1026,30 +1042,30 @@ async function getLeverageBracketsFromDb(symbol) {
     if (!db) {
       throw new Error('Não foi possível conectar ao banco de dados');
     }
-    
+
     // Verificar se o símbolo existe no banco
     const [rows] = await db.query(`
       SELECT * FROM alavancagem 
       WHERE symbol = ? AND corretora = 'binance'
       ORDER BY bracket ASC
     `, [symbol]);
-    
+
     // Se não encontrar dados para o símbolo, tentar atualizar o banco
     if (rows.length === 0) {
       console.log(`[API] Não foram encontrados dados de alavancagem para ${symbol}, atualizando banco...`);
       await updateLeverageBracketsInDatabase(true);
-      
+
       // Consultar novamente após atualização
       const [updatedRows] = await db.query(`
         SELECT * FROM alavancagem 
         WHERE symbol = ? AND corretora = 'binance'
         ORDER BY bracket ASC
       `, [symbol]);
-      
+
       // Mapear para o formato esperado pelo sistema
       return formatBracketsFromDb(updatedRows);
     }
-    
+
     // Mapear para o formato esperado pelo sistema
     return formatBracketsFromDb(rows);
   } catch (error) {
@@ -1065,10 +1081,10 @@ async function getLeverageBracketsFromDb(symbol) {
  */
 function formatBracketsFromDb(dbRows) {
   if (!dbRows || dbRows.length === 0) return [];
-  
+
   // Agrupar por símbolo
   const symbolsMap = {};
-  
+
   for (const row of dbRows) {
     if (!symbolsMap[row.symbol]) {
       symbolsMap[row.symbol] = {
@@ -1076,7 +1092,7 @@ function formatBracketsFromDb(dbRows) {
         brackets: []
       };
     }
-    
+
     symbolsMap[row.symbol].brackets.push({
       bracket: row.bracket,
       initialLeverage: row.initial_leverage,
@@ -1086,7 +1102,7 @@ function formatBracketsFromDb(dbRows) {
       cum: parseFloat(row.cum)
     });
   }
-  
+
   // Converter o mapa em array
   return Object.values(symbolsMap);
 }

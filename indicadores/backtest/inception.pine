@@ -1,12 +1,12 @@
 //@version=6
-strategy("Inception - 1 : 0.618", 
-     overlay=true, 
-     initial_capital=1000, 
-     default_qty_type=strategy.cash, 
-     default_qty_value=500,
-     commission_type=strategy.commission.percent, 
+strategy("Inception - 1:1",
+     overlay=true,
+     initial_capital=1000,
+     default_qty_type=strategy.cash,
+     default_qty_value=250,
+     commission_type=strategy.commission.percent,
      commission_value=0.05)
-     
+
 //---------------------------------------------------------
 // >>>>>>>>>>>>>>>> CONFIGURAÇÕES GERAIS <<<<<<<<<<<<<<<<<<
 //---------------------------------------------------------
@@ -19,8 +19,8 @@ volMultiplier  = input.float(1.0,"Volume acima da média (fator)", display=displ
 fibExt         = input.float(0.618, "Fib Extension TP (1.0 = 1:1)", display=display.none)
 
 // Parâmetros para envio de webhook
-leverage       = input.int(75,    title="Leverage p/ Envio Webhook", display=display.none)
-entry_percent  = input.float(0.5, title="Capital (em %) p/ Webhook", minval=0.0, maxval=1.0, display=display.none)
+leverage       = input.int(125,    title="Leverage p/ Envio Webhook", display=display.none)
+entry_percent  = input.int(25, title="Capital (%) p/ Webhook", display=display.none)
 
 //---------------------------------------------------------
 // >>>>>>>>>>>> INDICADORES BÁSICOS E DIVERGÊNCIAS <<<<<<<<<<
@@ -45,13 +45,13 @@ var float pivotHighRsi2   = na
 //---------------------------------------------------------
 // >>>>>>>>>>>>>>>> DIVERGÊNCIA ALTISTA <<<<<<<<<<<<<<<<<<<
 //---------------------------------------------------------
-pivotLowVal = ta.pivotlow(low, pivotLeft, pivotRight) 
+pivotLowVal = ta.pivotlow(low, pivotLeft, pivotRight)
 isPivotLow  = not na(pivotLowVal)
 
 if isPivotLow
     pivotLowPrice2 := pivotLowPrice1
     pivotLowRsi2   := pivotLowRsi1
-    pivotLowPrice1 := low[pivotRight]    
+    pivotLowPrice1 := low[pivotRight]
     pivotLowRsi1   := rsi[pivotRight]
 
 bullDiv = isPivotLow and not na(pivotLowPrice1) and not na(pivotLowPrice2) and
@@ -103,34 +103,41 @@ var string bearer_token = "fd23e8ae1c1c4d78c5092ff6db6f79a00e1f0d4dba3a8ea0ddd31
 // Recebe: _symbol, _side, _leverage, _entry_price, _tpPrice, _sl, _messageType, _id
 // e monta o JSON em uma ÚNICA LINHA para evitar erros de quebra de linha:
 send_webhook(_symbol, _side, _leverage, _entry_price, _tpPrice, _sl, _messageType, _id) =>
-    alert("{\"alert\":{\"message\":{\"id\":\"" + str.tostring(_id) + "\",\"symbol\":\"" + _symbol + "\",\"side\":\"" + _side + "\",\"leverage\":" + str.tostring(_leverage) + ",\"capital\":50,\"entry\":" + str.tostring(_entry_price) + ",\"tp\":" + str.tostring(_tpPrice) + ",\"sl\":" + str.tostring(_sl) + ",\"message_type\":\"" + _messageType + "\"},\"headers\":{\"Authorization\":\"Bearer " + bearer_token + "\"}}}", alert.freq_once_per_bar_close)
+    alert("{\"alert\":{\"message\":{\"id\":\"" + str.tostring(_id) + "\",\"symbol\":\"" + _symbol + "\",\"side\":\"" + _side + "\",\"leverage\":" + str.tostring(_leverage) + ",\"capital\":" + str.tostring(entry_percent) + ",\"entry\":" + str.tostring(_entry_price) + ",\"tp\":" + str.tostring(_tpPrice) + ",\"sl\":" + str.tostring(_sl) + ",\"message_type\":\"" + _messageType + "\"},\"headers\":{\"Authorization\":\"Bearer " + bearer_token + "\"}}}", alert.freq_once_per_bar_close)
 
 //---------------------------------------------------------
 // >>>>>>>>>>>>>>> ORDENS + STOP + TAKE PROFIT <<<<<<<<<<<<<<
 //---------------------------------------------------------
 if bullSignal
-    entryPrice = close
-    stopPrice  = pivotLowPrice1  // Stop na mínima do pivô
-    tpPrice    = entryPrice + (entryPrice - stopPrice) * fibExt
+    entryPrice         = close
+    originalStopPrice  = pivotLowPrice1
+    tpPrice            = entryPrice + (entryPrice - originalStopPrice) * fibExt
+    distPercentLong    = (tpPrice - entryPrice) / entryPrice
 
-    // Estratégia
-    strategy.entry("BUY", strategy.long)
-    strategy.exit("TP/SL Long", from_entry="BUY", stop=stopPrice, limit=tpPrice)
+    // só entra se a distância for > 0,8%
+    if distPercentLong > 0.008
+        slDistance        = entryPrice - originalStopPrice
+        doubledSlDistance = slDistance * 2
+        stopPrice         = entryPrice - doubledSlDistance
+        adjustedEntryPrice = entryPrice * 0.996
 
-    // Envio do alerta (webhook) em uma linha
-    // Ordem dos argumentos (9):
-    // (1)_symbol, (2)_side, (3)_leverage, (4)_entry_price, (5)_tpPrice, (6)_tp2, (7)_sl, (8)_messageType, (9)_id
-    send_webhook(syminfo.ticker, "buy", leverage, entryPrice, tpPrice, stopPrice, "new_trade_long", str.tostring(time))
+        strategy.entry("BUY", strategy.long, limit=adjustedEntryPrice)
+        strategy.exit("TP/SL Long", from_entry="BUY", stop=stopPrice, limit=tpPrice)
+        send_webhook(syminfo.ticker, "buy", leverage, adjustedEntryPrice, tpPrice, stopPrice, "new_trade_long", str.tostring(time))
 
 if bearSignal
-    entryPrice = close
-    stopPrice  = pivotHighPrice1 // Stop na máxima do pivô
-    tpPrice    = entryPrice - (stopPrice - entryPrice) * fibExt
+    entryPrice         = close
+    originalStopPrice  = pivotHighPrice1
+    tpPrice            = entryPrice - (originalStopPrice - entryPrice) * fibExt
+    distPercentShort   = (entryPrice - tpPrice) / entryPrice
 
-    // Estratégia
-    strategy.entry("SELL", strategy.short)
-    strategy.exit("TP/SL Short", from_entry="SELL", stop=stopPrice, limit=tpPrice)
+    // só entra se a distância for > 0,8%
+    if distPercentShort > 0.008
+        slDistance        = originalStopPrice - entryPrice
+        doubledSlDistance = slDistance * 2
+        stopPrice         = entryPrice + doubledSlDistance
+        adjustedEntryPrice = entryPrice * 1.002
 
-    // Envio do alerta (webhook) em uma linha
-    // Mesma ordem de argumentos
-    send_webhook(syminfo.ticker, "sell", leverage, entryPrice, tpPrice, stopPrice, "new_trade_short", str.tostring(time))
+        strategy.entry("SELL", strategy.short, limit=adjustedEntryPrice)
+        strategy.exit("TP/SL Short", from_entry="SELL", stop=stopPrice, limit=tpPrice)
+        send_webhook(syminfo.ticker, "sell", leverage, adjustedEntryPrice, tpPrice, stopPrice, "new_trade_short", str.tostring(time))
