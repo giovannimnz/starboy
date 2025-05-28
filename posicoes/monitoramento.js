@@ -76,14 +76,14 @@ async function initializeMonitoring() {
     }
   });
 
-  // Adicionar job de sincronização a cada 1 minuto 
-//  scheduledJobs.syncWithExchange = schedule.scheduleJob('*/1 * * * *', async () => {
-//    try {
-//      await syncWithExchange();
-//    } catch (error) {
-//      console.error('[MONITOR] Erro na sincronização periódica:', error);
-//    }
-//  });
+  // Adicionar job de sincronização a cada 1 minuto
+  // scheduledJobs.syncWithExchange = schedule.scheduleJob('*/1 * * * *', async () => {
+  //   try {
+  //     await syncWithExchange();
+  //   } catch (error) {
+  //     console.error('[MONITOR] Erro na sincronização periódica:', error);
+  //   }
+  // });
 
   // NOVO JOB: Atualização diária dos dados de alavancagem às 2:00 da manhã
   scheduledJobs.updateLeverageBrackets = schedule.scheduleJob('0 2 * * *', async () => {
@@ -105,7 +105,6 @@ async function initializeMonitoring() {
     }
   });
 
-  // Adicionar dentro da função initializeMonitoring(), junto com os outros jobs
   // Sincronizar saldo a cada hora
   scheduledJobs.syncAccountBalance = schedule.scheduleJob('0 * * * *', async () => {
     try {
@@ -116,6 +115,20 @@ async function initializeMonitoring() {
     }
   });
 
+  // ***** INÍCIO DA IMPLEMENTAÇÃO SOLICITADA *****
+  // Adicionar este job na função initializeMonitoring:
+  scheduledJobs.syncPositionsWithExchange = schedule.scheduleJob('*/5 * * * *', async () => {
+    try {
+      console.log('[MONITOR] Sincronizando posições com a corretora (job periódico)...'); // Adicionado log para identificar a chamada do job
+      await syncPositionsWithExchange();
+    } catch (error) {
+      // O erro já é logado dentro de syncPositionsWithExchange ou no catch mais específico dele
+      // Mas podemos adicionar um log genérico aqui se desejado, ou apenas deixar que a função interna lide com o log.
+      console.error('[MONITOR] Erro geral no job de sincronizar posições:', error);
+    }
+  });
+  // ***** FIM DA IMPLEMENTAÇÃO SOLICITADA *****
+
   // Iniciar monitoramento de preços para posições abertas
   try {
     await startPriceMonitoring();
@@ -125,6 +138,78 @@ async function initializeMonitoring() {
 
   console.log('[MONITOR] Sistema de monitoramento inicializado com sucesso!');
 }
+
+// ***** INÍCIO DA IMPLEMENTAÇÃO SOLICITADA *****
+// Nova função para sincronizar posições:
+async function syncPositionsWithExchange() {
+  try {
+    const db = await getDatabaseInstance(); // Presume que getDatabaseInstance() está definida
+    if (!db) {
+        console.error('[SYNC] Não foi possível obter instância do banco de dados.');
+        return;
+    }
+
+    // 1. Obter posições abertas do banco
+    // Adicionado um log para a query, caso seja útil para debug
+    // console.log('[SYNC] Buscando posições abertas no banco de dados...');
+    const [dbPositions] = await db.query(`SELECT id, simbolo, quantidade FROM posicoes WHERE status = 'OPEN'`);
+
+    // 2. Obter posições da corretora
+    // console.log('[SYNC] Buscando posições abertas na corretora...');
+    const exchangePositions = await getAllOpenPositions(); // Presume que getAllOpenPositions() está definida
+
+    console.log(`[SYNC] Verificando ${dbPositions.length} posições abertas no banco vs ${exchangePositions.length} na corretora...`);
+
+    // 3. Mapear posições da corretora por símbolo
+    const exchangePositionsMap = {};
+    exchangePositions.forEach(pos => {
+      // Garanta que 'pos.simbolo' corresponde ao formato de 'dbPos.simbolo'
+      exchangePositionsMap[pos.symbol] = pos; // Assumindo que a corretora retorna 'symbol' e não 'simbolo'
+                                              // Ajuste 'pos.symbol' para 'pos.simbolo' se o campo da API da corretora for 'simbolo'
+    });
+
+    // 4. Verificar posições que existem no banco mas não na corretora (fechadas)
+    for (const dbPos of dbPositions) {
+      if (!exchangePositionsMap[dbPos.simbolo]) {
+        console.log(`[SYNC] Posição ${dbPos.simbolo} [DB ID: ${dbPos.id}] não encontrada na corretora. Provavelmente fechada.`);
+        // Presume que movePositionToHistory() está definida
+        await movePositionToHistory(db, dbPos.id, 'CLOSED', 'Fechada na corretora (detectado por sincronização)');
+        console.log(`[SYNC] Posição ${dbPos.simbolo} [DB ID: ${dbPos.id}] movida para o histórico.`);
+        
+        // Verificar e fechar websocket
+        // Presume que checkAndCloseWebsocket() está definida
+        // Adicionado um log para quando o agendamento é feito
+        console.log(`[SYNC] Agendando fechamento de websocket para ${dbPos.simbolo} em 5 segundos.`);
+        setTimeout(async () => { // Adicionado async aqui para o await dentro do timeout, se checkAndCloseWebsocket for async
+            try {
+                console.log(`[SYNC] Executando fechamento de websocket para ${dbPos.simbolo} (agendado).`);
+                await checkAndCloseWebsocket(db, dbPos.simbolo);
+            } catch (wsError) {
+                console.error(`[SYNC] Erro ao tentar fechar websocket para ${dbPos.simbolo} (agendado):`, wsError);
+            }
+        }, 5000);
+      }
+      // TODO (Opcional): Adicionar lógica para verificar divergências em posições que existem em ambos
+      // Por exemplo, verificar se a quantidade (dbPos.quantidade) bate com exchangePositionsMap[dbPos.simbolo].positionAmt
+      // e tomar alguma ação ou logar se houver discrepância.
+    }
+
+    // TODO (Opcional): Adicionar lógica para posições que existem na corretora mas não no banco
+    // Isso pode indicar uma posição aberta manualmente ou uma falha anterior em registrar a posição.
+    // for (const symbol in exchangePositionsMap) {
+    //   if (!dbPositions.some(dbPos => dbPos.simbolo === symbol)) {
+    //     console.warn(`[SYNC] Posição para ${symbol} existe na corretora mas não no banco de dados!`);
+    //     // Aqui você pode decidir criar um registro no DB para essa posição "órfã"
+    //     // ou apenas notificar para investigação manual.
+    //   }
+    // }
+
+  } catch (error) {
+    // Log de erro mais detalhado, incluindo o stack trace se disponível
+    console.error(`[SYNC] Erro crítico ao sincronizar posições com a corretora: ${error.message}`, error.stack || error);
+  }
+}
+// ***** FIM DA IMPLEMENTAÇÃO SOLICITADA *****
 
 // Função para iniciar monitoramento de preços para posições abertas
 async function startPriceMonitoring() {
@@ -664,7 +749,7 @@ async function handleOrderUpdate(orderMsg, db) {
   }
 }
 
-// Função para processar atualizações de conta via WebSocket
+// Função corrigida para processar atualizações de conta via WebSocket
 async function handleAccountUpdate(message, db) {
   try {
     console.log('[ACCOUNT UPDATE] Recebido atualização de conta');
@@ -673,7 +758,7 @@ async function handleAccountUpdate(message, db) {
     if (!db) {
       db = await getDatabaseInstance();
       if (!db) {
-        console.error('[ACCOUNT UPDATE] Não foi possível obter conexão com o banco de dados');
+        console.error('[ACCOUNT UPDATE] Falha ao obter instância do banco de dados');
         return;
       }
     }
@@ -681,35 +766,88 @@ async function handleAccountUpdate(message, db) {
     // Verificar se há atualizações de posição no evento
     if (message.a && message.a.P) {
       const positions = message.a.P;
+      console.log(`[ACCOUNT UPDATE] Recebido atualização para ${positions.length} posições`);
 
       for (const position of positions) {
         const symbol = position.s;
-        const amount = parseFloat(position.pa);
+        const positionAmt = parseFloat(position.pa);
+        const entryPrice = parseFloat(position.ep);
+        const updateTime = new Date(); // Timestamp atual do servidor
+        
+        console.log(`[ACCOUNT UPDATE] Posição atualizada: ${symbol}, Quantidade: ${positionAmt}, Preço Entrada: ${entryPrice}`);
 
-        // Ignorar posições zeradas ou muito pequenas
-        if (Math.abs(amount) <= 0.000001) {
-          continue;
-        }
+        // Buscar posição no banco de dados
+        const [posRows] = await db.query(
+          'SELECT * FROM posicoes WHERE simbolo = ? AND status = "OPEN"',
+          [symbol]
+        );
 
-        console.log(`[ACCOUNT UPDATE] Posição atualizada: ${symbol}, quantidade: ${amount}`);
-
-        // Atualizar posição no banco de dados
-        try {
-          // Obter ID da posição
-          const positionId = await getPositionIdBySymbol(db, symbol);
-
-          if (positionId) {
-            const entryPrice = parseFloat(position.ep);
-            const markPrice = parseFloat(position.mp);
-            const leverage = parseInt(position.l);
-
-            // Atualizar dados da posição
-            await updatePositionInDb(db, positionId, amount, entryPrice, markPrice, leverage);
+        if (posRows.length > 0) {
+          const posicaoDb = posRows[0];
+          const positionId = posicaoDb.id;
+          
+          // CASO 1: Posição fechada (quantidade zerada)
+          if (Math.abs(positionAmt) < 0.000001) { // Considera zero com margem para erro de precisão
+            console.log(`[ACCOUNT UPDATE] Posição ${symbol} [ID: ${positionId}] detectada como FECHADA`);
+            
+            // Mover para histórico
+            await movePositionToHistory(db, positionId, 'CLOSED', 'Fechada através da corretora');
+            
+            // Enviar notificação ao Telegram se necessário
+            try {
+              const [webhookInfo] = await db.query(`
+                SELECT chat_id FROM webhook_signals 
+                WHERE position_id = ? ORDER BY id DESC LIMIT 1
+              `, [positionId]);
+              
+              if (webhookInfo.length > 0 && webhookInfo[0].chat_id && bot) {
+                await bot.telegram.sendMessage(
+                  webhookInfo[0].chat_id,
+                  `⚠️ Posição ${symbol} fechada manualmente na corretora`
+                );
+              }
+            } catch (notifyError) {
+              console.error(`[ACCOUNT UPDATE] Erro ao notificar fechamento: ${notifyError.message}`);
+            }
+            
+            // Verificar e fechar websocket se não houver mais atividade para este símbolo
+            setTimeout(async () => {
+              try {
+                await checkAndCloseWebsocket(db, symbol);
+              } catch (wsError) {
+                console.error(`[ACCOUNT UPDATE] Erro ao fechar websocket: ${wsError.message}`);
+              }
+            }, 5000);
+            
+          } 
+          // CASO 2: Posição ainda aberta (atualizar quantidade e preço)
+          else if (Math.abs(positionAmt) !== Math.abs(parseFloat(posicaoDb.quantidade)) || 
+                  Math.abs(entryPrice - parseFloat(posicaoDb.preco_entrada)) > 0.000001) {
+            
+            console.log(`[ACCOUNT UPDATE] Atualizando posição ${symbol} [ID: ${positionId}] - Nova quantidade: ${positionAmt}, Novo preço: ${entryPrice}`);
+            
+            await db.query(`
+              UPDATE posicoes
+              SET quantidade = ?,
+                  preco_entrada = ?,
+                  preco_corrente = ?,
+                  data_hora_ultima_atualizacao = ?
+              WHERE id = ? AND status = 'OPEN'
+            `, [
+              Math.abs(positionAmt),
+              entryPrice,
+              entryPrice,
+              formatDateForMySQL(updateTime),
+              positionId
+            ]);
           }
-        } catch (error) {
-          console.error(`[ACCOUNT UPDATE] Erro ao atualizar posição ${symbol}:`, error);
+        } else {
+          // Posição não encontrada no banco - pode ser uma nova posição aberta manualmente
+          console.log(`[ACCOUNT UPDATE] Posição ${symbol} com quantidade ${positionAmt} não encontrada no banco de dados`);
         }
       }
+    } else {
+      console.log('[ACCOUNT UPDATE] Sem atualizações de posição nesta mensagem');
     }
   } catch (error) {
     console.error('[ACCOUNT UPDATE] Erro ao processar atualização da conta:', error);
