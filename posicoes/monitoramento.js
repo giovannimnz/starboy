@@ -1111,7 +1111,7 @@ async function onPriceUpdate(symbol, currentPrice, db) {
       } else if (slHit) {
         console.log(`[PRICE UPDATE] ❌ SL ${formatDecimal(slPrice, 4)} atingido antes da entrada para ${signal.id} (${symbol}).`);
         await cancelSignal(db, signal.id, 'SL_BEFORE_ENTRY',
-          `Stop loss (${formatDecimal(slPrice, 4)}) atingido antes da entrada. \nEntrada: ${formatDecimal(currentPrice, 4)}`); // Precisa estar definida
+          `Stop loss (${formatDecimal(slPrice, 4)}) atingido antes da entrada(${formatDecimal(currentPrice, 4)})`); // Precisa estar definida
       } else if (timeoutHit) {
         console.log(`[PRICE UPDATE] ⏱️ TIMEOUT para sinal ${signal.id} (${symbol}). Ativo por ${elapsedMin} min (máx: ${maxLifetimeMin} min). Cancelando.`);
         await cancelSignal(db, signal.id, 'TIMEOUT_ENTRY',
