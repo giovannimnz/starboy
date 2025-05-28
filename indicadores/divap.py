@@ -163,7 +163,7 @@ def load_leverage_brackets(symbol=None):
         if base_symbol != symbol and base_symbol in brackets_data:
             print(f"[INFO] Usando brackets de {base_symbol} para {symbol}")
             return {symbol: brackets_data[base_symbol]}
-
+        
         if "USDT" in symbol and "BTCUSDT" in brackets_data:
             print(f"[INFO] Usando brackets de BTCUSDT como referência para {symbol}")
             return {symbol: brackets_data["BTCUSDT"]}
@@ -225,26 +225,37 @@ def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent, si
 
 def save_to_database(trade_data):
     """
-    Salva informações da operação no banco de dados MySQL e retorna o ID do sinal.
+    Saves trade operation information to the MySQL database and returns the signal ID.
+    Includes 'message_id' (ID of the message in the destination channel),
+    'message_id_orig' (ID of the original message that generated the signal),
+    and multiple TP targets (tp1_price to tp5_price).
     """
-    conn = None # Inicializar conn para o bloco finally
-    cursor = None # Inicializar cursor para o bloco finally
+    conn = None
+    cursor = None
     try:
         conn = mysql.connector.connect(
             host=DB_HOST,
-            port=int(DB_PORT), # Garanta que DB_PORT seja string no .env e convertido aqui
+            port=int(DB_PORT),
             user=DB_USER,
             password=DB_PASSWORD,
             database=DB_NAME
         )
         cursor = conn.cursor()
 
-        # SQL query incluindo a nova coluna message_id
+        # Prepare TP1 to TP5 values
+        tp_prices = [None] * 5  # Initialize a list with 5 None values by default
+        
+        all_tps = trade_data.get('all_tps', []) # Get all TPs from trade_data, default to empty list
+        for i in range(min(5, len(all_tps))): # Fill with available values, up to 5
+            tp_prices[i] = all_tps[i]
+            
+        # SQL query including the new columns tp1_price to tp5_price
         sql = """
               INSERT INTO webhook_signals
               (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price,
-               chat_id, status, timeframe, message_id)
-              VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               chat_id, status, timeframe, message_id, message_id_orig,
+               tp1_price, tp2_price, tp3_price, tp4_price, tp5_price)
+              VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
               """
 
         values = (
@@ -253,69 +264,119 @@ def save_to_database(trade_data):
             trade_data["leverage"],
             trade_data["capital_pct"],
             trade_data["entry"],
-            trade_data["tp"],  # Já contém o selected_tp
+            trade_data["tp"],  # Selected target for tp_price (main TP)
             trade_data["stop_loss"],
             trade_data["chat_id"],
-            "PENDING", # Status inicial
-            trade_data.get("timeframe", ""), # Default para "" se não existir
-            trade_data.get("message_id")  # Novo campo message_id
+            "PENDING", # Initial status
+            trade_data.get("timeframe", ""),
+            trade_data.get("message_id"),
+            trade_data.get("id_mensagem_origem_sinal"),
+            tp_prices[0],  # tp1_price
+            tp_prices[1],  # tp2_price
+            tp_prices[2],  # tp3_price
+            tp_prices[3],  # tp4_price
+            tp_prices[4]   # tp5_price
         )
 
         cursor.execute(sql, values)
-        signal_id = cursor.lastrowid # Captura o ID do último registro inserido
+        signal_id = cursor.lastrowid # Get the ID of the inserted row
         conn.commit()
 
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Operação salva no banco de dados: {trade_data['symbol']} (ID: {signal_id})")
-        return signal_id # Retorna o ID do sinal salvo
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Operation saved to database: {trade_data['symbol']} (ID: {signal_id})")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] TPs saved: TP1={tp_prices[0]}, TP2={tp_prices[1]}, TP3={tp_prices[2]}, TP4={tp_prices[3]}, TP5={tp_prices[4]}")
+        return signal_id
 
-    except Exception as e:
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Erro ao salvar no banco: {e}")
-        # O fallback existente para 'timeframe' permanece.
-        if "Unknown column 'timeframe'" in str(e):
+    except mysql.connector.Error as db_err:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Database error while saving: {db_err}")
+        
+        # Fallback logic for "Unknown column" errors
+        if "Unknown column" in str(db_err):
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Attempting fallback due to unknown column(s)...")
+            
+            sql_fallback = None
+            values_fallback = None
+
             try:
-                print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Tentando fallback: Salvar sem 'timeframe' mas com 'message_id'.")
-                # Tentar salvar sem o timeframe, mas mantendo message_id
-                sql_fallback = """
+                # Case 1: 'timeframe' column is missing
+                if "Unknown column 'timeframe'" in str(db_err):
+                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Fallback: 'timeframe' column missing. Saving with TPs.")
+                    sql_fallback = """
                         INSERT INTO webhook_signals
                         (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price, 
-                         chat_id, status, message_id) 
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         chat_id, status, message_id, message_id_orig,
+                         tp1_price, tp2_price, tp3_price, tp4_price, tp5_price) 
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """
-                values_fallback = (
-                    trade_data["symbol"],
-                    trade_data["side"],
-                    trade_data["leverage"],
-                    trade_data["capital_pct"],
-                    trade_data["entry"],
-                    trade_data["tp"],
-                    trade_data["stop_loss"],
-                    trade_data["chat_id"],
-                    "PENDING",
-                    trade_data.get("message_id") # Incluindo message_id no fallback
-                )
-                # É necessário um novo cursor ou reabrir se o anterior falhou e fechou a transação
-                # No entanto, se o erro foi "Unknown column", o cursor e a conexão ainda devem estar ok para uma nova tentativa.
-                # Se não estiver, esta chamada pode falhar.
-                if cursor is None and conn: # Recriar cursor se ele foi fechado ou não foi criado
-                     cursor = conn.cursor()
-                elif cursor is None and conn is None: # Se a conexão falhou, não há muito o que fazer aqui
-                     print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Conexão com DB não estabelecida, fallback não pode prosseguir.")
-                     return None
+                    # tp_prices is already defined from the main try block
+                    values_fallback = (
+                        trade_data["symbol"], trade_data["side"], trade_data["leverage"],
+                        trade_data["capital_pct"], trade_data["entry"], trade_data["tp"],
+                        trade_data["stop_loss"], trade_data["chat_id"], "PENDING",
+                        trade_data.get("message_id"), trade_data.get("id_mensagem_origem_sinal"),
+                        tp_prices[0], tp_prices[1], tp_prices[2], tp_prices[3], tp_prices[4]
+                    )
+                
+                # Case 2: One of 'tpX_price' columns is missing
+                elif any(f"Unknown column 'tp{i}_price'" in str(db_err) for i in range(1, 6)):
+                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Fallback: TP1-TP5 column(s) missing. Saving with timeframe (if available).")
+                    sql_fallback = """
+                        INSERT INTO webhook_signals
+                        (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price, 
+                         chat_id, status, timeframe, message_id, message_id_orig) 
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """
+                    values_fallback = (
+                        trade_data["symbol"], trade_data["side"], trade_data["leverage"],
+                        trade_data["capital_pct"], trade_data["entry"], trade_data["tp"],
+                        trade_data["stop_loss"], trade_data["chat_id"], "PENDING",
+                        trade_data.get("timeframe", ""), trade_data.get("message_id"),
+                        trade_data.get("id_mensagem_origem_sinal")
+                    )
+                
+                # Case 3: Other "Unknown column" error (e.g. 'message_id_orig' or other combinations)
+                # This attempts a more basic insert without timeframe and without individual TPs.
+                else:
+                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Fallback: Other unknown column. Basic insert attempt.")
+                    sql_fallback = """
+                        INSERT INTO webhook_signals
+                        (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price, 
+                         chat_id, status, message_id, message_id_orig) 
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """
+                    values_fallback = (
+                        trade_data["symbol"], trade_data["side"], trade_data["leverage"],
+                        trade_data["capital_pct"], trade_data["entry"], trade_data["tp"],
+                        trade_data["stop_loss"], trade_data["chat_id"], "PENDING",
+                        trade_data.get("message_id"), trade_data.get("id_mensagem_origem_sinal")
+                    )
 
+                if sql_fallback and values_fallback:
+                    if cursor is None and conn: # Recreate cursor if it was not created or closed due to severe error
+                        cursor = conn.cursor()
+                    elif cursor is None and conn is None:
+                        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] DB connection not established, fallback cannot proceed.")
+                        return None
 
-                cursor.execute(sql_fallback, values_fallback)
-                signal_id_fallback = cursor.lastrowid # Captura o ID do último registro inserido no fallback
-                conn.commit()
-                print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Operação salva sem timeframe (fallback) (ID: {signal_id_fallback})")
-                return signal_id_fallback # Retorna o ID do sinal salvo via fallback
+                    cursor.execute(sql_fallback, values_fallback)
+                    signal_id_fallback = cursor.lastrowid
+                    conn.commit()
+                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Operation saved with fallback (ID: {signal_id_fallback})")
+                    return signal_id_fallback
+                else: # Should not happen if "Unknown column" was in db_err string
+                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Fallback logic did not determine a query for error: {db_err}")
+
             except Exception as e2:
-                print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Erro na segunda tentativa de salvar (fallback): {e2}")
+                print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Error during fallback attempt: {e2}")
         
-        return None # Retorna None se todas as tentativas de salvar falharem ou outro erro ocorrer
+        return None # Return None if the main try failed and fallback was not successful or not applicable
+
+    except Exception as e_generic:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Generic error while saving to database: {e_generic}")
+        return None
 
     finally:
-        if conn and conn.is_connected(): # Verifica se conn foi definida e está conectada
-            if cursor: # Verifica se cursor foi definido
+        if conn and conn.is_connected():
+            if cursor:
                 cursor.close()
             conn.close()
 
@@ -417,153 +478,161 @@ async def extract_trade_info(message_text):
 @client.on(events.NewMessage())
 async def handle_new_message(event):
     """
-    Manipula novas mensagens, salvando todas e processando sinais de trade dos grupos de origem.
+    Manipula novas mensagens. Processa sinais de trade dos grupos de origem,
+    salva-os em webhook_signals. Registra mensagens relevantes (origem, destino, respostas)
+    em signals_msg, associando-as ao signal_id quando aplicável.
     """
+    incoming_message_id = event.message.id if event and hasattr(event, 'message') and hasattr(event.message, 'id') else 'desconhecido'
+    incoming_chat_id = event.chat_id if event and hasattr(event, 'chat_id') else 'desconhecido'
+
     try:
-        # --- INÍCIO DA NOVA LÓGICA PARA CAPTURAR TODAS AS MENSAGENS ---
         incoming_chat_id = event.chat_id
         incoming_message_id = event.message.id
         incoming_text = event.message.text
-        # Usar o timestamp da mensagem do evento, se disponível e no formato correto,
-        # ou formatar o datetime do evento. event.message.date já é um objeto datetime.
+
+        if not incoming_text:
+            print(f"[INFO] Mensagem ID {incoming_message_id} de Chat ID {incoming_chat_id} não tem texto. Ignorando.")
+            return
+
         incoming_created_at = event.message.date.strftime("%Y-%m-%d %H:%M:%S")
+        GRUPOS_PERMITIDOS_PARA_REGISTRO = GRUPOS_ORIGEM_IDS + [GRUPO_DESTINO_ID] 
+        is_incoming_reply = event.message.reply_to_msg_id is not None
+        incoming_reply_to_id = event.message.reply_to_msg_id if is_incoming_reply else None
 
-        is_reply = event.message.reply_to_msg_id is not None # Correção: event.message.reply_to_msg_id já é o ID
-        reply_to_original_msg_id = None
-        replied_signal_symbol = None
-        replied_signal_id = None
+        # 1. PRIMEIRO, processar se for um SINAL DE TRADE de um GRUPO DE ORIGEM
+        if incoming_chat_id in GRUPOS_ORIGEM_IDS:
+            chat_obj = await event.get_chat() 
+            print(f"[INFO] Mensagem ID {incoming_message_id} de GRUPO DE ORIGEM {chat_obj.id if chat_obj else incoming_chat_id}. Verificando se é sinal...")
+            
+            trade_info = await extract_trade_info(incoming_text)
 
-        if is_reply:
-            reply_to_original_msg_id = event.message.reply_to_msg_id
-            # Verificar se é resposta a um sinal conhecido
-            replied_signal_symbol, replied_signal_id = await check_if_reply_to_signal(reply_to_original_msg_id)
-            print(f"[INFO] Mensagem ID {incoming_message_id} é uma resposta para {reply_to_original_msg_id}. Sinal associado: {replied_signal_symbol}, ID: {replied_signal_id}")
+            if trade_info:
+                print(f"[INFO] Sinal de trade detectado em msg ID {incoming_message_id}: {trade_info['symbol']} {trade_info['side']}")
+                # all_tps = trade_info.get('all_tps', []) # Linha de log de TPs pode ser adicionada aqui se útil
+                # tp_log_msg = ", ".join([f"TP{i+1}: {tp}" for i, tp in enumerate(all_tps)])
+                # print(f"[INFO] Alvos detectados para {trade_info['symbol']}: {tp_log_msg}")
 
-        # Registrar TODAS as mensagens recebidas (ou aquelas que passam por este handler)
-        # A função save_message_to_database deve estar preparada para receber signal_id como None.
-        save_message_to_database(
-            message_id=incoming_message_id,
-            chat_id=incoming_chat_id,
-            text=incoming_text,
-            is_reply=is_reply,
-            reply_to_message_id=reply_to_original_msg_id,
-            symbol=replied_signal_symbol, # Símbolo do sinal respondido, se houver
-            signal_id=replied_signal_id, # ID do sinal respondido, se houver
-            created_at=incoming_created_at
-        )
-        print(f"[INFO] Mensagem ID {incoming_message_id} de Chat ID {incoming_chat_id} salva em signals_msg.")
-        # --- FIM DA NOVA LÓGICA PARA CAPTURAR TODAS AS MENSAGENS ---
-
-        # Verificar se a mensagem é de um dos grupos de origem para processamento do SINAL DE TRADE
-        if incoming_chat_id not in GRUPOS_ORIGEM_IDS:
-            print(f"[INFO] Mensagem ID {incoming_message_id} de Chat ID {incoming_chat_id} não é de um grupo de origem de sinais. Processamento de sinal não aplicável.")
-            return
-
-        # Continuar com o resto do código existente se for de um grupo de origem
-        chat = await event.get_chat() # 'chat' aqui será o grupo de origem
-        print(f"[INFO] Nova mensagem de SINAL recebida do grupo/canal de origem {chat.id}: {incoming_message_id}")
-
-        trade_info = await extract_trade_info(incoming_text)
-
-        if not trade_info:
-            print(f"[INFO] Mensagem ID {incoming_message_id} do grupo de origem não é um sinal de trade válido após extração.")
-            return
-
-        print(f"[INFO] Sinal de trade detectado de {chat.id} (Msg ID: {incoming_message_id}): {trade_info['symbol']} {trade_info['side']}")
-
-        selected_tp = None
-        if trade_info['all_tps'] and len(trade_info['all_tps']) >= ALVO_SELECIONADO:
-            selected_tp = trade_info['all_tps'][ALVO_SELECIONADO - 1]
-            print(f"[INFO] Selecionando Alvo {ALVO_SELECIONADO}: {selected_tp} para sinal da Msg ID {incoming_message_id}")
-        else:
-            selected_tp = trade_info['tp'] # Usa o primeiro TP se o selecionado não estiver disponível
-            print(f"[INFO] Alvo {ALVO_SELECIONADO} não disponível para sinal da Msg ID {incoming_message_id}, usando Alvo 1: {selected_tp}")
-
-        # Montagem da mensagem para o grupo de destino
-        message_text_to_send = (
-            f"#{trade_info['symbol']}  {trade_info['side']}\n"
-        )
-        if trade_info.get('timeframe'):
-            message_text_to_send += f"{trade_info['timeframe']}\n"
-        message_text_to_send += (
-            "Divap\n\n" # Certifique-se que "Divap" é o que você quer aqui
-            f"ALAVANCAGEM: {trade_info['leverage']}x\n"
-            "MARGEM: CRUZADA\n"
-            f"CAPITAL: {int(trade_info['capital_pct'])}%\n\n"
-            f"ENTRADA: {trade_info['entry']}\n\n"
-            f"ALVO: {selected_tp}\n\n"
-            f"STOP LOSS: {trade_info['stop_loss']}"
-        )
-
-        print("\n[INFO] Mensagem de sinal a ser encaminhada:")
-        print("-" * 50)
-        print(message_text_to_send)
-        print("-" * 50)
-
-        sent_message_to_dest = await client.send_message(GRUPO_DESTINO_ID, message_text_to_send)
-        sent_message_id = sent_message_to_dest.id
-        
-        # Registrar a mensagem ENVIADA ao grupo de destino em signals_msg
-        sent_message_created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        save_message_to_database(
-            message_id=sent_message_id,
-            chat_id=GRUPO_DESTINO_ID,
-            text=message_text_to_send,
-            is_reply=False, # A mensagem enviada pelo bot geralmente não é uma resposta direta no contexto do signals_msg
-            reply_to_message_id=None, # A menos que você queira vincular à mensagem original do GRUPO_ORIGEM_ID
-            symbol=trade_info['symbol'], # Símbolo do sinal
-            signal_id=None, # O signal_id ainda não foi gerado por save_to_database(trade_info)
-            created_at=sent_message_created_at
-        )
-        print(f"[INFO] Mensagem de sinal (ID: {sent_message_id}) enviada para GRUPO_DESTINO_ID ({GRUPO_DESTINO_ID}) e registrada em signals_msg.")
-
-        # Atualizar trade_info com dados relevantes para salvar o sinal
-        trade_info['tp'] = selected_tp
-        # `message_id` em trade_info deve referenciar a mensagem no GRUPO_DESTINO_ID
-        # pois é ela que será atualizada com botões de status, etc.
-        trade_info['message_id'] = sent_message_id
-        # Adicionar o ID da mensagem original do grupo de origem para referência, se necessário
-        trade_info['id_mensagem_origem_sinal'] = incoming_message_id 
-        trade_info['chat_id_origem_sinal'] = incoming_chat_id
-
-        # Salvar o sinal de trade na tabela principal de sinais (ex: webhook_signals)
-        # Esta função deve retornar o ID do sinal salvo (signal_id_from_db)
-        signal_id_from_db = save_to_database(trade_info) # Ex: retorna o ID da tabela webhook_signals
-
-        # Atualizar o registro da mensagem ENVIADA em signals_msg com o signal_id_from_db
-        if signal_id_from_db:
-            conn_update = None # Declarar fora do try para uso no finally
-            cursor_update = None
-            try:
-                conn_update = mysql.connector.connect(
-                    host=DB_HOST,
-                    port=int(DB_PORT), # Garanta que DB_PORT seja string no .env e convertido aqui
-                    user=DB_USER,
-                    password=DB_PASSWORD,
-                    database=DB_NAME
-                )
-                cursor_update = conn_update.cursor()
+                selected_tp = None
+                if trade_info.get('all_tps') and len(trade_info['all_tps']) >= ALVO_SELECIONADO:
+                    selected_tp = trade_info['all_tps'][ALVO_SELECIONADO - 1]
+                else:
+                    selected_tp = trade_info.get('tp')
+                    if selected_tp is None and trade_info.get('all_tps'): 
+                        selected_tp = trade_info['all_tps'][0]
                 
-                update_query = """
-                    UPDATE signals_msg SET signal_id = %s
-                    WHERE message_id = %s AND chat_id = %s
-                """
-                cursor_update.execute(update_query, (signal_id_from_db, sent_message_id, GRUPO_DESTINO_ID))
-                conn_update.commit()
-                print(f"[INFO] Tabela signals_msg atualizada com signal_id {signal_id_from_db} para Msg ID {sent_message_id} no Chat ID {GRUPO_DESTINO_ID}.")
-            except Exception as e_update:
-                print(f"[ERRO] Falha ao atualizar signals_msg com signal_id: {e_update}")
-            finally:
-                if conn_update and conn_update.is_connected():
-                    if cursor_update:
-                        cursor_update.close()
-                    conn_update.close()
+                if selected_tp is None:
+                    print(f"[ERRO] Sinal da Msg ID {incoming_message_id} (Símbolo: {trade_info['symbol']}) não tem TP válido. Sinal não será enviado.")
+                    await register_message_in_signals_msg(
+                        message_id=incoming_message_id, 
+                        chat_id=incoming_chat_id, 
+                        text=incoming_text, 
+                        is_reply=is_incoming_reply,
+                        reply_to_msg_id=incoming_reply_to_id,
+                        created_at=incoming_created_at
+                    )
+                    return 
+
+                message_text_to_send = format_trade_message(trade_info, selected_tp)
+                print(f"\n[INFO] Mensagem de sinal formatada para envio (Origem Msg ID: {incoming_message_id}):\n{'-'*50}\n{message_text_to_send}\n{'-'*50}")
+
+                trade_info['tp'] = selected_tp 
+                trade_info['id_mensagem_origem_sinal'] = incoming_message_id
+                trade_info['chat_id_origem_sinal'] = incoming_chat_id
+                trade_info['chat_id'] = GRUPO_DESTINO_ID 
+
+                sent_message_to_dest = await client.send_message(GRUPO_DESTINO_ID, message_text_to_send)
+                sent_message_id_in_dest = sent_message_to_dest.id
+                sent_message_created_at = sent_message_to_dest.date.strftime("%Y-%m-%d %H:%M:%S")
+                print(f"[INFO] Sinal enviado para GRUPO_DESTINO_ID. Msg ID no destino: {sent_message_id_in_dest}")
+                
+                trade_info['message_id'] = sent_message_id_in_dest 
+                
+                signal_id_from_webhook_db = save_to_database(trade_info) 
+                
+                if signal_id_from_webhook_db:
+                    print(f"[INFO] Sinal salvo em webhook_signals com ID: {signal_id_from_webhook_db}")
+                    save_message_to_database( 
+                        message_id=incoming_message_id,
+                        chat_id=incoming_chat_id,
+                        text=incoming_text,
+                        is_reply=is_incoming_reply,
+                        reply_to_message_id=incoming_reply_to_id,
+                        symbol=trade_info['symbol'], 
+                        signal_id=signal_id_from_webhook_db, 
+                        created_at=incoming_created_at
+                    )
+                    print(f"[INFO] Mensagem original ID {incoming_message_id} (Chat {incoming_chat_id}) registrada em signals_msg com Sinal ID {signal_id_from_webhook_db}.")
+                    
+                    save_message_to_database(
+                        message_id=sent_message_id_in_dest,
+                        chat_id=GRUPO_DESTINO_ID,
+                        text=message_text_to_send,
+                        is_reply=False, 
+                        reply_to_message_id=None,
+                        symbol=trade_info['symbol'], 
+                        signal_id=signal_id_from_webhook_db, 
+                        created_at=sent_message_created_at
+                    )
+                    print(f"[INFO] Mensagem enviada ID {sent_message_id_in_dest} (Chat {GRUPO_DESTINO_ID}) registrada em signals_msg com Sinal ID {signal_id_from_webhook_db}.")
+                else:
+                    print(f"[AVISO] Falha ao salvar sinal em webhook_signals para msg origem {incoming_message_id}. Mensagens em signals_msg não terão signal_id associado por este fluxo.")
+                    await register_message_in_signals_msg(incoming_message_id, incoming_chat_id, incoming_text, is_incoming_reply, incoming_reply_to_id, incoming_created_at, symbol=trade_info.get('symbol'))
+
+                return 
+            else: 
+                print(f"[INFO] Mensagem ID {incoming_message_id} de GRUPO DE ORIGEM não é um sinal de trade parseável.")
+
+        # --- INÍCIO DO TRECHO MODIFICADO (ETAPA 4) ---
+        # 4. Para mensagens de GRUPOS PERMITIDOS que NÃO SÃO SINAIS DE TRADE PROCESSADOS ACIMA
+        #    (ou seja, msgs de GRUPO_DESTINO_ID, ou msgs de GRUPO_ORIGEM_ID que não eram sinais válidos)
+        if incoming_chat_id in GRUPOS_PERMITIDOS_PARA_REGISTRO:
+            print(f"[INFO] Processando mensagem ID {incoming_message_id} de Chat ID {incoming_chat_id} para registro geral em signals_msg.")
+            
+            related_symbol = None
+            related_signal_id = None
+
+            # Verificar se esta mensagem está diretamente associada a um sinal
+            direct_symbol, direct_signal_id = await get_symbol_from_webhook_signals(incoming_message_id, incoming_chat_id)
+            if direct_signal_id:
+                related_symbol = direct_symbol
+                related_signal_id = direct_signal_id
+                print(f"[INFO] Mensagem ID {incoming_message_id} diretamente associada ao Sinal ID {related_signal_id}.")
+            elif is_incoming_reply:
+                # É uma resposta a outra mensagem - verificar relação com sinal
+                replied_s, replied_sid = await check_if_reply_to_signal(incoming_reply_to_id, incoming_chat_id)
+                if replied_sid:
+                    related_symbol = replied_s
+                    related_signal_id = replied_sid
+                    print(f"[INFO] Mensagem ID {incoming_message_id} é resposta ao Sinal ID {related_signal_id}.")
+                else:
+                    # IMPORTANTE: Mesmo que a mensagem respondida não esteja relacionada a um sinal,
+                    # ainda assim registramos a mensagem atual
+                    print(f"[INFO] Mensagem ID {incoming_message_id} é resposta a uma mensagem sem relação com sinais.")
+            
+            # SEMPRE registrar a mensagem em signals_msg, independente de ser uma resposta ou ter relação com sinal
+            save_message_to_database(
+                message_id=incoming_message_id,
+                chat_id=incoming_chat_id,
+                text=incoming_text,
+                is_reply=is_incoming_reply,
+                reply_to_message_id=incoming_reply_to_id,
+                symbol=related_symbol, # Pode ser None
+                signal_id=related_signal_id, # Pode ser None
+                created_at=incoming_created_at
+            )
+            
+            if related_signal_id:
+                print(f"[INFO] Mensagem ID {incoming_message_id} registrada e associada ao Sinal ID: {related_signal_id}")
+            else:
+                print(f"[INFO] Mensagem ID {incoming_message_id} registrada sem associação a um sinal.")
+        # --- FIM DO TRECHO MODIFICADO (ETAPA 4) ---
         else:
-            print(f"[AVISO] Não foi possível obter signal_id de save_to_database para o sinal da Msg ID {incoming_message_id}. Tabela signals_msg não atualizada com signal_id.")
+            # Esta mensagem não é de um grupo de origem (para sinais) nem de um grupo permitido para registro geral.
+            # Esta condição else corresponde ao if da Etapa 4.
+            print(f"[INFO] Mensagem ID {incoming_message_id} de Chat ID {incoming_chat_id} não pertence a GRUPOS_PERMITIDOS_PARA_REGISTRO (após falhar checagem de GRUPOS_ORIGEM_IDS). Ignorando completamente.")
 
     except Exception as e:
-        print(f"[ERRO GERAL] Falha ao processar mensagem ID {event.message.id if event and event.message else 'desconhecido'} de Chat ID {event.chat_id if event else 'desconhecido'}: {e}")
-        import traceback
+        print(f"[ERRO GERAL EM HANDLE_NEW_MESSAGE] Falha ao processar mensagem ID {incoming_message_id} de Chat ID {incoming_chat_id}: {e}")
         print(traceback.format_exc())
 
 # Nova função para registrar mensagens no banco de dados
@@ -628,15 +697,155 @@ def save_message_to_database(message_id, chat_id, text, is_reply=False,
             conn.close()
 
 # Função para verificar se uma mensagem é resposta a um sinal
-async def check_if_reply_to_signal(reply_to_message_id):
+async def check_if_reply_to_signal(reply_to_message_id, chat_id=None):
     """
-    Verifica se uma mensagem é uma resposta a um sinal de trade
+    Verifica se uma mensagem é uma resposta a um sinal de trade, 
+    potencialmente subindo na cadeia de respostas.
     
     Args:
-        reply_to_message_id: ID da mensagem à qual está respondendo
+        reply_to_message_id: ID da mensagem à qual está respondendo.
+        chat_id: ID do chat onde a mensagem original (a respondida) foi enviada (opcional, mas recomendado).
     
     Returns:
-        tuple: (symbol, signal_id) se for resposta a um sinal, (None, None) caso contrário
+        tuple: (symbol, signal_id) se for resposta a um sinal, (None, None) caso contrário.
+                 signal_id é o ID da tabela webhook_signals.
+    """
+    conn = None
+    cursor = None
+    try:
+        conn = mysql.connector.connect(
+            host=DB_HOST,
+            port=int(DB_PORT),
+            user=DB_USER,
+            password=DB_PASSWORD,
+            database=DB_NAME
+        )
+        cursor = conn.cursor(dictionary=True)
+        
+        # 1. Primeiro, verificar na tabela webhook_signals (sinais principais)
+        #    Verifica se a mensagem respondida é diretamente um sinal registrado em webhook_signals
+        #    usando seu message_id (ID no canal de destino), message_id_orig (ID no canal de origem),
+        #    ou um registry_message_id (se aplicável).
+        sql_webhook = """
+            SELECT id, symbol FROM webhook_signals 
+            WHERE (message_id = %s AND chat_id = %s) 
+               OR (message_id_orig = %s AND chat_id_orig_sinal = %s) 
+               OR registry_message_id = %s 
+        """
+        # Para message_id e message_id_orig, o chat_id correspondente é crucial.
+        # Se registry_message_id for global, não precisa de chat_id.
+        # Esta query assume que se chat_id é fornecido, ele se aplica a message_id (destino)
+        # e que você teria outro campo para chat_id_orig_sinal se quisesse ser preciso com message_id_orig.
+        # Simplificando para o contexto da pergunta, usaremos o chat_id fornecido se ele corresponder ao contexto de message_id.
+        # A query original era OR message_id_orig = %s OR registry_message_id = %s.
+        # Adicionar chat_id à query do webhook_signals se possível, para maior precisão.
+        # Por ora, mantendo a lógica de OR ampla da sua proposta, mas idealmente message_id e message_id_orig
+        # deveriam ser pareados com seus respectivos chat_ids na consulta.
+
+        # Query ajustada para ser mais flexível com base na sua proposta:
+        # O `chat_id` aqui é o chat da mensagem respondida.
+        # Se a mensagem respondida (`reply_to_message_id`) for a do canal de destino, `webhook_signals.chat_id` deve bater.
+        # Se a mensagem respondida for a do canal de origem, `webhook_signals.chat_id_orig_sinal` deve bater.
+        # `registry_message_id` é um caso à parte.
+
+        # Tentativa 1: webhook_signals (considerando message_id como o ID da mensagem no canal de destino)
+        # E message_id_orig como o ID da mensagem no canal de origem do sinal
+        # E registry_message_id como um ID de registro alternativo.
+        # A coluna `chat_id` em webhook_signals refere-se ao GRUPO_DESTINO_ID
+        # A coluna `chat_id_orig_sinal` em webhook_signals refere-se ao GRUPO_ORIGEM_ID
+
+        sql_webhook_refined = """
+            SELECT id, symbol FROM webhook_signals 
+            WHERE (message_id = %s AND chat_id = %s)  /* Mensagem no destino */
+               OR (message_id_orig = %s AND chat_id_orig_sinal = %s) /* Mensagem na origem */
+               OR registry_message_id = %s /* ID de registro alternativo */
+        """
+        # Nota: chat_id_orig_sinal não está como parâmetro da função, usando chat_id para ambos os cenários por simplicidade
+        # da chamada atual, mas idealmente você saberia o contexto.
+        # Se chat_id é do grupo de destino, o primeiro OR pode funcionar.
+        # Se chat_id é do grupo de origem, o segundo OR pode funcionar.
+        
+        # Usando a query da sua proposta que é mais simples:
+        cursor.execute(
+            "SELECT id, symbol FROM webhook_signals WHERE message_id = %s OR message_id_orig = %s OR registry_message_id = %s",
+            (reply_to_message_id, reply_to_message_id, reply_to_message_id)
+        )
+        result_ws = cursor.fetchone()
+        if result_ws:
+            return (result_ws['symbol'], result_ws['id'])
+            
+        # 2. Se não encontrar em webhook_signals, verificar na tabela signals_msg
+        #    Isto busca se a mensagem respondida foi registrada em signals_msg e tem um signal_id associado.
+        sql_signals_msg = "SELECT sm.symbol, sm.signal_id FROM signals_msg sm WHERE sm.message_id = %s"
+        params_sm = [reply_to_message_id]
+        
+        if chat_id: # Se o chat_id da mensagem respondida é conhecido, use para refinar a busca
+            sql_signals_msg += " AND sm.chat_id = %s"
+            params_sm.append(chat_id)
+            
+        cursor.execute(sql_signals_msg, tuple(params_sm)) # Converter lista para tupla para o execute
+        
+        result_sm = cursor.fetchone()
+        # Verifica se encontrou, se tem 'symbol' e se 'signal_id' não é None (ou 0 se for o caso)
+        if result_sm and result_sm.get('symbol') and result_sm.get('signal_id') is not None:
+            return (result_sm['symbol'], result_sm['signal_id'])
+        
+        # 3. Lógica Recursiva: Se não encontrou um sinal direto, verificar se a mensagem respondida
+        #    é ela mesma uma resposta a outra mensagem, e tentar encontrar o sinal na mensagem "pai".
+        #    Esta parte só é executada se as buscas diretas (passos 1 e 2) não retornarem resultado.
+        #    O 'result_sm' aqui é o da última busca em signals_msg.
+        #    Se `result_sm` for None ou não tiver `signal_id`, tentamos a recursão.
+        
+        if not (result_sm and result_sm.get('symbol') and result_sm.get('signal_id') is not None) :
+            # Buscar a mensagem "pai" da mensagem atual (reply_to_message_id) na tabela signals_msg
+            sql_recursive_parent_check = """
+                SELECT sm.reply_to_message_id
+                FROM signals_msg sm
+                WHERE sm.message_id = %s AND sm.chat_id = %s AND sm.is_reply = TRUE
+            """
+            # Para esta busca, precisamos do chat_id da mensagem atual que estamos inspecionando (reply_to_message_id)
+            # Se chat_id não foi fornecido, esta etapa recursiva pode ser menos confiável ou pulada.
+            if chat_id:
+                cursor.execute(sql_recursive_parent_check, (reply_to_message_id, chat_id))
+                parent_message_info = cursor.fetchone()
+                
+                if parent_message_info and parent_message_info.get('reply_to_message_id'):
+                    parent_msg_id = parent_message_info['reply_to_message_id']
+                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Recursão: Verificando mensagem pai ID {parent_msg_id} para o sinal.")
+                    # Chamada recursiva para verificar a mensagem-pai.
+                    # O chat_id passado para a recursão deve ser o da mensagem pai,
+                    # que presumimos ser o mesmo chat_id. Se as respostas puderem cruzar chats de forma relevante,
+                    # a lógica de chat_id precisaria ser mais complexa.
+                    return await check_if_reply_to_signal(parent_msg_id, chat_id) 
+            else:
+                print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Recursão pulada: chat_id não fornecido para a mensagem {reply_to_message_id}.")
+
+        return (None, None) # Se nenhuma das condições anteriores for atendida
+            
+    except mysql.connector.Error as db_err:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Erro de banco de dados em check_if_reply_to_signal: {db_err}")
+        print(traceback.format_exc())
+        return (None, None)
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Erro genérico em check_if_reply_to_signal: {e}")
+        print(traceback.format_exc())
+        return (None, None)
+    finally:
+        if cursor: # Fechar cursor primeiro
+            cursor.close()
+        if conn and conn.is_connected(): # Depois fechar conexão
+            conn.close()
+
+async def get_symbol_from_webhook_signals(message_id, chat_id=None):
+    """
+    Verifica se uma mensagem está relacionada a um trade na tabela webhook_signals
+    
+    Args:
+        message_id: ID da mensagem do Telegram
+        chat_id: ID do chat onde a mensagem foi enviada (opcional)
+        
+    Returns:
+        tuple: (symbol, signal_id) se a mensagem estiver relacionada a um trade
     """
     try:
         conn = mysql.connector.connect(
@@ -648,35 +857,59 @@ async def check_if_reply_to_signal(reply_to_message_id):
         )
         cursor = conn.cursor(dictionary=True)
         
-        # Primeiro, verificar na tabela webhook_signals
-        cursor.execute("""
+        # Verificar se esta mensagem tem um sinal associado diretamente
+        sql = """
             SELECT id, symbol FROM webhook_signals 
-            WHERE message_id = %s OR registry_message_id = %s
-        """, (reply_to_message_id, reply_to_message_id))
+            WHERE message_id = %s OR message_id_orig = %s
+        """
+        cursor.execute(sql, (message_id, message_id))
         
         result = cursor.fetchone()
         if result:
             return (result['symbol'], result['id'])
             
-        # Se não encontrar, verificar na tabela signals_msg
-        cursor.execute("""
-            SELECT symbol, signal_id FROM signals_msg 
-            WHERE message_id = %s
-        """, (reply_to_message_id,))
-        
-        result = cursor.fetchone()
-        if result and result['symbol']:
-            return (result['symbol'], result['signal_id'])
-            
         return (None, None)
         
     except Exception as e:
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Erro ao verificar resposta: {e}")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Erro ao verificar sinal relacionado: {e}")
         return (None, None)
     finally:
         if 'conn' in locals() and conn.is_connected():
             cursor.close()
             conn.close()
+
+# Função para formatar a mensagem de trade
+def format_trade_message(trade_info, selected_tp):
+    """
+    Formata a mensagem de trade para envio ao grupo de destino
+    """
+    message_text = (
+        f"#{trade_info['symbol']}  {trade_info['side']}\n"
+    )
+    if trade_info.get('timeframe'):
+        message_text += f"{trade_info['timeframe']}\n"
+    message_text += (
+        "Divap\n\n" 
+        f"ALAVANCAGEM: {trade_info['leverage']}x\n"
+        "MARGEM: CRUZADA\n"
+        f"CAPITAL: {int(trade_info['capital_pct'])}%\n\n"
+        f"ENTRADA: {trade_info['entry']}\n\n"
+    )
+
+    # Adicionar informação sobre qual alvo está sendo usado
+    all_tps = trade_info.get('all_tps', [])
+    if len(all_tps) > 1:
+        tp_index = 0
+        for i, tp in enumerate(all_tps):
+            if abs(float(tp) - float(selected_tp)) < 0.00001:  # Comparação com pequena tolerância para números flutuantes
+                tp_index = i + 1
+                break
+        message_text += f"ALVO {tp_index}: {selected_tp}\n\n"
+    else:
+        message_text += f"ALVO: {selected_tp}\n\n"
+        
+    message_text += f"STOP LOSS: {trade_info['stop_loss']}"
+    return message_text
 
 async def main():
     """

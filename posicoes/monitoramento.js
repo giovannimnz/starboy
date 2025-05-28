@@ -161,53 +161,52 @@ async function syncPositionsWithExchange() {
     // 3. Mapear posições da corretora por símbolo
     const exchangePositionsMap = {};
     exchangePositions.forEach(pos => {
-      // Garanta que 'pos.simbolo' corresponde ao formato de 'dbPos.simbolo'
-      exchangePositionsMap[pos.symbol] = pos; // Assumindo que a corretora retorna 'symbol' e não 'simbolo'
-                                              // Ajuste 'pos.symbol' para 'pos.simbolo' se o campo da API da corretora for 'simbolo'
+      exchangePositionsMap[pos.simbolo] = pos;
     });
 
     // 4. Verificar posições que existem no banco mas não na corretora (fechadas)
     for (const dbPos of dbPositions) {
       if (!exchangePositionsMap[dbPos.simbolo]) {
-        console.log(`[SYNC] Posição ${dbPos.simbolo} [DB ID: ${dbPos.id}] não encontrada na corretora. Provavelmente fechada.`);
-        // Presume que movePositionToHistory() está definida
+        console.log(`[SYNC] Posição ${dbPos.simbolo} [DB ID: ${dbPos.id}] não encontrada na corretora. Fazendo verificação adicional...`);
+        
+        // ADICIONAR AQUI: Verificação adicional para confirmar que a posição realmente não existe
+        try {
+          // Fazer uma chamada direta à API para verificar esta posição específica
+          const positionDetails = await getPositionDetails(dbPos.simbolo);
+          const hasOpenPosition = positionDetails && positionDetails.some(pos => 
+              parseFloat(pos.quantidade) > 0);
+              
+          if (hasOpenPosition) {
+            console.log(`[SYNC] Segunda verificação confirmou que ${dbPos.simbolo} ainda está aberta. Mantendo registro.`);
+            continue; // Pular para o próximo item do loop
+          }
+          
+          // Se chegou aqui, a posição realmente não existe
+          console.log(`[SYNC] Segunda verificação confirmou que ${dbPos.simbolo} está fechada. Movendo para histórico.`);
+        } catch (detailsError) {
+          console.error(`[SYNC] Erro ao verificar detalhes da posição ${dbPos.simbolo}:`, detailsError);
+          // Se ocorreu erro na verificação adicional, não fechar a posição para ser seguro
+          console.log(`[SYNC] Devido ao erro na verificação, mantendo posição ${dbPos.simbolo} no banco.`);
+          continue;
+        }
+        
         await movePositionToHistory(db, dbPos.id, 'CLOSED', 'Fechada na corretora (detectado por sincronização)');
         console.log(`[SYNC] Posição ${dbPos.simbolo} [DB ID: ${dbPos.id}] movida para o histórico.`);
         
         // Verificar e fechar websocket
-        // Presume que checkAndCloseWebsocket() está definida
-        // Adicionado um log para quando o agendamento é feito
-        console.log(`[SYNC] Agendando fechamento de websocket para ${dbPos.simbolo} em 5 segundos.`);
-        setTimeout(async () => { // Adicionado async aqui para o await dentro do timeout, se checkAndCloseWebsocket for async
-            try {
-                console.log(`[SYNC] Executando fechamento de websocket para ${dbPos.simbolo} (agendado).`);
-                await checkAndCloseWebsocket(db, dbPos.simbolo);
-            } catch (wsError) {
-                console.error(`[SYNC] Erro ao tentar fechar websocket para ${dbPos.simbolo} (agendado):`, wsError);
-            }
+        setTimeout(async () => {
+          try {
+            await checkAndCloseWebsocket(db, dbPos.simbolo);
+          } catch (wsError) {
+            console.error(`[SYNC] Erro ao tentar fechar websocket para ${dbPos.simbolo}:`, wsError);
+          }
         }, 5000);
       }
-      // TODO (Opcional): Adicionar lógica para verificar divergências em posições que existem em ambos
-      // Por exemplo, verificar se a quantidade (dbPos.quantidade) bate com exchangePositionsMap[dbPos.simbolo].positionAmt
-      // e tomar alguma ação ou logar se houver discrepância.
     }
-
-    // TODO (Opcional): Adicionar lógica para posições que existem na corretora mas não no banco
-    // Isso pode indicar uma posição aberta manualmente ou uma falha anterior em registrar a posição.
-    // for (const symbol in exchangePositionsMap) {
-    //   if (!dbPositions.some(dbPos => dbPos.simbolo === symbol)) {
-    //     console.warn(`[SYNC] Posição para ${symbol} existe na corretora mas não no banco de dados!`);
-    //     // Aqui você pode decidir criar um registro no DB para essa posição "órfã"
-    //     // ou apenas notificar para investigação manual.
-    //   }
-    // }
-
   } catch (error) {
-    // Log de erro mais detalhado, incluindo o stack trace se disponível
     console.error(`[SYNC] Erro crítico ao sincronizar posições com a corretora: ${error.message}`, error.stack || error);
   }
 }
-// ***** FIM DA IMPLEMENTAÇÃO SOLICITADA *****
 
 // Função para iniciar monitoramento de preços para posições abertas
 async function startPriceMonitoring() {
@@ -417,8 +416,8 @@ async function processSignal(db, signal) {
             `🔄 Sinal Registrado para ${symbol}!\n\n` +
             `🆔 Sinal Ref: WEBHOOK_${id}\n` +
             `Direção: ${side}\n` +
-            `Alavancagem: ${leverage}x\n` +
-            `\nEntrada: ${triggerCondition.replace(entry_price, formatDecimal(entry_price))}\n` +
+            `Alavancagem: ${leverage}x\n\n` +
+            `Entrada: ${triggerCondition.replace(entry_price, formatDecimal(entry_price))}\n` +
             `TP: ${formatDecimal(tp_price)}\n` +
             `SL: ${formatDecimal(sl_price)}\n\n` +
             `Aguardando gatilho de preço...`,
@@ -553,16 +552,102 @@ async function checkPositionExists(db, symbol) {
 // Substitua a função handleOrderUpdate existente
 async function handleOrderUpdate(orderMsg, db) {
   try {
-    console.log(`[ORDER UPDATE] Symbol: ${orderMsg.s}, OrderID: ${orderMsg.i}, Status: ${orderMsg.X}, ExecutionType: ${orderMsg.x}`);
+    //console.log(`[ORDER UPDATE] Symbol: ${orderMsg.s}, OrderID: ${orderMsg.i}, Status: ${orderMsg.X}, ExecutionType: ${orderMsg.x}, Price: ${orderMsg.p}, AvgPrice: ${orderMsg.ap}, Qty: ${orderMsg.q}, OrderType: ${orderMsg.o}`);
 
     // Buscar a ordem no banco de dados
     const [orders] = await db.query(
-        'SELECT * FROM ordens WHERE id_externo = ? AND simbolo = ?',
-        [orderMsg.i, orderMsg.s]
+      'SELECT * FROM ordens WHERE id_externo = ? AND simbolo = ?',
+      [orderMsg.i, orderMsg.s]
     );
 
+    // --- INÍCIO DA MELHORIA/CORREÇÃO ---
+    // Se a ordem não for encontrada no banco mas está na corretora como FILLED ou PARTIALLY_FILLED,
+    // verificar se temos a posição relacionada e registrar esta ordem.
+    if (orders.length === 0 && (orderMsg.X === 'FILLED' || orderMsg.X === 'PARTIALLY_FILLED')) {
+      //console.log(`[MONITOR] Detectada ordem executada (Status: ${orderMsg.X}) na corretora que não existe no banco. OrderID: ${orderMsg.i}, Symbol: ${orderMsg.s}`);
+      
+      // Verificar se temos uma posição aberta para este símbolo
+      // Idealmente, se for uma ordem de fechamento (TP/SL), ela deveria ter uma posição.
+      // Se for uma ordem de entrada "fantasma", não haveria posição aberta antes dela.
+      // A query busca uma posição que JÁ ESTARIA ABERTA se esta ordem fosse um TP/SL dela.
+      const [positions] = await db.query(
+        'SELECT * FROM posicoes WHERE simbolo = ? AND status = "OPEN" LIMIT 1', // Busca uma posição aberta para o símbolo
+        [orderMsg.s]
+      );
+      
+      if (positions.length > 0) {
+        const position = positions[0];
+        //console.log(`[MONITOR] Encontrada posição aberta (ID: ${position.id}) para ${orderMsg.s}. Registrando ordem executada ${orderMsg.i}.`);
+        
+        // Determinar o tipo de ordem do bot
+        const tipoOrdemBot = determineOrderType(orderMsg);
+
+        // Registrar a ordem com base nos dados recebidos via WebSocket
+        const orderData = {
+          tipo_ordem: orderMsg.o,        // Tipo de ordem da Binance (ex: MARKET, LIMIT, STOP_MARKET)
+          preco: parseFloat(orderMsg.ap || orderMsg.p || 0), // Preço médio de execução ou preço da ordem
+          quantidade: parseFloat(orderMsg.q), // Quantidade original da ordem
+          id_posicao: position.id,      // ID da posição aberta encontrada
+          status: orderMsg.X,           // Status da ordem (FILLED, PARTIALLY_FILLED)
+          // Usar o tempo da transação (T) se disponível, senão o tempo da ordem (O), senão agora.
+          data_hora_criacao: orderMsg.T ? formatDateForMySQL(new Date(orderMsg.T)) : (orderMsg.O ? formatDateForMySQL(new Date(orderMsg.O)) : formatDateForMySQL(new Date())),
+          id_externo: String(orderMsg.i), // ID externo (orderId da Binance)
+          side: orderMsg.S,             // Side (BUY/SELL)
+          simbolo: orderMsg.s,          // Símbolo
+          tipo_ordem_bot: tipoOrdemBot, // Tipo de ordem do bot (ENTRADA, STOP_LOSS, TAKE_PROFIT)
+          target: null,                 // Target (se aplicável, geralmente para TPs múltiplos)
+          // Tentar inferir reduce_only e close_position se possível a partir de orderMsg.R e orderMsg.pP
+          reduce_only: orderMsg.R === true, // orderMsg.R é a flag reduceOnly
+          close_position: orderMsg.pP === true, // orderMsg.pP é a flag closePosition (geralmente para ordens de TP/SL da UI da Binance)
+          last_update: orderMsg.T ? formatDateForMySQL(new Date(orderMsg.T)) : formatDateForMySQL(new Date()), // Tempo da última atualização (tempo da transação)
+          orign_sig: position.orign_sig || null, // Tentar herdar o orign_sig da posição, se existir
+          // Campos adicionais da mensagem que podem ser úteis para auditoria:
+          dados_originais_ws: JSON.stringify(orderMsg) // Salvar a mensagem original do WS
+        };
+        
+        await insertNewOrder(db, orderData); // Sua função de inserir nova ordem
+        //console.log(`[MONITOR] Ordem ${orderMsg.i} (Tipo Bot: ${tipoOrdemBot}) registrada no banco de dados para posição ${position.id}.`);
+        
+        // Se for uma ordem TP/SL FILLED, processar fechamento da posição
+        if ((tipoOrdemBot === 'TAKE_PROFIT' || tipoOrdemBot === 'STOP_LOSS') && orderMsg.X === 'FILLED') {
+          console.log(`[MONITOR] Ordem "fantasma" ${tipoOrdemBot} (ID: ${orderMsg.i}) executada, fechando posição ${position.id}`);
+          // Antes de mover para o histórico, cancelar outras ordens abertas para esta posição
+          const [otherLinkedOrders] = await db.query(
+            'SELECT * FROM ordens WHERE id_posicao = ? AND status = "OPEN" AND id_externo != ?',
+            [position.id, orderMsg.i]
+          );
+          for (const otherOrder of otherLinkedOrders) {
+            try {
+              console.log(`[MONITOR] Cancelando ordem linkada ${otherOrder.id_externo} para posição ${position.id}`);
+              await cancelOrder(otherOrder.id_externo, otherOrder.simbolo); // Sua função de cancelar ordem
+              await updateOrderStatus(db, otherOrder.id, "CANCELED"); // Atualiza status no seu DB
+            } catch (cancelError) {
+              console.error(`[MONITOR] Erro ao cancelar ordem linkada ${otherOrder.id_externo}: ${cancelError.message}`);
+            }
+          }
+          // Mover posição para o histórico
+          await movePositionToHistory(db, position.id, 'CLOSED', `Posição fechada via ${tipoOrdemBot} "fantasma" ID ${orderMsg.i}`);
+          
+          // Sincronizar saldo após fechamento
+           try {
+             await syncAccountBalance();
+           } catch (syncError) {
+             console.error('[MONITOR] Erro ao sincronizar saldo após fechamento de posição "fantasma":', syncError);
+           }
+        }
+      } else {
+        console.log(`[MONITOR] Nenhuma posição aberta encontrada para ${orderMsg.s}. Ordem "fantasma" ${orderMsg.i} não pôde ser associada e registrada.`);
+      }
+      
+      return; // Finaliza o processamento aqui para ordens "fantasmas"
+    }
+    // --- FIM DA MELHORIA/CORREÇÃO ---
+
+    // Código existente para ordens encontradas no banco
     if (orders.length === 0) {
-      console.log(`[MONITOR] Ordem ${orderMsg.i} não encontrada no banco de dados`);
+      // Esta condição agora só será verdadeira se a ordem não foi encontrada E NÃO era FILLED/PARTIALLY_FILLED
+      // ou se era FILLED/PARTIALLY_FILLED mas não tinha posição aberta correspondente.
+      console.log(`[MONITOR] Ordem ${orderMsg.i} (Status: ${orderMsg.X}) não encontrada no banco de dados e não tratada como "fantasma" preenchida.`);
       return;
     }
 
@@ -581,169 +666,221 @@ async function handleOrderUpdate(orderMsg, db) {
       if (existingOrders.length > 0) {
         console.log(`[MONITOR] Já existem ordens SL/TP para a posição ${order.id_posicao}, não criando novas`);
 
-        // Se a ordem foi preenchida, atualizar o status da posição
         if (orderMsg.X === 'FILLED' || orderMsg.X === 'PARTIALLY_FILLED') {
-          await updatePositionStatus(db, order.simbolo, { status: 'OPEN' });
-          console.log(`[MONITOR] Posição ${order.id_posicao} atualizada para OPEN após preenchimento da ordem`);
+            // Apenas garantir que a ordem de entrada seja atualizada no DB se necessário
+            if(order.status !== orderMsg.X) { // Se o status mudou
+                await db.query('UPDATE ordens SET status = ?, preco_executado = ?, last_update = ? WHERE id = ?', 
+                               [orderMsg.X, parseFloat(orderMsg.ap || order.preco), formatDateForMySQL(new Date(orderMsg.T || Date.now())), order.id]);
+                console.log(`[MONITOR] Status da ordem de ENTRADA ${order.id_externo} atualizado para ${orderMsg.X}`);
+            }
+            // Garantir que o status da posição seja OPEN
+            await updatePositionStatus(db, order.simbolo, { status: 'OPEN', id: order.id_posicao }); // Passar ID da posição
+            console.log(`[MONITOR] Posição ${order.id_posicao} atualizada para OPEN após preenchimento da ordem de entrada ${order.id_externo}`);
         }
-
         return;
       }
 
-      console.log(`[MONITOR] Criando ordens SL/TP para posição ${order.id_posicao} após ordem ${orderMsg.X}`);
+      console.log(`[MONITOR] Criando ordens SL/TP para posição ${order.id_posicao} após ordem de entrada ${orderMsg.X}`);
 
-      // 1. Obter a posição relacionada
-      const [positions] = await db.query('SELECT * FROM posicoes WHERE id = ?', [order.id_posicao]);
-      if (positions.length === 0) {
-        console.log(`[MONITOR] Posição ${order.id_posicao} não encontrada`);
+      const [positionsDb] = await db.query('SELECT * FROM posicoes WHERE id = ?', [order.id_posicao]);
+      if (positionsDb.length === 0) {
+        console.log(`[MONITOR] Posição ${order.id_posicao} não encontrada para criar SL/TP`);
         return;
       }
+      const currentPosition = positionsDb[0];
 
-      const position = positions[0];
-
-      // 2. Se a ordem foi preenchida, atualizar status da posição para OPEN
       if (orderMsg.X === 'FILLED' || orderMsg.X === 'PARTIALLY_FILLED') {
-        await updatePositionStatus(db, position.simbolo, { status: 'OPEN' });
+        // Atualizar a ordem de entrada no DB com preço de execução e novo status
+        await db.query('UPDATE ordens SET status = ?, preco_executado = ?, last_update = ? WHERE id = ?', 
+                       [orderMsg.X, parseFloat(orderMsg.ap || order.preco), formatDateForMySQL(new Date(orderMsg.T || Date.now())), order.id]);
+        console.log(`[MONITOR] Status da ordem de ENTRADA ${order.id_externo} atualizado para ${orderMsg.X} com preço ${orderMsg.ap || order.preco}`);
+        // Atualizar status da posição para OPEN
+        await updatePositionStatus(db, currentPosition.simbolo, { status: 'OPEN', id: currentPosition.id });
       }
 
-      // 3. Obter as configurações de TP/SL do webhook_signals, se existir
       let tpPrice, slPrice;
       const [signals] = await db.query(
           'SELECT * FROM webhook_signals WHERE position_id = ? ORDER BY created_at DESC LIMIT 1',
           [order.id_posicao]
       );
 
-      const entryPrice = parseFloat(position.preco_entrada || order.preco);
+      // Usar o preço de entrada da posição, que deve ter sido atualizado se a ordem de entrada foi FILLED.
+      // Se a ordem de entrada ainda não foi FILLED (ex: status NEW), usamos o preço da ordem.
+      const entryPrice = parseFloat(currentPosition.preco_entrada || order.preco);
+      if (!entryPrice) {
+          console.error(`[MONITOR] Preço de entrada inválido para posição ${currentPosition.id}. Não é possível criar TP/SL.`);
+          return;
+      }
 
       if (signals.length > 0 && signals[0].tp_price && signals[0].sl_price) {
         tpPrice = parseFloat(signals[0].tp_price);
         slPrice = parseFloat(signals[0].sl_price);
-        console.log(`[MONITOR] Usando preços TP/SL do sinal: TP=${tpPrice}, SL=${slPrice}`);
+        console.log(`[MONITOR] Usando preços TP/SL do sinal para pos ${currentPosition.id}: TP=${tpPrice}, SL=${slPrice}`);
       } else {
-        // Calcular preços de TP/SL padrão (1% de diferença)
-        if (position.side === 'BUY') {
-          tpPrice = entryPrice * 1.01; // TP 1% acima
-          slPrice = entryPrice * 0.99; // SL 1% abaixo
-        } else {
-          tpPrice = entryPrice * 0.99; // TP 1% abaixo
-          slPrice = entryPrice * 1.01; // SL 1% acima
+        const factor = 0.01; // 1%
+        if (currentPosition.side === 'BUY') {
+          tpPrice = entryPrice * (1 + factor);
+          slPrice = entryPrice * (1 - factor);
+        } else { // SELL
+          tpPrice = entryPrice * (1 - factor);
+          slPrice = entryPrice * (1 + factor);
         }
-        console.log(`[MONITOR] Calculando preços TP/SL padrão: TP=${tpPrice}, SL=${slPrice}`);
+        console.log(`[MONITOR] Calculando preços TP/SL padrão para pos ${currentPosition.id}: TP=${tpPrice}, SL=${slPrice} (Entrada: ${entryPrice})`);
+      }
+      
+      // Arredondar preços para a precisão correta do símbolo (implementar getSymbolPrecision se necessário)
+      // tpPrice = parseFloat(tpPrice.toFixed(getSymbolPrecision(currentPosition.simbolo, 'price')));
+      // slPrice = parseFloat(slPrice.toFixed(getSymbolPrecision(currentPosition.simbolo, 'price')));
+
+      const oppositeSide = currentPosition.side === 'BUY' ? 'SELL' : 'BUY';
+      const quantityToClose = parseFloat(currentPosition.quantidade_aberta || currentPosition.quantidade || order.quantidade);
+
+      if (!quantityToClose || quantityToClose <= 0) {
+          console.error(`[MONITOR] Quantidade inválida para fechar posição ${currentPosition.id}. Não é possível criar TP/SL.`);
+          return;
       }
 
-      // 4. Determinar o side oposto para as ordens de TP/SL
-      const oppositeSide = position.side === 'BUY' ? 'SELL' : 'BUY';
-
-      // 5. Criar e enviar ordem de SL para a corretora (usando STOP_MARKET)
+      // Criar e enviar ordem de SL
       try {
-        // IMPORTANTE: Aqui enviamos stopPrice sem price para ordem SL
+        const slOrderParams = {
+            symbol: currentPosition.simbolo,
+            side: oppositeSide,
+            type: 'STOP_MARKET', // Tipo de ordem para a corretora
+            quantity: quantityToClose,
+            stopPrice: slPrice, // Preço de disparo
+            reduceOnly: true
+        };
+        // A função newStopOrder deve ser adaptada para aceitar um objeto de parâmetros
+        // ou manter a assinatura original: newStopOrder(symbol, quantity, side, stopPrice, price, reduceOnly, closePosition)
+        // Para STOP_MARKET, price é geralmente null.
         const slResponse = await newStopOrder(
-            position.simbolo,
-            parseFloat(position.quantidade || order.quantidade),
-            oppositeSide,
-            slPrice,
-            null,            // price = null para STOP_MARKET
-            false,            // reduceOnly = true
-            true            // closePosition = false
+            slOrderParams.symbol,
+            slOrderParams.quantity,
+            slOrderParams.side,
+            slOrderParams.stopPrice,
+            null,  // price (para STOP_MARKET, não LIMIT)
+            true,  // reduceOnly
+            false  // closePosition (reduceOnly=true já garante que só reduzirá)
         );
-
-        console.log(`[MONITOR] Ordem SL (STOP_MARKET) criada na corretora: ${slResponse.data.orderId}`);
-
-        // 6. Registrar ordem SL no banco de dados
+        console.log(`[MONITOR] Ordem SL (STOP_MARKET) criada na corretora para pos ${currentPosition.id}: ${slResponse.data.orderId}`);
         await insertNewOrder(db, {
-          tipo_ordem: 'STOP_MARKET',
-          preco: slPrice,
-          quantidade: position.quantidade || order.quantidade,
-          id_posicao: position.id,
-          status: 'OPEN',
-          data_hora_criacao: formatDateForMySQL(new Date()),
-          id_externo: slResponse.data.orderId,
-          side: oppositeSide,
-          simbolo: position.simbolo,
-          tipo_ordem_bot: 'STOP_LOSS',
-          target: null,
-          reduce_only: true,
-          close_position: false,
-          last_update: formatDateForMySQL(new Date()),
-          orign_sig: position.orign_sig
+          tipo_ordem: 'STOP_MARKET', preco: slPrice, quantidade: quantityToClose,
+          id_posicao: currentPosition.id, status: 'NEW', // Status inicial é NEW até ser aceita pela corretora
+          data_hora_criacao: formatDateForMySQL(new Date()), id_externo: String(slResponse.data.orderId),
+          side: oppositeSide, simbolo: currentPosition.simbolo, tipo_ordem_bot: 'STOP_LOSS',
+          reduce_only: true, last_update: formatDateForMySQL(new Date()), orign_sig: currentPosition.orign_sig
         });
       } catch (error) {
-        console.error(`[MONITOR] Erro ao criar ordem SL: ${error.message}`);
+        console.error(`[MONITOR] Erro ao criar ordem SL para pos ${currentPosition.id}: ${error.message || error}`);
       }
 
-      // 7. Criar e enviar ordem de TP para a corretora (usando TAKE_PROFIT_MARKET)
+      // Criar e enviar ordem de TP
       try {
+        const tpOrderParams = {
+            symbol: currentPosition.simbolo,
+            side: oppositeSide,
+            type: 'TAKE_PROFIT_MARKET', // Tipo de ordem para a corretora
+            quantity: quantityToClose,
+            stopPrice: tpPrice, // Preço de disparo
+            reduceOnly: true
+        };
+        // Para TAKE_PROFIT_MARKET, price é geralmente null (ou igual a stopPrice, dependendo da API da corretora)
         const tpResponse = await newStopOrder(
-            position.simbolo,
-            parseFloat(position.quantidade || order.quantidade),
-            oppositeSide,
-            tpPrice,
-            tpPrice,  // stopPrice igual ao price para TP
-            false,     // reduceOnly = true
-            true     // closePosition = false
+            tpOrderParams.symbol,
+            tpOrderParams.quantity,
+            tpOrderParams.side,
+            tpOrderParams.stopPrice, // stopPrice para TAKE_PROFIT_MARKET
+            tpPrice, // price (algumas corretoras usam stopPrice como trigger e executam a mercado, outras podem precisar de price para TAKE_PROFIT_LIMIT)
+                      // Para TAKE_PROFIT_MARKET, o 'price' pode não ser usado ou ser igual ao stopPrice. Verifique a API.
+            true,  // reduceOnly
+            false  // closePosition
         );
-
-        console.log(`[MONITOR] Ordem TP (TAKE_PROFIT_MARKET) criada na corretora: ${tpResponse.data.orderId}`);
-
-        // 8. Registrar ordem TP no banco de dados
+        console.log(`[MONITOR] Ordem TP (TAKE_PROFIT_MARKET) criada na corretora para pos ${currentPosition.id}: ${tpResponse.data.orderId}`);
         await insertNewOrder(db, {
-          tipo_ordem: 'TAKE_PROFIT_MARKET',
-          preco: tpPrice,
-          quantidade: position.quantidade || order.quantidade,
-          id_posicao: position.id,
-          status: 'OPEN',
-          data_hora_criacao: formatDateForMySQL(new Date()),
-          id_externo: tpResponse.data.orderId,
-          side: oppositeSide,
-          simbolo: position.simbolo,
-          tipo_ordem_bot: 'TAKE_PROFIT',
-          target: null,
-          reduce_only: true,
-          close_position: false,
-          last_update: formatDateForMySQL(new Date()),
-          orign_sig: position.orign_sig
+          tipo_ordem: 'TAKE_PROFIT_MARKET', preco: tpPrice, quantidade: quantityToClose,
+          id_posicao: currentPosition.id, status: 'NEW',
+          data_hora_criacao: formatDateForMySQL(new Date()), id_externo: String(tpResponse.data.orderId),
+          side: oppositeSide, simbolo: currentPosition.simbolo, tipo_ordem_bot: 'TAKE_PROFIT',
+          reduce_only: true, last_update: formatDateForMySQL(new Date()), orign_sig: currentPosition.orign_sig
         });
       } catch (error) {
-        console.error(`[MONITOR] Erro ao criar ordem TP: ${error.message}`);
+        console.error(`[MONITOR] Erro ao criar ordem TP para pos ${currentPosition.id}: ${error.message || error}`);
       }
 
-    } else if ((order.tipo_ordem_bot === 'TAKE_PROFIT' || order.tipo_ordem_bot === 'STOP_LOSS') && orderMsg.X === 'FILLED') {
-      // Lógica para quando TP/SL é preenchido (manter o código original)
-      console.log(`[MONITOR] Ordem ${order.tipo_ordem_bot} executada completamente, fechando posição ${order.id_posicao}`);
+    } else if ((order.tipo_ordem_bot === 'TAKE_PROFIT' || order.tipo_ordem_bot === 'STOP_LOSS') && 
+               (orderMsg.X === 'FILLED' || (orderMsg.X === 'EXPIRED' && orderMsg.x === 'TRADE'))) { // Adicionado EXPIRED com execução TRADE
+        
+        const executionType = orderMsg.x; // NEW, CANCELED, REPLACED, REJECTED, TRADE, EXPIRED
+        const orderStatus = orderMsg.X;   // NEW, PARTIALLY_FILLED, FILLED, CANCELED, PENDING_CANCEL, REJECTED, EXPIRED
 
-      // Cancelar outras ordens abertas para esta posição
-      const [otherOrders] = await db.query(
-          'SELECT * FROM ordens WHERE id_posicao = ? AND id != ? AND status = "OPEN"',
-          [order.id_posicao, order.id]
-      );
+        console.log(`[MONITOR] Ordem ${order.tipo_ordem_bot} (ID_EXT: ${order.id_externo}) para posição ${order.id_posicao} teve atualização: Status=${orderStatus}, ExecType=${executionType}`);
 
-      for (const otherOrder of otherOrders) {
-        try {
-          await cancelOrder(otherOrder.id_externo, otherOrder.simbolo);
-          await updateOrderStatus(db, otherOrder.id, "CANCELED");
-          console.log(`[MONITOR] Ordem ${otherOrder.id_externo} cancelada`);
-        } catch (error) {
-          console.error(`[MONITOR] Erro ao cancelar ordem ${otherOrder.id_externo}: ${error.message}`);
+        // Se a ordem foi preenchida (FILLED ou EXPIRED mas com TRADE)
+        if (orderStatus === 'FILLED' || (orderStatus === 'EXPIRED' && executionType === 'TRADE')) {
+            console.log(`[MONITOR] Ordem ${order.tipo_ordem_bot} (ID_EXT: ${order.id_externo}) executada (Status: ${orderStatus}). Fechando posição ${order.id_posicao}.`);
+
+            // Atualizar o status da ordem que foi FILLED/EXECUTED
+            await db.query('UPDATE ordens SET status = ?, preco_executado = ?, last_update = ? WHERE id = ?', 
+                           [orderStatus, parseFloat(orderMsg.ap || order.preco), formatDateForMySQL(new Date(orderMsg.T || Date.now())), order.id]);
+
+            // Cancelar outras ordens abertas (TP ou SL oposto) para esta posição
+            const [otherOrders] = await db.query(
+                'SELECT * FROM ordens WHERE id_posicao = ? AND id_externo != ? AND status = "NEW" OR status = "OPEN" OR status = "PARTIALLY_FILLED"', // Status mais abrangentes para cancelamento
+                [order.id_posicao, order.id_externo] // Usar id_externo aqui para evitar cancelar a própria ordem se o ID interno for igual
+            );
+
+            for (const otherOrder of otherOrders) {
+                try {
+                    console.log(`[MONITOR] Cancelando ordem oposta ${otherOrder.id_externo} (Status: ${otherOrder.status}) para posição ${order.id_posicao}`);
+                    await cancelOrder(otherOrder.id_externo, otherOrder.simbolo); // Função da API da corretora
+                    // O status da ordem cancelada será atualizado via WebSocket pela própria corretora.
+                    // Podemos forçar uma atualização local se necessário, mas o ideal é aguardar o evento.
+                    // await updateOrderStatus(db, otherOrder.id, "CANCELED"); 
+                } catch (error) {
+                    console.error(`[MONITOR] Erro ao cancelar ordem oposta ${otherOrder.id_externo}: ${error.message}`);
+                    // Mesmo com erro no cancelamento, continuar para fechar a posição
+                }
+            }
+
+            // Mover posição e suas ordens para tabelas de histórico
+            try {
+                await moveClosedPositionsAndOrders(db, order.id_posicao); // Sua função original
+                console.log(`[MONITOR] Posição ${order.id_posicao} e suas ordens foram movidas para o histórico.`);
+
+                // Sincronizar saldo após fechamento de posição
+                try {
+                    await syncAccountBalance();
+                } catch (syncError) {
+                    console.error('[MONITOR] Erro ao sincronizar saldo após fechamento de posição:', syncError);
+                }
+            } catch (error) {
+                console.error(`[MONITOR] Erro ao mover registros para histórico para pos ${order.id_posicao}: ${error.message}`);
+            }
+        } else if (orderStatus === 'CANCELED' || orderStatus === 'REJECTED' || (orderStatus === 'EXPIRED' && executionType !== 'TRADE')) {
+            // Se a ordem TP/SL foi cancelada, rejeitada ou expirou sem trade, apenas atualiza o status no DB
+            console.log(`[MONITOR] Ordem ${order.tipo_ordem_bot} (ID_EXT: ${order.id_externo}) para posição ${order.id_posicao} teve status ${orderStatus}. Atualizando no DB.`);
+            await db.query('UPDATE ordens SET status = ?, last_update = ? WHERE id = ?', 
+                           [orderStatus, formatDateForMySQL(new Date(orderMsg.T || Date.now())), order.id]);
         }
-      }
-
-      // Mover registros para tabelas fechadas
-      try {
-        await moveClosedPositionsAndOrders(db, order.id_posicao);
-        console.log(`[MONITOR] Posição ${order.id_posicao} fechada e movida para histórico`);
-
-        // Sincronizar saldo após fechamento de posição - ADICIONADO
-        try {
-          await syncAccountBalance();
-        } catch (syncError) {
-          console.error('[MONITOR] Erro ao sincronizar saldo após fechamento de posição:', syncError);
+    } else if (orderMsg.X === 'CANCELED' || orderMsg.X === 'REJECTED' || (orderMsg.X === 'EXPIRED' && orderMsg.x !== 'TRADE')) {
+        // Lógica para ordens de ENTRADA que foram canceladas/rejeitadas/expiradas sem fill
+        if (order.tipo_ordem_bot === 'ENTRADA' && order.status !== 'FILLED' && order.status !== 'PARTIALLY_FILLED') {
+            console.log(`[MONITOR] Ordem de ENTRADA (ID_EXT: ${order.id_externo}) para símbolo ${order.simbolo} teve status ${orderMsg.X}. Atualizando no DB.`);
+            await db.query('UPDATE ordens SET status = ?, last_update = ? WHERE id = ?', 
+                           [orderMsg.X, formatDateForMySQL(new Date(orderMsg.T || Date.now())), order.id]);
+            // Se a ordem de entrada falhou, a posição associada (se existir e estiver PENDING) pode precisar ser atualizada ou removida.
+            // Isso depende da sua lógica de criação de posições.
+             const [posicoesPendentes] = await db.query('SELECT * FROM posicoes WHERE id = ? AND status = "PENDING"', [order.id_posicao]);
+             if (posicoesPendentes.length > 0) {
+                 await db.query('UPDATE posicoes SET status = "FAILED_ENTRY", observacao = ? WHERE id = ?',
+                                [`Entrada falhou: Ordem ${order.id_externo} com status ${orderMsg.X}`, order.id_posicao]);
+                 console.log(`[MONITOR] Posição ${order.id_posicao} marcada como FAILED_ENTRY.`);
+             }
         }
-      } catch (error) {
-        console.error(`[MONITOR] Erro ao mover registros para histórico: ${error.message}`);
-      }
     }
+
   } catch (error) {
-    console.error(`[MONITOR] Erro ao processar atualização de ordem: ${error.message}`);
+    console.error(`[MONITOR] Erro ao processar atualização de ordem (OrderID: ${orderMsg.i}): ${error.message}`, error.stack);
   }
 }
 
@@ -1419,10 +1556,10 @@ async function triggerMarketEntry(db, entry, currentPrice) {
               `✅ Entrada executada para ${entry.simbolo}\n\n` +
               `Direção: ${position.side}\n` +
               `Alavancagem: ${entry.leverage}x\n` +
-              `\nEntrada: ${executedPrice}\n` +
+              `Quantidade: ${executedQty}\n\n` +
+              `Entrada: ${executedPrice}\n` +
               `TP: ${tpPriceVal}\n` +
-              `SL: ${slPriceVal}\n` +
-              `Quantidade: ${executedQty}\n`,
+              `SL: ${slPriceVal}\n`,
               
           );
         } catch (telegramError) {
@@ -1847,11 +1984,11 @@ async function executeEntryOrder(db, signal, currentPrice) {
           await bot.telegram.sendMessage(signal.chat_id,
               `✅ Entrada EXECUTADA para ${signal.symbol} \n(Sinal ID ${signal.id})\n\n` +
               `Direção: ${signal.side}\n` +
-              `Alavancagem: ${signal.leverage}x` +
-              `\nEntrada: ${executedPrice.toFixed(pricePrecision || 2)}\n` +
+              `Alavancagem: ${signal.leverage}x\n` +
+              `Quantidade: ${formatDecimal(amountInUsdt, 2)} USDT\n\n` +
+              `Entrada: ${executedPrice.toFixed(pricePrecision || 2)}\n` +
               `Take Profit: ${tpPrice.toFixed(pricePrecision || 2)}\n` +
-              `Stop Loss: ${slPrice.toFixed(pricePrecision || 2)}\n` +
-              `Quantidade: ${formatDecimal(amountInUsdt, 2)} USDT\n`,
+              `Stop Loss: ${slPrice.toFixed(pricePrecision || 2)}\n`,
               telegramOptions
           );
           console.log(`[MONITOR] Notificação de execução enviada para Sinal ID ${signal.id} (reply to: ${replyToMessageId || 'N/A'}).`);
