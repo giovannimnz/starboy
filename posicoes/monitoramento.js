@@ -613,7 +613,7 @@ async function handleOrderUpdate(orderMsg, db) {
           console.log(`[MONITOR] Ordem "fantasma" ${tipoOrdemBot} (ID: ${orderMsg.i}) executada, fechando posição ${position.id}`);
           // Antes de mover para o histórico, cancelar outras ordens abertas para esta posição
           const [otherLinkedOrders] = await db.query(
-            'SELECT * FROM ordens WHERE id_posicao = ? AND status = "OPEN" AND id_externo != ?',
+            'SELECT * FROM ordens WHERE id_posicao = ? AND status = "NEW" AND id_externo != ?',
             [position.id, orderMsg.i]
           );
           for (const otherOrder of otherLinkedOrders) {
@@ -659,7 +659,7 @@ async function handleOrderUpdate(orderMsg, db) {
 
       // Verificar se já existem ordens TP/SL para esta posição
       const [existingOrders] = await db.query(
-          'SELECT * FROM ordens WHERE id_posicao = ? AND tipo_ordem_bot IN ("STOP_LOSS", "TAKE_PROFIT") AND status = "OPEN"',
+          'SELECT * FROM ordens WHERE id_posicao = ? AND tipo_ordem_bot IN ("STOP_LOSS", "TAKE_PROFIT") AND status = "NEW"',
           [order.id_posicao]
       );
 
@@ -1154,7 +1154,7 @@ async function onPriceUpdate(symbol, currentPrice, db) {
     
     const pendingSignals = pendingSignalsResult || [];
     // Log da nova estrutura:
-    console.log(`[PRICE UPDATE] Encontrados ${pendingSignals.length} sinais pendentes para ${symbol}`);
+    //console.log(`[PRICE UPDATE] Encontrados ${pendingSignals.length} sinais pendentes para ${symbol}`);
 
     // 3. Verificar se há posições abertas ou ordens pendentes
     const [openPositionsResult] = await db.query(`
@@ -1164,7 +1164,7 @@ async function onPriceUpdate(symbol, currentPrice, db) {
     
     const [pendingOrdersResult] = await db.query(`
       SELECT COUNT(*) as count FROM ordens
-      WHERE simbolo = ? AND status = 'OPEN' 
+      WHERE simbolo = ? AND status = 'NEW' 
     `, [symbol]); // Presume-se que ordens 'OPEN' são as que justificam manter o WS
 
     const openPositionsCount = (openPositionsResult && openPositionsResult[0] && openPositionsResult[0].count) || 0;
@@ -1184,12 +1184,19 @@ async function onPriceUpdate(symbol, currentPrice, db) {
       // Não é necessário retornar aqui, pois o loop de pendingSignals não executará se pendingSignals.length === 0.
     } else {
       let reasons = [];
-      if (pendingSignals.length > 0) reasons.push(`${pendingSignals.length} sinais pendentes`);
-      if (openPositionsCount > 0) reasons.push(`${openPositionsCount} posições abertas`);
-      if (pendingOrdersCount > 0) reasons.push(`${pendingOrdersCount} ordens pendentes`);
-      
-      console.log(`[MONITOR] WebSocket aberto para ${symbol}. ${reasons.join(', ')}.`);
-      
+      if (pendingSignals.length > 0) {
+        reasons.push(`${pendingSignals.length} ${pendingSignals.length === 1 ? 'Sinal pendente' : 'Sinais pendentes'}`);
+      }
+      if (openPositionsCount > 0) {
+        reasons.push(`${openPositionsCount} ${openPositionsCount === 1 ? 'Posição aberta' : 'Posições abertas'}`);
+      }
+      if (pendingOrdersCount > 0) {
+        reasons.push(`${pendingOrdersCount} ${pendingOrdersCount === 1 ? 'Ordem pendente' : 'Ordens pendentes'}`);
+      }
+  
+      // Primeiro mostra o cabeçalho
+      console.log(`[MONITOR] WebSocket aberto para ${symbol}${reasons.length > 0 ? ' - ' + reasons.join(' - ') : ''}`);
+   
       // Se houver websocketEmptyCheckCounter para este símbolo, remover, pois a nova lógica o substitui.
       if (websocketEmptyCheckCounter && websocketEmptyCheckCounter[symbol]) {
         console.log(`[MONITOR] Removendo contador antigo websocketEmptyCheckCounter para ${symbol}.`);
@@ -1317,7 +1324,7 @@ async function checkOrderTriggers(db, position, currentPrice) {
     const [orders] = await db.query(
       `SELECT * FROM ordens 
        WHERE id_posicao = ? 
-       AND status = "OPEN" 
+       AND status = "NEW" 
        AND tipo_ordem_bot IN ("STOP_LOSS", "TAKE_PROFIT")`, // Aspas duplas para consistência
       [position.id]
     );
@@ -1769,7 +1776,7 @@ async function checkAndCloseWebsocket(db, symbol) {
     // 3. Verificar se ainda existem ordens pendentes
     const [pendingOrdersRows] = await db.query(`
       SELECT COUNT(*) as count FROM ordens
-      WHERE simbolo = ? AND status = 'OPEN'
+      WHERE simbolo = ? AND status = 'NEW'
     `, [symbol]);
     // Acesso direto à contagem
     const pendingOrdersCount = pendingOrdersRows[0].count;
