@@ -22,7 +22,7 @@ DB_PASSWORD = os.getenv('DB_PASSWORD')
 DB_NAME = os.getenv('DB_NAME')
 
 # IDs dos grupos - USANDO OS IDs INTERNOS CORRETOS COM SINAL NEGATIVO
-GRUPOS_ORIGEM_IDS = [-1002444455075, -4192806079]  # Lista com os IDs dos grupos de origem
+GRUPOS_ORIGEM_IDS = [-1002444455075]  # Lista com os IDs dos grupos de origem
 GRUPO_DESTINO_ID = -1002016807368  # ID do grupo de destino
 
 # Seletor de alvo - valor 2 corresponde ao segundo alvo (Alvo 2)
@@ -495,7 +495,7 @@ async def handle_new_message(event):
             return
 
         incoming_created_at = event.message.date.strftime("%Y-%m-%d %H:%M:%S")
-        GRUPOS_PERMITIDOS_PARA_REGISTRO = GRUPOS_ORIGEM_IDS + [GRUPO_DESTINO_ID] 
+        GRUPOS_PERMITIDOS_PARA_REGISTRO = GRUPOS_ORIGEM_IDS #+ [GRUPO_DESTINO_ID] 
         is_incoming_reply = event.message.reply_to_msg_id is not None
         incoming_reply_to_id = event.message.reply_to_msg_id if is_incoming_reply else None
 

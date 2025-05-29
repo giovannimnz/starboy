@@ -415,7 +415,7 @@ async function processSignal(db, signal) {
         const sentMessage = await bot.telegram.sendMessage(chat_id,
             `🔄 Sinal Registrado para ${symbol}!\n\n` +
             `🆔 Sinal Ref: WEBHOOK_${id}\n` +
-            `Direção: ${side}\n` +
+            `Direção: ${side.charAt(0).toUpperCase() + position.side.slice(1).toLowerCase()}\n` +
             `Alavancagem: ${leverage}x\n\n` +
             `Entrada: ${triggerCondition.replace(entry_price, formatDecimal(entry_price))}\n` +
             `TP: ${formatDecimal(tp_price)}\n` +
@@ -1188,7 +1188,7 @@ async function onPriceUpdate(symbol, currentPrice, db) {
       if (openPositionsCount > 0) reasons.push(`${openPositionsCount} posições abertas`);
       if (pendingOrdersCount > 0) reasons.push(`${pendingOrdersCount} ordens pendentes`);
       
-      console.log(`[MONITOR] Mantendo WebSocket para ${symbol}. Motivo: ${reasons.join(', ')}.`);
+      console.log(`[MONITOR] WebSocket aberto para ${symbol}. ${reasons.join(', ')}.`);
       
       // Se houver websocketEmptyCheckCounter para este símbolo, remover, pois a nova lógica o substitui.
       if (websocketEmptyCheckCounter && websocketEmptyCheckCounter[symbol]) {
@@ -1553,8 +1553,8 @@ async function triggerMarketEntry(db, entry, currentPrice) {
       if (entry.chat_id) {
         try {
           await bot.telegram.sendMessage(entry.chat_id,
-              `✅ Entrada executada para ${entry.simbolo}\n\n` +
-              `Direção: ${position.side}\n` +
+              `✅ Entrada realizada em ${entry.simbolo}\n\n` +
+              `Direção: ${position.side.charAt(0).toUpperCase() + position.side.slice(1).toLowerCase()}\n` +
               `Alavancagem: ${entry.leverage}x\n` +
               `Quantidade: ${executedQty}\n\n` +
               `Entrada: ${executedPrice}\n` +
@@ -1982,8 +1982,8 @@ async function executeEntryOrder(db, signal, currentPrice) {
           const amountInUsdt = executedQty * executedPrice;
 
           await bot.telegram.sendMessage(signal.chat_id,
-              `✅ Entrada EXECUTADA para ${signal.symbol} \n(Sinal ID ${signal.id})\n\n` +
-              `Direção: ${signal.side}\n` +
+              `✅ Entrada realizada em ${signal.symbol} \n(Sinal ID ${signal.id})\n\n` +
+              `Direção: ${signal.side.charAt(0).toUpperCase() + position.side.slice(1).toLowerCase()}\n` +
               `Alavancagem: ${signal.leverage}x\n` +
               `Quantidade: ${formatDecimal(amountInUsdt, 2)} USDT\n\n` +
               `Entrada: ${executedPrice.toFixed(pricePrecision || 2)}\n` +
