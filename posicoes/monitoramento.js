@@ -5,7 +5,7 @@ const axios = require('axios');
 const schedule = require('node-schedule');
 const fs = require('fs').promises;
 const { Telegraf } = require("telegraf");
-const { newEntryOrder, cancelOrder, newStopOrder, cancelAllOpenOrders, getAllLeverageBrackets, getFuturesAccountBalanceDetails, getPrecision, changeInitialLeverage, changeMarginType, getPositionDetails, setPositionMode, getOpenOrders, getOrderStatus, getAllOpenPositions, updateLeverageBracketsInDatabase, cancelPendingEntry } = require('../api');
+const { newEntryOrder, newReduceOnlyOrder, cancelOrder, newStopOrder, cancelAllOpenOrders, getAllLeverageBrackets, getFuturesAccountBalanceDetails, getPrecision, changeInitialLeverage, changeMarginType, getPositionDetails, setPositionMode, getOpenOrders, getOrderStatus, getAllOpenPositions, updateLeverageBracketsInDatabase, cancelPendingEntry } = require('../api');
 const {getDatabaseInstance, getPositionIdBySymbol, updatePositionInDb, updatePositionStatus, insertNewOrder, disconnectDatabase, getAllPositionsFromDb, getOpenOrdersFromDb, getOrdersFromDb, updateOrderStatus, getPositionsFromDb, insertPosition, moveClosedPositionsAndOrders, formatDateForMySQL, getBaseCalculoBalance, updateAccountBalance} = require('../db/conexao');
 const websockets = require('../websockets');
 
@@ -13,6 +13,7 @@ const websockets = require('../websockets');
 const cancelledOrders = new Set();
 const processingSignals = new Set();
 const websocketEmptyCheckCounter = {};
+const lastLoggedWebsocketStates = {};
 
 // Inicializar o bot do Telegram
 const bot = new Telegraf(process.env.BOT_TOKEN);
@@ -1193,11 +1194,18 @@ async function onPriceUpdate(symbol, currentPrice, db) {
       if (pendingOrdersCount > 0) {
         reasons.push(`${pendingOrdersCount} ${pendingOrdersCount === 1 ? 'Ordem pendente' : 'Ordens pendentes'}`);
       }
+
+      // Criar uma string representando o estado atual
+      const currentState = reasons.join('|');
   
-      // Primeiro mostra o cabeçalho
-      console.log(`[MONITOR] WebSocket aberto para ${symbol}${reasons.length > 0 ? ' - ' + reasons.join(' - ') : ''}`);
-   
-      // Se houver websocketEmptyCheckCounter para este símbolo, remover, pois a nova lógica o substitui.
+      // Verificar se o estado mudou ou se é a primeira vez para este símbolo
+      if (!lastLoggedWebsocketStates[symbol] || lastLoggedWebsocketStates[symbol] !== currentState) {
+        console.log(`[MONITOR] WebSocket aberto para ${symbol}${reasons.length > 0 ? ' - ' + reasons.join(' - ') : ''}`);
+        // Atualizar o estado atual no log
+        lastLoggedWebsocketStates[symbol] = currentState;
+      }
+  
+      // Se houver websocketEmptyCheckCounter para este símbolo, remover
       if (websocketEmptyCheckCounter && websocketEmptyCheckCounter[symbol]) {
         console.log(`[MONITOR] Removendo contador antigo websocketEmptyCheckCounter para ${symbol}.`);
         delete websocketEmptyCheckCounter[symbol];
@@ -1990,7 +1998,7 @@ async function executeEntryOrder(db, signal, currentPrice) {
 
           await bot.telegram.sendMessage(signal.chat_id,
               `✅ Entrada realizada em ${signal.symbol} \n(Sinal ID ${signal.id})\n\n` +
-              `Direção: ${signal.side.charAt(0).toUpperCase() + position.side.slice(1).toLowerCase()}\n` +
+              `Direção: ${signal.side.charAt(0).toUpperCase() + signal.side.slice(1).toLowerCase()}\n` +
               `Alavancagem: ${signal.leverage}x\n` +
               `Quantidade: ${formatDecimal(amountInUsdt, 2)} USDT\n\n` +
               `Entrada: ${executedPrice.toFixed(pricePrecision || 2)}\n` +
