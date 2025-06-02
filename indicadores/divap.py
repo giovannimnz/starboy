@@ -3,6 +3,7 @@ import os
 import re
 import signal
 import sys
+import traceback
 import mysql.connector
 from datetime import datetime
 from telethon import TelegramClient, events
@@ -25,8 +26,14 @@ DB_NAME = os.getenv('DB_NAME')
 GRUPOS_ORIGEM_IDS = [-1002444455075]  # Lista com os IDs dos grupos de origem
 GRUPO_DESTINO_ID = -1002016807368  # ID do grupo de destino
 
+# Mapeamento de IDs de grupo para nomes de fontes (NOVO)
+GRUPO_FONTE_MAPEAMENTO = {
+    -1002444455075: "divap"  # Quando o grupo for este ID, o valor será "divap"
+    # Adicione mais mapeamentos conforme necessário para outros grupos
+}
+
 # Seletor de alvo - valor 2 corresponde ao segundo alvo (Alvo 2)
-ALVO_SELECIONADO = 1  # 1=Alvo 1, 2=Alvo 2, 3=Alvo 3, etc.
+ALVO_SELECIONADO = None  # 1=Alvo 1, 2=Alvo 2, 3=Alvo 3, etc.
 
 # Cliente Telegram
 client = TelegramClient('divap', pers_api_id, pers_api_hash)
@@ -170,15 +177,49 @@ def load_leverage_brackets(symbol=None):
 
     return brackets_data
 
+def get_account_base_balance():
+    """
+    Obtém o saldo base de cálculo da tabela conta
+    """
+    try:
+        conn = mysql.connector.connect(
+            host=DB_HOST,
+            port=int(DB_PORT),
+            user=DB_USER,
+            password=DB_PASSWORD,
+            database=DB_NAME
+        )
+        cursor = conn.cursor(dictionary=True)
+        
+        # Obter o saldo base de cálculo da primeira conta ativa
+        sql = "SELECT saldo_base_calculo FROM conta WHERE ativa = 1 LIMIT 1"
+        cursor.execute(sql)
+        result = cursor.fetchone()
+        
+        if result and 'saldo_base_calculo' in result and result['saldo_base_calculo'] is not None:
+            return float(result['saldo_base_calculo'])
+        else:
+            print("[AVISO] Saldo base de cálculo não encontrado. Usando valor padrão.")
+            return 10000.0  # Valor padrão se não encontrar
+            
+    except Exception as e:
+        print(f"[ERRO] Falha ao buscar saldo base de cálculo: {e}")
+        return 10000.0  # Valor padrão em caso de erro
+    finally:
+        if 'conn' in locals() and conn.is_connected():
+            cursor.close()
+            conn.close()
+
 def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent, side_raw=None):
     """
     Calcula a alavancagem ideal para margem cruzada baseada na distância entrada/SL
+    e verifica se está condizente com o saldo disponível
     """
     cleaned_symbol = clean_symbol(symbol)
 
     is_long = True
     if side_raw:
-        is_long = side_raw.upper() == "BUY"
+        is_long = side_raw.upper() in ("BUY", "COMPRA")
     else:
         is_long = entry_price < stop_loss
 
@@ -189,9 +230,15 @@ def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent, si
 
     print(f"[DEBUG] {symbol}: Distância até SL: {sl_distance_pct:.6f} ({sl_distance_pct*100:.2f}%)")
 
+    # Calcular alavancagem com base na distância até o SL
     target_leverage = int(1 / sl_distance_pct)
 
     try:
+        # Obter o saldo base de cálculo
+        account_balance = get_account_base_balance()
+        print(f"[DEBUG] Saldo base de cálculo: {account_balance:.2f} USDT")
+        
+        # Obter os brackets de alavancagem para o símbolo
         leverage_brackets = load_leverage_brackets(cleaned_symbol)
         symbol_brackets = []
 
@@ -207,28 +254,54 @@ def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent, si
             elif "BTCUSDT" in all_brackets:
                 symbol_brackets = all_brackets["BTCUSDT"]
 
+        # Valor para ordem (com base na porcentagem de capital)
+        order_value = account_balance * (capital_percent / 100)
+        print(f"[DEBUG] Valor da ordem: {order_value:.2f} USDT (Saldo {account_balance:.2f} * {capital_percent}%)")
+        
         max_leverage = 1
+        bracket_leverage_limits = []
+        
+        # Verificar cada bracket para determinar a alavancagem máxima permitida
         for bracket in symbol_brackets:
-            if "initialLeverage" in bracket:
-                bracket_leverage = int(bracket.get("initialLeverage", 1))
+            if "initialLeverage" not in bracket:
+                continue
+                
+            bracket_leverage = int(bracket.get("initialLeverage", 1))
+            notional_floor = float(bracket.get("notionalFloor", 0))
+            notional_cap = float(bracket.get("notionalCap", float('inf')))
+            
+            # Valor da posição = valor da ordem * alavancagem
+            position_value = order_value * bracket_leverage
+            
+            # Verificar se o valor da posição está dentro dos limites do bracket
+            if position_value >= notional_floor and (notional_cap == float('inf') or position_value < notional_cap):
                 max_leverage = max(max_leverage, bracket_leverage)
+                bracket_leverage_limits.append(bracket_leverage)
+                print(f"[DEBUG] Bracket elegível: Alavancagem {bracket_leverage}x, Valor posição: {position_value:.2f}, Limites: {notional_floor:.2f} - {notional_cap:.2f}")
+            else:
+                print(f"[DEBUG] Bracket não elegível: Alavancagem {bracket_leverage}x, Valor posição: {position_value:.2f}, Limites: {notional_floor:.2f} - {notional_cap:.2f}")
+        
+        if bracket_leverage_limits:
+            max_leverage = max(bracket_leverage_limits)
+            print(f"[DEBUG] Alavancagem máxima permitida pelos brackets: {max_leverage}x")
+        else:
+            print(f"[AVISO] Nenhum bracket elegível encontrado para o valor da ordem. Usando alavancagem conservadora.")
+            max_leverage = min(20, target_leverage)  # Valor conservador
 
     except Exception as e:
-        print(f"[AVISO] Erro ao obter alavancagem máxima: {e}. Usando valor padrão 125x.")
-        max_leverage = 125
+        print(f"[AVISO] Erro ao verificar alavancagem máxima: {e}. Usando valor padrão.")
+        max_leverage = 20  # Valor mais conservador em caso de erro
 
+    # A alavancagem final é o menor valor entre a alavancagem ideal e a alavancagem máxima permitida
     final_leverage = min(target_leverage, max_leverage)
-    final_leverage = max(1, final_leverage)
+    final_leverage = max(1, final_leverage)  # Mínimo de 1x
 
-    print(f"[INFO] Alavancagem final calculada para {cleaned_symbol}: {final_leverage}x")
+    print(f"[INFO] Alavancagem final calculada para {cleaned_symbol}: {final_leverage}x (Ideal: {target_leverage}x, Máximo permitido: {max_leverage}x)")
     return final_leverage
 
 def save_to_database(trade_data):
     """
     Saves trade operation information to the MySQL database and returns the signal ID.
-    Includes 'message_id' (ID of the message in the destination channel),
-    'message_id_orig' (ID of the original message that generated the signal),
-    and multiple TP targets (tp1_price to tp5_price).
     """
     conn = None
     cursor = None
@@ -249,13 +322,13 @@ def save_to_database(trade_data):
         for i in range(min(5, len(all_tps))): # Fill with available values, up to 5
             tp_prices[i] = all_tps[i]
             
-        # SQL query including the new columns tp1_price to tp5_price
+        # SQL query including the new columns tp1_price to tp5_price and message_source
         sql = """
               INSERT INTO webhook_signals
               (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price,
                chat_id, status, timeframe, message_id, message_id_orig,
-               tp1_price, tp2_price, tp3_price, tp4_price, tp5_price)
-              VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, message_source)
+              VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
               """
 
         values = (
@@ -275,7 +348,8 @@ def save_to_database(trade_data):
             tp_prices[1],  # tp2_price
             tp_prices[2],  # tp3_price
             tp_prices[3],  # tp4_price
-            tp_prices[4]   # tp5_price
+            tp_prices[4],  # tp5_price
+            trade_data.get("message_source")  # Nova coluna message_source
         )
 
         cursor.execute(sql, values)
@@ -284,6 +358,7 @@ def save_to_database(trade_data):
 
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Operation saved to database: {trade_data['symbol']} (ID: {signal_id})")
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] TPs saved: TP1={tp_prices[0]}, TP2={tp_prices[1]}, TP3={tp_prices[2]}, TP4={tp_prices[3]}, TP5={tp_prices[4]}")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Message source: {trade_data.get('message_source')}")
         return signal_id
 
     except mysql.connector.Error as db_err:
@@ -395,8 +470,8 @@ async def extract_trade_info(message_text):
 
         # Padrões para extrair informações
         symbol_pattern = r'#([A-Z0-9]+)'
-        # Padrão para capturar o timeframe (15m, 1h, 4h, etc.)
-        timeframe_pattern = r'#[A-Z0-9]+\s+([0-9]+[mhdwM])'
+        # Padrão para capturar o timeframe (15m, 1h, 4h, 1D, etc.) - incluindo D maiúsculo
+        timeframe_pattern = r'#[A-Z0-9]+\s+([0-9]+[mhdwMD])'
 
         # Detectar o lado (compra/venda)
         if "compra" in message_text.lower():
@@ -446,7 +521,7 @@ async def extract_trade_info(message_text):
             return None
 
         symbol = symbol_match.group(1)
-        timeframe = timeframe_match.group(1) if timeframe_match else ""
+        timeframe = timeframe_match.group(1).lower() if timeframe_match else ""
         entry = float(normalize_number(entry_match.group(1)))
         stop_loss = float(normalize_number(sl_match.group(1)))
         capital_pct = float(capital_match.group(1)) if capital_match else 5.0  # Valor padrão
@@ -478,20 +553,20 @@ async def extract_trade_info(message_text):
 @client.on(events.NewMessage())
 async def handle_new_message(event):
     """
-    Manipula novas mensagens. Processa sinais de trade dos grupos de origem,
-    salva-os em webhook_signals. Registra mensagens relevantes (origem, destino, respostas)
-    em signals_msg, associando-as ao signal_id quando aplicável.
+    Manipula novas mensagens. Processa sinais de trade dos grupos de origem.
     """
     incoming_message_id = event.message.id if event and hasattr(event, 'message') and hasattr(event.message, 'id') else 'desconhecido'
     incoming_chat_id = event.chat_id if event and hasattr(event, 'chat_id') else 'desconhecido'
 
+    # Obter a fonte da mensagem com base no chat_id (NOVO)
+    message_source = GRUPO_FONTE_MAPEAMENTO.get(incoming_chat_id)
+    
     try:
         incoming_chat_id = event.chat_id
         incoming_message_id = event.message.id
         incoming_text = event.message.text
 
         if not incoming_text:
-            print(f"[INFO] Mensagem ID {incoming_message_id} de Chat ID {incoming_chat_id} não tem texto. Ignorando.")
             return
 
         incoming_created_at = event.message.date.strftime("%Y-%m-%d %H:%M:%S")
@@ -513,32 +588,41 @@ async def handle_new_message(event):
                 # print(f"[INFO] Alvos detectados para {trade_info['symbol']}: {tp_log_msg}")
 
                 selected_tp = None
-                if trade_info.get('all_tps') and len(trade_info['all_tps']) >= ALVO_SELECIONADO:
-                    selected_tp = trade_info['all_tps'][ALVO_SELECIONADO - 1]
-                else:
-                    selected_tp = trade_info.get('tp')
-                    if selected_tp is None and trade_info.get('all_tps'): 
+                if ALVO_SELECIONADO is not None:
+                    if trade_info.get('all_tps') and len(trade_info['all_tps']) >= ALVO_SELECIONADO:
+                        selected_tp = trade_info['all_tps'][ALVO_SELECIONADO - 1]
+                    elif trade_info.get('tp'):
+                        selected_tp = trade_info.get('tp')
+                    elif trade_info.get('all_tps'):
                         selected_tp = trade_info['all_tps'][0]
                 
-                if selected_tp is None:
-                    print(f"[ERRO] Sinal da Msg ID {incoming_message_id} (Símbolo: {trade_info['symbol']}) não tem TP válido. Sinal não será enviado.")
-                    await register_message_in_signals_msg(
-                        message_id=incoming_message_id, 
-                        chat_id=incoming_chat_id, 
-                        text=incoming_text, 
-                        is_reply=is_incoming_reply,
-                        reply_to_msg_id=incoming_reply_to_id,
-                        created_at=incoming_created_at
-                    )
-                    return 
+                if selected_tp is None and trade_info.get('all_tps'):
+                    print(f"[INFO] Enviando todos os {len(trade_info.get('all_tps'))} alvos.")
+                elif selected_tp is None:
+                    print(f"[AVISO] Sinal da Msg ID {incoming_message_id} (Símbolo: {trade_info['symbol']}) não tem nenhum TP. Enviando apenas com entrada e SL.")
 
                 message_text_to_send = format_trade_message(trade_info, selected_tp)
                 print(f"\n[INFO] Mensagem de sinal formatada para envio (Origem Msg ID: {incoming_message_id}):\n{'-'*50}\n{message_text_to_send}\n{'-'*50}")
 
-                trade_info['tp'] = selected_tp 
+                # Garantir que tp_price nunca seja NULL
+                if selected_tp is None:
+                # Se não há TP selecionado, usar o último alvo como tp_price para o banco de dados
+                # Isso evita o erro "Column 'tp_price' cannot be null"
+                    if trade_info.get('all_tps') and len(trade_info['all_tps']) > 0:
+                # Usar o último alvo disponível
+                        trade_info['tp'] = trade_info['all_tps'][-1]
+                        print(f"[INFO] Sem alvo específico selecionado. Usando último alvo ({trade_info['tp']}) como tp_price para o banco.")
+                    else:
+                        # Se não houver alvos disponíveis, usar o preço de entrada como fallback
+                        trade_info['tp'] = trade_info['entry']
+                        print(f"[AVISO] Sem alvos disponíveis. Usando preço de entrada ({trade_info['entry']}) como tp_price para o banco.")
+                else:
+                    trade_info['tp'] = selected_tp
+
                 trade_info['id_mensagem_origem_sinal'] = incoming_message_id
                 trade_info['chat_id_origem_sinal'] = incoming_chat_id
                 trade_info['chat_id'] = GRUPO_DESTINO_ID 
+                trade_info['message_source'] = message_source  # Adicionar message_source                
 
                 sent_message_to_dest = await client.send_message(GRUPO_DESTINO_ID, message_text_to_send)
                 sent_message_id_in_dest = sent_message_to_dest.id
@@ -559,7 +643,8 @@ async def handle_new_message(event):
                         reply_to_message_id=incoming_reply_to_id,
                         symbol=trade_info['symbol'], 
                         signal_id=signal_id_from_webhook_db, 
-                        created_at=incoming_created_at
+                        created_at=incoming_created_at,
+                        message_source=message_source                        
                     )
                     print(f"[INFO] Mensagem original ID {incoming_message_id} (Chat {incoming_chat_id}) registrada em signals_msg com Sinal ID {signal_id_from_webhook_db}.")
                     
@@ -571,12 +656,24 @@ async def handle_new_message(event):
                         reply_to_message_id=None,
                         symbol=trade_info['symbol'], 
                         signal_id=signal_id_from_webhook_db, 
-                        created_at=sent_message_created_at
+                        created_at=sent_message_created_at,
+                        message_source=message_source                         
+
                     )
                     print(f"[INFO] Mensagem enviada ID {sent_message_id_in_dest} (Chat {GRUPO_DESTINO_ID}) registrada em signals_msg com Sinal ID {signal_id_from_webhook_db}.")
                 else:
                     print(f"[AVISO] Falha ao salvar sinal em webhook_signals para msg origem {incoming_message_id}. Mensagens em signals_msg não terão signal_id associado por este fluxo.")
-                    await register_message_in_signals_msg(incoming_message_id, incoming_chat_id, incoming_text, is_incoming_reply, incoming_reply_to_id, incoming_created_at, symbol=trade_info.get('symbol'))
+                    save_message_to_database(
+                        message_id=incoming_message_id,
+                        chat_id=incoming_chat_id,
+                        text=incoming_text,
+                        is_reply=is_incoming_reply,
+                        reply_to_message_id=incoming_reply_to_id,
+                        symbol=trade_info.get('symbol'),
+                        signal_id=None,
+                        created_at=incoming_created_at,
+                        message_source=message_source
+                    )
 
                 return 
             else: 
@@ -618,18 +715,20 @@ async def handle_new_message(event):
                 reply_to_message_id=incoming_reply_to_id,
                 symbol=related_symbol, # Pode ser None
                 signal_id=related_signal_id, # Pode ser None
-                created_at=incoming_created_at
+                created_at=incoming_created_at,
+                message_source=message_source
             )
             
             if related_signal_id:
                 print(f"[INFO] Mensagem ID {incoming_message_id} registrada e associada ao Sinal ID: {related_signal_id}")
             else:
                 print(f"[INFO] Mensagem ID {incoming_message_id} registrada sem associação a um sinal.")
-        # --- FIM DO TRECHO MODIFICADO (ETAPA 4) ---
+
         else:
             # Esta mensagem não é de um grupo de origem (para sinais) nem de um grupo permitido para registro geral.
             # Esta condição else corresponde ao if da Etapa 4.
-            print(f"[INFO] Mensagem ID {incoming_message_id} de Chat ID {incoming_chat_id} não pertence a GRUPOS_PERMITIDOS_PARA_REGISTRO (após falhar checagem de GRUPOS_ORIGEM_IDS). Ignorando completamente.")
+            #print(f"[INFO] Mensagem ID {incoming_message_id} de Chat ID {incoming_chat_id} não pertence a GRUPOS_PERMITIDOS_PARA_REGISTRO (após falhar checagem de GRUPOS_ORIGEM_IDS). Ignorando completamente.")
+            pass
 
     except Exception as e:
         print(f"[ERRO GERAL EM HANDLE_NEW_MESSAGE] Falha ao processar mensagem ID {incoming_message_id} de Chat ID {incoming_chat_id}: {e}")
@@ -638,19 +737,9 @@ async def handle_new_message(event):
 # Nova função para registrar mensagens no banco de dados
 def save_message_to_database(message_id, chat_id, text, is_reply=False, 
                             reply_to_message_id=None, symbol=None, signal_id=None, 
-                            created_at=None):
+                            created_at=None, message_source=None):
     """
     Salva uma mensagem do Telegram na tabela signals_msg
-    
-    Args:
-        message_id: ID da mensagem no Telegram
-        chat_id: ID do chat onde a mensagem foi enviada
-        text: Conteúdo da mensagem
-        is_reply: Se é uma resposta a outra mensagem
-        reply_to_message_id: ID da mensagem à qual esta responde
-        symbol: Símbolo relacionado (se identificado)
-        signal_id: ID do sinal na tabela webhook_signals (se relacionado)
-        created_at: Timestamp da mensagem (se não fornecido, usa o atual)
     """
     try:
         conn = mysql.connector.connect(
@@ -666,11 +755,11 @@ def save_message_to_database(message_id, chat_id, text, is_reply=False,
         if not created_at:
             created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        # Preparar a query
+        # Preparar a query com message_source
         sql = """
               INSERT INTO signals_msg
-              (message_id, chat_id, text, is_reply, reply_to_message_id, symbol, signal_id, created_at)
-              VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+              (message_id, chat_id, text, is_reply, reply_to_message_id, symbol, signal_id, created_at, message_source)
+              VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
               """
               
         values = (
@@ -681,7 +770,8 @@ def save_message_to_database(message_id, chat_id, text, is_reply=False,
             reply_to_message_id,
             symbol,
             signal_id,
-            created_at
+            created_at,
+            message_source
         )
         
         cursor.execute(sql, values)
@@ -896,16 +986,24 @@ def format_trade_message(trade_info, selected_tp):
         f"ENTRADA: {trade_info['entry']}\n\n"
     )
 
-    # Adicionar informação sobre qual alvo está sendo usado
+    # Verificar se temos um alvo selecionado ou se devemos mostrar todos
     all_tps = trade_info.get('all_tps', [])
-    if len(all_tps) > 1:
+    
+    if selected_tp is None and all_tps:
+        # Se não há alvo selecionado mas temos TPs disponíveis, mostrar todos
+        for i, tp in enumerate(all_tps):
+            message_text += f"ALVO {i+1}: {tp}\n"
+        message_text += "\n"
+    elif len(all_tps) > 1 and selected_tp is not None:
+        # Se temos múltiplos alvos e um foi selecionado, mostrar qual estamos usando
         tp_index = 0
         for i, tp in enumerate(all_tps):
-            if abs(float(tp) - float(selected_tp)) < 0.00001:  # Comparação com pequena tolerância para números flutuantes
+            if abs(float(tp) - float(selected_tp)) < 0.00001:  # Comparação com tolerância para números flutuantes
                 tp_index = i + 1
                 break
         message_text += f"ALVO {tp_index}: {selected_tp}\n\n"
-    else:
+    elif selected_tp is not None:
+        # Se temos apenas um alvo ou selected_tp não está em all_tps
         message_text += f"ALVO: {selected_tp}\n\n"
         
     message_text += f"STOP LOSS: {trade_info['stop_loss']}"

@@ -14,6 +14,10 @@ const cancelledOrders = new Set();
 const processingSignals = new Set();
 const websocketEmptyCheckCounter = {};
 const lastLoggedWebsocketStates = {};
+const lastTrailingCheck = {}; // Para controlar quando foi a última verificação por posição
+const positionsWithoutSL = new Set(); // Conjunto para armazenar IDs de posições sem SL
+const MIN_CHECK_INTERVAL = 10000; // 10 segundos entre verificações para a mesma posição
+const TWO_MINUTES_RECHECK_NO_SL = 2 * 60 * 1000; // 2 minutos para rechecar posições marcadas como sem SL
 
 // Inicializar o bot do Telegram
 const bot = new Telegraf(process.env.BOT_TOKEN);
@@ -414,9 +418,9 @@ async function processSignal(db, signal) {
         const telegramOptions = originalMessageId ? { reply_to_message_id: originalMessageId } : {};
         
         const sentMessage = await bot.telegram.sendMessage(chat_id,
-            `🔄 Sinal Registrado para ${symbol}!\n\n` +
+            `🔄 Sinal Registrado para ${symbol}\n\n` +
             `🆔 Sinal Ref: WEBHOOK_${id}\n` +
-            `Direção: ${side.charAt(0).toUpperCase() + position.side.slice(1).toLowerCase()}\n` +
+            `Direção: ${side.charAt(0).toUpperCase() + side.slice(1).toLowerCase()}\n` +
             `Alavancagem: ${leverage}x\n\n` +
             `Entrada: ${triggerCondition.replace(entry_price, formatDecimal(entry_price))}\n` +
             `TP: ${formatDecimal(tp_price)}\n` +
@@ -1146,8 +1150,15 @@ async function onPriceUpdate(symbol, currentPrice, db) {
 
     // 2. Buscar sinais pendentes para este símbolo
     const [pendingSignalsResult] = await db.query(`
-      SELECT id, symbol, side, leverage, capital_pct, entry_price,
-             tp_price, sl_price, chat_id, timeframe, created_at
+      SELECT 
+      id, symbol, timeframe, side, leverage, capital_pct, 
+      entry_price, 
+      tp_price, sl_price, 
+      tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, -- Garantir que estes estão aqui
+      status, error_message, position_id, entry_order_id, 
+      tp_order_id, sl_order_id, chat_id, message_id, created_at, 
+      updated_at, timeout_at, max_lifetime_minutes, 
+      registry_message_id, message_id_orig, message_source
       FROM webhook_signals
       WHERE symbol = ?
         AND status = 'AGUARDANDO_ACIONAMENTO'
@@ -1328,41 +1339,377 @@ async function updatePositionPrices(db, symbol, currentPrice) {
 // Nova função para verificar gatilhos de ordens
 async function checkOrderTriggers(db, position, currentPrice) {
   try {
-    // Buscar ordens SL/TP ativas para esta posição
-    const [orders] = await db.query(
+    const positionId = position.id;
+    const functionPrefix = "[TRAILING]";
+
+    // 1. VERIFICAR SE PRECISAMOS REALMENTE FAZER A VERIFICAÇÃO AGORA
+    const now = Date.now();
+    if (lastTrailingCheck[positionId] && (now - lastTrailingCheck[positionId] < MIN_CHECK_INTERVAL)) {
+      return; // Última verificação muito recente
+    }
+
+    // 2. VERIFICAR SE JÁ SABEMOS QUE ESTA POSIÇÃO NÃO TEM SL
+    if (positionsWithoutSL.has(positionId)) {
+      if (lastTrailingCheck[positionId] && (now - lastTrailingCheck[positionId] < TWO_MINUTES_RECHECK_NO_SL)) {
+        return; // Ainda não passou tempo suficiente para rechecar posição sem SL
+      }
+    }
+    
+    lastTrailingCheck[positionId] = now; // Atualiza o timestamp da última verificação
+
+    // 3. BUSCAR ORDENS ATIVAS PARA ESTA POSIÇÃO (DO NOSSO BANCO DE DADOS)
+    const [ordersInDb] = await db.query(
       `SELECT * FROM ordens 
        WHERE id_posicao = ? 
        AND status = "NEW" 
-       AND tipo_ordem_bot IN ("STOP_LOSS", "TAKE_PROFIT")`, // Aspas duplas para consistência
-      [position.id]
+       AND tipo_ordem_bot IN ("STOP_LOSS", "TAKE_PROFIT", "REDUCAO_PARCIAL")`, // Inclui outros tipos se relevante para a lógica geral
+      [positionId]
+    );
+
+    const slOrdersInDb = ordersInDb.filter(order => order.tipo_ordem_bot === 'STOP_LOSS' && order.status === 'NEW');
+
+    // 4. PROCESSAR CASO DE POSIÇÃO SEM SL ATIVO NO NOSSO DB
+    if (slOrdersInDb.length === 0) {
+      positionsWithoutSL.add(positionId);
+      console.log(`${functionPrefix} Nenhuma ordem SL ativa encontrada no DB para posição ${positionId}. Tentando criar SL automático.`);
+      try {
+        const [signalInfo] = await db.query(
+          `SELECT tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, entry_price, sl_price 
+           FROM webhook_signals 
+           WHERE position_id = ? 
+           ORDER BY created_at DESC LIMIT 1`,
+          [positionId]
+        );
+
+        if (signalInfo.length === 0) {
+          console.log(`${functionPrefix} Sinal não encontrado para posição ${positionId} - impossível criar SL automático.`);
+          return;
+        }
+
+        const signal = signalInfo[0];
+        const slPrice = parseFloat(signal.sl_price);
+        const side = position.side.toUpperCase();
+
+        if (isNaN(slPrice) || slPrice <= 0) {
+          console.log(`${functionPrefix} Preço de SL (sl_price: ${signal.sl_price}) inválido no sinal para posição ${positionId}.`);
+          return;
+        }
+
+        const quantity = parseFloat(position.quantidade);
+        if (isNaN(quantity) || quantity <= 0) {
+          console.log(`${functionPrefix} Quantidade inválida (quantidade: ${position.quantidade}) para posição ${positionId}.`);
+          return;
+        }
+
+        const oppositeSide = side === 'BUY' || side === 'COMPRA' ? 'SELL' : 'BUY';
+
+        console.log(`${functionPrefix} Preparando para criar nova ordem SL automática para posição ${positionId} no preço ${slPrice}`);
+        
+        // ANTES de criar o SL automático, cancelar quaisquer SLs que possam existir na corretora e não no nosso DB (sincronização)
+        console.log(`${functionPrefix} Verificando e cancelando SLs existentes na corretora ANTES de criar SL automático...`);
+        await cancelAllActiveStopLosses(db, position);
+        await new Promise(resolve => setTimeout(resolve, 1500)); // Pausa para processamento da corretora
+
+        const slResponse = await newStopOrder(
+          position.simbolo, quantity, oppositeSide, slPrice, null, true, true
+        );
+
+        if (slResponse && slResponse.data && slResponse.data.orderId) {
+          const newOrderId = String(slResponse.data.orderId);
+          console.log(`${functionPrefix} Nova ordem SL automática criada: ${newOrderId} a ${slPrice} para posição ${positionId}`);
+          await insertNewOrder(db, {
+            tipo_ordem: 'STOP_MARKET', preco: slPrice, quantidade: quantity,
+            id_posicao: positionId, status: 'NEW', data_hora_criacao: formatDateForMySQL(new Date()),
+            id_externo: newOrderId, side: oppositeSide, simbolo: position.simbolo,
+            tipo_ordem_bot: 'STOP_LOSS', target: null, reduce_only: true, close_position: true,
+            last_update: formatDateForMySQL(new Date()), orign_sig: position.orign_sig,
+            observacao: 'SL Criado Automaticamente - Trailing Stop'
+          });
+          await db.query(
+            `UPDATE posicoes SET trailing_stop_level = 'ORIGINAL', data_hora_ultima_atualizacao = ? WHERE id = ?`,
+            [formatDateForMySQL(new Date()), positionId]
+          );
+          positionsWithoutSL.delete(positionId);
+        } else {
+          console.error(`${functionPrefix} Falha ao criar ordem SL automática para posição ${positionId}. Resposta da corretora:`, slResponse);
+        }
+        return; 
+      } catch (error) {
+        console.error(`${functionPrefix} Erro crítico ao tentar criar ordem SL automática para posição ${positionId}: ${error.message}`, error.stack);
+      }
+      return; 
+    } else {
+      positionsWithoutSL.delete(positionId);
+    }
+
+    // 5. CONTINUAR COM A LÓGICA DE TRAILING STOP (SE HOUVER SLs ATIVOS NO NOSSO DB)
+    // const currentSLInDb = slOrdersInDb[0]; // Referência ao SL do nosso DB
+
+    const [signalInfo] = await db.query(
+      `SELECT tp1_price, tp3_price, entry_price 
+       FROM webhook_signals 
+       WHERE position_id = ? 
+       ORDER BY created_at DESC LIMIT 1`,
+      [positionId]
+    );
+
+    if (signalInfo.length === 0) {
+      console.log(`${functionPrefix} Sinal não encontrado para posição ${positionId} para lógica de trailing.`);
+      return;
+    }
+
+    const signal = signalInfo[0];
+    const tp1Price = parseFloat(signal.tp1_price);
+    const tp3Price = parseFloat(signal.tp3_price);
+    const entryPrice = parseFloat(position.preco_entrada);
+    const side = position.side.toUpperCase();
+
+    if (isNaN(tp1Price) || tp1Price <= 0) {
+      console.log(`${functionPrefix} TP1 (tp1_price: ${signal.tp1_price}) inválido no sinal para posição ${positionId}.`);
+      return;
+    }
+
+    const [trailingStateResult] = await db.query(
+      `SELECT trailing_stop_level FROM posicoes WHERE id = ?`,
+      [positionId]
     );
     
-    if (orders.length === 0) {
-        // console.log(`[PRICE UPDATE] Nenhuma ordem SL/TP ativa para posição ${position.id} (${position.simbolo}).`);
-        return; // Não há ordens para verificar
+    if (trailingStateResult.length > 0 && !trailingStateResult[0].hasOwnProperty('trailing_stop_level')) {
+      console.log(`[DB_FIX] Coluna 'trailing_stop_level' não encontrada para id ${positionId}. Adicionando...`);
+      try {
+        await db.query(`ALTER TABLE posicoes ADD COLUMN IF NOT EXISTS trailing_stop_level VARCHAR(20) DEFAULT 'ORIGINAL'`);
+        const [recheckState] = await db.query(`SELECT trailing_stop_level FROM posicoes WHERE id = ?`, [positionId]);
+        if (recheckState.length > 0) trailingStateResult[0] = recheckState[0];
+      } catch (alterError) {
+        console.error(`[DB_FIX] Erro ao adicionar coluna 'trailing_stop_level': ${alterError.message}`);
+      }
+    }
+    const currentTrailingLevel = trailingStateResult.length > 0 && trailingStateResult[0].trailing_stop_level ? trailingStateResult[0].trailing_stop_level : 'ORIGINAL';
+
+    let priceHitTP1 = false;
+    let priceHitTP3 = false;
+    if (side === 'BUY' || side === 'COMPRA') {
+      priceHitTP1 = currentPrice >= tp1Price && currentTrailingLevel === 'ORIGINAL';
+      priceHitTP3 = !isNaN(tp3Price) && tp3Price > 0 && currentPrice >= tp3Price && currentTrailingLevel === 'BREAKEVEN';
+    } else if (side === 'SELL' || side === 'VENDA') {
+      priceHitTP1 = currentPrice <= tp1Price && currentTrailingLevel === 'ORIGINAL';
+      priceHitTP3 = !isNaN(tp3Price) && tp3Price > 0 && currentPrice <= tp3Price && currentTrailingLevel === 'BREAKEVEN';
+    }
+
+    // --- INÍCIO DAS MODIFICAÇÕES PARA USAR cancelAllActiveStopLosses ---
+    if (priceHitTP1) {
+      console.log(`${functionPrefix} Preço (${currentPrice}) atingiu TP1 (${tp1Price}) para Posição ID ${positionId} (${side}). Nível Trailing: ${currentTrailingLevel}. Iniciando SL para Breakeven (${entryPrice}).`);
+      
+      console.log(`${functionPrefix} Cancelando ordens SL existentes ANTES de mover para breakeven...`);
+      await cancelAllActiveStopLosses(db, position); // <--- CHAMADA DA NOVA FUNÇÃO
+      
+      await new Promise(resolve => setTimeout(resolve, 2500)); // Pausa para processamento da corretora
+
+      try {
+        const newSLBreakevenPrice = entryPrice;
+        const quantity = parseFloat(position.quantidade);
+        const oppositeSide = side === 'BUY' || side === 'COMPRA' ? 'SELL' : 'BUY';
+        
+        console.log(`${functionPrefix} Criando nova ordem SL (breakeven) para ${position.simbolo} @ ${newSLBreakevenPrice}`);
+        const slResponse = await newStopOrder(
+          position.simbolo, quantity, oppositeSide, newSLBreakevenPrice, null, true, true
+        );
+        
+        if (slResponse && slResponse.data && slResponse.data.orderId) {
+          const newOrderId = String(slResponse.data.orderId);
+          console.log(`${functionPrefix} Nova SL (breakeven) criada: ID ${newOrderId} @ ${newSLBreakevenPrice}`);
+          await insertNewOrder(db, {
+            tipo_ordem: 'STOP_MARKET', preco: newSLBreakevenPrice, quantidade: quantity,
+            id_posicao: positionId, status: 'NEW', data_hora_criacao: formatDateForMySQL(new Date()),
+            id_externo: newOrderId, side: oppositeSide, simbolo: position.simbolo,
+            tipo_ordem_bot: 'STOP_LOSS', target: null, reduce_only: true, close_position: true,
+            last_update: formatDateForMySQL(new Date()), orign_sig: position.orign_sig,
+            observacao: 'Trailing Stop - Breakeven (CancelAll)'
+          });
+          await db.query(
+            `UPDATE posicoes SET trailing_stop_level = 'BREAKEVEN', data_hora_ultima_atualizacao = ? WHERE id = ?`,
+            [formatDateForMySQL(new Date()), positionId]
+          );
+          
+          // Notificação Telegram (adapte se necessário)
+          try {
+            const [webhookInfo] = await db.query(`SELECT chat_id FROM webhook_signals WHERE position_id = ? ORDER BY created_at DESC LIMIT 1`, [positionId]);
+            if (webhookInfo.length > 0 && webhookInfo[0].chat_id && typeof bot !== 'undefined' && bot && bot.telegram) {
+              await bot.telegram.sendMessage(webhookInfo[0].chat_id, `✅ Trailing Stop Ativado para ${position.simbolo}\n\nAlvo 1 atingido\nSL movido para breakeven: (${newSLBreakevenPrice})`);
+            }
+          } catch (notifyError) { console.error(`${functionPrefix} Erro ao notificar SL breakeven: ${notifyError.message}`); }
+
+        } else {
+          console.error(`${functionPrefix} Falha ao criar nova SL (breakeven) para ${position.simbolo}. Resposta:`, slResponse);
+        }
+      } catch (error) {
+        const errorMsg = error.response?.data?.msg || error.message || String(error);
+        console.error(`${functionPrefix} Erro crítico ao criar nova SL (breakeven) para ${position.simbolo}: ${errorMsg}`, error.stack);
+      }
+    } else if (priceHitTP3) {
+      console.log(`${functionPrefix} Preço (${currentPrice}) atingiu TP3 (${tp3Price}) para Posição ID ${positionId} (${side}). Nível Trailing: ${currentTrailingLevel}. Iniciando SL para TP1 (${tp1Price}).`);
+
+      console.log(`${functionPrefix} Cancelando ordens SL existentes ANTES de mover para TP1...`);
+      await cancelAllActiveStopLosses(db, position); // <--- CHAMADA DA NOVA FUNÇÃO
+      
+      await new Promise(resolve => setTimeout(resolve, 2500)); // Pausa
+
+      try {
+        const newSLatTP1Price = tp1Price;
+        const quantity = parseFloat(position.quantidade);
+        const oppositeSide = side === 'BUY' || side === 'COMPRA' ? 'SELL' : 'BUY';
+
+        console.log(`${functionPrefix} Criando nova ordem SL (nível TP1) para ${position.simbolo} @ ${newSLatTP1Price}`);
+        const slResponse = await newStopOrder(
+          position.simbolo, quantity, oppositeSide, newSLatTP1Price, null, true, true
+        );
+
+        if (slResponse && slResponse.data && slResponse.data.orderId) {
+          const newOrderId = String(slResponse.data.orderId);
+          console.log(`${functionPrefix} Nova SL (nível TP1) criada: ID ${newOrderId} @ ${newSLatTP1Price}`);
+          await insertNewOrder(db, {
+            tipo_ordem: 'STOP_MARKET', preco: newSLatTP1Price, quantidade: quantity,
+            id_posicao: positionId, status: 'NEW', data_hora_criacao: formatDateForMySQL(new Date()),
+            id_externo: newOrderId, side: oppositeSide, simbolo: position.simbolo,
+            tipo_ordem_bot: 'STOP_LOSS', target: null, reduce_only: true, close_position: true,
+            last_update: formatDateForMySQL(new Date()), orign_sig: position.orign_sig,
+            observacao: 'Trailing Stop - TP1 (CancelAll)'
+          });
+          await db.query(
+            `UPDATE posicoes SET trailing_stop_level = 'TP1', data_hora_ultima_atualizacao = ? WHERE id = ?`,
+            [formatDateForMySQL(new Date()), positionId]
+          );
+
+          // Notificação Telegram (adapte se necessário)
+          try {
+            const [webhookInfo] = await db.query(`SELECT chat_id FROM webhook_signals WHERE position_id = ? ORDER BY created_at DESC LIMIT 1`, [positionId]);
+            if (webhookInfo.length > 0 && webhookInfo[0].chat_id && typeof bot !== 'undefined' && bot && bot.telegram) {
+              await bot.telegram.sendMessage(webhookInfo[0].chat_id, `🚀 Trailing Stop Atualizado para ${position.simbolo}\n\nAlvo 3 Atingido\nSL movido para TP1: ${newSLatTP1Price}`);
+            }
+          } catch (notifyError) { console.error(`${functionPrefix} Erro ao notificar SL em TP1: ${notifyError.message}`); }
+
+        } else {
+           console.error(`${functionPrefix} Falha ao criar nova SL (nível TP1) para ${position.simbolo}. Resposta:`, slResponse);
+        }
+      } catch (error) {
+        const errorMsg = error.response?.data?.msg || error.message || String(error);
+        console.error(`${functionPrefix} Erro crítico ao criar nova SL (nível TP1) para ${position.simbolo}: ${errorMsg}`, error.stack);
+      }
     }
     
-    // Se a posição tiver um PnL >= X% ou <= Y%, enviar notificação
-    const entryPrice = parseFloat(position.preco_entrada);
-    if (isNaN(entryPrice) || entryPrice === 0) { // Adicionada verificação para evitar divisão por zero ou NaN
-        console.warn(`[PRICE UPDATE] Preço de entrada inválido ou zero para posição ${position.id} (${position.simbolo}). PnL não calculado.`);
-        return;
+  } catch (error) {
+    const positionIdError = position && position.id ? position.id : 'desconhecida';
+    console.error(`[TRAILING_GLOBAL] Erro crítico em checkOrderTriggers para posição ${positionIdError}: ${error.message}`, error.stack);
+  }
+}
+
+async function cancelAllActiveStopLosses(db, position) {
+  let canceledProcessedCount = 0;
+  const functionPrefix = "[CANCEL_ALL_SL]";
+  const { simbolo, id: positionId, side: positionSide } = position;
+
+  console.log(`${functionPrefix} Iniciando cancelamento de ordens SL para ${simbolo} (Posição ID: ${positionId})`);
+
+  try {
+    // 1. Buscar ordens abertas na corretora para o símbolo
+    const openOrdersOnExchange = await getOpenOrders(simbolo); // Assumindo que getOpenOrders(simbolo) existe
+
+    if (!openOrdersOnExchange || openOrdersOnExchange.length === 0) {
+      console.log(`${functionPrefix} Nenhuma ordem aberta encontrada na corretora para ${simbolo}.`);
+      // Opcional: Sincronizar/limpar ordens 'NEW' no DB que não existem na corretora
+      try {
+        const [dbSyncResult] = await db.query(
+          `UPDATE ordens SET status = 'CANCELED_SYNC', observacao = 'Sincronizado: Não encontrada na corretora ao cancelar SLs', last_update = ? 
+           WHERE id_posicao = ? AND tipo_ordem_bot = 'STOP_LOSS' AND status = 'NEW'`,
+          [formatDateForMySQL(new Date()), positionId]
+        );
+        if (dbSyncResult.affectedRows > 0) {
+          console.log(`${functionPrefix} ${dbSyncResult.affectedRows} ordens SL 'NEW' no DB para posição ${positionId} atualizadas para CANCELED_SYNC.`);
+        }
+      } catch (dbError) {
+        console.error(`${functionPrefix} Erro ao sincronizar ordens SL 'NEW' no DB para ${positionId}: ${dbError.message}`);
+      }
+      return 0;
     }
 
-    const side = position.side.toUpperCase(); // Normalizar para maiúsculas
-    let pnlPercent = 0;
+    // 2. Filtrar ordens de Stop Loss relevantes
+    const oppositeSide = positionSide.toUpperCase() === 'BUY' ? 'SELL' : 'BUY';
+    const stopLossOrdersToCancel = openOrdersOnExchange.filter(order => {
+      const orderTypeUpper = order.type ? order.type.toUpperCase() : '';
+      const orderSideUpper = order.side ? order.side.toUpperCase() : '';
+      
+      // Critérios para identificar uma ordem SL:
+      // - Tipo inclui 'STOP' (ex: STOP_MARKET, STOP)
+      // - Lado da ordem é oposto ao da posição (ordem de venda para posição de compra, e vice-versa)
+      // - Idealmente, é 'reduceOnly'. Se a informação não estiver disponível, este critério pode ser flexibilizado
+      //   ou assumir que todas as SLs gerenciadas são reduceOnly.
+      const isStopType = orderTypeUpper.includes('STOP');
+      const isCorrectSide = orderSideUpper === oppositeSide;
+      const isReduceOnlyOrNotSpecified = order.reduceOnly === true || typeof order.reduceOnly === 'undefined';
+      // Adicione mais lógicas de filtro se necessário, ex: verificar se a ordem não é um TP_MARKET que também pode usar 'STOP' no nome.
+      // No seu caso, 'STOP_LOSS' em `tipo_ordem_bot` já ajuda a distinguir no DB. Aqui focamos na corretora.
 
-    if (side === 'BUY' || side === 'COMPRA') { // Assumindo que 'COMPRA' também pode ser um valor
-      pnlPercent = ((currentPrice - entryPrice) / entryPrice) * 100;
-    } else if (side === 'SELL' || side === 'VENDA') { // Assumindo que 'VENDA' também pode ser um valor
-      pnlPercent = ((entryPrice - currentPrice) / entryPrice) * 100;
-    } else {
-        console.warn(`[PRICE UPDATE] Lado (side) desconhecido para posição ${position.id}: ${position.side}`);
-        return;
+      return isStopType && isCorrectSide && isReduceOnlyOrNotSpecified;
+    });
+
+    if (stopLossOrdersToCancel.length === 0) {
+      console.log(`${functionPrefix} Nenhuma ordem SL (tipo STOP, lado oposto, reduceOnly) para cancelar encontrada na corretora para ${simbolo}.`);
+      return 0;
     }
+    console.log(`${functionPrefix} Encontradas ${stopLossOrdersToCancel.length} ordens SL na corretora para ${simbolo} para cancelamento.`);
+
+    // 3. Cancelar cada ordem SL encontrada
+    for (const order of stopLossOrdersToCancel) {
+      const orderIdToCancel = order.orderId || order.clientOrderId; // Use o ID correto que sua função cancelOrder espera
+      if (!orderIdToCancel) {
+        console.warn(`${functionPrefix} Ordem SL sem ID válido para cancelar:`, order);
+        continue;
+      }
+
+      try {
+        console.log(`${functionPrefix} Cancelando ordem SL na corretora - ID: ${orderIdToCancel}, Tipo: ${order.type}, Preço Gatilho: ${order.stopPrice || order.price}`);
+        await cancelOrder(orderIdToCancel, simbolo); // Assumindo que cancelOrder(orderId, symbol) existe
+        
+        console.log(`${functionPrefix} Ordem SL ${orderIdToCancel} cancelada com sucesso na corretora.`);
+        
+        // Atualizar status no banco de dados para esta ordem específica
+        const [updateResult] = await db.query(
+          'UPDATE ordens SET status = "CANCELED", observacao = ?, last_update = ? WHERE id_externo = ? AND id_posicao = ?', 
+          [`Cancelada automaticamente antes de reposicionar SL`, formatDateForMySQL(new Date()), orderIdToCancel, positionId]
+        );
+
+        if (updateResult.affectedRows > 0) {
+            console.log(`${functionPrefix} Status da ordem ${orderIdToCancel} (id_externo) atualizado para CANCELED no DB.`);
+        } else {
+            console.warn(`${functionPrefix} Ordem ${orderIdToCancel} cancelada na corretora, mas não encontrada/atualizada no DB por id_externo=${orderIdToCancel} e id_posicao=${positionId}. Verifique a consistência dos IDs.`);
+        }
+        canceledProcessedCount++;
+      } catch (cancelError) {
+        const errorMsg = cancelError.response?.data?.msg || cancelError.message || String(cancelError);
+        const errorCode = cancelError.response?.data?.code;
+
+        // Código -2011: Unknown order sent (ordem não existe ou já foi fechada/cancelada)
+        if (errorCode === -2011 || (typeof errorMsg === 'string' && errorMsg.toLowerCase().includes('order does not exist'))) {
+          console.log(`${functionPrefix} Ordem SL ${orderIdToCancel} não encontrada na corretora (provavelmente já cancelada/executada). Code: ${errorCode}. Msg: ${errorMsg}. Marcando como CANCELED_EXT no DB.`);
+          await db.query(
+            'UPDATE ordens SET status = "CANCELED_EXT", observacao = ?, last_update = ? WHERE id_externo = ? AND id_posicao = ?', 
+            [`Não encontrada na corretora durante cancelamento em massa`, formatDateForMySQL(new Date()), orderIdToCancel, positionId]
+          );
+          canceledProcessedCount++; // Conta como processada
+        } else {
+          console.error(`${functionPrefix} Erro ao cancelar ordem SL ${orderIdToCancel} para ${simbolo}: ${errorMsg} (Code: ${errorCode})`);
+          // Continuar tentando cancelar as outras ordens
+        }
+      }
+    }
+    
+    console.log(`${functionPrefix} ${canceledProcessedCount} de ${stopLossOrdersToCancel.length} ordens SL relevantes foram processadas para cancelamento para ${simbolo}.`);
+    return canceledProcessedCount;
 
   } catch (error) {
-    console.error(`[PRICE UPDATE] Erro ao verificar gatilhos de ordens para posição ${position.id || 'desconhecida'}: ${error.message}`, error);
+    const errorMsg = error.response?.data?.msg || error.message || String(error);
+    console.error(`${functionPrefix} Erro geral ao buscar ou cancelar ordens SL para ${simbolo}: ${errorMsg}`, error.stack);
+    return 0; // Indica que houve falha na operação principal
   }
 }
 
@@ -1822,278 +2169,362 @@ async function checkAndCloseWebsocket(db, symbol) {
 
 // NOVA FUNÇÃO: Executar ordem de entrada
 async function executeEntryOrder(db, signal, currentPrice) {
-  const connection = await db.getConnection();
-  try {
-    await connection.beginTransaction();
-
-    console.log(`[MONITOR] Executando entrada para Sinal ID ${signal.id} (${signal.symbol}) a ${currentPrice}`);
-
-    // 1. Obter precisão da quantidade e adicionar log
-    const precisionInfo = await getPrecision(signal.symbol);
-    console.log(`[MONITOR] Precisão obtida para ${signal.symbol}: ${JSON.stringify(precisionInfo)}`);
-    const { quantityPrecision, pricePrecision } = precisionInfo; // Adicionado pricePrecision aqui
-
-    // 2. Obter saldo e adicionar log
-    const availableBalance = await getAvailableBalance();
-    console.log(`[MONITOR] Saldo base de cálculo: ${availableBalance.toFixed(2)} USDT`);
-    
-    // 3. Calcular tamanho da ordem e adicionar log detalhado
-    const capitalPercentage = parseFloat(signal.capital_pct) / 100;
-    const leverage = parseInt(signal.leverage);
-    console.log(`[MONITOR] Parâmetros de cálculo para Sinal ID ${signal.id}: ${capitalPercentage * 100}% do capital, alavancagem ${leverage}x`);
-    
-    const orderSize = calculateOrderSize(
-        availableBalance,
-        capitalPercentage,
-        currentPrice,
-        leverage,
-        quantityPrecision
-    );
-
-    // 4. Validar tamanho da ordem antes de enviar
-    if (orderSize <= 0 || isNaN(orderSize)) {
-      throw new Error(`Tamanho da ordem inválido para Sinal ID ${signal.id}: ${orderSize}`);
-    }
-    
-    console.log(`[MONITOR] Enviando ordem para Sinal ID ${signal.id}: ${signal.symbol}, Qtd: ${orderSize}, Side: ${signal.side}`);
-    
-    // 5. Enviar ordem e processar (Início do try específico para a chamada da API e DB ops)
-    try { 
-      const binanceSide = signal.side.toUpperCase() === 'COMPRA' || signal.side.toUpperCase() === 'BUY' ? 'BUY' : 'SELL';
-      const orderResponse = await newEntryOrder(
-          signal.symbol,
-          orderSize,
-          binanceSide
-      );
-
-      console.log(`[MONITOR] Resposta da API para ordem de entrada (Sinal ID ${signal.id}): ${JSON.stringify(orderResponse)}`);
-
-      if (!orderResponse || !orderResponse.orderId) {
-        throw new Error(`Resposta inválida da corretora ao criar ordem de mercado para Sinal ID ${signal.id}`);
-      }
-
-      const orderId = orderResponse.orderId;
-      const executedQty = parseFloat(orderResponse.executedQty);
-      const executedPrice = parseFloat(orderResponse.avgPrice || orderResponse.price) || currentPrice; // Usar avgPrice se disponível para ordens de mercado
-
-      console.log(`[MONITOR] Ordem de mercado executada para Sinal ID ${signal.id}: ${signal.symbol}, ID Externo: ${orderId}, Preço Médio: ${executedPrice}, Qtd: ${executedQty}`);
-
-      const positionData = {
-        simbolo: signal.symbol,
-        quantidade: executedQty,
-        preco_medio: executedPrice,
-        status: 'OPEN',
-        data_hora_abertura: new Date().toISOString(),
-        side: binanceSide,
-        leverage: parseInt(signal.leverage),
-        data_hora_ultima_atualizacao: new Date().toISOString(),
-        preco_entrada: executedPrice,
-        preco_corrente: executedPrice,
-        orign_sig: `WEBHOOK_${signal.id}`
-      };
-
-      const positionId = await insertPosition(connection, positionData);
-
-      if (!positionId) {
-        throw new Error(`Falha ao inserir posição no DB para Sinal ID ${signal.id} após execução da ordem`);
-      }
-      console.log(`[MONITOR] Posição ID ${positionId} inserida no DB para Sinal ID ${signal.id}.`);
-
-      const orderData = {
-        tipo_ordem: 'MARKET', // ou o tipo real retornado pela API, se disponível
-        preco: executedPrice,
-        quantidade: executedQty,
-        id_posicao: positionId,
-        status: orderResponse.status || 'FILLED', // Usar status da API se disponível
-        data_hora_criacao: orderResponse.updateTime ? new Date(orderResponse.updateTime).toISOString() : new Date().toISOString(),
-        id_externo: orderId,
-        side: binanceSide,
-        simbolo: signal.symbol,
-        tipo_ordem_bot: 'ENTRADA',
-        target: null, // Definir conforme necessidade
-        reduce_only: false,
-        close_position: false,
-        last_update: new Date().toISOString(),
-        orign_sig: `WEBHOOK_${signal.id}`
-      };
-
-      await insertNewOrder(connection, orderData);
-      console.log(`[MONITOR] Ordem de entrada registrada no DB para Posição ID ${positionId} (Sinal ID ${signal.id}).`);
-
-      await connection.query(
-          `UPDATE webhook_signals SET
-              status = 'EXECUTADO',
-              position_id = ?,
-              entry_order_id = ? 
-           WHERE id = ?`,
-          [positionId, orderId, signal.id]
-      );
-      console.log(`[MONITOR] Sinal ID ${signal.id} atualizado para EXECUTADO no DB.`);
-
-      const oppositeSide = binanceSide === 'BUY' ? 'SELL' : 'BUY';
-      const tpPrice = parseFloat(signal.tp_price);
-      const slPrice = parseFloat(signal.sl_price);
-
-      // Criar ordem SL
-      try {
-        const slResponse = await newStopOrder(signal.symbol, executedQty, oppositeSide, slPrice, null, false, true); // Ajustar parâmetros conforme sua newStopOrder
-        if (slResponse && slResponse.data && slResponse.data.orderId) {
-            const slOrderData = { simbolo: signal.symbol, side: oppositeSide, quantidade: executedQty, preco: slPrice, status: 'NEW', tipo_ordem: 'STOP_MARKET', tipo_ordem_bot: 'STOP_LOSS', id_posicao: positionId, id_externo: slResponse.data.orderId, data_hora_criacao: (slResponse.data && slResponse.data.transactTime) ? new Date(slResponse.data.transactTime).toISOString() : new Date().toISOString(), last_update: new Date().toISOString(), orign_sig: `WEBHOOK_${signal.id}`, reduce_only: true, close_position: true };
-            await insertNewOrder(connection, slOrderData);
-            await connection.query(`UPDATE webhook_signals SET sl_order_id = ? WHERE id = ?`, [slResponse.data.orderId, signal.id]);
-            console.log(`[MONITOR] Ordem SL criada e registrada para Sinal ID ${signal.id}. ID Externo: ${slResponse.data.orderId}`);
-        } else {
-            console.warn(`[MONITOR] Resposta inválida ao criar ordem SL para Sinal ID ${signal.id}. Posição aberta sem SL programado via API.`);
-             // Notificar usuário sobre falha na criação do SL
-            if(signal.chat_id && bot) {
-                await bot.telegram.sendMessage(signal.chat_id, `⚠️ Atenção: A ordem de entrada para ${signal.symbol} (Sinal ID ${signal.id}) foi executada, mas houve um problema ao programar o Stop Loss. Verifique manualmente.`);
-            }
-        }
-      } catch (slError) {
-        console.error(`[MONITOR] Erro ao criar ordem SL para ${signal.symbol} (Sinal ID: ${signal.id}): ${slError.message}. A posição pode estar sem SL.`, slError);
-        if(signal.chat_id && bot) {
-            await bot.telegram.sendMessage(signal.chat_id, `⚠️ Erro Crítico: Falha ao criar Stop Loss para ${signal.symbol} (Sinal ID ${signal.id}) após entrada. Motivo: ${slError.message}. Verifique imediatamente!`);
-        }
-      }
-
-      try {
-        const tpResponse = await newStopOrder(signal.symbol, executedQty, oppositeSide, tpPrice, tpPrice, false, true); // Ajustar parâmetros
-        if (tpResponse && tpResponse.data && tpResponse.data.orderId) {
-            const tpOrderData = { simbolo: signal.symbol, side: oppositeSide, quantidade: executedQty, preco: tpPrice, status: 'NEW', tipo_ordem: 'TAKE_PROFIT_MARKET', tipo_ordem_bot: 'TAKE_PROFIT', id_posicao: positionId, id_externo: tpResponse.data.orderId, data_hora_criacao: (tpResponse.data && tpResponse.data.transactTime) ? new Date(tpResponse.data.transactTime).toISOString() : new Date().toISOString(), last_update: new Date().toISOString(), orign_sig: `WEBHOOK_${signal.id}`, reduce_only: true, close_position: true };
-            await insertNewOrder(connection, tpOrderData);
-            await connection.query(`UPDATE webhook_signals SET tp_order_id = ? WHERE id = ?`, [tpResponse.data.orderId, signal.id]);
-            console.log(`[MONITOR] Ordem TP criada e registrada para Sinal ID ${signal.id}. ID Externo: ${tpResponse.data.orderId}`);
-        } else {
-            console.warn(`[MONITOR] Resposta inválida ao criar ordem TP para Sinal ID ${signal.id}. Posição aberta sem TP programado via API.`);
-            if(signal.chat_id && bot) {
-                await bot.telegram.sendMessage(signal.chat_id, `⚠️ Atenção: A ordem de entrada para ${signal.symbol} (Sinal ID ${signal.id}) foi executada, mas houve um problema ao programar o Take Profit. Verifique manualmente.`);
-            }
-        }
-      } catch (tpError) {
-        console.error(`[MONITOR] Erro ao criar ordem TP para ${signal.symbol} (Sinal ID: ${signal.id}): ${tpError.message}. A posição pode estar sem TP.`, tpError);
-         if(signal.chat_id && bot) {
-            await bot.telegram.sendMessage(signal.chat_id, `⚠️ Erro Crítico: Falha ao criar Take Profit para ${signal.symbol} (Sinal ID ${signal.id}) após entrada. Motivo: ${tpError.message}. Verifique imediatamente!`);
-        }
-      }
-
-      let replyToMessageId = null;
-      try {        
-          const [messageInfoRows] = await db.query(` 
-            SELECT registry_message_id FROM webhook_signals WHERE id = ? LIMIT 1 
-          `, [signal.id]); // Supondo que o ID da mensagem de registro é 'registry_message_id'
-
-          if (messageInfoRows && messageInfoRows.length > 0 && messageInfoRows[0].registry_message_id) {
-            replyToMessageId = messageInfoRows[0].registry_message_id;
-          }
-      } catch(e) {
-          console.error(`[MONITOR] Erro ao buscar ID da mensagem de registro para Sinal ID ${signal.id}: ${e.message}`);
-      }
-      
-      if (signal.chat_id && bot) { // Adicionado 'bot' na condição para segurança
-        try {
-          const telegramOptions = replyToMessageId ? { reply_to_message_id: replyToMessageId } : {};
-          
-          // Calcular o valor em USDT
-          const amountInUsdt = executedQty * executedPrice;
-
-          await bot.telegram.sendMessage(signal.chat_id,
-              `✅ Entrada realizada em ${signal.symbol} \n(Sinal ID ${signal.id})\n\n` +
-              `Direção: ${signal.side.charAt(0).toUpperCase() + signal.side.slice(1).toLowerCase()}\n` +
-              `Alavancagem: ${signal.leverage}x\n` +
-              `Quantidade: ${formatDecimal(amountInUsdt, 2)} USDT\n\n` +
-              `Entrada: ${executedPrice.toFixed(pricePrecision || 2)}\n` +
-              `Take Profit: ${tpPrice.toFixed(pricePrecision || 2)}\n` +
-              `Stop Loss: ${slPrice.toFixed(pricePrecision || 2)}\n`,
-              telegramOptions
-          );
-          console.log(`[MONITOR] Notificação de execução enviada para Sinal ID ${signal.id} (reply to: ${replyToMessageId || 'N/A'}).`);
-        } catch (telegramError) {
-          console.error(`[MONITOR] Erro ao enviar mensagem Telegram de execução para Sinal ID ${signal.id}:`, telegramError);
-        }
-      }
-
-      await connection.commit();
-      console.log(`[MONITOR] Entrada a mercado executada e transação commitada com sucesso para ${signal.symbol} (Sinal ID: ${signal.id})`);
-
-      try {
-        await syncAccountBalance();
-      } catch (syncError) {
-        console.error(`[MONITOR] Erro ao sincronizar saldo após criar ordem para Sinal ID ${signal.id}:`, syncError);
-      }
-
-      // Verificar e fechar websocket se necessário (lógica já existente)
-      try {
-        const [remainingSignalsRows] = await db.query(`
-          SELECT COUNT(*) as count FROM webhook_signals
-          WHERE symbol = ? AND status = 'AGUARDANDO_ACIONAMENTO'
-        `, [signal.symbol]);
-        const count = (remainingSignalsRows && remainingSignalsRows[0]) ? remainingSignalsRows[0].count : 0;
-        if (count === 0) {
-          console.log(`[MONITOR] Não há mais sinais 'AGUARDANDO_ACIONAMENTO' para ${signal.symbol} após execução do Sinal ID ${signal.id}. Agendando verificação de websocket.`);
-          setTimeout(async () => {
-            console.log(`[MONITOR] Executando checkAndCloseWebsocket para ${signal.symbol} (agendado após execução do Sinal ID ${signal.id}).`);
-            await checkAndCloseWebsocket(db, signal.symbol);
-          }, 5000);
-        } else {
-          console.log(`[MONITOR] Ainda existem ${count} sinais 'AGUARDANDO_ACIONAMENTO' para ${signal.symbol}. Websocket para ${signal.symbol} permanecerá ativo.`);
-        }
-      } catch (checkError) {
-        console.error(`[MONITOR] Erro ao verificar sinais restantes para ${signal.symbol} (Sinal ID ${signal.id}):`, checkError);
-      }
-
-    } catch (apiError) { // Catch para erros da API ou operações de DB dentro do try aninhado
-      console.error(`[MONITOR] ERRO API/DB INTERNO (Sinal ID: ${signal.id}, Símbolo: ${signal.symbol}): ${apiError.message}`, apiError);
-      if (apiError.response && apiError.response.data) {
-        console.error(`[MONITOR] Detalhes do erro API: ${JSON.stringify(apiError.response.data)}`);
-      }
-      // Notificar usuário sobre falha na ordem, se possível respondendo à mensagem original
-      if (signal.chat_id && bot) {
-          let replyToIdForError = null;
-          try {
-              const [msgErrInfo] = await db.query(`SELECT registry_message_id FROM webhook_signals WHERE id = ? LIMIT 1`, [signal.id]);
-              if (msgErrInfo && msgErrInfo.length > 0) replyToIdForError = msgErrInfo[0].registry_message_id;
-          } catch(e) { /* ignore */ }
-
-          const errorOptions = replyToIdForError ? { reply_to_message_id: replyToIdForError } : {};
-          let userErrorMessage = `⚠️ Falha ao executar ordem para ${signal.symbol} (Sinal ID ${signal.id}).`;
-          if (apiError.message && (apiError.message.includes('MIN_NOTIONAL') || apiError.message.includes('size < minQty') || apiError.message.includes('minQty'))) {
-            userErrorMessage += ` Motivo: O tamanho da ordem calculado (${orderSize}) é menor que o mínimo permitido pela corretora. Verifique o capital alocado ou o preço do ativo.`;
-          } else if (apiError.message) {
-            userErrorMessage += ` Motivo: ${apiError.message}`;
-          }
-          try {
-            await bot.telegram.sendMessage(signal.chat_id, userErrorMessage, errorOptions);
-          } catch (telegramError) {
-            console.error(`[MONITOR] Erro ao enviar mensagem de ERRO API/DB no Telegram para Sinal ID ${signal.id}:`, telegramError);
-          }
-      }
-      throw apiError; // Re-throw para ser capturado pelo catch externo que fará o rollback
-    }
-    // Fim do try específico
-
-  } catch (error) { // Catch externo/geral
-    console.error(`[MONITOR] ERRO GERAL ao executar entrada para ${signal.symbol} (Sinal ID: ${signal.id}):`, error);
-    if (connection) {
-        try {
-            await connection.rollback();
-            console.log(`[MONITOR] Rollback da transação para Sinal ID ${signal.id} efetuado devido a erro.`);
-        } catch (rollbackError) {
-            console.error(`[MONITOR] Erro crítico ao tentar fazer rollback para Sinal ID ${signal.id}:`, rollbackError);
-        }
-    }
+    const connection = await db.getConnection();
     try {
-      await db.query(
-          `UPDATE webhook_signals SET status = 'ERROR', error_message = ? WHERE id = ? AND status != 'EXECUTADO'`,
-          [`Erro ao executar entrada: ${error.message.substring(0, 250)}`, signal.id] // Limitar tamanho da msg de erro
-      );
-    } catch (updateError) {
-      console.error(`[MONITOR] Erro ao atualizar status do Sinal ID ${signal.id} para ERROR após falha:`, updateError);
+        await connection.beginTransaction();
+
+        console.log(`[MONITOR] Executando entrada para Sinal ID ${signal.id} (${signal.symbol}) a ${currentPrice}`);
+
+        const precisionInfo = await getPrecision(signal.symbol);
+        console.log(`[MONITOR] Precisão obtida para ${signal.symbol}: ${JSON.stringify(precisionInfo)}`);
+        const { quantityPrecision, pricePrecision } = precisionInfo;
+
+        const availableBalance = await getAvailableBalance();
+        console.log(`[MONITOR] Saldo base de cálculo: ${availableBalance.toFixed(2)} USDT`);
+        
+        const capitalPercentage = parseFloat(signal.capital_pct) / 100;
+        const leverage = parseInt(signal.leverage);
+        console.log(`[MONITOR] Parâmetros de cálculo para Sinal ID ${signal.id}: ${capitalPercentage * 100}% do capital, alavancagem ${leverage}x`);
+        
+        const orderSize = calculateOrderSize(
+            availableBalance,
+            capitalPercentage,
+            currentPrice,
+            leverage,
+            quantityPrecision
+        );
+
+        if (orderSize <= 0 || isNaN(orderSize)) {
+            throw new Error(`Tamanho da ordem inválido para Sinal ID ${signal.id}: ${orderSize}`);
+        }
+        
+        console.log(`[MONITOR] Enviando ordem para Sinal ID ${signal.id}: ${signal.symbol}, Qtd: ${orderSize}, Side: ${signal.side}`);
+        
+        try { 
+            const binanceSide = signal.side.toUpperCase() === 'COMPRA' || signal.side.toUpperCase() === 'BUY' ? 'BUY' : 'SELL';
+            const orderResponse = await newEntryOrder(
+                signal.symbol,
+                orderSize,
+                binanceSide
+            );
+
+            console.log(`[MONITOR] Resposta da API para ordem de entrada (Sinal ID ${signal.id}): ${JSON.stringify(orderResponse)}`);
+
+            if (!orderResponse || !orderResponse.orderId) {
+                throw new Error(`Resposta inválida da corretora ao criar ordem de mercado para Sinal ID ${signal.id}`);
+            }
+
+            const orderId = String(orderResponse.orderId);
+            const executedQty = parseFloat(orderResponse.executedQty);
+            const executedPrice = parseFloat(orderResponse.avgPrice || orderResponse.price) || currentPrice;
+            const orderTimestamp = orderResponse.updateTime ? new Date(orderResponse.updateTime).toISOString() : new Date().toISOString();
+
+            console.log(`[MONITOR] Ordem de mercado executada para Sinal ID ${signal.id}: ${signal.symbol}, ID Externo: ${orderId}, Preço Médio: ${executedPrice}, Qtd: ${executedQty}`);
+
+            const positionData = {
+                simbolo: signal.symbol,
+                quantidade: executedQty,
+                preco_medio: executedPrice,
+                status: 'OPEN',
+                data_hora_abertura: orderTimestamp,
+                side: binanceSide,
+                leverage: leverage, 
+                preco_entrada: executedPrice,
+                preco_corrente: executedPrice,
+                orign_sig: `WEBHOOK_${signal.id}`,
+                quantidade_aberta: executedQty,
+                data_hora_criacao: orderTimestamp,
+                last_update: orderTimestamp
+            };
+
+            const positionId = await insertPosition(connection, positionData);
+
+            if (!positionId) {
+                throw new Error(`Falha ao inserir posição no DB para Sinal ID ${signal.id} após execução da ordem`);
+            }
+            console.log(`[MONITOR] Posição ID ${positionId} inserida no DB para Sinal ID ${signal.id}.`);
+
+            const entryOrderDbData = {
+                tipo_ordem: orderResponse.origType || 'MARKET',
+                preco: executedPrice,
+                quantidade: executedQty,
+                id_posicao: positionId,
+                status: orderResponse.status || 'FILLED',
+                data_hora_criacao: orderTimestamp,
+                id_externo: orderId,
+                side: binanceSide,
+                simbolo: signal.symbol,
+                tipo_ordem_bot: 'ENTRADA',
+                target: null,
+                reduce_only: orderResponse.reduceOnly || false,
+                close_position: orderResponse.closePosition || false,
+                last_update: orderTimestamp,
+                orign_sig: `WEBHOOK_${signal.id}`,
+                preco_executado: executedPrice,
+                quantidade_executada: executedQty,
+                dados_originais_ws: JSON.stringify(orderResponse)
+            };
+
+            await insertNewOrder(connection, entryOrderDbData);
+            console.log(`[MONITOR] Ordem de entrada registrada no DB para Posição ID ${positionId} (Sinal ID ${signal.id}).`);
+
+            await connection.query(
+                `UPDATE webhook_signals SET
+                    status = 'EXECUTADO',
+                    position_id = ?,
+                    entry_order_id = ?,
+                    entry_price = ? 
+                WHERE id = ?`,
+                [positionId, orderId, executedPrice, signal.id]
+            );
+            console.log(`[MONITOR] Sinal ID ${signal.id} atualizado para EXECUTADO no DB.`);
+
+            // ## 🅿️ Criação das Ordens de Saída (SL, Reduções Parciais, TP Final)
+            const oppositeSide = binanceSide === 'BUY' ? 'SELL' : 'BUY';
+            const slPrice = signal.sl_price ? parseFloat(signal.sl_price) : null; // Pega SL do sinal
+            
+            // Percentuais para as reduções parciais (se os TPs correspondentes existirem)
+            const reductionPercentages = [0.10, 0.40, 0.30, 0.10]; // 10%, 40%, 30%, 10%, 10%
+
+            // Obter os preços dos alvos diretamente do objeto 'signal' (que reflete o banco de dados)
+            const targetPrices = {
+                tp1: signal.tp1_price ? parseFloat(signal.tp1_price) : null,
+                tp2: signal.tp2_price ? parseFloat(signal.tp2_price) : null,
+                tp3: signal.tp3_price ? parseFloat(signal.tp3_price) : null,
+                tp4: signal.tp4_price ? parseFloat(signal.tp4_price) : null,
+                tp5: signal.tp5_price ? parseFloat(signal.tp5_price) : (signal.tp_price ? parseFloat(signal.tp_price) : null) // Fallback para tp_price se tp5 não existir
+            };
+
+            console.log(`[MONITOR] Preços dos alvos lidos do SINAL ID ${signal.id} (${signal.symbol}): ` +
+                        `RP1=${targetPrices.tp1 || 'N/A'}, RP2=${targetPrices.tp2 || 'N/A'}, RP3=${targetPrices.tp3 || 'N/A'}, ` +
+                        `RP4=${targetPrices.tp4 || 'N/A'}, TP Final=${targetPrices.tp5 || 'N/A'}, SL=${slPrice || 'N/A'}`);
+
+            // ### ✂️ Ordens de Redução Parcial (RPs)
+            const rpTargetKeys = ['tp1', 'tp2', 'tp3', 'tp4']; // Chaves no objeto targetPrices para RPs
+            for (let i = 0; i < rpTargetKeys.length; i++) {
+                const currentRpKey = rpTargetKeys[i]; // 'tp1', 'tp2', etc.
+                const rpPrice = targetPrices[currentRpKey];
+            
+                if (!rpPrice || isNaN(rpPrice) || rpPrice <= 0) {
+                    console.log(`[MONITOR] ℹ️ Pulando REDUÇÃO PARCIAL ${i+1} (${currentRpKey}) para ${signal.symbol}: preço não fornecido ou inválido no sinal (${rpPrice}).`);
+                    continue;
+                }
+                if (i >= reductionPercentages.length) { 
+                    console.warn(`[MONITOR] ⚠️ Não há percentual de redução definido para o alvo ${currentRpKey} (índice ${i}). Pulando.`);
+                    continue;
+                }
+            
+                try {
+                    const reductionPercentage = reductionPercentages[i];
+                    const rpQty = parseFloat((executedQty * reductionPercentage).toFixed(quantityPrecision));
+            
+                    if (rpQty <= 0) {
+                        console.warn(`[MONITOR] ⚠️ Quantidade para REDUÇÃO PARCIAL ${i+1} (${currentRpKey}) é zero ou negativa (${rpQty}). Pulando.`);
+                        continue;
+                    }
+            
+                    console.log(`[MONITOR] ⏳ Criando ordem REDUÇÃO PARCIAL ${i+1} (${currentRpKey}) para ${signal.symbol} (${oppositeSide}) @ ${rpPrice}, Qtd: ${rpQty} (${reductionPercentage*100}%)`);
+                    
+                    if (typeof newReduceOnlyOrder === 'undefined') {
+                       const errorMsg = `[MONITOR] 🆘 Função 'newReduceOnlyOrder' não está definida. Não é possível criar REDUÇÃO PARCIAL ${i+1}.`;
+                       console.error(errorMsg);
+                       if(typeof bot !== 'undefined' && signal.chat_id && bot) { await bot.telegram.sendMessage(signal.chat_id, `🆘 Erro de Configuração: Função 'newReduceOnlyOrder' não definida. RPs para ${signal.symbol} (Sinal ${signal.id}) não criadas.`); }
+                       continue; 
+                    }
+
+                    const rpApiResponse = await newReduceOnlyOrder(signal.symbol, rpQty, oppositeSide, rpPrice);
+                    
+                    if (rpApiResponse && rpApiResponse.data && rpApiResponse.data.orderId) {
+                        console.log(`[MONITOR] ✅ Ordem REDUÇÃO PARCIAL ${i+1} (${currentRpKey}) criada na corretora: ID ${rpApiResponse.data.orderId}`);
+                        const rpOrderTimestamp = rpApiResponse.data.transactTime ? new Date(rpApiResponse.data.transactTime).toISOString() : orderTimestamp; // Usar timestamp da ordem se disponível
+                        await insertNewOrder(connection, {
+                            tipo_ordem: 'LIMIT', preco: rpPrice, quantidade: rpQty, id_posicao: positionId, status: 'NEW',
+                            data_hora_criacao: rpOrderTimestamp, id_externo: String(rpApiResponse.data.orderId), side: oppositeSide, simbolo: signal.symbol,
+                            tipo_ordem_bot: 'REDUCAO_PARCIAL', 
+                            target: i + 1, // Target numérico para a coluna INT
+                            reduce_only: true, close_position: false,
+                            last_update: rpOrderTimestamp, orign_sig: `WEBHOOK_${signal.id}`
+                        });
+                    } else {
+                         console.warn(`[MONITOR] ⚠️ Resposta inválida ao criar REDUÇÃO PARCIAL ${i+1} (${currentRpKey}) para Sinal ID ${signal.id}. Detalhes: ${JSON.stringify(rpApiResponse)}`);
+                         if(typeof bot !== 'undefined' && signal.chat_id && bot) { await bot.telegram.sendMessage(signal.chat_id, `⚠️ Atenção: Problema ao programar RP ${i+1} para ${signal.symbol} (Sinal ${signal.id}). Verifique manualmente.`);}
+                    }
+                } catch (rpError) {
+                    console.error(`[MONITOR] 🆘 Erro ao criar ordem REDUÇÃO PARCIAL ${i+1} (${currentRpKey}) para ${signal.symbol}: ${rpError.message}`, rpError.response?.data || rpError);
+                    if(typeof bot !== 'undefined' && signal.chat_id && bot) { await bot.telegram.sendMessage(signal.chat_id, `🆘 Erro Crítico: Falha ao criar RP ${i+1} para ${signal.symbol} (Sinal ${signal.id}). Motivo: ${rpError.message}. Verifique!`);}
+                }
+            }
+            
+            // ### 🎯 Ordem Take Profit Final (TP Final)
+            const finalTpPrice = targetPrices.tp5; 
+
+            if (finalTpPrice && !isNaN(finalTpPrice) && finalTpPrice > 0) {
+                try {
+                    console.log(`[MONITOR] ⏳ Criando ordem TP FINAL para ${signal.symbol} (${oppositeSide}) @ ${finalTpPrice}, Qtd: ${executedQty}`);
+                    const tpFinalApiResponse = await newStopOrder( signal.symbol, executedQty, oppositeSide, finalTpPrice, finalTpPrice, true, true );
+
+                    if (tpFinalApiResponse && tpFinalApiResponse.data && tpFinalApiResponse.data.orderId) {
+                        console.log(`[MONITOR] ✅ Ordem TP FINAL criada na corretora: ID ${tpFinalApiResponse.data.orderId}`);
+                        const tpFinalOrderTimestamp = tpFinalApiResponse.data.transactTime ? new Date(tpFinalApiResponse.data.transactTime).toISOString() : orderTimestamp;
+                        await insertNewOrder(connection, {
+                            tipo_ordem: 'TAKE_PROFIT_MARKET', preco: finalTpPrice, stop_price: finalTpPrice, quantidade: executedQty,
+                            id_posicao: positionId, status: 'NEW', data_hora_criacao: tpFinalOrderTimestamp,
+                            id_externo: String(tpFinalApiResponse.data.orderId), side: oppositeSide, simbolo: signal.symbol,
+                            tipo_ordem_bot: 'TAKE_PROFIT', 
+                            target: 5, // Target numérico para o TP Final
+                            reduce_only: true, close_position: true,
+                            last_update: tpFinalOrderTimestamp, orign_sig: `WEBHOOK_${signal.id}`
+                        });
+                        await connection.query( `UPDATE webhook_signals SET tp_order_id = ? WHERE id = ?`, [String(tpFinalApiResponse.data.orderId), signal.id]);
+                    } else {
+                        console.warn(`[MONITOR] ⚠️ Resposta inválida ao criar TP FINAL para Sinal ID ${signal.id}. Detalhes: ${JSON.stringify(tpFinalApiResponse)}`);
+                        if(typeof bot !== 'undefined' && signal.chat_id && bot) { await bot.telegram.sendMessage(signal.chat_id, `⚠️ Atenção: Problema ao programar TP Final para ${signal.symbol} (Sinal ${signal.id}). Verifique manualmente.`);}
+                    }
+                } catch (tpFinalError) {
+                    console.error(`[MONITOR] 🆘 Erro ao criar ordem TP FINAL para ${signal.symbol}: ${tpFinalError.message}`, tpFinalError.response?.data || tpFinalError);
+                     if(typeof bot !== 'undefined' && signal.chat_id && bot) { await bot.telegram.sendMessage(signal.chat_id, `🆘 Erro Crítico: Falha ao criar TP Final para ${signal.symbol} (Sinal ${signal.id}). Motivo: ${tpFinalError.message}. Verifique!`);}
+                }
+            } else {
+                console.warn(`[MONITOR] ⚠️ Não foi possível criar ordem TP FINAL para ${signal.symbol}: preço final não fornecido ou inválido no sinal (${finalTpPrice}).`);
+            }
+
+            // ### 🛑 Ordem Stop Loss (SL)
+            if (slPrice && slPrice > 0) {
+                try {
+                    console.log(`[MONITOR] ⏳ Criando ordem SL para ${signal.symbol} (${oppositeSide}) @ ${slPrice}, Qtd: ${executedQty}`);
+                    const slApiResponse = await newStopOrder( signal.symbol, executedQty, oppositeSide, slPrice, null, true, true );
+
+                    if (slApiResponse && slApiResponse.data && slApiResponse.data.orderId) {
+                        console.log(`[MONITOR] ✅ Ordem SL criada na corretora: ID ${slApiResponse.data.orderId}`);
+                        const slOrderTimestamp = slApiResponse.data.transactTime ? new Date(slApiResponse.data.transactTime).toISOString() : orderTimestamp;
+                        await insertNewOrder(connection, {
+                            tipo_ordem: 'STOP_MARKET', preco: slPrice, stop_price: slPrice, quantidade: executedQty, id_posicao: positionId, status: 'NEW',
+                            data_hora_criacao: slOrderTimestamp, id_externo: String(slApiResponse.data.orderId), side: oppositeSide, simbolo: signal.symbol,
+                            tipo_ordem_bot: 'STOP_LOSS', target: null, // SL geralmente não tem um 'target' numérico como os TPs
+                            reduce_only: true, close_position: true,
+                            last_update: slOrderTimestamp, orign_sig: `WEBHOOK_${signal.id}`
+                        });
+                        await connection.query(`UPDATE webhook_signals SET sl_order_id = ? WHERE id = ?`,[String(slApiResponse.data.orderId), signal.id]);
+                    } else {
+                        console.warn(`[MONITOR] ⚠️ Resposta inválida ao criar SL para Sinal ID ${signal.id}. Detalhes: ${JSON.stringify(slApiResponse)}`);
+                         if(typeof bot !== 'undefined' && signal.chat_id && bot) { await bot.telegram.sendMessage(signal.chat_id, `⚠️ Atenção: Problema ao programar SL para ${signal.symbol} (Sinal ${signal.id}). Verifique manualmente.`);}
+                    }
+                } catch (slError) {
+                    console.error(`[MONITOR] 🆘 Erro ao criar ordem SL para ${signal.symbol}: ${slError.message}`, slError.response?.data || slError);
+                    if(typeof bot !== 'undefined' && signal.chat_id && bot) { await bot.telegram.sendMessage(signal.chat_id, `🆘 Erro Crítico: Falha ao criar SL para ${signal.symbol} (Sinal ${signal.id}). Motivo: ${slError.message}. Verifique!`);}
+                }
+            } else {
+                console.warn(`[MONITOR] ⚠️ Preço de SL inválido ou não definido para Sinal ID ${signal.id} (${slPrice}). Ordem SL não será criada.`);
+            }
+            
+            // Envio de notificação consolidada
+            if (typeof bot !== 'undefined' && signal.chat_id && bot) {
+                try {
+                    let replyToMessageId = null;
+                    const [messageInfoRows] = await db.query(`SELECT registry_message_id FROM webhook_signals WHERE id = ? LIMIT 1 `, [signal.id]);
+                    if (messageInfoRows && messageInfoRows.length > 0 && messageInfoRows[0].registry_message_id) {
+                        replyToMessageId = messageInfoRows[0].registry_message_id;
+                    }
+                    const telegramOptions = replyToMessageId ? { reply_to_message_id: replyToMessageId } : {};
+                    const amountInUsdt = executedQty * executedPrice;
+                    const formatFn = typeof formatDecimal !== 'undefined' ? formatDecimal : (val, dec) => val.toFixed(dec || 0);
+
+                    let targetsMessage = "\n";
+                    const displayRpKeys = ['tp1', 'tp2', 'tp3', 'tp4'];
+                    let hasAnyRpListed = false;
+                    displayRpKeys.forEach((key, index) => {
+                        const price = targetPrices[key]; // Usar targetPrices que são diretamente do sinal
+                        if (price && price > 0 && index < reductionPercentages.length) {
+                            targetsMessage += `Alvo ${index+1} (${reductionPercentages[index]*100}%) : ${price.toFixed(pricePrecision)}\n`;
+                            hasAnyRpListed = true;
+                        }
+                    });
+                    
+                    const finalTpDisplay = targetPrices.tp5;
+                    if (finalTpDisplay && finalTpDisplay > 0) {
+                         targetsMessage += `Take Profit   : ${finalTpDisplay.toFixed(pricePrecision)}\n`;
+                    } else if (!hasAnyRpListed) { 
+                         targetsMessage = "\nTake Profit não fornecido ou inválido no sinal.\n";
+                    }
+                    
+                    if (!hasAnyRpListed && !(finalTpDisplay && finalTpDisplay > 0)) {
+                        targetsMessage = "\nNenhum Take Profit fornecido ou inválido no sinal.\n";
+                    }
+
+                    await bot.telegram.sendMessage(signal.chat_id,
+                        `✅ Entrada realizada em ${signal.symbol} \n(Sinal ID: ${signal.id})\n\n` +
+                        `Direção: ${signal.side.charAt(0).toUpperCase() + signal.side.slice(1).toLowerCase()}\n` +
+                        `Alavancagem: ${leverage}x\n` +
+                        `Quantidade: ${formatFn(amountInUsdt, 2)} USDT\n\n` +
+                        `Entrada: ${executedPrice.toFixed(pricePrecision || 2)}\n` +
+                        targetsMessage + '\n' +
+                        `Stop Loss: ${slPrice ? slPrice.toFixed(pricePrecision || 2) : 'N/A'}\n`,
+                        telegramOptions
+                    );
+                    console.log(`[MONITOR] Notificação de execução enviada para Sinal ID ${signal.id}.`);
+                } catch (telegramError) {
+                    console.error(`[MONITOR] Erro ao enviar mensagem Telegram de execução para Sinal ID ${signal.id}:`, telegramError);
+                }
+            }
+
+            await connection.commit();
+            console.log(`[MONITOR] ✅ Entrada a mercado executada e todas as ordens de saída configuradas. Transação commitada para ${signal.symbol} (Sinal ID: ${signal.id})`);
+
+            if (typeof syncAccountBalance !== 'undefined') { try { await syncAccountBalance(); } catch (e) { console.error(`[MONITOR] Erro syncAccountBalance: ${e.message}`); }}
+            if (typeof checkAndCloseWebsocket !== 'undefined') {
+                 setTimeout(async () => {
+                    try {
+                        const [rows] = await db.query(`SELECT COUNT(*) as count FROM webhook_signals WHERE symbol = ? AND status = 'AGUARDANDO_ACIONAMENTO'`, [signal.symbol]);
+                        if (rows[0].count === 0) {
+                             console.log(`[MONITOR] Agendado: Fechando websocket para ${signal.symbol}.`);
+                             await checkAndCloseWebsocket(db, signal.symbol);
+                        }
+                    } catch (e) { console.error(`[MONITOR] Erro checkAndCloseWebsocket (timeout): ${e.message}`);}
+                }, 5000);
+            }
+
+        } catch (apiError) { 
+            console.error(`[MONITOR] 🆘 ERRO API/DB INTERNO (Sinal ID: ${signal.id}, Símbolo: ${signal.symbol}): ${apiError.message}`, apiError.response?.data || apiError);
+            if (connection) { 
+                try { await connection.rollback(); console.log(`[MONITOR] Rollback da transação (API/DB INTERNO) para Sinal ID ${signal.id} efetuado.`); } 
+                catch (rbErr) { console.error(`[MONITOR] Erro no rollback (API/DB INTERNO) para Sinal ID ${signal.id}:`, rbErr); }
+            }
+            if (typeof bot !== 'undefined' && signal.chat_id && bot) {
+                 let replyToIdForError = null;
+                 try { const [msgErrInfo] = await db.query(`SELECT registry_message_id FROM webhook_signals WHERE id = ? LIMIT 1`, [signal.id]); if (msgErrInfo && msgErrInfo.length > 0) replyToIdForError = msgErrInfo[0].registry_message_id; } catch(e) { /* ignore */ }
+                 const errorOptions = replyToIdForError ? { reply_to_message_id: replyToIdForError } : {};
+                 let userErrorMessage = `⚠️ Falha ao processar Sinal ID ${signal.id} para ${signal.symbol}.`;
+                 if (apiError.message) { userErrorMessage += ` Motivo: ${apiError.message}`; }
+                 try { await bot.telegram.sendMessage(signal.chat_id, userErrorMessage, errorOptions); } catch (telegramError) { console.error(`[MONITOR] Erro Telegram (API/DB INTERNO):`, telegramError); }
+            }
+            try {
+                await db.query( `UPDATE webhook_signals SET status = 'ERROR', error_message = ? WHERE id = ? AND status != 'EXECUTADO'`, [`Erro API/DB: ${String(apiError.message || apiError).substring(0, 250)}`, signal.id]);
+            } catch (updateError) { console.error(`[MONITOR] Erro ao atualizar Sinal ID ${signal.id} para ERROR (API/DB INTERNO):`, updateError); }
+            return; 
+        }
+
+    } catch (error) { 
+        console.error(`[MONITOR] 🆘 ERRO GERAL ao executar entrada para ${signal.symbol} (Sinal ID: ${signal.id}):`, error);
+        if (connection) {
+            try { await connection.rollback(); console.log(`[MONITOR] Rollback da transação (ERRO GERAL) para Sinal ID ${signal.id} efetuado.`); } 
+            catch (rbErr) { console.error(`[MONITOR] Erro no rollback (ERRO GERAL) para Sinal ID ${signal.id}:`, rbErr); }
+        }
+        if (typeof bot !== 'undefined' && signal && signal.chat_id && bot) {
+             let replyToIdForError = null;
+             try { const [msgErrInfo] = await db.query(`SELECT registry_message_id FROM webhook_signals WHERE id = ? LIMIT 1`, [signal.id]); if (msgErrInfo && msgErrInfo.length > 0) replyToIdForError = msgErrInfo[0].registry_message_id; } catch(e) { /* ignore */ }
+             const errorOptions = replyToIdForError ? { reply_to_message_id: replyToIdForError } : {};
+             try { await bot.telegram.sendMessage(signal.chat_id, `⚠️ Erro Geral ao processar Sinal ID ${signal.id} para ${signal.symbol}. Motivo: ${error.message}`, errorOptions); } catch (telegramError) { console.error(`[MONITOR] Erro Telegram (ERRO GERAL):`, telegramError); }
+        }
+        try {
+            if (signal && signal.id) {
+                await db.query( `UPDATE webhook_signals SET status = 'ERROR', error_message = ? WHERE id = ? AND status != 'EXECUTADO'`, [`Erro GERAL: ${String(error.message || error).substring(0, 250)}`, signal.id]);
+            }
+        } catch (updateError) { console.error(`[MONITOR] Erro ao atualizar Sinal ID ${signal?.id} para ERROR (ERRO GERAL):`, updateError); }
+    } finally {
+        if (connection) {
+            connection.release();
+        }
     }
-  } finally {
-    if (connection) {
-        connection.release();
-    }
-  }
 }
 
 const cancelingSignals = new Set();
