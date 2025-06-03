@@ -5,7 +5,7 @@ const axios = require('axios');
 const schedule = require('node-schedule');
 const fs = require('fs').promises;
 const { Telegraf } = require("telegraf");
-const { newEntryOrder, newReduceOnlyOrder, cancelOrder, newStopOrder, cancelAllOpenOrders, getAllLeverageBrackets, getFuturesAccountBalanceDetails, getPrecision, changeInitialLeverage, changeMarginType, getPositionDetails, setPositionMode, getOpenOrders, getOrderStatus, getAllOpenPositions, updateLeverageBracketsInDatabase, cancelPendingEntry } = require('../api');
+const { newEntryOrder, getRecentOrders, editOrder, roundPriceToTickSize, newLimitMakerOrder, newReduceOnlyOrder, cancelOrder, newStopOrder, cancelAllOpenOrders, getAllLeverageBrackets, getFuturesAccountBalanceDetails, getPrecision, changeInitialLeverage, changeMarginType, getPositionDetails, setPositionMode, getOpenOrders, getOrderStatus, getAllOpenPositions, updateLeverageBracketsInDatabase, cancelPendingEntry, getTickSize } = require('../api');
 const {getDatabaseInstance, getPositionIdBySymbol, updatePositionInDb, updatePositionStatus, insertNewOrder, disconnectDatabase, getAllPositionsFromDb, getOpenOrdersFromDb, getOrdersFromDb, updateOrderStatus, getPositionsFromDb, insertPosition, moveClosedPositionsAndOrders, formatDateForMySQL, getBaseCalculoBalance, updateAccountBalance} = require('../db/conexao');
 const websockets = require('../websockets');
 
@@ -24,6 +24,18 @@ const bot = new Telegraf(process.env.BOT_TOKEN);
 
 // Adicionar variável para armazenar os jobs
 let scheduledJobs = {};
+
+function determineOrderType(orderMsg) {
+  // Se for ordem de tipo STOP ou TAKE_PROFIT com lado oposto à posição, é um SL ou TP
+  if (orderMsg.o && orderMsg.o.toLowerCase().includes('stop') && orderMsg.R) {
+    return 'STOP_LOSS';
+  } else if (orderMsg.o && orderMsg.o.toLowerCase().includes('take_profit') && orderMsg.R) {
+    return 'TAKE_PROFIT';
+  } else {
+    // Para outros casos, assumir ENTRADA por padrão
+    return 'ENTRADA';
+  }
+}
 
 // Atualizar dados de alavancagem ao iniciar o sistema
 (async () => {
@@ -408,39 +420,54 @@ async function processSignal(db, signal) {
     // 4. Iniciar monitoramento de preço para este símbolo (se não estiver ativo)
     websockets.ensurePriceWebsocketExists(symbol);
 
-    if (chat_id) {
-      try {
-        const triggerCondition = side.toUpperCase() === 'COMPRA' || side.toUpperCase() === 'BUY'
-            ? `Acima de ${entry_price}`
-            : `Abaixo de ${entry_price}`;
-
-        // Opções de envio com reply_to_message_id se originalMessageId (vindo de signal.message_id) estiver disponível
-        const telegramOptions = originalMessageId ? { reply_to_message_id: originalMessageId } : {};
+if (chat_id) {
+    try {
+        let telegramOptions = {};
         
+        // Verificar se temos um ID de mensagem original para responder
+        if (originalMessageId) {
+            try {
+                // Verificar se a mensagem original existe antes de tentar responder
+                // Usar uma abordagem mais segura sem tentar verificar a mensagem diretamente
+                telegramOptions = { reply_to_message_id: originalMessageId };
+            } catch (telegramCheckError) {
+                console.log(`[MONITOR] Aviso: Erro ao verificar mensagem original ID ${originalMessageId}. Enviando sem resposta.`);
+                // Continue sem reply_to_message_id
+            }
+        }
+        
+        const triggerCondition = side.toUpperCase() === 'COMPRA' || side.toUpperCase() === 'BUY'
+            ? `Acima de ${formatDecimal(entry_price)}`
+            : `Abaixo de ${formatDecimal(entry_price)}`;
+        
+        // Enviar a mensagem sem try-catch específico para este envio
+        // Se houver erro, ele será capturado pelo try-catch externo
         const sentMessage = await bot.telegram.sendMessage(chat_id,
             `🔄 Sinal Registrado para ${symbol}\n\n` +
             `🆔 Sinal Ref: WEBHOOK_${id}\n` +
             `Direção: ${side.charAt(0).toUpperCase() + side.slice(1).toLowerCase()}\n` +
             `Alavancagem: ${leverage}x\n\n` +
-            `Entrada: ${triggerCondition.replace(entry_price, formatDecimal(entry_price))}\n` +
+            `Entrada: ${triggerCondition}\n` +
             `TP: ${formatDecimal(tp_price)}\n` +
             `SL: ${formatDecimal(sl_price)}\n\n` +
             `Aguardando gatilho de preço...`,
             telegramOptions
         );
         
-        // Salvar o ID da mensagem de confirmação no banco de dados
+        // Salvar o ID da mensagem de confirmação
         if (sentMessage && sentMessage.message_id) {
-          await connection.query(
-              `UPDATE webhook_signals SET registry_message_id = ? WHERE id = ?`,
-              [sentMessage.message_id, id]
-          );
-          console.log(`[MONITOR] Mensagem de confirmação (${sentMessage.message_id}) enviada e ID salvo para sinal ${id}.`);
+            await connection.query(
+                `UPDATE webhook_signals SET registry_message_id = ? WHERE id = ?`,
+                [sentMessage.message_id, id]
+            );
+            console.log(`[MONITOR] Mensagem de confirmação (${sentMessage.message_id}) enviada e ID salvo para sinal ${id}.`);
         }
-      } catch (telegramError) {
-        console.error(`[MONITOR] Erro ao enviar mensagem de confirmação Telegram para sinal ID ${id}:`, telegramError);
-      }
+    } catch (telegramError) {
+        // Simplificar mensagem de erro e continuar o processamento
+        console.error(`[MONITOR] Erro ao enviar mensagem Telegram para sinal ID ${id}: ${telegramError.message}`);
+        // Não reexibir o objeto de erro completo para evitar poluição do log
     }
+}
 
     // 6. Calcular e registrar o tempo de timeout e atualizar o sinal novamente
     let timeoutAt = null;
@@ -1154,7 +1181,7 @@ async function onPriceUpdate(symbol, currentPrice, db) {
       id, symbol, timeframe, side, leverage, capital_pct, 
       entry_price, 
       tp_price, sl_price, 
-      tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, -- Garantir que estes estão aqui
+      tp1_price, tp2_price, tp3_price, tp4_price, tp5_price,
       status, error_message, position_id, entry_order_id, 
       tp_order_id, sl_order_id, chat_id, message_id, created_at, 
       updated_at, timeout_at, max_lifetime_minutes, 
@@ -1223,7 +1250,7 @@ async function onPriceUpdate(symbol, currentPrice, db) {
       }
     }
 
-    // 5. Processar sinais pendentes (se houver) - Lógica interna mantida da sua versão original
+    // 5. Processar sinais pendentes (modificação aqui)
     for (const signal of pendingSignals) {
       const entryPrice = parseFloat(signal.entry_price);
       const slPrice = parseFloat(signal.sl_price);
@@ -1261,14 +1288,16 @@ async function onPriceUpdate(symbol, currentPrice, db) {
         processingSignals.add(signalKey);
 
         try {
-          console.log(`[PRICE UPDATE] ACIONANDO entrada para sinal ${signalKey} a ${currentPrice}`);
-          await executeEntryOrder(db, signal, currentPrice); // Precisa estar definida
+          console.log(`[PRICE UPDATE] ACIONANDO entrada LIMIT MAKER para sinal ${signalKey} a ${currentPrice}`);
+          
+          // MODIFICAÇÃO: Usar executeLimitMakerEntry em vez de executeEntryOrder
+          await executeLimitMakerEntry(db, signal, currentPrice);
         } catch (error) {
           console.error(`[PRICE UPDATE] Erro ao executar entrada para ${signalKey}: ${error.message}`);
         } finally {
           setTimeout(() => {
             processingSignals.delete(signalKey);
-            console.log(`[PRICE UPDATE] Sinal ${signalKey} removido do processamento após timeout.`);
+            console.log(`[PRICE UPDATE] Sinal ${signalKey} removido da lista de processamento`);
           }, 5000);
         }
       } else if (slHit) {
@@ -1288,7 +1317,6 @@ async function onPriceUpdate(symbol, currentPrice, db) {
       }
     }
   } catch (error) {
-    // Catch da nova estrutura
     console.error(`[PRICE UPDATE] Erro no processamento para ${symbol}:`, error);
   }
 }
@@ -1418,24 +1446,35 @@ async function checkOrderTriggers(db, position, currentPrice) {
           const newOrderId = String(slResponse.data.orderId);
           console.log(`${functionPrefix} Nova ordem SL automática criada: ${newOrderId} a ${slPrice} para posição ${positionId}`);
           await insertNewOrder(db, {
-            tipo_ordem: 'STOP_MARKET', preco: slPrice, quantidade: quantity,
-            id_posicao: positionId, status: 'NEW', data_hora_criacao: formatDateForMySQL(new Date()),
-            id_externo: newOrderId, side: oppositeSide, simbolo: position.simbolo,
-            tipo_ordem_bot: 'STOP_LOSS', target: null, reduce_only: true, close_position: true,
-            last_update: formatDateForMySQL(new Date()), orign_sig: position.orign_sig,
-            observacao: 'SL Criado Automaticamente - Trailing Stop'
-          });
+            tipo_ordem: 'STOP_MARKET',
+            preco: newSLBreakevenPrice,
+            quantidade: quantity, // Certifique-se que 'quantity' está definida corretamente
+            id_posicao: positionId,
+            status: 'NEW', // Ou o status retornado pela API se disponível
+            data_hora_criacao: formatDateForMySQL(new Date()),
+            id_externo: newOrderId,
+            side: oppositeSide, // Certifique-se que 'oppositeSide' está definida
+            simbolo: position.simbolo,
+            tipo_ordem_bot: 'STOP_LOSS',
+            target: null, // SL geralmente não tem target
+            reduce_only: true,
+            close_position: true, // Geralmente SLs são closePosition
+            last_update: formatDateForMySQL(new Date()),
+            orign_sig: position.orign_sig, // Certifique-se que 'position.orign_sig' existe
+            observacao: 'Trailing Stop - Breakeven' // Adicione se a coluna existir
+        });
           await db.query(
-            `UPDATE posicoes SET trailing_stop_level = 'ORIGINAL', data_hora_ultima_atualizacao = ? WHERE id = ?`,
+            `UPDATE posicoes SET trailing_stop_level = 'BREAKEVEN', data_hora_ultima_atualizacao = ? WHERE id = ?`,
             [formatDateForMySQL(new Date()), positionId]
           );
+          console.log(`${functionPrefix} SL Breakeven (${newOrderId}) criado e posição atualizada para BREAKEVEN.`);
           positionsWithoutSL.delete(positionId);
         } else {
-          console.error(`${functionPrefix} Falha ao criar ordem SL automática para posição ${positionId}. Resposta da corretora:`, slResponse);
+          console.error(`${functionPrefix} Falha ao criar SL de breakeven na corretora. Resposta:`, slResponse);
         }
         return; 
       } catch (error) {
-        console.error(`${functionPrefix} Erro crítico ao tentar criar ordem SL automática para posição ${positionId}: ${error.message}`, error.stack);
+        console.error(`${functionPrefix} Erro crítico ao mover SL para breakeven: ${error.message}`, error.stack);
       }
       return; 
     } else {
@@ -1893,7 +1932,7 @@ async function triggerMarketEntry(db, entry, currentPrice) {
           side: binanceOppositeSide,
           simbolo: entry.simbolo,
           tipo_ordem_bot: 'TAKE_PROFIT',
-          target: null,
+          target: 5,
           reduce_only: true,
           close_position: false,
           last_update: new Date().toISOString(),
@@ -2167,363 +2206,1464 @@ async function checkAndCloseWebsocket(db, symbol) {
   }
 }
 
-// NOVA FUNÇÃO: Executar ordem de entrada
-async function executeEntryOrder(db, signal, currentPrice) {
+async function executeLimitMakerEntry(db, signal, currentPriceTrigger) {
     const connection = await db.getConnection();
+    const MAX_CHASE_ATTEMPTS = 20;
+    const CHASE_TIMEOUT_MS = 60000;
+    const WAIT_FOR_EXECUTION_TIMEOUT_MS = 5000;
+    const EDIT_WAIT_TIMEOUT_MS = 3000;
+
+    let chaseAttempts = 0;
+    let totalEntrySize = 0;
+    let totalFilledSize = 0;
+    let averageEntryPrice = 0;
+    let positionId = null;
+    let executionStartTime = Date.now();
+    let partialFills = [];
+    let activeOrderId = null;
+    let marketOrderResponseForDb = null; // Para registrar a ordem MARKET final
+    const rpTargetKeys = ['tp1', 'tp2', 'tp3', 'tp4']; // Adicionar esta linha
+
+    let binanceSide;
+    let leverage;
+    let quantityPrecision;
+    let pricePrecision;
+    let precisionInfo;
+    
     try {
-        await connection.beginTransaction();
-
-        console.log(`[MONITOR] Executando entrada para Sinal ID ${signal.id} (${signal.symbol}) a ${currentPrice}`);
-
-        const precisionInfo = await getPrecision(signal.symbol);
-        console.log(`[MONITOR] Precisão obtida para ${signal.symbol}: ${JSON.stringify(precisionInfo)}`);
-        const { quantityPrecision, pricePrecision } = precisionInfo;
-
-        const availableBalance = await getAvailableBalance();
-        console.log(`[MONITOR] Saldo base de cálculo: ${availableBalance.toFixed(2)} USDT`);
-        
-        const capitalPercentage = parseFloat(signal.capital_pct) / 100;
-        const leverage = parseInt(signal.leverage);
-        console.log(`[MONITOR] Parâmetros de cálculo para Sinal ID ${signal.id}: ${capitalPercentage * 100}% do capital, alavancagem ${leverage}x`);
-        
-        const orderSize = calculateOrderSize(
-            availableBalance,
-            capitalPercentage,
-            currentPrice,
-            leverage,
-            quantityPrecision
+        // Verificação inicial de posição existente (fora da transação)
+        const existingPositionsOnExchange = await getAllOpenPositions(signal.symbol);
+        const positionAlreadyExists = existingPositionsOnExchange.some(p =>
+            p.simbolo === signal.symbol && Math.abs(p.quantidade) > 0
         );
 
-        if (orderSize <= 0 || isNaN(orderSize)) {
-            throw new Error(`Tamanho da ordem inválido para Sinal ID ${signal.id}: ${orderSize}`);
+        if (positionAlreadyExists) {
+            console.log(`[LIMIT_ENTRY] ALERTA: Posição já existe para ${signal.symbol}. Cancelando.`);
+            await db.query(
+                `UPDATE webhook_signals SET status = 'ERROR', error_message = ? WHERE id = ?`,
+                ['Posição já existe na corretora (verificação inicial)', signal.id]
+            );
+            return { success: false, error: 'Posição já existe na corretora (verificação inicial)' };
+        }
+
+        await connection.beginTransaction();
+        
+        console.log(`[LIMIT_ENTRY] Iniciando LIMIT MAKER para Sinal ID ${signal.id} (${signal.symbol})`);
+        
+        precisionInfo = await getPrecision(signal.symbol);
+        quantityPrecision = precisionInfo.quantityPrecision;
+        pricePrecision = precisionInfo.pricePrecision;
+        
+        const availableBalance = await getAvailableBalance();
+        const capitalPercentage = parseFloat(signal.capital_pct) / 100;
+        leverage = parseInt(signal.leverage); 
+        
+        totalEntrySize = calculateOrderSize(
+            availableBalance, capitalPercentage, currentPriceTrigger, leverage, quantityPrecision
+        );
+        
+        if (totalEntrySize <= 0 || isNaN(totalEntrySize)) {
+            throw new Error(`Tamanho da ordem inválido: ${totalEntrySize}`);
         }
         
-        console.log(`[MONITOR] Enviando ordem para Sinal ID ${signal.id}: ${signal.symbol}, Qtd: ${orderSize}, Side: ${signal.side}`);
+        binanceSide = signal.side.toUpperCase() === 'COMPRA' || signal.side.toUpperCase() === 'BUY' ? 'BUY' : 'SELL';
         
-        try { 
-            const binanceSide = signal.side.toUpperCase() === 'COMPRA' || signal.side.toUpperCase() === 'BUY' ? 'BUY' : 'SELL';
-            const orderResponse = await newEntryOrder(
-                signal.symbol,
-                orderSize,
-                binanceSide
-            );
-
-            console.log(`[MONITOR] Resposta da API para ordem de entrada (Sinal ID ${signal.id}): ${JSON.stringify(orderResponse)}`);
-
-            if (!orderResponse || !orderResponse.orderId) {
-                throw new Error(`Resposta inválida da corretora ao criar ordem de mercado para Sinal ID ${signal.id}`);
-            }
-
-            const orderId = String(orderResponse.orderId);
-            const executedQty = parseFloat(orderResponse.executedQty);
-            const executedPrice = parseFloat(orderResponse.avgPrice || orderResponse.price) || currentPrice;
-            const orderTimestamp = orderResponse.updateTime ? new Date(orderResponse.updateTime).toISOString() : new Date().toISOString();
-
-            console.log(`[MONITOR] Ordem de mercado executada para Sinal ID ${signal.id}: ${signal.symbol}, ID Externo: ${orderId}, Preço Médio: ${executedPrice}, Qtd: ${executedQty}`);
-
-            const positionData = {
-                simbolo: signal.symbol,
-                quantidade: executedQty,
-                preco_medio: executedPrice,
-                status: 'OPEN',
-                data_hora_abertura: orderTimestamp,
-                side: binanceSide,
-                leverage: leverage, 
-                preco_entrada: executedPrice,
-                preco_corrente: executedPrice,
-                orign_sig: `WEBHOOK_${signal.id}`,
-                quantidade_aberta: executedQty,
-                data_hora_criacao: orderTimestamp,
-                last_update: orderTimestamp
-            };
-
-            const positionId = await insertPosition(connection, positionData);
-
-            if (!positionId) {
-                throw new Error(`Falha ao inserir posição no DB para Sinal ID ${signal.id} após execução da ordem`);
-            }
-            console.log(`[MONITOR] Posição ID ${positionId} inserida no DB para Sinal ID ${signal.id}.`);
-
-            const entryOrderDbData = {
-                tipo_ordem: orderResponse.origType || 'MARKET',
-                preco: executedPrice,
-                quantidade: executedQty,
-                id_posicao: positionId,
-                status: orderResponse.status || 'FILLED',
-                data_hora_criacao: orderTimestamp,
-                id_externo: orderId,
-                side: binanceSide,
-                simbolo: signal.symbol,
-                tipo_ordem_bot: 'ENTRADA',
-                target: null,
-                reduce_only: orderResponse.reduceOnly || false,
-                close_position: orderResponse.closePosition || false,
-                last_update: orderTimestamp,
-                orign_sig: `WEBHOOK_${signal.id}`,
-                preco_executado: executedPrice,
-                quantidade_executada: executedQty,
-                dados_originais_ws: JSON.stringify(orderResponse)
-            };
-
-            await insertNewOrder(connection, entryOrderDbData);
-            console.log(`[MONITOR] Ordem de entrada registrada no DB para Posição ID ${positionId} (Sinal ID ${signal.id}).`);
-
-            await connection.query(
-                `UPDATE webhook_signals SET
-                    status = 'EXECUTADO',
-                    position_id = ?,
-                    entry_order_id = ?,
-                    entry_price = ? 
-                WHERE id = ?`,
-                [positionId, orderId, executedPrice, signal.id]
-            );
-            console.log(`[MONITOR] Sinal ID ${signal.id} atualizado para EXECUTADO no DB.`);
-
-            // ## 🅿️ Criação das Ordens de Saída (SL, Reduções Parciais, TP Final)
-            const oppositeSide = binanceSide === 'BUY' ? 'SELL' : 'BUY';
-            const slPrice = signal.sl_price ? parseFloat(signal.sl_price) : null; // Pega SL do sinal
+        await connection.query(
+            `UPDATE webhook_signals SET status = 'ENTRADA_EM_PROGRESSO' WHERE id = ?`,
+            [signal.id]
+        );
+        
+        // Loop principal de "perseguição" (chasing)
+        while (totalFilledSize < totalEntrySize && 
+               chaseAttempts < MAX_CHASE_ATTEMPTS && 
+               (Date.now() - executionStartTime) < CHASE_TIMEOUT_MS) {
             
-            // Percentuais para as reduções parciais (se os TPs correspondentes existirem)
-            const reductionPercentages = [0.10, 0.40, 0.30, 0.10]; // 10%, 40%, 30%, 10%, 10%
+            chaseAttempts++;
+            console.log(`[LIMIT_ENTRY] Tentativa ${chaseAttempts}/${MAX_CHASE_ATTEMPTS}. Preenchido: ${totalFilledSize.toFixed(quantityPrecision)}/${totalEntrySize.toFixed(quantityPrecision)} para Sinal ${signal.id}`);
 
-            // Obter os preços dos alvos diretamente do objeto 'signal' (que reflete o banco de dados)
+            // Sincronizar preenchimentos com ordens recentes
+            try {
+                const recentOrders = await getRecentOrders(signal.symbol, 15);
+                const filledExchangeOrders = recentOrders.filter(order => 
+                    order.status === 'FILLED' && 
+                    order.side === binanceSide &&
+                    parseFloat(order.executedQty) > 0 &&
+                    (Date.now() - order.updateTime) < CHASE_TIMEOUT_MS * 2 &&
+                    !partialFills.some(fill => fill.orderId === String(order.orderId))
+                );
+            
+                for (const exOrder of filledExchangeOrders) {
+                    const qty = parseFloat(exOrder.executedQty);
+                    const price = parseFloat(exOrder.avgPrice || exOrder.price);
+                    if (!partialFills.some(fill => fill.orderId === String(exOrder.orderId))) {
+                        partialFills.push({ qty, price, orderId: String(exOrder.orderId) });
+                        // Recalcular totalFilledSize baseado no array partialFills para evitar contagem dupla
+                        totalFilledSize = partialFills.reduce((sum, pf) => sum + pf.qty, 0);
+                        console.log(`[LIMIT_ENTRY] (Sync Recent) Contabilizado: ${qty.toFixed(quantityPrecision)} @ ${price.toFixed(pricePrecision)} (ID: ${exOrder.orderId}). Total agora: ${totalFilledSize.toFixed(quantityPrecision)}`);
+                    }
+                }
+                if (totalFilledSize >= totalEntrySize) {
+                    console.log(`[LIMIT_ENTRY] (Sync Recent) Qtd total atingida.`);
+                    break; 
+                }
+            } catch (checkError) {
+                console.error(`[LIMIT_ENTRY] Erro getRecentOrders:`, checkError.message);
+            }
+
+            const remainingSizeCurrentLoop = parseFloat((totalEntrySize - totalFilledSize).toFixed(quantityPrecision));
+            if (remainingSizeCurrentLoop <= 0) {
+                console.log(`[LIMIT_ENTRY] Qtd restante (${remainingSizeCurrentLoop}) zerada/negativa. Saindo.`);
+                break;
+            }
+
+            const bookTickerData = await getBookTicker(signal.symbol);
+            if (!bookTickerData || !bookTickerData.bidPrice || !bookTickerData.askPrice) {
+              console.log(`[LIMIT_ENTRY] Dados do book inválidos para ${signal.symbol}. Usando preço atual.`);
+              continue;
+            }
+
+            const bestBid = parseFloat(bookTickerData.bidPrice);
+            const bestAsk = parseFloat(bookTickerData.askPrice);
+            const spread = bestAsk - bestBid;
+
+            // Obter tick size para arredondamento correto
+            const tickSizeData = await getTickSize(signal.symbol);
+            const tickSize = parseFloat(tickSizeData.tickSize);
+
+            // Definir preço mais agressivo com base no lado da ordem
+        let makerPrice;
+        if (binanceSide === 'BUY') {
+            // Para compra, usar preço próximo ao ask (mais agressivo)
+            // Mas garantir que seja pelo menos 1 tick abaixo para ser maker
+            makerPrice = bestAsk - tickSize;
+        } else { // SELL
+          // Para venda, usar preço próximo ao bid (mais agressivo)
+          // Mas garantir que seja pelo menos 1 tick acima para ser maker
+          makerPrice = bestBid + tickSize;
+        }
+
+        // Arredondar para o tick size correto
+        makerPrice = await roundPriceToTickSize(signal.symbol, makerPrice);
+
+        console.log(`[LIMIT_ENTRY] Preço calculado para ordem mais agressiva: ${makerPrice} (Bid: ${bestBid}, Ask: ${bestAsk}, Spread: ${spread})`);
+            
+            let orderPlacedOrEditedThisIteration = false;
+
+            if (activeOrderId) {
+                let currentOrderDataFromExchange;
+                try {
+                    currentOrderDataFromExchange = await getOrderStatus(activeOrderId, signal.symbol); // Deve retornar objeto completo
+                } catch (e) {
+                    if (e.response && e.response.data && (e.response.data.code === -2013 || e.response.data.code === -2011) ) { 
+                        console.log(`[LIMIT_ENTRY] Ordem ativa ${activeOrderId} não existe. Resetando.`);
+                        activeOrderId = null;
+                    } else {
+                        console.error(`[LIMIT_ENTRY] Erro buscar status ${activeOrderId}: ${e.message}`);
+                        await new Promise(resolve => setTimeout(resolve, 1000)); continue;
+                    }
+                }
+
+                if (currentOrderDataFromExchange) {
+                    const { status, executedQty, avgPrice, price: orderPriceOnExchange, origQty } = currentOrderDataFromExchange;
+                    const apiFilledQty = parseFloat(executedQty || 0);
+                    
+                    let alreadyAccountedForThisOrder = 0;
+                    partialFills.forEach(pf => { if (pf.orderId === activeOrderId) alreadyAccountedForThisOrder += pf.qty; });
+                    const netFilledSinceLastCheck = apiFilledQty - alreadyAccountedForThisOrder;
+
+                    if (netFilledSinceLastCheck > 0) {
+                        const fillPrice = parseFloat(avgPrice || orderPriceOnExchange);
+                        partialFills.push({ qty: netFilledSinceLastCheck, price: fillPrice, orderId: activeOrderId });
+                        totalFilledSize = partialFills.reduce((sum, pf) => sum + pf.qty, 0); // Recalcular
+                        console.log(`[LIMIT_ENTRY] Preenchimento (status check) ${activeOrderId}: ${netFilledSinceLastCheck.toFixed(quantityPrecision)} @ ${fillPrice.toFixed(pricePrecision)}. Total: ${totalFilledSize.toFixed(quantityPrecision)}`);
+                    }
+
+                    if (status === 'FILLED') {
+                        console.log(`[LIMIT_ENTRY] Ordem ${activeOrderId} FILLED (status check).`);
+                        activeOrderId = null; 
+                        if (totalFilledSize >= totalEntrySize) break; 
+                        continue; 
+                    } else if (status === 'PARTIALLY_FILLED') {
+                        console.log(`[LIMIT_ENTRY] Ordem ${activeOrderId} PARTIALLY_FILLED (status check). Restante na ordem: ${parseFloat(origQty) - apiFilledQty}`);
+                        const priceOfCurrentOrder = parseFloat(orderPriceOnExchange);
+                        // Se o preço do book mudou significativamente, cancelar para reposicionar
+                        if (Math.abs(makerPrice - priceOfCurrentOrder) > (makerPrice * 0.0005)) { 
+                            console.log(`[LIMIT_ENTRY] Preço mudou. Cancelando ${activeOrderId} para reposicionar restante.`);
+                            try { await cancelOrder(activeOrderId, signal.symbol); console.log(`[LIMIT_ENTRY] Ordem ${activeOrderId} cancelada.`); } 
+                            catch (cancelError) { console.warn(`[LIMIT_ENTRY] Falha cancelando ${activeOrderId} (parcial): ${cancelError.message}`); }
+                            activeOrderId = null; 
+                        } else { orderPlacedOrEditedThisIteration = true; }
+                    } else if (status === 'NEW') {
+                        const priceOfCurrentOrder = parseFloat(orderPriceOnExchange);
+                        if (Math.abs(makerPrice - priceOfCurrentOrder) > (makerPrice * 0.0005)) {
+                            console.log(`[LIMIT_ENTRY] Preço mudou para ordem NEW ${activeOrderId}. Tentando editar.`);
+                            try {
+                                const qtyToEdit = parseFloat((totalEntrySize - totalFilledSize).toFixed(quantityPrecision));
+                                if (qtyToEdit > 0) {
+                                    const editResp = await editOrder(signal.symbol, activeOrderId, binanceSide, qtyToEdit, makerPrice.toFixed(pricePrecision));
+                                    if (editResp && editResp.orderId) {
+                                        if (editResp.orderId !== activeOrderId) {
+                                            console.log(`[LIMIT_ENTRY] Ordem ${activeOrderId} editada (cancel/replace). Nova ID: ${editResp.orderId}`);
+                                            activeOrderId = String(editResp.orderId);
+                                        } else { console.log(`[LIMIT_ENTRY] Ordem ${activeOrderId} editada.`); }
+                                        orderPlacedOrEditedThisIteration = true;
+                                    } else {
+                                        console.warn(`[LIMIT_ENTRY] Edição ${activeOrderId} não retornou ID. Cancelando para segurança.`);
+                                        try { await cancelOrder(activeOrderId, signal.symbol); } catch(e){} activeOrderId = null;
+                                    }
+                                } else { activeOrderId = null; /* Nada a editar */ } // Nada a editar
+                            } catch (editErr) {
+                                console.warn(`[LIMIT_ENTRY] Falha editar ${activeOrderId}: ${editErr.message}.`, editErr.response?.data);
+                                 try { const postEditStatus = await getOrderStatus(activeOrderId, signal.symbol); if(postEditStatus && postEditStatus.status !== 'NEW' && postEditStatus.status !== 'PARTIALLY_FILLED') activeOrderId = null; } 
+                                 catch(e){ activeOrderId = null; } 
+                            }
+                        } else { orderPlacedOrEditedThisIteration = true; }
+                    } else { 
+                        console.log(`[LIMIT_ENTRY] Ordem ${activeOrderId} status ${status}. Resetando.`);
+                        activeOrderId = null;
+                    }
+                }
+            } // Fim if (activeOrderId)
+            
+            if (!activeOrderId && totalFilledSize < totalEntrySize) { 
+                const newOrderQty = parseFloat((totalEntrySize - totalFilledSize).toFixed(quantityPrecision));
+                if (newOrderQty <= 0) { console.log("[LIMIT_ENTRY] Nova ordem com qtd zero. Saindo."); break; }
+                try {
+                    console.log(`[LIMIT_ENTRY] Enviando NOVA LIMIT ${signal.symbol}: ${binanceSide} ${newOrderQty.toFixed(quantityPrecision)} @ ${makerPrice.toFixed(pricePrecision)}`);
+                    const orderResponse = await newLimitMakerOrder(
+                        signal.symbol, newOrderQty, binanceSide, makerPrice
+                    );
+                    if (orderResponse.status === 'REJECTED_POST_ONLY') {
+                        console.log(`[LIMIT_ENTRY] Nova LIMIT MAKER rejeitada.`);
+                        await new Promise(resolve => setTimeout(resolve, 200)); continue; 
+                    }
+                    if (!orderResponse.orderId) throw new Error(`Resposta nova LIMIT inválida: ${JSON.stringify(orderResponse)}`);
+                    activeOrderId = String(orderResponse.orderId);
+                    orderPlacedOrEditedThisIteration = true;
+                    console.log(`[LIMIT_ENTRY] Nova LIMIT: ID ${activeOrderId}`);
+                } catch (newOrderError) {
+                    console.error(`[LIMIT_ENTRY] Erro criar NOVA LIMIT:`, newOrderError.response?.data || newOrderError.message);
+                    await new Promise(resolve => setTimeout(resolve, 1000)); continue;
+                }
+            }
+            
+            if (orderPlacedOrEditedThisIteration && activeOrderId) {
+                console.log(`[LIMIT_ENTRY] Aguardando ${activeOrderId}...`);
+                const orderWaitResult = await waitForOrderExecution(
+                    signal.symbol, activeOrderId, 
+                    EDIT_WAIT_TIMEOUT_MS // Usar timeout mais curto para verificação pós-colocação/edição
+                );
+                
+                // Processar preenchimento de orderWaitResult
+                const apiWaitFilledQty = parseFloat(orderWaitResult.executedQty || 0);
+                let alreadyAccountedForWait = 0;
+                partialFills.forEach(pf => { if (pf.orderId === activeOrderId) alreadyAccountedForWait += pf.qty; });
+                const netFilledInWait = apiWaitFilledQty - alreadyAccountedForWait;
+
+                if (netFilledInWait > 0) {
+                    const fillPrice = parseFloat(orderWaitResult.avgPrice || orderWaitResult.price);
+                    partialFills.push({ qty: netFilledInWait, price: fillPrice, orderId: activeOrderId });
+                    totalFilledSize = partialFills.reduce((sum, pf) => sum + pf.qty, 0); // Recalcular
+                    console.log(`[LIMIT_ENTRY] Preenchimento (após wait) ${activeOrderId}: ${netFilledInWait.toFixed(quantityPrecision)} @ ${fillPrice.toFixed(pricePrecision)}. Total: ${totalFilledSize.toFixed(quantityPrecision)}`);
+                }
+
+                if (orderWaitResult.status === 'FILLED') {
+                    console.log(`[LIMIT_ENTRY] Ordem ${activeOrderId} FILLED (após wait).`);
+                    activeOrderId = null; 
+                    if (totalFilledSize >= totalEntrySize) break;
+                } else if (orderWaitResult.status === 'PARTIALLY_FILLED') {
+                    console.log(`[LIMIT_ENTRY] Ordem ${activeOrderId} PARTIALLY_FILLED (após wait).`);
+                } else if (['CANCELED', 'REJECTED', 'EXPIRED'].includes(orderWaitResult.status)) {
+                    console.log(`[LIMIT_ENTRY] Ordem ${activeOrderId} ${orderWaitResult.status} (após wait). Resetando.`);
+                    activeOrderId = null;
+                } else if (orderWaitResult.status === 'NEW') {
+                     console.log(`[LIMIT_ENTRY] Ordem ${activeOrderId} ainda NEW (após wait).`);
+                } else if (orderWaitResult.status && orderWaitResult.status.startsWith('TIMED_OUT')) {
+                    console.log(`[LIMIT_ENTRY] Timeout ${activeOrderId}. Reavaliando.`);
+                }
+            }
+            
+            if (totalFilledSize >= totalEntrySize) {
+                console.log(`[LIMIT_ENTRY] Qtd total (${totalEntrySize.toFixed(quantityPrecision)}) alcançada.`);
+                break; 
+            }
+            await new Promise(resolve => setTimeout(resolve, 500)); 
+        } // Fim do loop while de chasing
+        
+
+        if (partialFills.length > 0) {
+            averageEntryPrice = calculateAveragePrice(partialFills);
+        } else if (totalFilledSize > 0 && !averageEntryPrice) { // Fallback
+            averageEntryPrice = currentPriceTrigger; 
+            console.warn(`[LIMIT_ENTRY] averageEntryPrice não pôde ser calculado a partir de partialFills, usando currentPriceTrigger como fallback: ${averageEntryPrice}`);
+        }
+
+
+        if (totalFilledSize < totalEntrySize) {
+            console.log(`[LIMIT_ENTRY] Chasing encerrado. Preenchido: ${totalFilledSize.toFixed(quantityPrecision)}/${totalEntrySize.toFixed(quantityPrecision)}. Timeout: ${(Date.now() - executionStartTime) >= CHASE_TIMEOUT_MS}`);
+            const remainingToFillMarket = parseFloat((totalEntrySize - totalFilledSize).toFixed(quantityPrecision));
+            
+            if (remainingToFillMarket > 0) {
+                console.log(`[LIMIT_ENTRY] Tentando MARKET para ${remainingToFillMarket.toFixed(quantityPrecision)}`);
+                if (activeOrderId) { 
+                    try {
+                        const lastOrderStatus = await getOrderStatus(activeOrderId, signal.symbol);
+                        if (lastOrderStatus && (lastOrderStatus.status === 'NEW' || lastOrderStatus.status === 'PARTIALLY_FILLED')) {
+                            await cancelOrder(activeOrderId, signal.symbol); 
+                            console.log(`[LIMIT_ENTRY] Última LIMIT ${activeOrderId} cancelada antes da MARKET.`);
+                        }
+                    } catch (cancelErr) { console.warn(`[LIMIT_ENTRY] Falha cancelando ${activeOrderId} antes MARKET: ${cancelErr.message}`); }
+                    activeOrderId = null; 
+                }
+                try {
+                    marketOrderResponseForDb = await newEntryOrder(
+                        signal.symbol, remainingToFillMarket, binanceSide
+                    );
+                    if (marketOrderResponseForDb && marketOrderResponseForDb.orderId) {
+                        const marketFilledQty = parseFloat(marketOrderResponseForDb.executedQty);
+                        const marketFilledPrice = parseFloat(marketOrderResponseForDb.price); 
+                        if (marketFilledQty > 0) {
+                            partialFills.push({ qty: marketFilledQty, price: marketFilledPrice, orderId: String(marketOrderResponseForDb.orderId) });
+                            totalFilledSize = partialFills.reduce((sum, pf) => sum + pf.qty, 0); // Recalcular
+                            averageEntryPrice = calculateAveragePrice(partialFills); 
+                        }
+                        console.log(`[LIMIT_ENTRY] MARKET final: ${marketFilledQty.toFixed(quantityPrecision)} @ ${marketFilledPrice.toFixed(pricePrecision)}. Total: ${totalFilledSize.toFixed(quantityPrecision)}`);
+                    } else {
+                        console.error(`[LIMIT_ENTRY] Falha MARKET final (resposta inválida):`, marketOrderResponseForDb);
+                    }
+                } catch (marketError) {
+                     console.error(`[LIMIT_ENTRY] Erro MARKET final:`, marketError.response?.data || marketError.message);
+                }
+            }
+        }
+        
+        const MIN_FILL_THRESHOLD_ABSOLUTE = 0.000001; // Um valor mínimo absoluto para considerar preenchido
+        if (totalFilledSize <= MIN_FILL_THRESHOLD_ABSOLUTE) { 
+             throw new Error(`Entrada falhou. Qtd preenchida (${totalFilledSize.toFixed(quantityPrecision)}) insignificante ou nula para ${signal.id}.`);
+        }
+        
+        const fillRatio = totalEntrySize > 0 ? totalFilledSize / totalEntrySize : 0;
+        const ENTRY_COMPLETE_THRESHOLD_RATIO = 0.999; // Considerar completo se 99.9% preenchido
+
+        console.log(`[LIMIT_ENTRY] Processo de entrada finalizado para Sinal ID ${signal.id}: Total Preenchido ${totalFilledSize.toFixed(quantityPrecision)} de ${totalEntrySize.toFixed(quantityPrecision)} (${(fillRatio * 100).toFixed(1)}%) @ Preço Médio ${averageEntryPrice.toFixed(pricePrecision)}`);
+        
+        const positionData = {
+            simbolo: signal.symbol, quantidade: totalFilledSize, preco_medio: averageEntryPrice, status: 'OPEN',
+            data_hora_abertura: new Date(executionStartTime).toISOString(), side: binanceSide, leverage: leverage,
+            data_hora_ultima_atualizacao: new Date().toISOString(), preco_entrada: averageEntryPrice,
+            preco_corrente: averageEntryPrice, orign_sig: `WEBHOOK_${signal.id}`,
+            quantidade_aberta: totalFilledSize,
+        };
+        
+        positionId = await insertPosition(connection, positionData);
+        if (!positionId) throw new Error(`Falha ao inserir posição no DB`);
+        console.log(`[LIMIT_ENTRY] Posição ID ${positionId} criada para Sinal ID ${signal.id}`);
+        
+        for (const fill of partialFills) {
+            const orderData = {
+                tipo_ordem: (marketOrderResponseForDb && fill.orderId === String(marketOrderResponseForDb.orderId)) ? 'MARKET' : 'LIMIT',
+                preco: fill.price, quantidade: fill.qty, id_posicao: positionId, status: 'FILLED', 
+                data_hora_criacao: new Date().toISOString(), 
+                id_externo: String(fill.orderId || `fill_${Date.now()}_${Math.random().toString(36).substring(7)}`).substring(0, 90), 
+                side: binanceSide, simbolo: signal.symbol, tipo_ordem_bot: 'ENTRADA', target: null,
+                reduce_only: false, close_position: false, last_update: new Date().toISOString(),
+                orign_sig: `WEBHOOK_${signal.id}`, preco_executado: fill.price, quantidade_executada: fill.qty,
+            };
+            await insertNewOrder(connection, orderData);
+        }
+        
+        await connection.query(
+            `UPDATE webhook_signals SET status = 'EXECUTADO', position_id = ?, entry_order_id = ?, entry_price = ? WHERE id = ?`,
+            [positionId, (partialFills.length > 0 ? partialFills[0].orderId : null), averageEntryPrice, signal.id]
+        );
+        
+        let slTpRpsCreated = false;
+        if (fillRatio >= ENTRY_COMPLETE_THRESHOLD_RATIO) {
+            console.log(`[LIMIT_ENTRY] Entrada considerada COMPLETA (${(fillRatio * 100).toFixed(1)}%). Criando SL/TP/RPs.`);
+            slTpRpsCreated = true; // Marcar que vamos tentar criar
+
+            const binanceOppositeSide = binanceSide === 'BUY' ? 'SELL' : 'BUY';
+            const slPriceVal = signal.sl_price ? parseFloat(signal.sl_price) : null;
+            
             const targetPrices = {
                 tp1: signal.tp1_price ? parseFloat(signal.tp1_price) : null,
                 tp2: signal.tp2_price ? parseFloat(signal.tp2_price) : null,
                 tp3: signal.tp3_price ? parseFloat(signal.tp3_price) : null,
                 tp4: signal.tp4_price ? parseFloat(signal.tp4_price) : null,
-                tp5: signal.tp5_price ? parseFloat(signal.tp5_price) : (signal.tp_price ? parseFloat(signal.tp_price) : null) // Fallback para tp_price se tp5 não existir
+                tp5: signal.tp5_price ? parseFloat(signal.tp5_price) : (signal.tp_price ? parseFloat(signal.tp_price) : null) 
             };
 
-            console.log(`[MONITOR] Preços dos alvos lidos do SINAL ID ${signal.id} (${signal.symbol}): ` +
-                        `RP1=${targetPrices.tp1 || 'N/A'}, RP2=${targetPrices.tp2 || 'N/A'}, RP3=${targetPrices.tp3 || 'N/A'}, ` +
-                        `RP4=${targetPrices.tp4 || 'N/A'}, TP Final=${targetPrices.tp5 || 'N/A'}, SL=${slPrice || 'N/A'}`);
-
-            // ### ✂️ Ordens de Redução Parcial (RPs)
-            const rpTargetKeys = ['tp1', 'tp2', 'tp3', 'tp4']; // Chaves no objeto targetPrices para RPs
-            for (let i = 0; i < rpTargetKeys.length; i++) {
-                const currentRpKey = rpTargetKeys[i]; // 'tp1', 'tp2', etc.
-                const rpPrice = targetPrices[currentRpKey];
-            
-                if (!rpPrice || isNaN(rpPrice) || rpPrice <= 0) {
-                    console.log(`[MONITOR] ℹ️ Pulando REDUÇÃO PARCIAL ${i+1} (${currentRpKey}) para ${signal.symbol}: preço não fornecido ou inválido no sinal (${rpPrice}).`);
-                    continue;
-                }
-                if (i >= reductionPercentages.length) { 
-                    console.warn(`[MONITOR] ⚠️ Não há percentual de redução definido para o alvo ${currentRpKey} (índice ${i}). Pulando.`);
-                    continue;
-                }
-            
+            if (slPriceVal && slPriceVal > 0) {
                 try {
-                    const reductionPercentage = reductionPercentages[i];
-                    const rpQty = parseFloat((executedQty * reductionPercentage).toFixed(quantityPrecision));
-            
-                    if (rpQty <= 0) {
-                        console.warn(`[MONITOR] ⚠️ Quantidade para REDUÇÃO PARCIAL ${i+1} (${currentRpKey}) é zero ou negativa (${rpQty}). Pulando.`);
-                        continue;
-                    }
-            
-                    console.log(`[MONITOR] ⏳ Criando ordem REDUÇÃO PARCIAL ${i+1} (${currentRpKey}) para ${signal.symbol} (${oppositeSide}) @ ${rpPrice}, Qtd: ${rpQty} (${reductionPercentage*100}%)`);
-                    
-                    if (typeof newReduceOnlyOrder === 'undefined') {
-                       const errorMsg = `[MONITOR] 🆘 Função 'newReduceOnlyOrder' não está definida. Não é possível criar REDUÇÃO PARCIAL ${i+1}.`;
-                       console.error(errorMsg);
-                       if(typeof bot !== 'undefined' && signal.chat_id && bot) { await bot.telegram.sendMessage(signal.chat_id, `🆘 Erro de Configuração: Função 'newReduceOnlyOrder' não definida. RPs para ${signal.symbol} (Sinal ${signal.id}) não criadas.`); }
-                       continue; 
-                    }
-
-                    const rpApiResponse = await newReduceOnlyOrder(signal.symbol, rpQty, oppositeSide, rpPrice);
-                    
-                    if (rpApiResponse && rpApiResponse.data && rpApiResponse.data.orderId) {
-                        console.log(`[MONITOR] ✅ Ordem REDUÇÃO PARCIAL ${i+1} (${currentRpKey}) criada na corretora: ID ${rpApiResponse.data.orderId}`);
-                        const rpOrderTimestamp = rpApiResponse.data.transactTime ? new Date(rpApiResponse.data.transactTime).toISOString() : orderTimestamp; // Usar timestamp da ordem se disponível
-                        await insertNewOrder(connection, {
-                            tipo_ordem: 'LIMIT', preco: rpPrice, quantidade: rpQty, id_posicao: positionId, status: 'NEW',
-                            data_hora_criacao: rpOrderTimestamp, id_externo: String(rpApiResponse.data.orderId), side: oppositeSide, simbolo: signal.symbol,
-                            tipo_ordem_bot: 'REDUCAO_PARCIAL', 
-                            target: i + 1, // Target numérico para a coluna INT
-                            reduce_only: true, close_position: false,
-                            last_update: rpOrderTimestamp, orign_sig: `WEBHOOK_${signal.id}`
-                        });
-                    } else {
-                         console.warn(`[MONITOR] ⚠️ Resposta inválida ao criar REDUÇÃO PARCIAL ${i+1} (${currentRpKey}) para Sinal ID ${signal.id}. Detalhes: ${JSON.stringify(rpApiResponse)}`);
-                         if(typeof bot !== 'undefined' && signal.chat_id && bot) { await bot.telegram.sendMessage(signal.chat_id, `⚠️ Atenção: Problema ao programar RP ${i+1} para ${signal.symbol} (Sinal ${signal.id}). Verifique manualmente.`);}
-                    }
-                } catch (rpError) {
-                    console.error(`[MONITOR] 🆘 Erro ao criar ordem REDUÇÃO PARCIAL ${i+1} (${currentRpKey}) para ${signal.symbol}: ${rpError.message}`, rpError.response?.data || rpError);
-                    if(typeof bot !== 'undefined' && signal.chat_id && bot) { await bot.telegram.sendMessage(signal.chat_id, `🆘 Erro Crítico: Falha ao criar RP ${i+1} para ${signal.symbol} (Sinal ${signal.id}). Motivo: ${rpError.message}. Verifique!`);}
-                }
-            }
-            
-            // ### 🎯 Ordem Take Profit Final (TP Final)
-            const finalTpPrice = targetPrices.tp5; 
-
-            if (finalTpPrice && !isNaN(finalTpPrice) && finalTpPrice > 0) {
-                try {
-                    console.log(`[MONITOR] ⏳ Criando ordem TP FINAL para ${signal.symbol} (${oppositeSide}) @ ${finalTpPrice}, Qtd: ${executedQty}`);
-                    const tpFinalApiResponse = await newStopOrder( signal.symbol, executedQty, oppositeSide, finalTpPrice, finalTpPrice, true, true );
-
-                    if (tpFinalApiResponse && tpFinalApiResponse.data && tpFinalApiResponse.data.orderId) {
-                        console.log(`[MONITOR] ✅ Ordem TP FINAL criada na corretora: ID ${tpFinalApiResponse.data.orderId}`);
-                        const tpFinalOrderTimestamp = tpFinalApiResponse.data.transactTime ? new Date(tpFinalApiResponse.data.transactTime).toISOString() : orderTimestamp;
-                        await insertNewOrder(connection, {
-                            tipo_ordem: 'TAKE_PROFIT_MARKET', preco: finalTpPrice, stop_price: finalTpPrice, quantidade: executedQty,
-                            id_posicao: positionId, status: 'NEW', data_hora_criacao: tpFinalOrderTimestamp,
-                            id_externo: String(tpFinalApiResponse.data.orderId), side: oppositeSide, simbolo: signal.symbol,
-                            tipo_ordem_bot: 'TAKE_PROFIT', 
-                            target: 5, // Target numérico para o TP Final
-                            reduce_only: true, close_position: true,
-                            last_update: tpFinalOrderTimestamp, orign_sig: `WEBHOOK_${signal.id}`
-                        });
-                        await connection.query( `UPDATE webhook_signals SET tp_order_id = ? WHERE id = ?`, [String(tpFinalApiResponse.data.orderId), signal.id]);
-                    } else {
-                        console.warn(`[MONITOR] ⚠️ Resposta inválida ao criar TP FINAL para Sinal ID ${signal.id}. Detalhes: ${JSON.stringify(tpFinalApiResponse)}`);
-                        if(typeof bot !== 'undefined' && signal.chat_id && bot) { await bot.telegram.sendMessage(signal.chat_id, `⚠️ Atenção: Problema ao programar TP Final para ${signal.symbol} (Sinal ${signal.id}). Verifique manualmente.`);}
-                    }
-                } catch (tpFinalError) {
-                    console.error(`[MONITOR] 🆘 Erro ao criar ordem TP FINAL para ${signal.symbol}: ${tpFinalError.message}`, tpFinalError.response?.data || tpFinalError);
-                     if(typeof bot !== 'undefined' && signal.chat_id && bot) { await bot.telegram.sendMessage(signal.chat_id, `🆘 Erro Crítico: Falha ao criar TP Final para ${signal.symbol} (Sinal ${signal.id}). Motivo: ${tpFinalError.message}. Verifique!`);}
-                }
-            } else {
-                console.warn(`[MONITOR] ⚠️ Não foi possível criar ordem TP FINAL para ${signal.symbol}: preço final não fornecido ou inválido no sinal (${finalTpPrice}).`);
-            }
-
-            // ### 🛑 Ordem Stop Loss (SL)
-            if (slPrice && slPrice > 0) {
-                try {
-                    console.log(`[MONITOR] ⏳ Criando ordem SL para ${signal.symbol} (${oppositeSide}) @ ${slPrice}, Qtd: ${executedQty}`);
-                    const slApiResponse = await newStopOrder( signal.symbol, executedQty, oppositeSide, slPrice, null, true, true );
-
-                    if (slApiResponse && slApiResponse.data && slApiResponse.data.orderId) {
-                        console.log(`[MONITOR] ✅ Ordem SL criada na corretora: ID ${slApiResponse.data.orderId}`);
-                        const slOrderTimestamp = slApiResponse.data.transactTime ? new Date(slApiResponse.data.transactTime).toISOString() : orderTimestamp;
-                        await insertNewOrder(connection, {
-                            tipo_ordem: 'STOP_MARKET', preco: slPrice, stop_price: slPrice, quantidade: executedQty, id_posicao: positionId, status: 'NEW',
-                            data_hora_criacao: slOrderTimestamp, id_externo: String(slApiResponse.data.orderId), side: oppositeSide, simbolo: signal.symbol,
-                            tipo_ordem_bot: 'STOP_LOSS', target: null, // SL geralmente não tem um 'target' numérico como os TPs
-                            reduce_only: true, close_position: true,
-                            last_update: slOrderTimestamp, orign_sig: `WEBHOOK_${signal.id}`
-                        });
-                        await connection.query(`UPDATE webhook_signals SET sl_order_id = ? WHERE id = ?`,[String(slApiResponse.data.orderId), signal.id]);
-                    } else {
-                        console.warn(`[MONITOR] ⚠️ Resposta inválida ao criar SL para Sinal ID ${signal.id}. Detalhes: ${JSON.stringify(slApiResponse)}`);
-                         if(typeof bot !== 'undefined' && signal.chat_id && bot) { await bot.telegram.sendMessage(signal.chat_id, `⚠️ Atenção: Problema ao programar SL para ${signal.symbol} (Sinal ${signal.id}). Verifique manualmente.`);}
-                    }
-                } catch (slError) {
-                    console.error(`[MONITOR] 🆘 Erro ao criar ordem SL para ${signal.symbol}: ${slError.message}`, slError.response?.data || slError);
-                    if(typeof bot !== 'undefined' && signal.chat_id && bot) { await bot.telegram.sendMessage(signal.chat_id, `🆘 Erro Crítico: Falha ao criar SL para ${signal.symbol} (Sinal ${signal.id}). Motivo: ${slError.message}. Verifique!`);}
-                }
-            } else {
-                console.warn(`[MONITOR] ⚠️ Preço de SL inválido ou não definido para Sinal ID ${signal.id} (${slPrice}). Ordem SL não será criada.`);
-            }
-            
-            // Envio de notificação consolidada
-            if (typeof bot !== 'undefined' && signal.chat_id && bot) {
-                try {
-                    let replyToMessageId = null;
-                    const [messageInfoRows] = await db.query(`SELECT registry_message_id FROM webhook_signals WHERE id = ? LIMIT 1 `, [signal.id]);
-                    if (messageInfoRows && messageInfoRows.length > 0 && messageInfoRows[0].registry_message_id) {
-                        replyToMessageId = messageInfoRows[0].registry_message_id;
-                    }
-                    const telegramOptions = replyToMessageId ? { reply_to_message_id: replyToMessageId } : {};
-                    const amountInUsdt = executedQty * executedPrice;
-                    const formatFn = typeof formatDecimal !== 'undefined' ? formatDecimal : (val, dec) => val.toFixed(dec || 0);
-
-                    let targetsMessage = "\n";
-                    const displayRpKeys = ['tp1', 'tp2', 'tp3', 'tp4'];
-                    let hasAnyRpListed = false;
-                    displayRpKeys.forEach((key, index) => {
-                        const price = targetPrices[key]; // Usar targetPrices que são diretamente do sinal
-                        if (price && price > 0 && index < reductionPercentages.length) {
-                            targetsMessage += `Alvo ${index+1} (${reductionPercentages[index]*100}%) : ${price.toFixed(pricePrecision)}\n`;
-                            hasAnyRpListed = true;
-                        }
-                    });
-                    
-                    const finalTpDisplay = targetPrices.tp5;
-                    if (finalTpDisplay && finalTpDisplay > 0) {
-                         targetsMessage += `Take Profit   : ${finalTpDisplay.toFixed(pricePrecision)}\n`;
-                    } else if (!hasAnyRpListed) { 
-                         targetsMessage = "\nTake Profit não fornecido ou inválido no sinal.\n";
-                    }
-                    
-                    if (!hasAnyRpListed && !(finalTpDisplay && finalTpDisplay > 0)) {
-                        targetsMessage = "\nNenhum Take Profit fornecido ou inválido no sinal.\n";
-                    }
-
-                    await bot.telegram.sendMessage(signal.chat_id,
-                        `✅ Entrada realizada em ${signal.symbol} \n(Sinal ID: ${signal.id})\n\n` +
-                        `Direção: ${signal.side.charAt(0).toUpperCase() + signal.side.slice(1).toLowerCase()}\n` +
-                        `Alavancagem: ${leverage}x\n` +
-                        `Quantidade: ${formatFn(amountInUsdt, 2)} USDT\n\n` +
-                        `Entrada: ${executedPrice.toFixed(pricePrecision || 2)}\n` +
-                        targetsMessage + '\n' +
-                        `Stop Loss: ${slPrice ? slPrice.toFixed(pricePrecision || 2) : 'N/A'}\n`,
-                        telegramOptions
+                    console.log(`[LIMIT_ENTRY] Criando SL: ${totalFilledSize.toFixed(quantityPrecision)} ${signal.symbol} @ ${slPriceVal.toFixed(pricePrecision)}`);
+                    const slResponse = await newStopOrder( 
+                        signal.symbol, totalFilledSize.toFixed(quantityPrecision), 
+                        binanceOppositeSide, slPriceVal.toFixed(pricePrecision), null, true, true 
                     );
-                    console.log(`[MONITOR] Notificação de execução enviada para Sinal ID ${signal.id}.`);
-                } catch (telegramError) {
-                    console.error(`[MONITOR] Erro ao enviar mensagem Telegram de execução para Sinal ID ${signal.id}:`, telegramError);
+                    if (slResponse && slResponse.data && slResponse.data.orderId) {
+                        const slOrderData = { 
+                            tipo_ordem: 'STOP_MARKET', preco: slPriceVal, quantidade: totalFilledSize, id_posicao: positionId, status: 'NEW', 
+                            data_hora_criacao: new Date().toISOString(), id_externo: String(slResponse.data.orderId).substring(0,90), side: binanceOppositeSide, 
+                            simbolo: signal.symbol, tipo_ordem_bot: 'STOP_LOSS', reduce_only: true, close_position: true, orign_sig: `WEBHOOK_${signal.id}`,
+                            last_update: new Date().toISOString(), target: null
+                        };
+                        await insertNewOrder(connection, slOrderData); 
+                        console.log(`[LIMIT_ENTRY] SL criado: ${slResponse.data.orderId}`);
+                        await connection.query( `UPDATE webhook_signals SET sl_order_id = ? WHERE id = ?`, [String(slResponse.data.orderId), signal.id] );
+                    } else { console.warn(`[LIMIT_ENTRY] Falha criar SL, resp inválida:`, slResponse); }
+                } catch (slError) { console.error(`[LIMIT_ENTRY] Erro SL:`, slError.response?.data || slError.message); }
+            } else { console.warn(`[LIMIT_ENTRY] SL inválido/não fornecido (${slPriceVal}).`); }
+            
+            const reductionPercentages = [0.10, 0.40, 0.30, 0.10]; 
+            const rpTargetKeys = ['tp1', 'tp2', 'tp3', 'tp4'];
+
+            for (let i = 0; i < rpTargetKeys.length; i++) {
+                const rpKey = rpTargetKeys[i];
+                const rpPrice = targetPrices[rpKey];
+                if (rpPrice && rpPrice > 0 && i < reductionPercentages.length) {
+                    const reductionPercent = reductionPercentages[i];
+                    const reductionQty = parseFloat((totalFilledSize * reductionPercent).toFixed(quantityPrecision));
+                    if (reductionQty <= 0) continue;
+                    try {
+                        console.log(`[LIMIT_ENTRY] Criando RP${i+1} (${rpKey}): ${reductionQty.toFixed(quantityPrecision)} ${signal.symbol} @ ${rpPrice.toFixed(pricePrecision)}`);
+                        const rpResponse = await newReduceOnlyOrder(
+                            signal.symbol, reductionQty, binanceOppositeSide, rpPrice.toFixed(pricePrecision)
+                        );
+                        if (rpResponse && rpResponse.data && rpResponse.data.orderId) {
+                            const rpOrderData = { 
+                                tipo_ordem: 'LIMIT', preco: rpPrice, quantidade: reductionQty, id_posicao: positionId, status: 'NEW',
+                                data_hora_criacao: new Date().toISOString(), id_externo: String(rpResponse.data.orderId).substring(0,90), side: binanceOppositeSide,
+                                simbolo: signal.symbol, tipo_ordem_bot: 'REDUCAO_PARCIAL', target: i + 1, reduce_only: true, close_position: false, orign_sig: `WEBHOOK_${signal.id}`,
+                                last_update: new Date().toISOString()
+                            };
+                            await insertNewOrder(connection, rpOrderData); 
+                            console.log(`[LIMIT_ENTRY] RP${i+1} (${rpKey}) criada: ${rpResponse.data.orderId}`);
+                        } else { console.warn(`[LIMIT_ENTRY] Falha criar RP${i+1}, resp inválida:`, rpResponse); }
+                    } catch (rpError) { console.error(`[LIMIT_ENTRY] Erro RP${i+1} (${rpKey}):`, rpError.response?.data || rpError.message); }
                 }
             }
 
-            await connection.commit();
-            console.log(`[MONITOR] ✅ Entrada a mercado executada e todas as ordens de saída configuradas. Transação commitada para ${signal.symbol} (Sinal ID: ${signal.id})`);
-
-            if (typeof syncAccountBalance !== 'undefined') { try { await syncAccountBalance(); } catch (e) { console.error(`[MONITOR] Erro syncAccountBalance: ${e.message}`); }}
-            if (typeof checkAndCloseWebsocket !== 'undefined') {
-                 setTimeout(async () => {
-                    try {
-                        const [rows] = await db.query(`SELECT COUNT(*) as count FROM webhook_signals WHERE symbol = ? AND status = 'AGUARDANDO_ACIONAMENTO'`, [signal.symbol]);
-                        if (rows[0].count === 0) {
-                             console.log(`[MONITOR] Agendado: Fechando websocket para ${signal.symbol}.`);
-                             await checkAndCloseWebsocket(db, signal.symbol);
-                        }
-                    } catch (e) { console.error(`[MONITOR] Erro checkAndCloseWebsocket (timeout): ${e.message}`);}
-                }, 5000);
-            }
-
-        } catch (apiError) { 
-            console.error(`[MONITOR] 🆘 ERRO API/DB INTERNO (Sinal ID: ${signal.id}, Símbolo: ${signal.symbol}): ${apiError.message}`, apiError.response?.data || apiError);
-            if (connection) { 
-                try { await connection.rollback(); console.log(`[MONITOR] Rollback da transação (API/DB INTERNO) para Sinal ID ${signal.id} efetuado.`); } 
-                catch (rbErr) { console.error(`[MONITOR] Erro no rollback (API/DB INTERNO) para Sinal ID ${signal.id}:`, rbErr); }
-            }
+            const finalTpPrice = targetPrices.tp5;
+            if (finalTpPrice && finalTpPrice > 0) {
+                const qtyForFinalTp = totalFilledSize; // TAKE_PROFIT_MARKET com reduceOnly=true e closePosition=true fecha o restante
+                if (qtyForFinalTp > 0) { 
+                     try {
+                        console.log(`[LIMIT_ENTRY] Criando TP Final (tp5): ${qtyForFinalTp.toFixed(quantityPrecision)} ${signal.symbol} @ ${finalTpPrice.toFixed(pricePrecision)}`);
+                        const tpResponse = await newStopOrder( 
+                            signal.symbol, qtyForFinalTp.toFixed(quantityPrecision), 
+                            binanceOppositeSide, finalTpPrice.toFixed(pricePrecision),
+                            finalTpPrice.toFixed(pricePrecision), true, true 
+                        );
+                        if (tpResponse && tpResponse.data && tpResponse.data.orderId) {
+                            const tpOrderData = { 
+                                tipo_ordem: 'TAKE_PROFIT_MARKET', preco: finalTpPrice, quantidade: qtyForFinalTp, id_posicao: positionId, status: 'NEW',
+                                data_hora_criacao: new Date().toISOString(), id_externo: String(tpResponse.data.orderId).substring(0,90), side: binanceOppositeSide,
+                                simbolo: signal.symbol, tipo_ordem_bot: 'TAKE_PROFIT', target: 5, reduce_only: true, close_position: true, orign_sig: `WEBHOOK_${signal.id}`,
+                                last_update: new Date().toISOString()
+                            };
+                            await insertNewOrder(connection, tpOrderData); 
+                            console.log(`[LIMIT_ENTRY] TP Final (tp5) criado: ${tpResponse.data.orderId}`);
+                             await connection.query( `UPDATE webhook_signals SET tp_order_id = ? WHERE id = ?`, [String(tpResponse.data.orderId), signal.id] );
+                        } else { console.warn(`[LIMIT_ENTRY] Falha criar TP Final, resp inválida:`, tpResponse); }
+                    } catch (tpError) { console.error(`[LIMIT_ENTRY] Erro TP Final (tp5):`, tpError.response?.data || tpError.message); }
+                }
+            } else { console.warn(`[LIMIT_ENTRY] TP Final (tp5/tp_price) inválido (${finalTpPrice}).`);}
+        } else if (totalFilledSize > 0) { // Preenchido parcialmente, mas não o suficiente para SL/TP automáticos
+             console.warn(`[LIMIT_ENTRY] Entrada NÃO COMPLETAMENTE PREENCHIDA (${(fillRatio * 100).toFixed(1)}% < ${(ENTRY_COMPLETE_THRESHOLD_RATIO*100).toFixed(1)}%). SL/TP/RPs AUTOMÁTICOS NÃO CRIADOS para Posição ID: ${positionId}. Requer manejo manual!`);
             if (typeof bot !== 'undefined' && signal.chat_id && bot) {
-                 let replyToIdForError = null;
-                 try { const [msgErrInfo] = await db.query(`SELECT registry_message_id FROM webhook_signals WHERE id = ? LIMIT 1`, [signal.id]); if (msgErrInfo && msgErrInfo.length > 0) replyToIdForError = msgErrInfo[0].registry_message_id; } catch(e) { /* ignore */ }
-                 const errorOptions = replyToIdForError ? { reply_to_message_id: replyToIdForError } : {};
-                 let userErrorMessage = `⚠️ Falha ao processar Sinal ID ${signal.id} para ${signal.symbol}.`;
-                 if (apiError.message) { userErrorMessage += ` Motivo: ${apiError.message}`; }
-                 try { await bot.telegram.sendMessage(signal.chat_id, userErrorMessage, errorOptions); } catch (telegramError) { console.error(`[MONITOR] Erro Telegram (API/DB INTERNO):`, telegramError); }
+                try {
+                    const warningMsg = `⚠️ ATENÇÃO: ${signal.symbol} (Sinal ID: ${signal.id}) aberta PARCIALMENTE (${totalFilledSize.toFixed(quantityPrecision)}/${totalEntrySize.toFixed(quantityPrecision)} - ${(fillRatio * 100).toFixed(1)}%).\n` +
+                                       `SL/TP automáticos NÃO foram criados. GERENCIE MANUALMENTE!`;
+                    const tgOpts = signal.message_id ? { reply_to_message_id: signal.message_id } : {};
+                    await bot.telegram.sendMessage(signal.chat_id, warningMsg, tgOpts);
+                } catch (tgError) { console.error(`[LIMIT_ENTRY] Erro Telegram (parcial sem SL/TP):`, tgError); }
             }
+        }
+        
+        if (typeof bot !== 'undefined' && signal.chat_id && bot) { 
             try {
-                await db.query( `UPDATE webhook_signals SET status = 'ERROR', error_message = ? WHERE id = ? AND status != 'EXECUTADO'`, [`Erro API/DB: ${String(apiError.message || apiError).substring(0, 250)}`, signal.id]);
-            } catch (updateError) { console.error(`[MONITOR] Erro ao atualizar Sinal ID ${signal.id} para ERROR (API/DB INTERNO):`, updateError); }
-            return; 
-        }
+                const displaySide = binanceSide === 'BUY' ? 'Compra' : 'Venda';
+                const amountInUsdt = totalFilledSize * averageEntryPrice; 
+                let tgTargetsMessage = "";
+                let tgHasAnyRpListed = false;
+                rpTargetKeys.forEach((key, index) => {
+                    const price = targetPrices[key];
+                    if (price && price > 0 && index < reductionPercentages.length) {
+                        const percent = reductionPercentages[index] * 100;
+                        tgTargetsMessage += `RP${index+1} (${percent}%): ${price.toFixed(pricePrecision)}\n`;
+                        tgHasAnyRpListed = true;
+                    }
+                });
+                const tgFinalTpDisplay = targetPrices.tp5;
+                if (tgFinalTpDisplay && tgFinalTpDisplay > 0) {
+                    tgTargetsMessage += `Take Profit  : ${tgFinalTpDisplay.toFixed(pricePrecision)}\n`;
+                } else if (!tgHasAnyRpListed) {
+                    tgTargetsMessage = "Alvos de TP não definidos no sinal.\n";
+                }
+                 if (!tgHasAnyRpListed && !(tgFinalTpDisplay && tgFinalTpDisplay > 0)) {
+                    tgTargetsMessage = "Nenhum Take Profit programado.\n";
+                }
+                let slTpMessage = "";
+                if (slTpRpsCreated) {
+                    slTpMessage = `Alvos Programados:\n${tgTargetsMessage}\nStop Loss: ${slPriceVal ? slPriceVal.toFixed(pricePrecision) : 'N/A'}\n`;
+                } else {
+                    slTpMessage = "SL/TP automáticos NÃO configurados devido à entrada parcial.\n";
+                }
 
-    } catch (error) { 
-        console.error(`[MONITOR] 🆘 ERRO GERAL ao executar entrada para ${signal.symbol} (Sinal ID: ${signal.id}):`, error);
-        if (connection) {
-            try { await connection.rollback(); console.log(`[MONITOR] Rollback da transação (ERRO GERAL) para Sinal ID ${signal.id} efetuado.`); } 
-            catch (rbErr) { console.error(`[MONITOR] Erro no rollback (ERRO GERAL) para Sinal ID ${signal.id}:`, rbErr); }
+                const telegramOptions = signal.message_id ? { reply_to_message_id: signal.message_id } : {};
+                
+                await bot.telegram.sendMessage(signal.chat_id,
+                    `✅ Entrada ${slTpRpsCreated ? 'LIMIT MAKER' : 'LIMIT MAKER (PARCIAL)'} realizada em ${signal.symbol} \n(Sinal ID: ${signal.id})\n\n` +
+                    `Direção: ${displaySide}\nAlavancagem: ${leverage}x\n` +
+                    `Valor Aprox.: ${amountInUsdt.toFixed(2)} USDT\n`+
+                    `Qtd. Executada: ${totalFilledSize.toFixed(quantityPrecision)} ${signal.symbol.replace('USDT', '')} (${(fillRatio*100).toFixed(1)}% da meta)\n\n` +
+                    `Preço Médio Entrada: ${averageEntryPrice.toFixed(pricePrecision)}\n\n` +
+                    slTpMessage,
+                    telegramOptions
+                );
+                console.log(`[LIMIT_ENTRY] Notificação Telegram enviada para Sinal ID ${signal.id}`);
+            } catch (telegramError) { console.error(`[LIMIT_ENTRY] Erro notificação Telegram:`, telegramError); }
         }
-        if (typeof bot !== 'undefined' && signal && signal.chat_id && bot) {
-             let replyToIdForError = null;
-             try { const [msgErrInfo] = await db.query(`SELECT registry_message_id FROM webhook_signals WHERE id = ? LIMIT 1`, [signal.id]); if (msgErrInfo && msgErrInfo.length > 0) replyToIdForError = msgErrInfo[0].registry_message_id; } catch(e) { /* ignore */ }
-             const errorOptions = replyToIdForError ? { reply_to_message_id: replyToIdForError } : {};
-             try { await bot.telegram.sendMessage(signal.chat_id, `⚠️ Erro Geral ao processar Sinal ID ${signal.id} para ${signal.symbol}. Motivo: ${error.message}`, errorOptions); } catch (telegramError) { console.error(`[MONITOR] Erro Telegram (ERRO GERAL):`, telegramError); }
+        
+        await connection.commit();
+        console.log(`[LIMIT_ENTRY] Transação COMMITADA. Sucesso Sinal ID ${signal.id}`);
+        
+        if (typeof syncAccountBalance !== 'undefined') { 
+            try { await syncAccountBalance(); } catch (e) { console.error(`[LIMIT_ENTRY] Erro syncAccountBalance: ${e.message}`); }
         }
-        try {
-            if (signal && signal.id) {
-                await db.query( `UPDATE webhook_signals SET status = 'ERROR', error_message = ? WHERE id = ? AND status != 'EXECUTADO'`, [`Erro GERAL: ${String(error.message || error).substring(0, 250)}`, signal.id]);
+        
+        return {
+            success: true, positionId, averagePrice: averageEntryPrice, filledQuantity: totalFilledSize, partialWarning: !slTpRpsCreated && totalFilledSize > 0
+        };
+        
+    } catch (error) { // Catch principal
+        const originalErrorMessage = error.message || String(error);
+        console.error(`[LIMIT_ENTRY] ERRO FATAL (Sinal ID ${signal.id}): ${originalErrorMessage}`, error.stack || error);
+        
+        // Lógica de recuperação se posição foi criada no DB
+        if (positionId && totalFilledSize > 0) {
+            console.warn(`[LIMIT_ENTRY_RECOVERY] Tentando SALVAR POSIÇÃO ${positionId} (${totalFilledSize.toFixed(quantityPrecision)} ${signal.symbol}) e enviar SL/TP apesar do erro: ${originalErrorMessage}`);
+            try {
+                // As variáveis binanceSide, leverage, quantityPrecision, pricePrecision, signal já devem estar definidas
+                const binanceOppositeSide = binanceSide === 'BUY' ? 'SELL' : 'BUY';
+                const slPriceVal = signal.sl_price ? parseFloat(signal.sl_price) : null;
+                
+                if (slPriceVal && slPriceVal > 0) {
+                    console.log(`[LIMIT_ENTRY_RECOVERY] Enviando SL: ${totalFilledSize.toFixed(quantityPrecision)} @ ${slPriceVal.toFixed(pricePrecision)}`);
+                    const slResponse = await newStopOrder( 
+                        signal.symbol, totalFilledSize.toFixed(quantityPrecision), 
+                        binanceOppositeSide, slPriceVal.toFixed(pricePrecision), null, true, true 
+                    );
+                    if (slResponse && slResponse.data && slResponse.data.orderId) {
+                        const slOrderData = { 
+                            tipo_ordem: 'STOP_MARKET', preco: slPriceVal, quantidade: totalFilledSize, id_posicao: positionId, status: 'NEW', 
+                            data_hora_criacao: new Date().toISOString(), id_externo: String(slResponse.data.orderId).substring(0,90), side: binanceOppositeSide, 
+                            simbolo: signal.symbol, tipo_ordem_bot: 'STOP_LOSS', reduce_only: true, close_position: true, orign_sig: `WEBHOOK_${signal.id}`,
+                            last_update: new Date().toISOString(), target: null, observacao: 'SL Enviado em Recuperação'
+                        };
+                        await insertNewOrder(connection, slOrderData); 
+                        console.log(`[LIMIT_ENTRY_RECOVERY] SL (recuperação) criado: ${slResponse.data.orderId}`);
+                        await connection.query( `UPDATE webhook_signals SET sl_order_id = ? WHERE id = ? AND position_id = ?`, [String(slResponse.data.orderId), signal.id, positionId] );
+                    } else { console.error(`[LIMIT_ENTRY_RECOVERY] Falha criar SL (recuperação).`, slResponse); }
+                } else { console.warn(`[LIMIT_ENTRY_RECOVERY] SL inválido (${slPriceVal}).`); }
+
+                const finalTpPriceVal = signal.tp_price ? parseFloat(signal.tp_price) : (signal.tp5_price ? parseFloat(signal.tp5_price) : null);
+                if (finalTpPriceVal && finalTpPriceVal > 0) {
+                    console.log(`[LIMIT_ENTRY_RECOVERY] Enviando TP Final: ${totalFilledSize.toFixed(quantityPrecision)} @ ${finalTpPriceVal.toFixed(pricePrecision)}`);
+                     const tpResponse = await newStopOrder( 
+                        signal.symbol, totalFilledSize.toFixed(quantityPrecision), 
+                        binanceOppositeSide, finalTpPriceVal.toFixed(pricePrecision),
+                        finalTpPriceVal.toFixed(pricePrecision), true, true 
+                    );
+                    if (tpResponse && tpResponse.data && tpResponse.data.orderId) {
+                        const tpOrderData = {
+                            tipo_ordem: 'TAKE_PROFIT_MARKET', preco: finalTpPriceVal, quantidade: totalFilledSize, id_posicao: positionId, status: 'NEW',
+                            data_hora_criacao: new Date().toISOString(), id_externo: String(tpResponse.data.orderId).substring(0,90), side: binanceOppositeSide,
+                            simbolo: signal.symbol, tipo_ordem_bot: 'TAKE_PROFIT', target: 5, reduce_only: true, close_position: true, orign_sig: `WEBHOOK_${signal.id}`,
+                            last_update: new Date().toISOString(), observacao: 'TP Enviado em Recuperação'
+                        };
+                        await insertNewOrder(connection, tpOrderData); 
+                        console.log(`[LIMIT_ENTRY_RECOVERY] TP (recuperação) criado: ${tpResponse.data.orderId}`);
+                        await connection.query( `UPDATE webhook_signals SET tp_order_id = ? WHERE id = ? AND position_id = ?`, [String(tpResponse.data.orderId), signal.id, positionId] );
+                    } else { console.error(`[LIMIT_ENTRY_RECOVERY] Falha criar TP (recuperação).`, tpResponse); }
+                } else { console.warn(`[LIMIT_ENTRY_RECOVERY] TP Final inválido.`); }
+                
+                await connection.commit(); 
+                console.warn(`[LIMIT_ENTRY_RECOVERY] Posição ${positionId} SALVA e SL/TP tentados. Erro original: ${originalErrorMessage}`);
+                
+                 await db.query( 
+                    `UPDATE webhook_signals SET status = 'EXECUTADO_COM_AVISO', error_message = ? WHERE id = ? AND position_id = ?`,
+                    [`Erro: ${originalErrorMessage}. Posição salva, SL/TP tentados.`.substring(0, 250), signal.id, positionId]
+                );
+                // Notificar Telegram
+                if (typeof bot !== 'undefined' && signal.chat_id && bot) {
+                    await bot.telegram.sendMessage(signal.chat_id, `⚠️ Posição ${signal.symbol} (Sinal ${signal.id}) aberta, mas com erro: ${originalErrorMessage}.\nSL/TP foram tentados. Verifique!`);
+                }
+                return {
+                    success: true, positionId, averagePrice: averageEntryPrice, filledQuantity: totalFilledSize,
+                    warning: `Erro durante entrada: ${originalErrorMessage}. Posição salva e SL/TP tentados.`
+                };
+            } catch (recoveryError) {
+                console.error(`[LIMIT_ENTRY_RECOVERY] ERRO na RECUPERAÇÃO (SL/TP):`, recoveryError.message);
+                // Se a recuperação falhar, o rollback principal abaixo será executado.
             }
-        } catch (updateError) { console.error(`[MONITOR] Erro ao atualizar Sinal ID ${signal?.id} para ERROR (ERRO GERAL):`, updateError); }
+        }
+        
+        if (activeOrderId) { 
+            try { await cancelOrder(activeOrderId, signal.symbol); console.log(`[LIMIT_ENTRY] (Catch) ${activeOrderId} cancelada.`); } 
+            catch (cancelErrOnCatch) { console.error(`[LIMIT_ENTRY] (Catch) Erro cancelar ${activeOrderId}:`, cancelErrOnCatch.message); }
+        }
+        
+        if (connection) { 
+            try { await connection.rollback(); console.log(`[LIMIT_ENTRY] (Catch) ROLLBACK para Sinal ${signal.id}.`); }
+            catch (rbErr) { console.error(`[LIMIT_ENTRY] (Catch) Erro ROLLBACK Sinal ${signal.id}:`, rbErr); }
+        }
+        
+        try {
+            await db.query( 
+                `UPDATE webhook_signals SET status = 'ERROR', error_message = ? WHERE id = ?`,
+                [String(originalErrorMessage).substring(0, 250), signal.id]
+            );
+        } catch (updateError) { console.error(`[LIMIT_ENTRY] (Catch) Erro atualizar sinal para ERROR:`, updateError); }
+        
+        if (typeof bot !== 'undefined' && signal.chat_id && bot) { 
+            try {
+                const tgOptsOnError = signal.message_id ? { reply_to_message_id: signal.message_id } : {};
+                await bot.telegram.sendMessage(signal.chat_id,
+                    `❌ Erro CRÍTICO LIMIT MAKER ${signal.symbol} (Sinal ID: ${signal.id})\nMotivo: ${originalErrorMessage}`, tgOptsOnError );
+            } catch (tgError) { console.error(`[LIMIT_ENTRY] (Catch) Erro Telegram:`, tgError); }
+        }
+        return { success: false, error: originalErrorMessage };
     } finally {
         if (connection) {
             connection.release();
         }
+        // processingSignals.delete(signalKey); // Se você usa signalKey
+    }
+}
+
+// ... (funções auxiliares como calculateAveragePrice, waitForOrderExecution mock)
+// Assegure-se que as funções auxiliares estão corretas e completas.
+
+// Função auxiliar para calcular preço médio
+function calculateAveragePrice(fills) {
+    if (!fills || fills.length === 0) return 0;
+    let totalQty = 0;
+    let totalCost = 0;
+    fills.forEach(fill => {
+        const qty = parseFloat(fill.qty);
+        const price = parseFloat(fill.price);
+        if (!isNaN(qty) && !isNaN(price) && qty > 0) { // Adicionada verificação qty > 0
+            totalQty += qty;
+            totalCost += qty * price;
+        }
+    });
+    return totalQty > 0 ? totalCost / totalQty : 0;
+}
+
+async function waitForOrderExecution(symbol, orderId, maxWaitMs = 6000) {
+  if (!orderId) {
+    console.log(`[WAIT_ORDER] OrderId inválido: ${orderId}`);
+    return { status: 'UNKNOWN', executedQty: 0 };
+  }
+
+  const startTime = Date.now();
+  let lastStatus = null;
+  
+  try {
+    // Tentar obter status imediatamente
+    try {
+      const initialStatus = await getOrderStatus(symbol, orderId);
+      if (initialStatus.status === 'FILLED' || initialStatus.status === 'PARTIALLY_FILLED') {
+        console.log(`[WAIT_ORDER] Ordem ${orderId} já está ${initialStatus.status}`);
+        return initialStatus;
+      }
+      lastStatus = initialStatus;
+    } catch (initialError) {
+      console.log(`[WAIT_ORDER] Erro inicial ao verificar ordem ${orderId}: ${initialError.message}`);
+    }
+    
+    // Usar algoritmo de espera adaptativa
+    let waitTime = 300; // Começa com 300ms
+    
+    while (Date.now() - startTime < maxWaitMs) {
+      await new Promise(resolve => setTimeout(resolve, waitTime));
+      
+      try {
+        const orderStatus = await getOrderStatus(symbol, orderId);
+        lastStatus = orderStatus;
+        
+        // Se a ordem foi preenchida ou cancelada, retornar imediatamente
+        if (['FILLED', 'CANCELED', 'REJECTED', 'EXPIRED'].includes(orderStatus.status)) {
+          console.log(`[WAIT_ORDER] Ordem ${orderId} com status ${orderStatus.status}`);
+          return orderStatus;
+        }
+        
+        // Aumentar ligeiramente o tempo de espera, max 800ms
+        waitTime = Math.min(waitTime * 1.5, 800);
+      } catch (error) {
+        console.log(`[WAIT_ORDER] Erro ao verificar ordem ${orderId}: ${error.message}`);
+        // Diminuir tempo de espera para tentar mais vezes
+        waitTime = Math.max(waitTime / 2, 200);
+      }
+    }
+    
+    // Timeout atingido
+    console.log(`[WAIT_ORDER] Timeout para ordem ${orderId} (${maxWaitMs}ms)`);
+    return lastStatus || { status: 'TIMEOUT', executedQty: 0 };
+  } catch (error) {
+    console.error(`[WAIT_ORDER] Erro crítico ao aguardar ordem ${orderId}: ${error.message}`);
+    return lastStatus || { status: 'ERROR', executedQty: 0, error: error.message };
+  }
+}
+
+// ... (funções auxiliares como calculateAveragePrice, waitForOrderExecution mock)
+// Assegure-se que as funções auxiliares estão corretas e completas.
+
+// Função auxiliar para calcular preço médio
+function calculateAveragePrice(fills) {
+    if (!fills || fills.length === 0) return 0;
+    let totalQty = 0;
+    let totalCost = 0;
+    fills.forEach(fill => {
+        const qty = parseFloat(fill.qty);
+        const price = parseFloat(fill.price);
+        if (!isNaN(qty) && !isNaN(price) && qty > 0) { // Adicionada verificação qty > 0
+            totalQty += qty;
+            totalCost += qty * price;
+        }
+    });
+    return totalQty > 0 ? totalCost / totalQty : 0;
+}
+
+// Função auxiliar para aguardar execução da ordem (MOCK - SUBSTITUA PELA SUA IMPLEMENTAÇÃO REAL)
+// ESSENCIAL: Sua função real getOrderStatus deve retornar o objeto completo da ordem, não apenas a string do status.
+async function waitForOrderExecution(symbol, orderId, timeoutMs) {
+    // console.log(`[MOCK_WAIT] Aguardando execução da ordem ${orderId} para ${symbol} (Timeout: ${timeoutMs}ms)`);
+    return new Promise(async (resolve) => {
+        if (!orderId) {
+            resolve({ status: 'NO_ORDER_ID', executedQty: 0, price: 0, orderId: null, avgPrice: 0, cummulativeQuoteQty: 0 });
+            return;
+        }
+
+        const checkInterval = Math.min(Math.max(timeoutMs / 4, 500), 2000); // Intervalo entre 0.5s e 2s, no máximo 4 checagens
+        let elapsedTime = 0;
+        let intervalId;
+
+        const checker = async () => {
+            try {
+                // ESTA FUNÇÃO PRECISA RETORNAR O OBJETO COMPLETO DA ORDEM DA BINANCE
+                const orderStatusFull = await getOrderStatus(orderId, symbol); 
+
+                if (orderStatusFull) { 
+                    const status = orderStatusFull.status;
+                    const executedQty = parseFloat(orderStatusFull.executedQty || 0);
+                    const avgPrice = parseFloat(orderStatusFull.avgPrice || 0); // avgPrice é o preço médio de execução
+                    const price = parseFloat(orderStatusFull.price || 0); // Preço da ordem original
+                    const cummulativeQuoteQty = parseFloat(orderStatusFull.cummulativeQuoteQty || 0);
+                    const orderIdFromStatus = orderStatusFull.orderId;
+
+                    if (['FILLED', 'CANCELED', 'REJECTED', 'EXPIRED'].includes(status)) {
+                        clearInterval(intervalId);
+                        resolve({ status, executedQty, price: avgPrice || price, orderId: orderIdFromStatus, avgPrice, cummulativeQuoteQty });
+                        return;
+                    } else if (status === 'PARTIALLY_FILLED') {
+                        // Para parcial, resolve para que o loop principal possa processar o preenchimento
+                        clearInterval(intervalId); // Resolve imediatamente com o estado parcial
+                        resolve({ status, executedQty, price: avgPrice || price, orderId: orderIdFromStatus, avgPrice, cummulativeQuoteQty });
+                        return;
+                    } else if (status === 'NEW' || status === 'PENDING_CANCEL') {
+                        // Continua esperando se NEW
+                    }
+                } else {
+                    // console.warn(`[MOCK_WAIT] Status nulo para ordem ${orderId}.`);
+                }
+            } catch (error) {
+                console.error(`[MOCK_WAIT] Erro buscar status ${orderId}: ${error.message}`);
+            }
+
+            elapsedTime += checkInterval;
+            if (elapsedTime >= timeoutMs) {
+                clearInterval(intervalId);
+                try {
+                    const finalOrderStatus = await getOrderStatus(orderId, symbol); 
+                    if (finalOrderStatus) {
+                         resolve({ 
+                            status: finalOrderStatus.status || 'TIMED_OUT_UNKNOWN_STATUS', 
+                            executedQty: parseFloat(finalOrderStatus.executedQty || 0), 
+                            price: parseFloat(finalOrderStatus.avgPrice || finalOrderStatus.price || 0), 
+                            orderId: finalOrderStatus.orderId,
+                            avgPrice: parseFloat(finalOrderStatus.avgPrice || 0),
+                            cummulativeQuoteQty: parseFloat(finalOrderStatus.cummulativeQuoteQty || 0)
+                        });
+                    } else {
+                         resolve({ status: 'TIMED_OUT_NO_INFO', executedQty: 0, price: 0, orderId: orderId, avgPrice: 0, cummulativeQuoteQty: 0 });
+                    }
+                } catch (e) {
+                     resolve({ status: 'TIMED_OUT_API_ERROR', executedQty: 0, price: 0, orderId: orderId, avgPrice: 0, cummulativeQuoteQty: 0 });
+                }
+            }
+        };
+        intervalId = setInterval(checker, checkInterval);
+        await checker(); 
+    });
+}
+
+// ... (funções auxiliares como calculateAveragePrice, waitForOrderExecution mock)
+// Assegure-se que as funções auxiliares estão corretas e completas.
+
+// Função auxiliar para calcular preço médio
+function calculateAveragePrice(fills) {
+    if (!fills || fills.length === 0) return 0;
+    let totalQty = 0;
+    let totalCost = 0;
+    fills.forEach(fill => {
+        const qty = parseFloat(fill.qty);
+        const price = parseFloat(fill.price);
+        if (!isNaN(qty) && !isNaN(price) && qty > 0) { // Adicionada verificação qty > 0
+            totalQty += qty;
+            totalCost += qty * price;
+        }
+    });
+    return totalQty > 0 ? totalCost / totalQty : 0;
+}
+
+// Função auxiliar para aguardar execução da ordem (MOCK - SUBSTITUA PELA SUA IMPLEMENTAÇÃO REAL)
+// ESSENCIAL: Sua função real getOrderStatus deve retornar o objeto completo da ordem, não apenas a string do status.
+async function waitForOrderExecution(symbol, orderId, timeoutMs) {
+    // console.log(`[MOCK_WAIT] Aguardando execução da ordem ${orderId} para ${symbol} (Timeout: ${timeoutMs}ms)`);
+    return new Promise(async (resolve) => {
+        if (!orderId) {
+            resolve({ status: 'NO_ORDER_ID', executedQty: 0, price: 0, orderId: null, avgPrice: 0, cummulativeQuoteQty: 0 });
+            return;
+        }
+
+        const checkInterval = Math.min(Math.max(timeoutMs / 4, 500), 2000); // Intervalo entre 0.5s e 2s, no máximo 4 checagens
+        let elapsedTime = 0;
+        let intervalId;
+
+        const checker = async () => {
+            try {
+                // ESTA FUNÇÃO PRECISA RETORNAR O OBJETO COMPLETO DA ORDEM DA BINANCE
+                const orderStatusFull = await getOrderStatus(orderId, symbol); 
+
+                if (orderStatusFull) { 
+                    const status = orderStatusFull.status;
+                    const executedQty = parseFloat(orderStatusFull.executedQty || 0);
+                    const avgPrice = parseFloat(orderStatusFull.avgPrice || 0); // avgPrice é o preço médio de execução
+                    const price = parseFloat(orderStatusFull.price || 0); // Preço da ordem original
+                    const cummulativeQuoteQty = parseFloat(orderStatusFull.cummulativeQuoteQty || 0);
+                    const orderIdFromStatus = orderStatusFull.orderId;
+
+                    if (['FILLED', 'CANCELED', 'REJECTED', 'EXPIRED'].includes(status)) {
+                        clearInterval(intervalId);
+                        resolve({ status, executedQty, price: avgPrice || price, orderId: orderIdFromStatus, avgPrice, cummulativeQuoteQty });
+                        return;
+                    } else if (status === 'PARTIALLY_FILLED') {
+                        // Para parcial, resolve para que o loop principal possa processar o preenchimento
+                        clearInterval(intervalId); // Resolve imediatamente com o estado parcial
+                        resolve({ status, executedQty, price: avgPrice || price, orderId: orderIdFromStatus, avgPrice, cummulativeQuoteQty });
+                        return;
+                    } else if (status === 'NEW' || status === 'PENDING_CANCEL') {
+                        // Continua esperando se NEW
+                    }
+                } else {
+                    // console.warn(`[MOCK_WAIT] Status nulo para ordem ${orderId}.`);
+                }
+            } catch (error) {
+                console.error(`[MOCK_WAIT] Erro buscar status ${orderId}: ${error.message}`);
+            }
+
+            elapsedTime += checkInterval;
+            if (elapsedTime >= timeoutMs) {
+                clearInterval(intervalId);
+                try {
+                    const finalOrderStatus = await getOrderStatus(orderId, symbol); 
+                    if (finalOrderStatus) {
+                         resolve({ 
+                            status: finalOrderStatus.status || 'TIMED_OUT_UNKNOWN_STATUS', 
+                            executedQty: parseFloat(finalOrderStatus.executedQty || 0), 
+                            price: parseFloat(finalOrderStatus.avgPrice || finalOrderStatus.price || 0), 
+                            orderId: finalOrderStatus.orderId,
+                            avgPrice: parseFloat(finalOrderStatus.avgPrice || 0),
+                            cummulativeQuoteQty: parseFloat(finalOrderStatus.cummulativeQuoteQty || 0)
+                        });
+                    } else {
+                         resolve({ status: 'TIMED_OUT_NO_INFO', executedQty: 0, price: 0, orderId: orderId, avgPrice: 0, cummulativeQuoteQty: 0 });
+                    }
+                } catch (e) {
+                     resolve({ status: 'TIMED_OUT_API_ERROR', executedQty: 0, price: 0, orderId: orderId, avgPrice: 0, cummulativeQuoteQty: 0 });
+                }
+            }
+        };
+        intervalId = setInterval(checker, checkInterval);
+        await checker(); 
+    });
+}
+
+// ... (funções auxiliares como calculateAveragePrice, waitForOrderExecution mock)
+// Assegure-se que as funções auxiliares estão corretas e completas.
+
+// Função auxiliar para calcular preço médio
+function calculateAveragePrice(fills) {
+    if (!fills || fills.length === 0) return 0;
+    let totalQty = 0;
+    let totalCost = 0;
+    fills.forEach(fill => {
+        const qty = parseFloat(fill.qty);
+        const price = parseFloat(fill.price);
+        if (!isNaN(qty) && !isNaN(price) && qty > 0) { // Adicionada verificação qty > 0
+            totalQty += qty;
+            totalCost += qty * price;
+        }
+    });
+    return totalQty > 0 ? totalCost / totalQty : 0;
+}
+
+// Função auxiliar para aguardar execução da ordem (MOCK - SUBSTITUA PELA SUA IMPLEMENTAÇÃO REAL)
+// ESSENCIAL: Sua função real getOrderStatus deve retornar o objeto completo da ordem, não apenas a string do status.
+async function waitForOrderExecution(symbol, orderId, timeoutMs) {
+    // console.log(`[MOCK_WAIT] Aguardando execução da ordem ${orderId} para ${symbol} (Timeout: ${timeoutMs}ms)`);
+    return new Promise(async (resolve) => {
+        if (!orderId) {
+            resolve({ status: 'NO_ORDER_ID', executedQty: 0, price: 0, orderId: null, avgPrice: 0, cummulativeQuoteQty: 0 });
+            return;
+        }
+
+        const checkInterval = Math.min(Math.max(timeoutMs / 4, 500), 2000); // Intervalo entre 0.5s e 2s, no máximo 4 checagens
+        let elapsedTime = 0;
+        let intervalId;
+
+        const checker = async () => {
+            try {
+                // ESTA FUNÇÃO PRECISA RETORNAR O OBJETO COMPLETO DA ORDEM DA BINANCE
+                const orderStatusFull = await getOrderStatus(orderId, symbol); 
+
+                if (orderStatusFull) { 
+                    const status = orderStatusFull.status;
+                    const executedQty = parseFloat(orderStatusFull.executedQty || 0);
+                    const avgPrice = parseFloat(orderStatusFull.avgPrice || 0); // avgPrice é o preço médio de execução
+                    const price = parseFloat(orderStatusFull.price || 0); // Preço da ordem original
+                    const cummulativeQuoteQty = parseFloat(orderStatusFull.cummulativeQuoteQty || 0);
+                    const orderIdFromStatus = orderStatusFull.orderId;
+
+                    if (['FILLED', 'CANCELED', 'REJECTED', 'EXPIRED'].includes(status)) {
+                        clearInterval(intervalId);
+                        resolve({ status, executedQty, price: avgPrice || price, orderId: orderIdFromStatus, avgPrice, cummulativeQuoteQty });
+                        return;
+                    } else if (status === 'PARTIALLY_FILLED') {
+                        // Para parcial, resolve para que o loop principal possa processar o preenchimento
+                        clearInterval(intervalId); // Resolve imediatamente com o estado parcial
+                        resolve({ status, executedQty, price: avgPrice || price, orderId: orderIdFromStatus, avgPrice, cummulativeQuoteQty });
+                        return;
+                    } else if (status === 'NEW' || status === 'PENDING_CANCEL') {
+                        // Continua esperando se NEW
+                    }
+                } else {
+                    // console.warn(`[MOCK_WAIT] Status nulo para ordem ${orderId}.`);
+                }
+            } catch (error) {
+                console.error(`[MOCK_WAIT] Erro buscar status ${orderId}: ${error.message}`);
+            }
+
+            elapsedTime += checkInterval;
+            if (elapsedTime >= timeoutMs) {
+                clearInterval(intervalId);
+                try {
+                    const finalOrderStatus = await getOrderStatus(orderId, symbol); 
+                    if (finalOrderStatus) {
+                         resolve({ 
+                            status: finalOrderStatus.status || 'TIMED_OUT_UNKNOWN_STATUS', 
+                            executedQty: parseFloat(finalOrderStatus.executedQty || 0), 
+                            price: parseFloat(finalOrderStatus.avgPrice || finalOrderStatus.price || 0), 
+                            orderId: finalOrderStatus.orderId,
+                            avgPrice: parseFloat(finalOrderStatus.avgPrice || 0),
+                            cummulativeQuoteQty: parseFloat(finalOrderStatus.cummulativeQuoteQty || 0)
+                        });
+                    } else {
+                         resolve({ status: 'TIMED_OUT_NO_INFO', executedQty: 0, price: 0, orderId: orderId, avgPrice: 0, cummulativeQuoteQty: 0 });
+                    }
+                } catch (e) {
+                     resolve({ status: 'TIMED_OUT_API_ERROR', executedQty: 0, price: 0, orderId: orderId, avgPrice: 0, cummulativeQuoteQty: 0 });
+                }
+            }
+        };
+        intervalId = setInterval(checker, checkInterval);
+        await checker(); 
+    });
+}
+
+// Função auxiliar para calcular preço médio
+function calculateAveragePrice(fills) {
+    if (!fills || fills.length === 0) return 0;
+    let totalQty = 0;
+    let totalCost = 0;
+    fills.forEach(fill => {
+        const qty = parseFloat(fill.qty);
+        const price = parseFloat(fill.price);
+        if (!isNaN(qty) && !isNaN(price) && qty > 0) { // Adicionada verificação qty > 0
+            totalQty += qty;
+            totalCost += qty * price;
+        }
+    });
+    return totalQty > 0 ? totalCost / totalQty : 0;
+}
+
+// Função auxiliar para aguardar execução da ordem (MOCK - SUBSTITUA PELA SUA IMPLEMENTAÇÃO REAL)
+// ESSENCIAL: Sua função real getOrderStatus deve retornar o objeto completo da ordem, não apenas a string do status.
+async function waitForOrderExecution(symbol, orderId, timeoutMs) {
+    // console.log(`[MOCK_WAIT] Aguardando execução da ordem ${orderId} para ${symbol} (Timeout: ${timeoutMs}ms)`);
+    return new Promise(async (resolve) => {
+        if (!orderId) {
+            resolve({ status: 'NO_ORDER_ID', executedQty: 0, price: 0, orderId: null, avgPrice: 0, cummulativeQuoteQty: 0 });
+            return;
+        }
+
+        const checkInterval = Math.min(Math.max(timeoutMs / 4, 500), 2000); // Intervalo entre 0.5s e 2s, no máximo 4 checagens
+        let elapsedTime = 0;
+        let intervalId;
+
+        const checker = async () => {
+            try {
+                // ESTA FUNÇÃO PRECISA RETORNAR O OBJETO COMPLETO DA ORDEM DA BINANCE
+                const orderStatusFull = await getOrderStatus(orderId, symbol); 
+
+                if (orderStatusFull) { 
+                    const status = orderStatusFull.status;
+                    const executedQty = parseFloat(orderStatusFull.executedQty || 0);
+                    const avgPrice = parseFloat(orderStatusFull.avgPrice || 0); // avgPrice é o preço médio de execução
+                    const price = parseFloat(orderStatusFull.price || 0); // Preço da ordem original
+                    const cummulativeQuoteQty = parseFloat(orderStatusFull.cummulativeQuoteQty || 0);
+                    const orderIdFromStatus = orderStatusFull.orderId;
+
+                    if (['FILLED', 'CANCELED', 'REJECTED', 'EXPIRED'].includes(status)) {
+                        clearInterval(intervalId);
+                        resolve({ status, executedQty, price: avgPrice || price, orderId: orderIdFromStatus, avgPrice, cummulativeQuoteQty });
+                        return;
+                    } else if (status === 'PARTIALLY_FILLED') {
+                        // Para parcial, resolve para que o loop principal possa processar o preenchimento
+                        clearInterval(intervalId); // Resolve imediatamente com o estado parcial
+                        resolve({ status, executedQty, price: avgPrice || price, orderId: orderIdFromStatus, avgPrice, cummulativeQuoteQty });
+                        return;
+                    } else if (status === 'NEW' || status === 'PENDING_CANCEL') {
+                        // Continua esperando se NEW
+                    }
+                } else {
+                    // console.warn(`[MOCK_WAIT] Status nulo para ordem ${orderId}.`);
+                }
+            } catch (error) {
+                console.error(`[MOCK_WAIT] Erro buscar status ${orderId}: ${error.message}`);
+            }
+
+            elapsedTime += checkInterval;
+            if (elapsedTime >= timeoutMs) {
+                clearInterval(intervalId);
+                try {
+                    const finalOrderStatus = await getOrderStatus(orderId, symbol); 
+                    if (finalOrderStatus) {
+                         resolve({ 
+                            status: finalOrderStatus.status || 'TIMED_OUT_UNKNOWN_STATUS', 
+                            executedQty: parseFloat(finalOrderStatus.executedQty || 0), 
+                            price: parseFloat(finalOrderStatus.avgPrice || finalOrderStatus.price || 0), 
+                            orderId: finalOrderStatus.orderId,
+                            avgPrice: parseFloat(finalOrderStatus.avgPrice || 0),
+                            cummulativeQuoteQty: parseFloat(finalOrderStatus.cummulativeQuoteQty || 0)
+                        });
+                    } else {
+                         resolve({ status: 'TIMED_OUT_NO_INFO', executedQty: 0, price: 0, orderId: orderId, avgPrice: 0, cummulativeQuoteQty: 0 });
+                    }
+                } catch (e) {
+                     resolve({ status: 'TIMED_OUT_API_ERROR', executedQty: 0, price: 0, orderId: orderId, avgPrice: 0, cummulativeQuoteQty: 0 });
+                }
+            }
+        };
+        intervalId = setInterval(checker, checkInterval);
+        await checker(); 
+    });
+}
+
+// Função auxiliar para calcular preço médio
+function calculateAveragePrice(fills) {
+    if (!fills || fills.length === 0) return 0;
+    let totalQty = 0;
+    let totalCost = 0;
+    fills.forEach(fill => {
+        const qty = parseFloat(fill.qty);
+        const price = parseFloat(fill.price);
+        if (!isNaN(qty) && !isNaN(price)) {
+            totalQty += qty;
+            totalCost += qty * price;
+        }
+    });
+    return totalQty > 0 ? totalCost / totalQty : 0;
+}
+
+// Função auxiliar para aguardar execução da ordem (MOCK - SUBSTITUA PELA SUA IMPLEMENTAÇÃO REAL)
+async function waitForOrderExecution(symbol, orderId, timeoutMs) {
+    // console.log(`[MOCK_WAIT] Aguardando execução da ordem ${orderId} para ${symbol} (Timeout: ${timeoutMs}ms)`);
+    return new Promise(async (resolve) => {
+        if (!orderId) {
+            // console.warn("[MOCK_WAIT] OrderId nulo fornecido para waitForOrderExecution.");
+            resolve({ status: 'NO_ORDER_ID', executedQty: 0, price: 0, orderId: null, avgPrice: 0, cummulativeQuoteQty: 0 });
+            return;
+        }
+
+        const checkInterval = Math.min(timeoutMs / 3, 1500); 
+        let elapsedTime = 0;
+        let intervalId;
+
+        const checker = async () => {
+            try {
+                const orderStatusFull = await getOrderStatus(orderId, symbol); // Deve retornar o objeto completo da ordem
+
+                if (orderStatusFull) { 
+                    if (['FILLED', 'CANCELED', 'REJECTED', 'EXPIRED'].includes(orderStatusFull.status)) {
+                        clearInterval(intervalId);
+                        resolve({
+                            status: orderStatusFull.status,
+                            executedQty: parseFloat(orderStatusFull.executedQty || 0),
+                            price: parseFloat(orderStatusFull.avgPrice || orderStatusFull.price || 0), 
+                            orderId: orderStatusFull.orderId,
+                            avgPrice: parseFloat(orderStatusFull.avgPrice || 0), 
+                            cummulativeQuoteQty: parseFloat(orderStatusFull.cummulativeQuoteQty || 0)
+                        });
+                        return;
+                    } else if (orderStatusFull.status === 'PARTIALLY_FILLED' || orderStatusFull.status === 'NEW' || orderStatusFull.status === 'PENDING_CANCEL') {
+                        // Para PARTIALLY_FILLED, também resolvemos para que o loop principal possa processar.
+                        // Para NEW, o loop principal continuará monitorando ou editando.
+                         if (orderStatusFull.status === 'PARTIALLY_FILLED' && elapsedTime >= timeoutMs / 2) { // Resolve antes se parcial e já esperou um pouco
+                            clearInterval(intervalId);
+                            resolve({ /* ... dados da ordem ... */ ...orderStatusFull, executedQty: parseFloat(orderStatusFull.executedQty), price: parseFloat(orderStatusFull.avgPrice || orderStatusFull.price) });
+                            return;
+                         }
+                        // console.log(`[MOCK_WAIT] Ordem ${orderId} status: ${orderStatusFull.status}`);
+                    } else {
+                         // console.log(`[MOCK_WAIT] Ordem ${orderId} status inesperado: ${orderStatusFull.status}`);
+                    }
+                } else {
+                    // console.warn(`[MOCK_WAIT] Status nulo para ordem ${orderId}.`);
+                }
+            } catch (error) {
+                console.error(`[MOCK_WAIT] Erro ao buscar status da ordem ${orderId}: ${error.message}`);
+                // Não limpar intervalo aqui, pode ser erro de rede temporário
+            }
+
+            elapsedTime += checkInterval;
+            if (elapsedTime >= timeoutMs) {
+                clearInterval(intervalId);
+                // console.warn(`[MOCK_WAIT] Timeout para ordem ${orderId}. Obtendo status final...`);
+                try {
+                    const finalOrderStatus = await getOrderStatus(orderId, symbol); 
+                    if (finalOrderStatus) {
+                         resolve({ /* ... dados da ordem ... */ ...finalOrderStatus, executedQty: parseFloat(finalOrderStatus.executedQty), price: parseFloat(finalOrderStatus.avgPrice || finalOrderStatus.price) });
+                    } else {
+                         resolve({ status: 'TIMED_OUT_NO_INFO', executedQty: 0, price: 0, orderId: orderId, avgPrice: 0, cummulativeQuoteQty: 0 });
+                    }
+                } catch (e) {
+                     resolve({ status: 'TIMED_OUT_API_ERROR', executedQty: 0, price: 0, orderId: orderId, avgPrice: 0, cummulativeQuoteQty: 0 });
+                }
+            }
+        };
+        intervalId = setInterval(checker, checkInterval);
+        await checker(); // Executa imediatamente uma vez
+    });
+}
+
+// Função auxiliar para calcular preço médio (você já deve ter algo similar)
+function calculateAveragePrice(fills) {
+    if (!fills || fills.length === 0) return 0;
+    let totalQty = 0;
+    let totalCost = 0;
+    fills.forEach(fill => {
+        totalQty += parseFloat(fill.qty);
+        totalCost += parseFloat(fill.qty) * parseFloat(fill.price);
+    });
+    return totalQty > 0 ? totalCost / totalQty : 0;
+}
+
+// Função auxiliar para simular waitForOrderExecution (substitua pela sua implementação real com WebSockets ou polling mais robusto)
+// ESTA É UMA SIMULAÇÃO E PRECISA SER SUBSTITUÍDA PELA SUA LÓGICA REAL DE WEBSOCKET/POLLING
+async function waitForOrderExecution(symbol, orderId, timeoutMs) {
+    // console.log(`[MOCK_WAIT] Aguardando execução da ordem ${orderId} para ${symbol} (Timeout: ${timeoutMs}ms)`);
+    
+    return new Promise(async (resolve) => {
+        const checkInterval = Math.min(timeoutMs / 2, 1000); 
+        let elapsedTime = 0;
+        let intervalId;
+
+        const checker = async () => {
+            elapsedTime += checkInterval;
+            try {
+                const orderStatus = await getOrderStatus(orderId, symbol); 
+
+                if (orderStatus) { 
+                    if (['FILLED', 'PARTIALLY_FILLED', 'CANCELED', 'REJECTED', 'EXPIRED'].includes(orderStatus.status)) {
+                        clearInterval(intervalId);
+                        // console.log(`[MOCK_WAIT] Ordem ${orderId} com status final: ${orderStatus.status}`);
+                        resolve({
+                            status: orderStatus.status,
+                            executedQty: orderStatus.executedQty || 0,
+                            price: orderStatus.avgPrice || orderStatus.price || 0, 
+                            orderId: orderStatus.orderId,
+                            avgPrice: orderStatus.avgPrice || 0, // Adicionado para consistência
+                            cummulativeQuoteQty: orderStatus.cummulativeQuoteQty || 0 // Adicionado
+                        });
+                        return;
+                    } else if (orderStatus.status === 'NEW' || orderStatus.status === 'PENDING_CANCEL') {
+                        // console.log(`[MOCK_WAIT] Ordem ${orderId} ainda com status: ${orderStatus.status}`);
+                    } else {
+                         // console.log(`[MOCK_WAIT] Ordem ${orderId} com status desconhecido/inesperado: ${orderStatus.status}`);
+                    }
+                } else {
+                    // console.warn(`[MOCK_WAIT] Não foi possível obter status da ordem ${orderId}.`);
+                }
+            } catch (error) {
+                console.error(`[MOCK_WAIT] Erro ao buscar status da ordem ${orderId}: ${error.message}`);
+            }
+
+            if (elapsedTime >= timeoutMs) {
+                clearInterval(intervalId);
+                // console.warn(`[MOCK_WAIT] Timeout esperando pela ordem ${orderId}. Tentando obter status final...`);
+                try {
+                    const finalOrderStatus = await getOrderStatus(orderId, symbol); 
+                    if (finalOrderStatus) {
+                         resolve({
+                            status: finalOrderStatus.status || 'TIMED_OUT_UNKNOWN_STATUS',
+                            executedQty: finalOrderStatus.executedQty || 0,
+                            price: finalOrderStatus.avgPrice || finalOrderStatus.price || 0,
+                            orderId: finalOrderStatus.orderId,
+                            avgPrice: finalOrderStatus.avgPrice || 0,
+                            cummulativeQuoteQty: finalOrderStatus.cummulativeQuoteQty || 0
+                        });
+                    } else {
+                         resolve({ status: 'TIMED_OUT_NO_INFO', executedQty: 0, price: 0, orderId: orderId, avgPrice: 0, cummulativeQuoteQty: 0 });
+                    }
+                } catch (e) {
+                     resolve({ status: 'TIMED_OUT_API_ERROR', executedQty: 0, price: 0, orderId: orderId, avgPrice: 0, cummulativeQuoteQty: 0 });
+                }
+            }
+        };
+        intervalId = setInterval(checker, checkInterval);
+        checker(); // Executa imediatamente uma vez
+    });
+}
+
+// Função auxiliar para calcular preço médio (você já deve ter algo similar)
+function calculateAveragePrice(fills) {
+    if (!fills || fills.length === 0) return 0;
+    let totalQty = 0;
+    let totalCost = 0;
+    fills.forEach(fill => {
+        totalQty += parseFloat(fill.qty);
+        totalCost += parseFloat(fill.qty) * parseFloat(fill.price);
+    });
+    return totalQty > 0 ? totalCost / totalQty : 0;
+}
+
+// Função auxiliar para simular waitForOrderExecution (substitua pela sua implementação real com WebSockets ou polling mais robusto)
+// ESTA É UMA SIMULAÇÃO E PRECISA SER SUBSTITUÍDA PELA SUA LÓGICA REAL DE WEBSOCKET/POLLING
+async function waitForOrderExecution(symbol, orderId, timeoutMs) {
+    console.log(`[MOCK_WAIT] Aguardando execução da ordem ${orderId} para ${symbol} (Timeout: ${timeoutMs}ms)`);
+    // Na sua implementação real, você ouviria os WebSockets ou faria polling na API da Binance.
+    // Para este exemplo, vamos apenas simular buscando o status da ordem após um delay.
+    
+    return new Promise(async (resolve) => {
+        const checkInterval = Math.min(timeoutMs / 2, 1000); // Verificar no máximo a cada 1s ou na metade do timeout
+        let elapsedTime = 0;
+
+        const intervalId = setInterval(async () => {
+            elapsedTime += checkInterval;
+            try {
+                const orderStatus = await getOrderStatus(orderId, symbol); // Sua função de api.js //
+
+                if (orderStatus) { // Se getOrderStatus retorna um objeto com a ordem
+                    if (['FILLED', 'PARTIALLY_FILLED', 'CANCELED', 'REJECTED', 'EXPIRED'].includes(orderStatus.status)) {
+                        clearInterval(intervalId);
+                        console.log(`[MOCK_WAIT] Ordem ${orderId} com status final: ${orderStatus.status}`);
+                        resolve({
+                            status: orderStatus.status,
+                            executedQty: orderStatus.executedQty || 0,
+                            price: orderStatus.avgPrice || orderStatus.price || 0, // ou cummulativeQuoteQty / executedQty
+                            orderId: orderStatus.orderId,
+                            // Adicione mais campos relevantes da resposta da ordem
+                        });
+                        return;
+                    } else if (orderStatus.status === 'NEW' || orderStatus.status === 'PENDING_CANCEL') {
+                        console.log(`[MOCK_WAIT] Ordem ${orderId} ainda com status: ${orderStatus.status}`);
+                    } else {
+                         console.log(`[MOCK_WAIT] Ordem ${orderId} com status desconhecido/inesperado: ${orderStatus.status}`);
+                    }
+                } else {
+                    console.warn(`[MOCK_WAIT] Não foi possível obter status da ordem ${orderId}.`);
+                }
+            } catch (error) {
+                console.error(`[MOCK_WAIT] Erro ao buscar status da ordem ${orderId}: ${error.message}`);
+                // Não limpar intervalo em caso de erro de busca, pode ser temporário
+            }
+
+            if (elapsedTime >= timeoutMs) {
+                clearInterval(intervalId);
+                console.warn(`[MOCK_WAIT] Timeout esperando pela ordem ${orderId}. Tentando obter status final...`);
+                try {
+                    const finalOrderStatus = await getOrderStatus(orderId, symbol); //
+                    if (finalOrderStatus) {
+                         resolve({
+                            status: finalOrderStatus.status || 'TIMED_OUT_UNKNOWN_STATUS',
+                            executedQty: finalOrderStatus.executedQty || 0,
+                            price: finalOrderStatus.avgPrice || finalOrderStatus.price || 0,
+                            orderId: finalOrderStatus.orderId,
+                        });
+                    } else {
+                         resolve({ status: 'TIMED_OUT_NO_INFO', executedQty: 0, price: 0, orderId: orderId });
+                    }
+                } catch (e) {
+                     resolve({ status: 'TIMED_OUT_API_ERROR', executedQty: 0, price: 0, orderId: orderId });
+                }
+            }
+        }, checkInterval);
+    });
+}
+
+function calculateAveragePrice(fills) {
+    if (!fills || fills.length === 0) return 0;
+    
+    let totalQuantity = 0;
+    let totalValue = 0;
+    
+    for (const fill of fills) {
+        totalQuantity += fill.qty;
+        totalValue += fill.qty * fill.price;
+    }
+    
+    return totalQuantity > 0 ? totalValue / totalQuantity : 0;
+}
+
+// Função para obter dados do livro de ordens (BookTicker)
+async function getBookTicker(symbol) {
+  try {
+    // Usar um timeout mais curto para evitar bloqueios longos
+    const url = `${process.env.API_URL}/v1/ticker/bookTicker?symbol=${symbol}`;
+    const response = await axios.get(url, { 
+      timeout: 2000, // Timeout de 2 segundos
+      headers: { 'Cache-Control': 'no-cache' } // Evitar cache
+    });
+    
+    if (!response.data || !response.data.bidPrice || !response.data.askPrice) {
+      throw new Error(`Dados do bookTicker inválidos para ${symbol}`);
+    }
+    
+    return {
+      bidPrice: response.data.bidPrice,
+      askPrice: response.data.askPrice,
+      bidQty: response.data.bidQty,
+      askQty: response.data.askQty,
+      timestamp: Date.now()
+    };
+  } catch (error) {
+    console.error(`[BOOK] Erro ao obter book ticker para ${symbol}: ${error.message}`);
+    
+    // Implementar fallback para situações de erro
+    // Tentar obter o preço de outra fonte se disponível
+    try {
+      console.log(`[BOOK] Tentando fallback para ${symbol}...`);
+      const fallbackUrl = `${process.env.API_URL}/v1/ticker/price?symbol=${symbol}`;
+      const fallbackResponse = await axios.get(fallbackUrl, { timeout: 2000 });
+      
+      if (fallbackResponse.data && fallbackResponse.data.price) {
+        const price = parseFloat(fallbackResponse.data.price);
+        // Criar um book ticker aproximado com o preço atual
+        return {
+          bidPrice: (price * 0.9999).toString(), // 0.01% abaixo do preço
+          askPrice: (price * 1.0001).toString(), // 0.01% acima do preço
+          bidQty: "0",
+          askQty: "0",
+          timestamp: Date.now(),
+          isApproximation: true
+        };
+      }
+    } catch (fallbackError) {
+      console.error(`[BOOK] Fallback também falhou para ${symbol}: ${fallbackError.message}`);
+    }
+    
+    throw error; // Re-lançar o erro original se o fallback também falhar
+  }
+}
+// Função otimizada para aguardar a execução de uma ordem
+async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3000) {
+    const startTime = Date.now();
+    
+    // Verificar imediatamente o status da ordem (sem espera inicial)
+    try {
+        const orderStatus = await getOrderStatus(symbol, orderId);
+        
+        // Se a ordem foi executada (total ou parcialmente), retornar imediatamente
+        if (orderStatus.status === 'FILLED' || orderStatus.status === 'PARTIALLY_FILLED') {
+            return orderStatus;
+        }
+    } catch (initialError) {
+        // Ignorar erro inicial, continuará o loop abaixo
+    }
+    
+    // Loop de espera com intervalos mais curtos
+    while (Date.now() - startTime < maxWaitMs) {
+        try {
+            // Verificar status da ordem
+            const orderStatus = await getOrderStatus(symbol, orderId);
+            
+            // Se a ordem foi executada (total ou parcialmente), retornar imediatamente
+            if (orderStatus.status === 'FILLED' || orderStatus.status === 'PARTIALLY_FILLED') {
+                return orderStatus;
+            }
+            
+            // Aguardar um período muito curto antes de verificar novamente
+            await new Promise(resolve => setTimeout(resolve, 100)); // Reduzido para 100ms
+            
+        } catch (error) {
+            // Se a ordem não for encontrada, verificar se foi executada
+            if (error.response && error.response.status === 404) {
+                try {
+                    const recentOrders = await getRecentOrders(symbol, 5); // Buscar apenas as 5 mais recentes
+                    const matchingOrder = recentOrders.find(order => String(order.orderId) === String(orderId));
+                    if (matchingOrder) {
+                        return matchingOrder;
+                    }
+                } catch (detailsError) {
+                    // Ignorar erro
+                }
+            }
+            
+            // Aguardar antes de tentar novamente
+            await new Promise(resolve => setTimeout(resolve, 100)); // Reduzido para 100ms
+        }
+    }
+    
+    // Timeout atingido, retornar o status atual
+    try {
+        return await getOrderStatus(symbol, orderId);
+    } catch (error) {
+        return { status: 'UNKNOWN' };
+    }
+}
+
+// Função para obter detalhes de uma ordem executada
+async function getFilledOrderDetails(symbol, orderId) {
+    try {
+        const timestamp = Date.now();
+        const queryString = `symbol=${symbol}&orderId=${orderId}&timestamp=${timestamp}`;
+        const signature = crypto
+            .createHmac('sha256', process.env.API_SECRET)
+            .update(queryString)
+            .digest('hex');
+        
+        const response = await axios.get(
+            `${process.env.API_URL}/v1/order?${queryString}&signature=${signature}`,
+            { headers: { 'X-MBX-APIKEY': process.env.API_KEY } }
+        );
+        
+        return response.data;
+    } catch (error) {
+        console.error(`[LIMIT_ENTRY] Erro ao obter detalhes da ordem ${orderId}:`, error);
+        return null;
     }
 }
 

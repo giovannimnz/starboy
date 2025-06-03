@@ -70,6 +70,102 @@ async function newEntryOrder(symbol, quantity, side) {
   }
 }
 
+async function newLimitMakerOrder(symbol, quantity, side, price) {
+  try {
+    // Validações de quantidade e preço podem ser adicionadas aqui
+    // Arredondar o preço para o tickSize correto usando sua função roundPriceToTickSize
+    const { pricePrecision } = await getPrecision(symbol); // Assumindo que getPrecision retorna pricePrecision
+    const roundedPrice = await roundPriceToTickSize(symbol, price); // Sua função existente
+
+    const data = {
+      symbol,
+      side,
+      type: "LIMIT",
+      quantity,
+      price: roundedPrice.toFixed(pricePrecision), // Garanta a formatação correta do preço
+      timeInForce: "GTX", // ESSENCIAL: Garante que a ordem seja Post-Only (Maker)
+      newOrderRespType: "RESULT" // Para obter mais detalhes na resposta
+    };
+
+    const timestamp = Date.now();
+    const recvWindow = 60000; // Binance recomenda até 60000 para Futuros
+
+    const signature = crypto
+        .createHmac("sha256", apiSecret)
+        .update(`${new URLSearchParams({ ...data, timestamp, recvWindow }).toString()}`)
+        .digest("hex");
+
+    const newData = { ...data, timestamp, recvWindow, signature };
+    const qs = `?${new URLSearchParams(newData).toString()}`;
+
+    console.log(`[API] Enviando Ordem LIMIT MAKER: ${symbol}, Qtd: ${quantity}, Lado: ${side}, Preço: ${roundedPrice}, TimeInForce: GTX`);
+    const result = await axios({
+      method: "POST",
+      url: `${apiUrl}/v1/order${qs}`, // CORREÇÃO AQUI - remover as tags HTML
+      headers: { "X-MBX-APIKEY": apiKey },
+    });
+
+    console.log(`[API] Resposta da Ordem LIMIT MAKER: ${JSON.stringify(result.data)}`);
+    return result.data; // Retorna a resposta completa da API
+
+  } catch (error) {
+    console.error(`[API] ERRO DETALHADO ao criar Ordem LIMIT MAKER para ${symbol}:`);
+    if (error.response) {
+      console.error(`[API] Status: ${error.response.status}`);
+      console.error(`[API] Dados: ${JSON.stringify(error.response.data)}`);
+      // Código -2010: "Order would immediately match and take." - Isso é esperado se a ordem GTX seria taker.
+      if (error.response.data && error.response.data.code === -2010) {
+        return { ...error.response.data, status: 'REJECTED_POST_ONLY' }; // Identifica rejeição por ser taker
+      }
+    } else {
+      console.error(`[API] Mensagem: ${error.message}`);
+    }
+    throw error; // Relança outros erros
+  }
+}
+
+async function editOrder(symbol, orderId, newPrice, quantity = null) {
+  try {
+    console.log(`[API] Editando ordem ${orderId} para ${symbol}: novo preço ${newPrice}`);
+    
+    // Preparar dados para a requisição
+    const data = {
+      symbol,
+      orderId,
+      timestamp: Date.now(),
+      recvWindow: 60000
+    };
+    
+    // Adicionar novo preço (obrigatório)
+    data.price = newPrice;
+    
+    // Adicionar nova quantidade (opcional)
+    if (quantity !== null) {
+      data.quantity = quantity;
+    }
+
+    const queryString = new URLSearchParams(data).toString();
+    const signature = crypto
+        .createHmac('sha256', apiSecret)
+        .update(queryString)
+        .digest('hex');
+
+    const url = `${apiUrl}/v1/order?${queryString}&signature=${signature}`;
+
+    const result = await axios({
+      method: "PUT",  // Método PUT para editar ordens
+      url: url,
+      headers: { "X-MBX-APIKEY": apiKey }
+    });
+
+    console.log(`[API] Ordem ${orderId} editada com sucesso para preço ${newPrice}`);
+    return result.data;
+  } catch (error) {
+    console.error(`[API] Erro ao editar ordem ${orderId}:`, error.response ? error.response.data : error.message);
+    throw error;
+  }
+}
+
 async function newOrder(symbol, quantity, side, price, type = 'LIMIT', reduceOnly = false) {
   try {
     const data = {
@@ -121,35 +217,55 @@ async function setPositionMode(dualSidePosition) {
 }
 
 async function newReduceOnlyOrder(symbol, quantity, side, price) {
-  price = await roundPriceToTickSize(symbol, price);
-  const data = {
-    symbol,
-    side,
-    type: "LIMIT",
-    quantity,
-    price: parseFloat(price),
-    timeInForce: "GTC",
-    reduceOnly: true,
-  };
+  try {
+    price = await roundPriceToTickSize(symbol, price);
+    
+    // Garantir que a quantidade esteja no formato correto
+    const { quantityPrecision } = await getPrecision(symbol);
+    const formattedQuantity = parseFloat(quantity.toFixed(quantityPrecision));
+    
+    console.log(`[API] Enviando ordem LIMIT reduce-only: ${symbol}, ${side}, qty=${formattedQuantity}, price=${price}`);
+    
+    const data = {
+      symbol,
+      side,
+      type: "LIMIT",
+      quantity: formattedQuantity,
+      price: parseFloat(price),
+      timeInForce: "GTC",
+      reduceOnly: true,
+    };
 
-  const timestamp = Date.now();
-  const recvWindow = 60000;
+    const timestamp = Date.now();
+    const recvWindow = 60000;
 
-  const signature = crypto
-      .createHmac("sha256", apiSecret)
-      .update(`${new URLSearchParams({ ...data, timestamp, recvWindow }).toString()}`)
-      .digest("hex");
+    const signature = crypto
+        .createHmac("sha256", apiSecret)
+        .update(`${new URLSearchParams({ ...data, timestamp, recvWindow }).toString()}`)
+        .digest("hex");
 
-  const newData = { ...data, timestamp, recvWindow, signature };
-  const qs = `?${new URLSearchParams(newData).toString()}`;
+    const newData = { ...data, timestamp, recvWindow, signature };
+    const qs = `?${new URLSearchParams(newData).toString()}`;
 
-  const result = await axios({
-    method: "POST",
-    url: `${apiUrl}/v1/order${qs}`,
-    headers: { "X-MBX-APIKEY": apiKey },
-  });
+    const result = await axios({
+      method: "POST",
+      url: `${apiUrl}/v1/order${qs}`,
+      headers: { "X-MBX-APIKEY": apiKey },
+    });
 
-  return result;
+    console.log(`[API] Ordem LIMIT reduce-only criada com sucesso: orderId=${result.data.orderId}`);
+    return result;
+  } catch (error) {
+    console.error(`[API] Erro ao criar ordem LIMIT reduce-only:`, error.message);
+    if (error.response && error.response.data) {
+      console.error(`[API] Resposta da API: ${JSON.stringify(error.response.data)}`);
+      // Se o erro for relacionado à quantidade, tornar mais claro
+      if (error.response.data.code === -1013) {
+        console.error(`[API] Quantidade inválida (${quantity}) para ${symbol}. A quantidade é menor que o mínimo ou não tem a precisão correta.`);
+      }
+    }
+    throw error;
+  }
 }
 
 async function newStopOrder(symbol, quantity, side, stopPrice, price = null, reduceOnly = false, closePosition = false) {
@@ -211,6 +327,51 @@ async function newStopOrder(symbol, quantity, side, stopPrice, price = null, red
         error.response ? error.response.data : error.message);
     throw error;
   }
+}
+
+async function newStopOrTpLimitOrder(symbol, quantity, side, orderType, stopPrice, limitExecutionPrice, options = {}) {
+    try {
+        const { pricePrecision, quantityPrecision } = await getPrecision(symbol);
+
+        const formattedQuantity = parseFloat(quantity).toFixed(quantityPrecision);
+        const formattedStopPrice = parseFloat(stopPrice).toFixed(pricePrecision); // Preço de ativação
+        const formattedLimitExecutionPrice = parseFloat(limitExecutionPrice).toFixed(pricePrecision); // Preço limite da ordem após ativação
+
+        const data = {
+            symbol,
+            side, // Lado para FECHAR a posição (SELL para LONG, BUY para SHORT)
+            type: orderType, // "STOP_LIMIT" ou "TAKE_PROFIT_LIMIT"
+            quantity: formattedQuantity,
+            price: formattedLimitExecutionPrice, // O preço LIMITE da ordem
+            stopPrice: formattedStopPrice,       // O preço de GATILHO (trigger)
+            timeInForce: options.timeInForce || 'GTC', // Geralmente GTC para SL/TP
+            reduceOnly: options.reduceOnly === undefined ? true : options.reduceOnly, // Default para true
+            newOrderRespType: options.newOrderRespType || "RESULT",
+            timestamp: Date.now(),
+            recvWindow: options.recvWindow || 60000,
+        };
+
+        const signature = crypto
+            .createHmac("sha256", apiSecret)
+            .update(`${new URLSearchParams(data).toString()}`)
+            .digest("hex");
+
+        const newData = { ...data, signature };
+        const qs = `?${new URLSearchParams(newData).toString()}`;
+
+        console.log(`[API] Enviando ${orderType}: ${symbol}, Qtd: ${quantity}, Lado: ${side}, Gatilho(stopPrice): ${stopPrice}, PreçoLimite(price): ${limitExecutionPrice}, ReduceOnly: ${data.reduceOnly}`);
+        const result = await axios({
+            method: "POST",
+            url: `${apiUrl}/v1/order${qs}`,
+            headers: { "X-MBX-APIKEY": apiKey },
+        });
+
+        console.log(`[API] Resposta ${orderType}:`, result.data);
+        return result.data; // Retorna o objeto completo da resposta da ordem
+    } catch (error) {
+        console.error(`[API] Erro ao enviar ordem ${orderType} para ${symbol}:`, error.response?.data || error.message);
+        throw error;
+    }
 }
 
 async function newTakeProfitOrder(symbol, quantity, side, price, orderId) {
@@ -276,32 +437,32 @@ async function getMaxLeverage(symbol) {
 
 async function getTickSize(symbol) {
   try {
+    console.log(`[API] Obtendo informações do símbolo ${symbol}...`);
     const response = await axios.get(`${apiUrl}/v1/exchangeInfo?symbol=${symbol}`);
-    const symbolInfo = response.data.symbols.find(info => info.symbol === symbol);
-    if (symbolInfo) {
-      // Obtenção de filtros específicos
-      const priceFilter = symbolInfo.filters.find(filter => filter.filterType === 'PRICE_FILTER');
-      const minNotionalFilter = symbolInfo.filters.find(filter => filter.filterType === 'MIN_NOTIONAL');
-      const marketLotSizeFilter = symbolInfo.filters.find(filter => filter.filterType === 'MARKET_LOT_SIZE');
-
-      if (priceFilter && minNotionalFilter && marketLotSizeFilter) {
-        const { minPrice, maxPrice, tickSize } = priceFilter;
-        const { notional } = minNotionalFilter;
-        const { minQty } = marketLotSizeFilter;
-
-        return {
-          minPrice: parseFloat(minPrice),
-          minQty: parseFloat(minQty),
-          notional: parseFloat(notional),
-          maxPrice: parseFloat(maxPrice),
-          tickSize: parseFloat(tickSize)
-        };
-      }
+    
+    if (!response.data || !response.data.symbols || !response.data.symbols.length) {
+      throw new Error(`Nenhuma informação encontrada para o símbolo ${symbol}`);
     }
-    return null;
+    
+    const symbolInfo = response.data.symbols.find(s => s.symbol === symbol);
+    if (!symbolInfo) {
+      throw new Error(`Símbolo ${symbol} não encontrado`);
+    }
+    
+    // Obter informações de filtros
+    const priceFilter = symbolInfo.filters.find(f => f.filterType === 'PRICE_FILTER');
+    if (!priceFilter) {
+      throw new Error(`Filtro de preço não encontrado para ${symbol}`);
+    }
+    
+    return {
+      tickSize: priceFilter.tickSize,
+      minPrice: priceFilter.minPrice,
+      maxPrice: priceFilter.maxPrice
+    };
   } catch (error) {
-    console.error("Erro ao obter o tamanho do tick e filtros associados:", error);
-    return null;
+    console.error(`[API] Erro ao obter tick size para ${symbol}: ${error.message}`);
+    throw error;
   }
 }
 
@@ -396,26 +557,67 @@ async function getMultipleOrderStatus(symbol, orderIds) {
   return results;
 }
 
-async function getOrderStatus(orderId, symbol) {
-  const data = {
-    orderId,
-    symbol,
-    timestamp: Date.now(),
-    recvWindow: 60000
-  };
+async function getOrderStatus(symbol, orderId) {
+  try {
+    if (!symbol || !orderId) {
+      console.error(`[API] Parâmetros inválidos para getOrderStatus: Symbol=${symbol}, OrderId=${orderId}`);
+      throw new Error(`Parâmetros inválidos para getOrderStatus`);
+    }
+    
+    // Verificar se orderId e symbol estão na ordem correta
+    // Se orderId parece ser um símbolo, trocar os parâmetros
+    if (typeof orderId === 'string' && orderId.includes('USDT') && !symbol.includes('USDT')) {
+      console.log(`[API] Detectada troca de parâmetros. Corrigindo symbol=${orderId}, orderId=${symbol}`);
+      [symbol, orderId] = [orderId, symbol];
+    }
 
-  const queryString = new URLSearchParams(data).toString();
-  const signature = crypto.createHmac("sha256", apiSecret)
+    const timestamp = Date.now();
+    const recvWindow = 60000;
+
+    const queryString = `symbol=${symbol}&orderId=${orderId}&timestamp=${timestamp}&recvWindow=${recvWindow}`;
+    const signature = crypto
+      .createHmac("sha256", apiSecret)
       .update(queryString)
       .digest("hex");
-  const url = `${apiUrl}/v1/order?${queryString}&signature=${signature}`;
+    const url = `${apiUrl}/v1/order?${queryString}&signature=${signature}`;
 
-  try {
-    const response = await axios.get(url, { headers: { 'X-MBX-APIKEY': apiKey } });
-    return response.data.status; // Retorna apenas o status da ordem
+    // Adicionar timeout mais curto para evitar bloqueios longos
+    const response = await axios.get(url, { 
+      headers: { "X-MBX-APIKEY": apiKey },
+      timeout: 5000 // 5 segundos de timeout
+    });
+    
+    return response.data;
   } catch (error) {
-    console.error(`Erro ao obter status da ordem ${orderId} para o símbolo ${symbol}: ${error.message}`);
-    return null; // Retorna null em caso de erro
+    // Tratar o erro de forma mais detalhada
+    if (error.response) {
+      // Se a ordem não existe mais (já foi executada/cancelada)
+      if (error.response.status === 400 && error.response.data && error.response.data.code === -2013) {
+        return { status: 'UNKNOWN', reason: 'Order does not exist' };
+      }
+    }
+    
+    console.error(`[API] Erro ao obter status da ordem ${orderId} para ${symbol}: ${error.message}`);
+    throw error;
+  }
+}
+
+async function getRecentOrders(symbol, limit = 50) {
+  try {
+    const timestamp = Date.now();
+    const recvWindow = 60000;
+
+    const queryString = `symbol=${symbol}&limit=${limit}&timestamp=${timestamp}&recvWindow=${recvWindow}`;
+    const signature = crypto.createHmac("sha256", apiSecret)
+        .update(queryString)
+        .digest("hex");
+    const url = `${apiUrl}/v1/allOrders?${queryString}&signature=${signature}`;
+
+    const response = await axios.get(url, { headers: { 'X-MBX-APIKEY': apiKey } });
+    return response.data;
+  } catch (error) {
+    console.error(`Erro ao obter ordens recentes para ${symbol}: ${error.message}`);
+    throw error;
   }
 }
 
@@ -1179,12 +1381,17 @@ module.exports = {
   changeMarginType,
   newOrder,
   newEntryOrder,
+  newLimitMakerOrder,
+  editOrder,
   newReduceOnlyOrder,
   newStopOrder,
+  newStopOrTpLimitOrder,
   newTakeProfitOrder,
   getTickSize,
+  roundPriceToTickSize,
   getPrecision,
   getOpenOrders,
+  getRecentOrders,
   getOrderStatus,
   getMultipleOrderStatus,
   getPositionDetails,
