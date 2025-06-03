@@ -244,6 +244,21 @@ async function handlePriceUpdate(symbol, tickerData) {
     }
 }
 
+function setupBookDepthWebsocket(symbol, callback) {
+    const wsEndpoint = `${process.env.WS_URL}/ws/${symbol.toLowerCase()}@depth`;
+    const ws = new WebSocket(wsEndpoint);
+    
+    ws.on('message', (data) => {
+        const depthData = JSON.parse(data);
+        // Processar dados do livro e chamar callback com o melhor bid/ask
+        const bestBid = parseFloat(depthData.bids[0][0]);
+        const bestAsk = parseFloat(depthData.asks[0][0]);
+        callback({bestBid, bestAsk});
+    });
+    
+    return ws;
+}
+
 // Em websockets.js
 function stopPriceMonitoring(symbol) {
     if (priceWebsockets[symbol]) {
@@ -258,6 +273,7 @@ function stopPriceMonitoring(symbol) {
 // Exportar funções
 module.exports = {
     startUserDataStream,
+    setupBookDepthWebsocket,
     setMonitoringCallbacks,
     ensurePriceWebsocketExists,
     stopPriceMonitoring,
