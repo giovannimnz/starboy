@@ -270,7 +270,7 @@ async function startPriceMonitoring() {
 
     // Iniciar websockets para cada símbolo
     for (const symbol of symbols) {
-      console.log(`[MONITOR] Iniciando monitoramento de preço para ${symbol}`);
+      //console.log(`[MONITOR] Iniciando monitoramento de preço para ${symbol}`);
       websockets.ensurePriceWebsocketExists(symbol);
     }
 
