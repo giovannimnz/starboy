@@ -245,8 +245,7 @@ async function handlePriceUpdate(symbol, tickerData) {
 }
 
 function setupBookDepthWebsocket(symbol, callback) {
-    // Usando @bookTicker em vez de @depth para maior estabilidade
-    const wsEndpoint = `${process.env.WS_URL}/ws/${symbol.toLowerCase()}@bookTicker`;
+    const wsEndpoint = `${process.env.WS_URL}/ws/${symbol.toLowerCase()}@depth`;
     const ws = new WebSocket(wsEndpoint);
     
     ws.on('open', () => {
@@ -255,25 +254,33 @@ function setupBookDepthWebsocket(symbol, callback) {
     
     ws.on('message', (data) => {
         try {
-            const tickerData = JSON.parse(data);
+            const depthData = JSON.parse(data);
             
-            // O formato de @bookTicker: { u: updateId, s: symbol, b: bestBid, B: bestBidQty, a: bestAsk, A: bestAskQty }
-            if (tickerData && tickerData.b && tickerData.a) {
-                const bestBid = parseFloat(tickerData.b);
-                const bestAsk = parseFloat(tickerData.a);
+            // Verificar se os dados têm o formato esperado antes de processar
+            if (depthData && depthData.bids && Array.isArray(depthData.bids) && 
+                depthData.bids.length > 0 && Array.isArray(depthData.bids[0]) && 
+                depthData.asks && Array.isArray(depthData.asks) && 
+                depthData.asks.length > 0 && Array.isArray(depthData.asks[0])) {
+                
+                const bestBid = parseFloat(depthData.bids[0][0]);
+                const bestAsk = parseFloat(depthData.asks[0][0]);
                 callback({bestBid, bestAsk});
+            } else {
+                // Se os dados não têm o formato esperado, registre isso mas não falhe
+                // console.log(`[WEBSOCKET] Dados de profundidade para ${symbol} em formato inesperado:`, 
+                //              depthData.e || 'formato desconhecido');
             }
         } catch (error) {
-            console.error(`[WEBSOCKET] Erro ao processar dados de bookTicker para ${symbol}:`, error.message);
+            console.error(`[WEBSOCKET] Erro ao processar dados de profundidade para ${symbol}:`, error.message);
         }
     });
     
     ws.on('error', (error) => {
-        console.error(`[WEBSOCKET] Erro na conexão de bookTicker para ${symbol}:`, error.message);
+        console.error(`[WEBSOCKET] Erro na conexão de profundidade para ${symbol}:`, error.message);
     });
     
     ws.on('close', () => {
-        console.log(`[WEBSOCKET] WebSocket de bookTicker fechado para ${symbol}`);
+        console.log(`[WEBSOCKET] WebSocket de profundidade fechado para ${symbol}`);
     });
     
     return ws;
