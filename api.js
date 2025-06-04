@@ -1366,41 +1366,6 @@ async function cancelPendingEntry(db, positionId, status, reason) {
   }
 }
 
-async function getAccountInfo() {
-  try {
-    // Obter posições via endpoint positionRisk (que sabemos que funciona)
-    const timestamp = Date.now();
-    const recvWindow = 60000;
-    
-    const queryString = `timestamp=${timestamp}&recvWindow=${recvWindow}`;
-    const signature = crypto
-      .createHmac('sha256', apiSecret)
-      .update(queryString)
-      .digest('hex');
-    
-    // Usar positionRisk que é mais confiável para verificar posições
-    const positionResponse = await axios({
-      method: 'GET',
-      url: `${apiUrl}/v2/positionRisk?${queryString}&signature=${signature}`,
-      headers: { 'X-MBX-APIKEY': apiKey }
-    });
-    
-    // Filtrar apenas posições com quantidade diferente de zero
-    const activePositions = positionResponse.data.filter(pos => 
-      Math.abs(parseFloat(pos.positionAmt)) > 0
-    );
-    
-    // Retornar em formato compatível com o esperado pela função syncPositionsWithExchange
-    return { positions: activePositions };
-  } catch (error) {
-    console.error('[API] Erro ao obter informações da conta:', error.message);
-    if (error.response) {
-      console.error('[API] Detalhes do erro:', error.response.data);
-    }
-    throw error;
-  }
-}
-
 // Atualizar função load_leverage_brackets para usar o banco de dados
 function load_leverage_brackets(symbol = null) {
   return getLeverageBracketsFromDb(symbol);
@@ -1415,7 +1380,6 @@ module.exports = {
   changeInitialLeverage,
   changeMarginType,
   newOrder,
-  getAccountInfo,
   newEntryOrder,
   newLimitMakerOrder,
   editOrder,

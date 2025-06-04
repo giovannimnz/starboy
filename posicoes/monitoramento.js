@@ -248,11 +248,11 @@ async function startPriceMonitoring() {
       WHERE status = 'OPEN'
     `);
 
-    // NOVO: Obter sinais em PENDING
+    // NOVO: Obter sinais em AGUARDANDO_ACIONAMENTO
     const [pendingSignals] = await db.query(`
       SELECT symbol, timeframe, created_at, timeout_at, max_lifetime_minutes
       FROM webhook_signals
-      WHERE status = 'PENDING'
+      WHERE status = 'AGUARDANDO_ACIONAMENTO'
     `);
 
     //console.log(`[MONITOR] Encontrados ${pendingSignals.length} sinais pendentes para monitoramento`);
@@ -270,7 +270,7 @@ async function startPriceMonitoring() {
 
     // Iniciar websockets para cada símbolo
     for (const symbol of symbols) {
-      console.log(`[MONITOR] Iniciando monitoramento de preço para ${symbol}`);
+      //console.log(`[MONITOR] Iniciando monitoramento de preço para ${symbol}`);
       websockets.ensurePriceWebsocketExists(symbol);
     }
 
@@ -287,7 +287,7 @@ async function startPriceMonitoring() {
             UPDATE webhook_signals 
             SET status = 'CANCELED', 
                 error_message = ? 
-            WHERE symbol = ? AND status = 'PENDING'`,
+            WHERE symbol = ? AND status = 'AGUARDANDO_ACIONAMENTO'`,
             [`Sinal expirado durante período offline (timeout: ${signal.max_lifetime_minutes} min)`, signal.symbol]
           );
         } else {
@@ -409,10 +409,10 @@ async function processSignal(db, signal) {
       return;
     }
 
-    // 3. Atualizar webhook_signals para 'PENDING' (inicialmente)
+    // 3. Atualizar webhook_signals para 'AGUARDANDO_ACIONAMENTO' (inicialmente)
     await connection.query(
         `UPDATE webhook_signals SET
-            status = 'PENDING'
+            status = 'AGUARDANDO_ACIONAMENTO'
          WHERE id = ?`,
         [id]
     );
@@ -491,7 +491,7 @@ if (chat_id) {
 
     await connection.query(
         `UPDATE webhook_signals SET
-            status = 'PENDING', 
+            status = 'AGUARDANDO_ACIONAMENTO', 
             timeout_at = ?,
             max_lifetime_minutes = ?
          WHERE id = ?`,
@@ -499,7 +499,7 @@ if (chat_id) {
     );
 
     await connection.commit(); // Comita a transação
-    console.log(`[MONITOR] Sinal ID ${id} para ${symbol} registrado com sucesso. Status: PENDING.`);
+    console.log(`[MONITOR] Sinal ID ${id} para ${symbol} registrado com sucesso. Status: AGUARDANDO_ACIONAMENTO.`);
 
   } catch (error) {
     console.error(`[MONITOR] Erro crítico ao processar sinal ID ${signal.id || 'N/A'} para ${signal.symbol || 'N/A'}:`, error);
@@ -1022,6 +1022,7 @@ async function handleAccountUpdate(message, db) {
 }
 
 // Função para mover posição para tabelas de fechadas
+// Modificação da função movePositionToHistory para cancelar ordens abertas na corretora
 async function movePositionToHistory(db, positionId, status, reason) {
   let attempts = 0;
   const maxAttempts = 3;
@@ -1041,8 +1042,44 @@ async function movePositionToHistory(db, positionId, status, reason) {
         connection.release();
         return true;
       }
+      
+      // Obter o símbolo da posição
+      const symbol = positionResult[0].simbolo;
+      console.log(`[MOVE_POSITION] Verificando ordens abertas na corretora para ${symbol} antes de mover posição ${positionId} para histórico`);
+      
+      // 2. NOVO: Verificar se existem ordens abertas na corretora para este símbolo
+      try {
+        const openOrdersInExchange = await getOpenOrders(symbol);
+        
+        if (openOrdersInExchange && openOrdersInExchange.length > 0) {
+          console.log(`[MOVE_POSITION] Encontradas ${openOrdersInExchange.length} ordens abertas na corretora para ${symbol}. Cancelando...`);
+          
+          // Cancelar cada ordem aberta
+          for (const order of openOrdersInExchange) {
+            try {
+              console.log(`[MOVE_POSITION] Cancelando ordem ${order.orderId} para ${symbol} na corretora`);
+              await cancelOrder(order.orderId, symbol);
+              
+              // Pequena pausa para evitar rate limiting
+              await new Promise(resolve => setTimeout(resolve, 300));
+            } catch (cancelError) {
+              // Logar erro mas continuar tentando cancelar outras ordens
+              console.error(`[MOVE_POSITION] Erro ao cancelar ordem ${order.orderId} para ${symbol}: ${cancelError.message}`);
+            }
+          }
+          
+          // Dar um tempo para a corretora processar os cancelamentos
+          console.log(`[MOVE_POSITION] Aguardando 2 segundos para a corretora processar os cancelamentos...`);
+          await new Promise(resolve => setTimeout(resolve, 2000));
+        } else {
+          console.log(`[MOVE_POSITION] Nenhuma ordem aberta encontrada na corretora para ${symbol}`);
+        }
+      } catch (exchangeError) {
+        console.error(`[MOVE_POSITION] Erro ao verificar ordens abertas na corretora para ${symbol}: ${exchangeError.message}`);
+        // Continuar mesmo com erro na verificação de ordens na corretora
+      }
 
-      // 2. Atualizar status e tempo de fechamento
+      // 3. Atualizar status e tempo de fechamento
       const formattedDate = formatDateForMySQL(new Date());
       await connection.query(
           `UPDATE posicoes
@@ -1053,11 +1090,11 @@ async function movePositionToHistory(db, positionId, status, reason) {
           [status, formattedDate, formattedDate, positionId]
       );
 
-      // 3. Verificar todas as ordens que referenciam esta posição
+      // 4. Verificar todas as ordens que referenciam esta posição
       const [orderResult] = await connection.query("SELECT * FROM ordens WHERE id_posicao = ?", [positionId]);
       console.log(`Encontradas ${orderResult.length} ordens para posição ${positionId}.`);
 
-      // 4. Se houver ordens, movê-las para fechadas
+      // 5. Se houver ordens, movê-las para fechadas
       if (orderResult.length > 0) {
         // Construir esquemas dinâmicos para mover ordens
         const [renew_sl_firs] = await connection.query(`SHOW COLUMNS FROM ordens LIKE 'renew_sl_firs'`);
@@ -1102,11 +1139,11 @@ async function movePositionToHistory(db, positionId, status, reason) {
         console.log(`Ordens com id_posicao ${positionId} excluídas de ordens.`);
       }
 
-      // 5. Verificar se posição tem coluna orign_sig
+      // 6. Verificar se posição tem coluna orign_sig
       const [posColumns] = await connection.query(`SHOW COLUMNS FROM posicoes LIKE 'orign_sig'`);
       const hasOrignSig = posColumns.length > 0;
 
-      // 6. Copiar posição para tabela histórica
+      // 7. Copiar posição para tabela histórica
       if (hasOrignSig) {
         await connection.query(
             `INSERT INTO posicoes_fechadas
@@ -1130,17 +1167,16 @@ async function movePositionToHistory(db, positionId, status, reason) {
       }
       console.log(`Posição com id ${positionId} movida para posicoes_fechadas.`);
 
-      // 7. Excluir posição original
+      // 8. Excluir posição original
       await connection.query("DELETE FROM posicoes WHERE id = ?", [positionId]);
       console.log(`Posição com id ${positionId} excluída de posicoes.`);
 
-      // 8. Finalizar transação
+      // 9. Finalizar transação
       await connection.commit();
       console.log(`[SYNC] Posição ${positionId} movida para fechadas com status: ${status}, motivo: ${reason}`);
 
-      // 9. Verificar se precisamos fechar o WebSocket de monitoramento de preço
+      // 10. Verificar se precisamos fechar o WebSocket de monitoramento de preço
       // Obter o símbolo da posição que foi movida
-      const symbol = positionResult[0].simbolo;
       await checkAndCloseWebsocket(db, symbol);
 
       connection.release();
@@ -1188,7 +1224,7 @@ async function onPriceUpdate(symbol, currentPrice, db) {
       registry_message_id, message_id_orig, message_source
       FROM webhook_signals
       WHERE symbol = ?
-        AND status = 'PENDING'
+        AND status = 'AGUARDANDO_ACIONAMENTO'
     `, [symbol]);
     
     const pendingSignals = pendingSignalsResult || [];
@@ -2008,7 +2044,7 @@ async function checkExpiredOrders() {
     const [pendingSignals] = await db.query(`
       SELECT id, symbol, side, entry_price, timeframe, created_at, chat_id
       FROM webhook_signals
-      WHERE status = 'PENDING'
+      WHERE status = 'AGUARDANDO_ACIONAMENTO'
         AND timeframe IS NOT NULL AND timeframe != ''
     `);
 
@@ -2153,7 +2189,7 @@ async function checkAndCloseWebsocket(db, symbol) {
     // 1. Verificar se ainda existem sinais pendentes para o símbolo
     const [pendingSignalsRows] = await db.query(`
       SELECT COUNT(*) as count FROM webhook_signals 
-      WHERE symbol = ? AND status = 'PENDING'
+      WHERE symbol = ? AND status = 'AGUARDANDO_ACIONAMENTO'
     `, [symbol]);
     // Acesso direto à contagem - assume que pendingSignalsRows[0] sempre existirá.
     // A versão anterior era: const pendingSignalsCount = (pendingSignalsRows && pendingSignalsRows[0]) ? pendingSignalsRows[0].count : 0;
@@ -3948,13 +3984,13 @@ async function cancelSignal(db, signalId, statusParam, reason) {
           SELECT COUNT(*) as count
           FROM webhook_signals
           WHERE symbol = ?
-            AND status = 'PENDING'
+            AND status = 'AGUARDANDO_ACIONAMENTO'
         `, [symbolToVerify]);
 
         const count = (remainingSignalsRows && remainingSignalsRows[0]) ? remainingSignalsRows[0].count : 0;
 
         if (count === 0) {
-          console.log(`[MONITOR] Não há mais sinais 'PENDING' para ${symbolToVerify} após cancelamento do sinal ID ${signalId}. Agendando verificação de websocket.`);
+          console.log(`[MONITOR] Não há mais sinais 'AGUARDANDO_ACIONAMENTO' para ${symbolToVerify} após cancelamento do sinal ID ${signalId}. Agendando verificação de websocket.`);
           setTimeout(async () => {
             try {
                 console.log(`[MONITOR] Executando checkAndCloseWebsocket para ${symbolToVerify} (agendado após cancelamento do sinal ID ${signalId}).`);
@@ -3968,7 +4004,7 @@ async function cancelSignal(db, signalId, statusParam, reason) {
             }
           }, 5000);
         } else {
-          console.log(`[MONITOR] Ainda existem ${count} sinais 'PENDING' para ${symbolToVerify} após cancelamento do sinal ID ${signalId}. Websocket para ${symbolToVerify} permanecerá ativo.`);
+          console.log(`[MONITOR] Ainda existem ${count} sinais 'AGUARDANDO_ACIONAMENTO' para ${symbolToVerify} após cancelamento do sinal ID ${signalId}. Websocket para ${symbolToVerify} permanecerá ativo.`);
         }
       } catch (checkError) {
         console.error(`[MONITOR] Erro ao verificar sinais restantes para ${symbolToVerify} (referente ao sinal cancelado ID ${signalId}):`, checkError);
@@ -3995,11 +4031,11 @@ async function cleanUpExistingEntries() {
         return;
     }
     
-    // Cancelar todos os sinais em PENDING que têm position_id
+    // Cancelar todos os sinais em AGUARDANDO_ACIONAMENTO que têm position_id
     const [pendingSignalsRows] = await db.query(`
       SELECT id, symbol, position_id 
       FROM webhook_signals 
-      WHERE status = 'PENDING' 
+      WHERE status = 'AGUARDANDO_ACIONAMENTO' 
         AND position_id IS NOT NULL
     `);
     
