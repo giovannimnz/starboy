@@ -245,15 +245,35 @@ async function handlePriceUpdate(symbol, tickerData) {
 }
 
 function setupBookDepthWebsocket(symbol, callback) {
-    const wsEndpoint = `${process.env.WS_URL}/ws/${symbol.toLowerCase()}@depth`;
+    // Usando @bookTicker em vez de @depth para maior estabilidade
+    const wsEndpoint = `${process.env.WS_URL}/ws/${symbol.toLowerCase()}@bookTicker`;
     const ws = new WebSocket(wsEndpoint);
     
+    ws.on('open', () => {
+        console.log(`[WEBSOCKET] WebSocket de profundidade conectado para ${symbol}`);
+    });
+    
     ws.on('message', (data) => {
-        const depthData = JSON.parse(data);
-        // Processar dados do livro e chamar callback com o melhor bid/ask
-        const bestBid = parseFloat(depthData.bids[0][0]);
-        const bestAsk = parseFloat(depthData.asks[0][0]);
-        callback({bestBid, bestAsk});
+        try {
+            const tickerData = JSON.parse(data);
+            
+            // O formato de @bookTicker: { u: updateId, s: symbol, b: bestBid, B: bestBidQty, a: bestAsk, A: bestAskQty }
+            if (tickerData && tickerData.b && tickerData.a) {
+                const bestBid = parseFloat(tickerData.b);
+                const bestAsk = parseFloat(tickerData.a);
+                callback({bestBid, bestAsk});
+            }
+        } catch (error) {
+            console.error(`[WEBSOCKET] Erro ao processar dados de bookTicker para ${symbol}:`, error.message);
+        }
+    });
+    
+    ws.on('error', (error) => {
+        console.error(`[WEBSOCKET] Erro na conexão de bookTicker para ${symbol}:`, error.message);
+    });
+    
+    ws.on('close', () => {
+        console.log(`[WEBSOCKET] WebSocket de bookTicker fechado para ${symbol}`);
     });
     
     return ws;
