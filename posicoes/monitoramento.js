@@ -248,11 +248,11 @@ async function startPriceMonitoring() {
       WHERE status = 'OPEN'
     `);
 
-    // NOVO: Obter sinais em AGUARDANDO_ACIONAMENTO
+    // NOVO: Obter sinais em PENDING
     const [pendingSignals] = await db.query(`
       SELECT symbol, timeframe, created_at, timeout_at, max_lifetime_minutes
       FROM webhook_signals
-      WHERE status = 'AGUARDANDO_ACIONAMENTO'
+      WHERE status = 'PENDING'
     `);
 
     //console.log(`[MONITOR] Encontrados ${pendingSignals.length} sinais pendentes para monitoramento`);
@@ -270,7 +270,7 @@ async function startPriceMonitoring() {
 
     // Iniciar websockets para cada símbolo
     for (const symbol of symbols) {
-      //console.log(`[MONITOR] Iniciando monitoramento de preço para ${symbol}`);
+      console.log(`[MONITOR] Iniciando monitoramento de preço para ${symbol}`);
       websockets.ensurePriceWebsocketExists(symbol);
     }
 
@@ -287,7 +287,7 @@ async function startPriceMonitoring() {
             UPDATE webhook_signals 
             SET status = 'CANCELED', 
                 error_message = ? 
-            WHERE symbol = ? AND status = 'AGUARDANDO_ACIONAMENTO'`,
+            WHERE symbol = ? AND status = 'PENDING'`,
             [`Sinal expirado durante período offline (timeout: ${signal.max_lifetime_minutes} min)`, signal.symbol]
           );
         } else {
@@ -409,10 +409,10 @@ async function processSignal(db, signal) {
       return;
     }
 
-    // 3. Atualizar webhook_signals para 'AGUARDANDO_ACIONAMENTO' (inicialmente)
+    // 3. Atualizar webhook_signals para 'PENDING' (inicialmente)
     await connection.query(
         `UPDATE webhook_signals SET
-            status = 'AGUARDANDO_ACIONAMENTO'
+            status = 'PENDING'
          WHERE id = ?`,
         [id]
     );
@@ -491,7 +491,7 @@ if (chat_id) {
 
     await connection.query(
         `UPDATE webhook_signals SET
-            status = 'AGUARDANDO_ACIONAMENTO', 
+            status = 'PENDING', 
             timeout_at = ?,
             max_lifetime_minutes = ?
          WHERE id = ?`,
@@ -499,7 +499,7 @@ if (chat_id) {
     );
 
     await connection.commit(); // Comita a transação
-    console.log(`[MONITOR] Sinal ID ${id} para ${symbol} registrado com sucesso. Status: AGUARDANDO_ACIONAMENTO.`);
+    console.log(`[MONITOR] Sinal ID ${id} para ${symbol} registrado com sucesso. Status: PENDING.`);
 
   } catch (error) {
     console.error(`[MONITOR] Erro crítico ao processar sinal ID ${signal.id || 'N/A'} para ${signal.symbol || 'N/A'}:`, error);
@@ -1188,7 +1188,7 @@ async function onPriceUpdate(symbol, currentPrice, db) {
       registry_message_id, message_id_orig, message_source
       FROM webhook_signals
       WHERE symbol = ?
-        AND status = 'AGUARDANDO_ACIONAMENTO'
+        AND status = 'PENDING'
     `, [symbol]);
     
     const pendingSignals = pendingSignalsResult || [];
@@ -2008,7 +2008,7 @@ async function checkExpiredOrders() {
     const [pendingSignals] = await db.query(`
       SELECT id, symbol, side, entry_price, timeframe, created_at, chat_id
       FROM webhook_signals
-      WHERE status = 'AGUARDANDO_ACIONAMENTO'
+      WHERE status = 'PENDING'
         AND timeframe IS NOT NULL AND timeframe != ''
     `);
 
@@ -2153,7 +2153,7 @@ async function checkAndCloseWebsocket(db, symbol) {
     // 1. Verificar se ainda existem sinais pendentes para o símbolo
     const [pendingSignalsRows] = await db.query(`
       SELECT COUNT(*) as count FROM webhook_signals 
-      WHERE symbol = ? AND status = 'AGUARDANDO_ACIONAMENTO'
+      WHERE symbol = ? AND status = 'PENDING'
     `, [symbol]);
     // Acesso direto à contagem - assume que pendingSignalsRows[0] sempre existirá.
     // A versão anterior era: const pendingSignalsCount = (pendingSignalsRows && pendingSignalsRows[0]) ? pendingSignalsRows[0].count : 0;
@@ -3948,13 +3948,13 @@ async function cancelSignal(db, signalId, statusParam, reason) {
           SELECT COUNT(*) as count
           FROM webhook_signals
           WHERE symbol = ?
-            AND status = 'AGUARDANDO_ACIONAMENTO'
+            AND status = 'PENDING'
         `, [symbolToVerify]);
 
         const count = (remainingSignalsRows && remainingSignalsRows[0]) ? remainingSignalsRows[0].count : 0;
 
         if (count === 0) {
-          console.log(`[MONITOR] Não há mais sinais 'AGUARDANDO_ACIONAMENTO' para ${symbolToVerify} após cancelamento do sinal ID ${signalId}. Agendando verificação de websocket.`);
+          console.log(`[MONITOR] Não há mais sinais 'PENDING' para ${symbolToVerify} após cancelamento do sinal ID ${signalId}. Agendando verificação de websocket.`);
           setTimeout(async () => {
             try {
                 console.log(`[MONITOR] Executando checkAndCloseWebsocket para ${symbolToVerify} (agendado após cancelamento do sinal ID ${signalId}).`);
@@ -3968,7 +3968,7 @@ async function cancelSignal(db, signalId, statusParam, reason) {
             }
           }, 5000);
         } else {
-          console.log(`[MONITOR] Ainda existem ${count} sinais 'AGUARDANDO_ACIONAMENTO' para ${symbolToVerify} após cancelamento do sinal ID ${signalId}. Websocket para ${symbolToVerify} permanecerá ativo.`);
+          console.log(`[MONITOR] Ainda existem ${count} sinais 'PENDING' para ${symbolToVerify} após cancelamento do sinal ID ${signalId}. Websocket para ${symbolToVerify} permanecerá ativo.`);
         }
       } catch (checkError) {
         console.error(`[MONITOR] Erro ao verificar sinais restantes para ${symbolToVerify} (referente ao sinal cancelado ID ${signalId}):`, checkError);
@@ -3995,11 +3995,11 @@ async function cleanUpExistingEntries() {
         return;
     }
     
-    // Cancelar todos os sinais em AGUARDANDO_ACIONAMENTO que têm position_id
+    // Cancelar todos os sinais em PENDING que têm position_id
     const [pendingSignalsRows] = await db.query(`
       SELECT id, symbol, position_id 
       FROM webhook_signals 
-      WHERE status = 'AGUARDANDO_ACIONAMENTO' 
+      WHERE status = 'PENDING' 
         AND position_id IS NOT NULL
     `);
     
