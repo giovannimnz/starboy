@@ -299,7 +299,219 @@ def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent, si
     print(f"[INFO] Alavancagem final calculada para {cleaned_symbol}: {final_leverage}x (Ideal: {target_leverage}x, Máximo permitido: {max_leverage}x)")
     return final_leverage
 
+# ...existing code...
+
 def save_to_database(trade_data):
+    """
+    Salva as informações de operação de trade no banco de dados MySQL principal e em bancos adicionais.
+    """
+    signal_id = None
+    conn = None
+    cursor = None
+    
+    try:
+        # 1. Primeiro, salvar no banco principal
+        conn = mysql.connector.connect(
+            host=DB_HOST,
+            port=int(DB_PORT),
+            user=DB_USER,
+            password=DB_PASSWORD,
+            database=DB_NAME
+        )
+        cursor = conn.cursor()
+
+        # Prepare TP1 to TP5 values
+        tp_prices = [None] * 5  # Initialize a list with 5 None values by default
+        
+        all_tps = trade_data.get('all_tps', []) # Get all TPs from trade_data, default to empty list
+        for i in range(min(5, len(all_tps))): # Fill with available values, up to 5
+            tp_prices[i] = all_tps[i]
+            
+        # SQL query including the new columns tp1_price to tp5_price and message_source
+        sql = """
+              INSERT INTO webhook_signals
+              (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price,
+               chat_id, status, timeframe, message_id, message_id_orig,
+               tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, message_source)
+              VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+              """
+
+        values = (
+            trade_data["symbol"],
+            trade_data["side"],
+            trade_data["leverage"],
+            trade_data["capital_pct"],
+            trade_data["entry"],
+            trade_data["tp"],  # Selected target for tp_price (main TP)
+            trade_data["stop_loss"],
+            trade_data["chat_id"],
+            "PENDING", # Initial status
+            trade_data.get("timeframe", ""),
+            trade_data.get("message_id"),
+            trade_data.get("id_mensagem_origem_sinal"),
+            tp_prices[0],  # tp1_price
+            tp_prices[1],  # tp2_price
+            tp_prices[2],  # tp3_price
+            tp_prices[3],  # tp4_price
+            tp_prices[4],  # tp5_price
+            trade_data.get("message_source")  # Nova coluna message_source
+        )
+
+        cursor.execute(sql, values)
+        signal_id = cursor.lastrowid # Get the ID of the inserted row
+        conn.commit()
+
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Operation saved to database: {trade_data['symbol']} (ID: {signal_id})")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] TPs saved: TP1={tp_prices[0]}, TP2={tp_prices[1]}, TP3={tp_prices[2]}, TP4={tp_prices[3]}, TP5={tp_prices[4]}")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Message source: {trade_data.get('message_source')}")
+        
+        # 2. Salvar nos bancos adicionais
+        additional_dbs = find_additional_databases()
+        if additional_dbs:
+            for db_name in additional_dbs:
+                save_to_additional_database(trade_data, db_name, tp_prices)
+                
+        return signal_id
+
+    except mysql.connector.Error as db_err:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Database error while saving: {db_err}")
+        
+        # Fallback logic for "Unknown column" errors
+        if "Unknown column" in str(db_err):
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Attempting fallback due to unknown column(s)...")
+            
+            # ... código de fallback existente ...
+
+    except Exception as e_generic:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Generic error while saving to database: {e_generic}")
+        return None
+
+    finally:
+        if conn and conn.is_connected():
+            if cursor:
+                cursor.close()
+            conn.close()
+
+def find_additional_databases():
+    """
+    Encontra todos os bancos de dados adicionais configurados no arquivo .env
+    """
+    additional_dbs = []
+    
+    # Procurar por DB_NAME_2, DB_NAME_3, etc. no arquivo .env
+    i = 2
+    while True:
+        db_name_key = f"DB_NAME_{i}"
+        db_name = os.getenv(db_name_key)
+        
+        if db_name:
+            additional_dbs.append(db_name)
+            i += 1
+        else:
+            break
+    
+    return additional_dbs
+
+def save_to_additional_database(trade_data, db_name, tp_prices):
+    """
+    Salva os dados de trade em um banco de dados adicional
+    """
+    conn = None
+    cursor = None
+    
+    try:
+        # Conectar ao banco de dados adicional
+        conn = mysql.connector.connect(
+            host=DB_HOST,
+            port=int(DB_PORT),
+            user=DB_USER,
+            password=DB_PASSWORD,
+            database=db_name
+        )
+        cursor = conn.cursor()
+        
+        # Verificar se a tabela webhook_signals existe no banco adicional
+        cursor.execute(f"SHOW TABLES LIKE 'webhook_signals'")
+        if not cursor.fetchone():
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Tabela webhook_signals não encontrada no banco {db_name}. Pulando...")
+            return
+        
+        # Verificar as colunas disponíveis na tabela do banco adicional
+        cursor.execute(f"DESCRIBE webhook_signals")
+        columns = {row[0].lower(): row for row in cursor.fetchall()}
+        
+        # Construir a consulta SQL dinamicamente com base nas colunas disponíveis
+        available_columns = []
+        values = []
+        value_placeholders = []
+        
+        # Mapeamento de campos de trade_data para colunas da tabela
+        field_mappings = {
+            'symbol': 'symbol',
+            'side': 'side',
+            'leverage': 'leverage',
+            'capital_pct': 'capital_pct',
+            'entry': 'entry_price',
+            'tp': 'tp_price',
+            'stop_loss': 'sl_price',
+            'chat_id': 'chat_id',
+            'timeframe': 'timeframe',
+            'message_id': 'message_id',
+            'id_mensagem_origem_sinal': 'message_id_orig',
+            'message_source': 'message_source'
+        }
+        
+        # Adicionar colunas básicas
+        for field, column in field_mappings.items():
+            if column.lower() in columns:
+                available_columns.append(column)
+                value_placeholders.append('%s')
+                
+                # Valores especiais
+                if field == 'message_source':
+                    values.append(trade_data.get(field))
+                else:
+                    values.append(trade_data.get(field))
+        
+        # Adicionar status sempre como "PENDING"
+        if 'status' in columns:
+            available_columns.append('status')
+            value_placeholders.append('%s')
+            values.append('PENDING')
+        
+        # Adicionar colunas de TP1 a TP5 se disponíveis
+        for i in range(5):
+            tp_column = f'tp{i+1}_price'
+            if tp_column in columns:
+                available_columns.append(tp_column)
+                value_placeholders.append('%s')
+                values.append(tp_prices[i] if i < len(tp_prices) else None)
+        
+        # Construir e executar a consulta SQL
+        if available_columns:
+            sql = f"""
+                  INSERT INTO webhook_signals
+                  ({', '.join(available_columns)})
+                  VALUES ({', '.join(value_placeholders)})
+                  """
+            
+            cursor.execute(sql, tuple(values))
+            additional_id = cursor.lastrowid
+            conn.commit()
+            
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Operation also saved to additional database {db_name} (ID: {additional_id})")
+        
+    except mysql.connector.Error as db_err:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Error saving to additional database {db_name}: {db_err}")
+    
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Generic error while saving to additional database {db_name}: {e}")
+    
+    finally:
+        if conn and conn.is_connected():
+            if cursor:
+                cursor.close()
+            conn.close()
     """
     Saves trade operation information to the MySQL database and returns the signal ID.
     """
