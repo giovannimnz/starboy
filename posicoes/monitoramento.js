@@ -782,9 +782,7 @@ async function handleOrderUpdate(orderMsg, db) {
             stopPrice: slPrice, // Preço de disparo
             reduceOnly: true
         };
-        // A função newStopOrder deve ser adaptada para aceitar um objeto de parâmetros
-        // ou manter a assinatura original: newStopOrder(symbol, quantity, side, stopPrice, price, reduceOnly, closePosition)
-        // Para STOP_MARKET, price é geralmente null.
+        // ou manter a assinatura original: (symbol, quantity, side, stopPrice, price, reduceOnly, closePosition)
         const slResponse = await newStopOrder(
             slOrderParams.symbol,
             slOrderParams.quantity,
@@ -1048,36 +1046,33 @@ async function movePositionToHistory(db, positionId, status, reason) {
       console.log(`[MOVE_POSITION] Verificando ordens abertas na corretora para ${symbol} antes de mover posição ${positionId} para histórico`);
       
       // 2. NOVO: Verificar se existem ordens abertas na corretora para este símbolo
-      try {
-        const openOrdersInExchange = await getOpenOrders(symbol);
-        
-        if (openOrdersInExchange && openOrdersInExchange.length > 0) {
-          console.log(`[MOVE_POSITION] Encontradas ${openOrdersInExchange.length} ordens abertas na corretora para ${symbol}. Cancelando...`);
-          
-          // Cancelar cada ordem aberta
-          for (const order of openOrdersInExchange) {
-            try {
-              console.log(`[MOVE_POSITION] Cancelando ordem ${order.orderId} para ${symbol} na corretora`);
-              await cancelOrder(order.orderId, symbol);
-              
-              // Pequena pausa para evitar rate limiting
-              await new Promise(resolve => setTimeout(resolve, 300));
-            } catch (cancelError) {
-              // Logar erro mas continuar tentando cancelar outras ordens
-              console.error(`[MOVE_POSITION] Erro ao cancelar ordem ${order.orderId} para ${symbol}: ${cancelError.message}`);
-            }
-          }
-          
-          // Dar um tempo para a corretora processar os cancelamentos
-          console.log(`[MOVE_POSITION] Aguardando 2 segundos para a corretora processar os cancelamentos...`);
-          await new Promise(resolve => setTimeout(resolve, 2000));
-        } else {
-          console.log(`[MOVE_POSITION] Nenhuma ordem aberta encontrada na corretora para ${symbol}`);
-        }
-      } catch (exchangeError) {
-        console.error(`[MOVE_POSITION] Erro ao verificar ordens abertas na corretora para ${symbol}: ${exchangeError.message}`);
-        // Continuar mesmo com erro na verificação de ordens na corretora
+    try {
+      console.log(`[MOVE_POSITION] Tentando cancelar todas as ordens abertas para ${symbol} de uma vez`);
+  
+      const cancelResult = await cancelAllOpenOrders(symbol);
+  
+      if (cancelResult && Array.isArray(cancelResult) && cancelResult.length > 0) {
+        console.log(`[MOVE_POSITION] ${cancelResult.length} ordens canceladas com sucesso para ${symbol}`);
+    
+        // Log detalhado das ordens canceladas (opcional)
+        cancelResult.forEach(order => {
+          console.log(`[MOVE_POSITION] Ordem ${order.orderId} (tipo: ${order.type}, lado: ${order.side}) cancelada`);
+        });
+      } else {
+        console.log(`[MOVE_POSITION] Nenhuma ordem encontrada/cancelada para ${symbol} ou resultado vazio`);
       }
+  
+  // Pequena pausa para a corretora processar os cancelamentos
+  console.log(`[MOVE_POSITION] Aguardando 1 segundo para a corretora processar os cancelamentos...`);
+  await new Promise(resolve => setTimeout(resolve, 1000));
+  
+} catch (exchangeError) {
+  console.error(`[MOVE_POSITION] Erro ao cancelar ordens para ${symbol}: ${exchangeError.message}`);
+  
+  // Continuar mesmo com erro na verificação/cancelamento de ordens
+  // Pode adicionar tentativa de fallback para cancelamento individual aqui se necessário
+  console.log(`[MOVE_POSITION] Continuando apesar do erro no cancelamento em lote`);
+}
 
       // 3. Atualizar status e tempo de fechamento
       const formattedDate = formatDateForMySQL(new Date());
