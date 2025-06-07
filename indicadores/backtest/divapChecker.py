@@ -25,19 +25,35 @@ logger = logging.getLogger("DIVAP_Analyzer")
 env_path = pathlib.Path(__file__).parents[1] / '.env'
 load_dotenv(dotenv_path=env_path)
 
-# Configuração de conexão com o banco de dados do arquivo .env
+DB_HOST = os.getenv('DB_HOST')
+DB_PORT = os.getenv('DB_PORT')
+DB_USER = os.getenv('DB_USER')
+DB_PASSWORD = os.getenv('DB_PASSWORD')
+DB_NAME = os.getenv('DB_NAME')
+
+# Configuração da conexão com banco de dados
 DB_CONFIG = {
-    "host": os.getenv('DB_HOST'),
-    "port": os.getenv('DB_PORT'),
-    "user": os.getenv('DB_USER'),
-    "password": os.getenv('DB_PASSWORD'),
-    "database": os.getenv('DB_NAME')
+    "host": DB_HOST,
+    "user": DB_USER,
+    "password": DB_PASSWORD,
+    "database": DB_NAME
 }
 
+# Adicionar porta apenas se estiver definida
+if DB_PORT:
+    try:
+        DB_CONFIG["port"] = int(DB_PORT)
+    except (ValueError, TypeError):
+        logger.warning(f"Valor de porta inválido no .env: '{DB_PORT}'. Usando porta padrão.")
+
 # Configuração para API da Binance do arquivo .env
+API_KEY = os.getenv('API_KEY')
+API_SECRET = os.getenv('API_SECRET')
+
+# Configuração da conexão com Binance
 BINANCE_CONFIG = {
-    "apiKey": os.getenv('API_KEY'),
-    "secret": os.getenv('API_SECRET'),
+    "apiKey": API_KEY,
+    "secret": API_SECRET,
     "enableRateLimit": True
 }
 
