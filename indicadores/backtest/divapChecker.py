@@ -712,7 +712,7 @@ class DIVAPAnalyzer:
                 if signal["id"] > last_processed_id:
                     last_processed_id = signal["id"]
             
-            time.sleep(5)  # Intervalo entre verificações (ajuste conforme necessário)
+            time.sleep(2)  # Intervalo entre verificações (ajuste conforme necessário)
 
 def interactive_mode():
     analyzer = DIVAPAnalyzer(DB_CONFIG, BINANCE_CONFIG)
@@ -723,9 +723,10 @@ def interactive_mode():
             print("\n" + "="*60 + "\n🔍 ANALISADOR DIVAP - MODO INTERATIVO\n" + "="*60)
             print("1. Analisar sinal por ID")
             print("2. Analisar sinal por data e símbolo")
-            print("3. Monitorar todos os sinais")  # Nova opção
-            print("4. Sair")
-            choice = input("\nEscolha uma opção (1-4): ").strip()
+            print("3. Monitorar todos os sinais")
+            print("4. Monitoramento em tempo real")  # Nova opção
+            print("5. Sair")
+            choice = input("\nEscolha uma opção (1-5): ").strip()
             
             if choice == "1":
                 try:
@@ -796,6 +797,10 @@ def interactive_mode():
                     analyzer.monitor_all_signals(period_days=days, limit=limit)
             
             elif choice == "4":
+                print("\nIniciando monitoramento em tempo real da tabela webhook_signals...")
+                analyzer.monitor_signals_realtime()
+            
+            elif choice == "5":
                 print("\n👋 Saindo...")
                 break
             else:
