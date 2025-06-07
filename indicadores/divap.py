@@ -300,8 +300,6 @@ def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent, si
     print(f"[INFO] Alavancagem final calculada para {cleaned_symbol}: {final_leverage}x (Ideal: {target_leverage}x, Máximo permitido: {max_leverage}x)")
     return final_leverage
 
-# ...existing code...
-
 def save_to_database(trade_data):
     """
     Salva as informações de operação de trade no banco de dados MySQL principal e em bancos adicionais,
