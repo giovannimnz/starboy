@@ -691,15 +691,33 @@ class DIVAPAnalyzer:
     def monitor_signals_realtime(self):
         """
         Monitora a tabela webhook_signals em tempo real.
-        Quando há um novo sinal (id > last_processed_id), realiza a análise e salva o resultado.
+        Inicia pelo menor ID não processado (divap_confirmado=NULL e cancelado_checker=NULL),
+        realizando análise e salvando o resultado.
         """
-        # Definir last_processed_id para o maior ID já cadastrado
-        self.cursor.execute("SELECT COALESCE(MAX(id), 0) AS max_id FROM webhook_signals")
+        # Buscar o menor ID de sinal não processado (divap_confirmado=NULL e cancelado_checker=NULL)
+        self.cursor.execute("""
+            SELECT COALESCE(MIN(id), 0) AS min_id 
+            FROM webhook_signals 
+            WHERE divap_confirmado IS NULL 
+            AND cancelado_checker IS NULL
+        """)
         row = self.cursor.fetchone()
-        last_processed_id = row["max_id"] or 0
+        last_processed_id = (row["min_id"] or 0) - 1  # Subtrair 1 para incluir o primeiro sinal não processado
         
-        print(f"[{datetime.now()}] Iniciando monitoramento em tempo real. Processando sinais a partir do ID {last_processed_id+1}...")
-        print("Aguardando novos sinais... (pressione Ctrl+C para interromper)")
+        # Buscar o maior ID na tabela para referência
+        self.cursor.execute("SELECT COALESCE(MAX(id), 0) AS max_id FROM webhook_signals")
+        max_id_row = self.cursor.fetchone()
+        max_id = max_id_row["max_id"] or 0
+        
+        if last_processed_id < 0:
+            last_processed_id = 0
+        
+        pending_count = max_id - last_processed_id if last_processed_id > 0 else max_id
+        
+        print(f"[{datetime.now()}] Iniciando monitoramento em tempo real.")
+        print(f"Processando sinais a partir do ID {last_processed_id+1} (menor ID não processado)")
+        print(f"Total de sinais pendentes: {pending_count}")
+        print("Aguardando processamento... (pressione Ctrl+C para interromper)")
         
         last_check_had_signals = False
         check_count = 0
@@ -713,13 +731,18 @@ class DIVAPAnalyzer:
                     print("[ALERTA] Conexão perdida, reconectando...")
                     self.connect_db()
                 
-                # Executa a busca
-                self.cursor.execute("SELECT * FROM webhook_signals WHERE id > %s ORDER BY id ASC", (last_processed_id,))
+                # Executa a busca de sinais não processados com ID > último processado
+                self.cursor.execute("""
+                    SELECT * FROM webhook_signals 
+                    WHERE id > %s 
+                    AND (divap_confirmado IS NULL OR cancelado_checker IS NULL)
+                    ORDER BY id ASC
+                """, (last_processed_id,))
                 new_signals = self.cursor.fetchall()
                 
                 # Só mostra mensagens se encontrou sinais
                 if new_signals:
-                    print(f"\n[{datetime.now()}] Encontrados {len(new_signals)} novos sinais!")
+                    print(f"\n[{datetime.now()}] Encontrados {len(new_signals)} sinais não processados!")
                     
                     # Processa os sinais
                     for signal in new_signals:
@@ -735,7 +758,7 @@ class DIVAPAnalyzer:
                 
                 # Mostrar mensagem apenas se mudou de estado ou se passou tempo suficiente
                 elif last_check_had_signals or (datetime.now() - last_status_time).total_seconds() >= 1800:  # 30 minutos
-                    print(f"[{datetime.now()}] Nenhum novo sinal encontrado. Última ID processada: {last_processed_id}")
+                    print(f"[{datetime.now()}] Nenhum novo sinal não processado encontrado. Última ID processada: {last_processed_id}")
                     last_check_had_signals = False
                     last_status_time = datetime.now()
                 

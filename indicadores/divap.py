@@ -236,7 +236,7 @@ def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent, si
     try:
         # Obter o saldo base de cálculo
         account_balance = get_account_base_balance()
-        print(f"[DEBUG] Saldo base de cálculo: {account_balance:.2f} USDT")
+        #print(f"[DEBUG] Saldo base de cálculo: {account_balance:.2f} USDT")
         
         # Obter os brackets de alavancagem para o símbolo
         leverage_brackets = load_leverage_brackets(cleaned_symbol)
@@ -256,7 +256,7 @@ def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent, si
 
         # Valor para ordem (com base na porcentagem de capital)
         order_value = account_balance * (capital_percent / 100)
-        print(f"[DEBUG] Valor da ordem: {order_value:.2f} USDT (Saldo {account_balance:.2f} * {capital_percent}%)")
+        #print(f"[DEBUG] Valor da ordem: {order_value:.2f} USDT (Saldo {account_balance:.2f} * {capital_percent}%)")
         
         max_leverage = 1
         bracket_leverage_limits = []
@@ -279,7 +279,8 @@ def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent, si
                 bracket_leverage_limits.append(bracket_leverage)
                 print(f"[DEBUG] Bracket elegível: Alavancagem {bracket_leverage}x, Valor posição: {position_value:.2f}, Limites: {notional_floor:.2f} - {notional_cap:.2f}")
             else:
-                print(f"[DEBUG] Bracket não elegível: Alavancagem {bracket_leverage}x, Valor posição: {position_value:.2f}, Limites: {notional_floor:.2f} - {notional_cap:.2f}")
+                #print(f"[DEBUG] Bracket não elegível: Alavancagem {bracket_leverage}x, Valor posição: {position_value:.2f}, Limites: {notional_floor:.2f} - {notional_cap:.2f}")
+                pass
         
         if bracket_leverage_limits:
             max_leverage = max(bracket_leverage_limits)
@@ -1113,48 +1114,19 @@ async def check_if_reply_to_signal(reply_to_message_id, chat_id=None):
         )
         cursor = conn.cursor(dictionary=True)
         
-        # 1. Primeiro, verificar na tabela webhook_signals (sinais principais)
-        #    Verifica se a mensagem respondida é diretamente um sinal registrado em webhook_signals
-        #    usando seu message_id (ID no canal de destino), message_id_orig (ID no canal de origem),
-        #    ou um registry_message_id (se aplicável).
+        # 1. Verificar se não vai duplicar na tabela webhook_signals (sinais principais)
         sql_webhook = """
             SELECT id, symbol FROM webhook_signals 
             WHERE (message_id = %s AND chat_id = %s) 
                OR (message_id_orig = %s AND chat_id_orig_sinal = %s) 
                OR registry_message_id = %s 
         """
-        # Para message_id e message_id_orig, o chat_id correspondente é crucial.
-        # Se registry_message_id for global, não precisa de chat_id.
-        # Esta query assume que se chat_id é fornecido, ele se aplica a message_id (destino)
-        # e que você teria outro campo para chat_id_orig_sinal se quisesse ser preciso com message_id_orig.
-        # Simplificando para o contexto da pergunta, usaremos o chat_id fornecido se ele corresponder ao contexto de message_id.
-        # A query original era OR message_id_orig = %s OR registry_message_id = %s.
-        # Adicionar chat_id à query do webhook_signals se possível, para maior precisão.
-        # Por ora, mantendo a lógica de OR ampla da sua proposta, mas idealmente message_id e message_id_orig
-        # deveriam ser pareados com seus respectivos chat_ids na consulta.
-
-        # Query ajustada para ser mais flexível com base na sua proposta:
-        # O `chat_id` aqui é o chat da mensagem respondida.
-        # Se a mensagem respondida (`reply_to_message_id`) for a do canal de destino, `webhook_signals.chat_id` deve bater.
-        # Se a mensagem respondida for a do canal de origem, `webhook_signals.chat_id_orig_sinal` deve bater.
-        # `registry_message_id` é um caso à parte.
-
-        # Tentativa 1: webhook_signals (considerando message_id como o ID da mensagem no canal de destino)
-        # E message_id_orig como o ID da mensagem no canal de origem do sinal
-        # E registry_message_id como um ID de registro alternativo.
-        # A coluna `chat_id` em webhook_signals refere-se ao GRUPO_DESTINO_ID
-        # A coluna `chat_id_orig_sinal` em webhook_signals refere-se ao GRUPO_ORIGEM_ID
-
         sql_webhook_refined = """
             SELECT id, symbol FROM webhook_signals 
             WHERE (message_id = %s AND chat_id = %s)  /* Mensagem no destino */
                OR (message_id_orig = %s AND chat_id_orig_sinal = %s) /* Mensagem na origem */
                OR registry_message_id = %s /* ID de registro alternativo */
         """
-        # Nota: chat_id_orig_sinal não está como parâmetro da função, usando chat_id para ambos os cenários por simplicidade
-        # da chamada atual, mas idealmente você saberia o contexto.
-        # Se chat_id é do grupo de destino, o primeiro OR pode funcionar.
-        # Se chat_id é do grupo de origem, o segundo OR pode funcionar.
         
         # Usando a query da sua proposta que é mais simples:
         cursor.execute(
@@ -1182,10 +1154,6 @@ async def check_if_reply_to_signal(reply_to_message_id, chat_id=None):
             return (result_sm['symbol'], result_sm['signal_id'])
         
         # 3. Lógica Recursiva: Se não encontrou um sinal direto, verificar se a mensagem respondida
-        #    é ela mesma uma resposta a outra mensagem, e tentar encontrar o sinal na mensagem "pai".
-        #    Esta parte só é executada se as buscas diretas (passos 1 e 2) não retornarem resultado.
-        #    O 'result_sm' aqui é o da última busca em signals_msg.
-        #    Se `result_sm` for None ou não tiver `signal_id`, tentamos a recursão.
         
         if not (result_sm and result_sm.get('symbol') and result_sm.get('signal_id') is not None) :
             # Buscar a mensagem "pai" da mensagem atual (reply_to_message_id) na tabela signals_msg
@@ -1203,10 +1171,7 @@ async def check_if_reply_to_signal(reply_to_message_id, chat_id=None):
                 if parent_message_info and parent_message_info.get('reply_to_message_id'):
                     parent_msg_id = parent_message_info['reply_to_message_id']
                     print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Recursão: Verificando mensagem pai ID {parent_msg_id} para o sinal.")
-                    # Chamada recursiva para verificar a mensagem-pai.
                     # O chat_id passado para a recursão deve ser o da mensagem pai,
-                    # que presumimos ser o mesmo chat_id. Se as respostas puderem cruzar chats de forma relevante,
-                    # a lógica de chat_id precisaria ser mais complexa.
                     return await check_if_reply_to_signal(parent_msg_id, chat_id) 
             else:
                 print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Recursão pulada: chat_id não fornecido para a mensagem {reply_to_message_id}.")
@@ -1318,7 +1283,7 @@ async def main():
 
     # Iniciar o cliente
     await client.start()
-    print("[INFO] Cliente Telethon conectado")
+    #print("[INFO] Cliente Telethon conectado")
 
     # Configurar tratamento de sinais para Windows e Unix
     try:
@@ -1334,7 +1299,7 @@ async def main():
 
     # Verificar se conseguimos acessar os grupos
     try:
-        print("[INFO] Verificando acesso aos grupos de origem:")
+        #print("[INFO] Verificando acesso aos grupos de origem:")
         for grupo_id in GRUPOS_ORIGEM_IDS:
             try:
                 # Usar get_entity diretamente com o ID interno
