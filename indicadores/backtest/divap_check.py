@@ -691,7 +691,12 @@ class DIVAPAnalyzer:
         realizando análise e salvando o resultado.
         """
         try:
-            # Verificar quantos sinais pendentes existem no total
+            # Verificar quantos sinais existem no total na tabela
+            self.cursor.execute("SELECT COUNT(*) AS total_signals FROM webhook_signals")
+            total_signals_row = self.cursor.fetchone()
+            total_signals = total_signals_row["total_signals"] or 0
+            
+            # Verificar quantos sinais pendentes existem
             self.cursor.execute("""
                 SELECT COUNT(*) AS total_pending 
                 FROM webhook_signals 
@@ -701,7 +706,16 @@ class DIVAPAnalyzer:
             pending_count_row = self.cursor.fetchone()
             total_pending = pending_count_row["total_pending"] or 0
             
+            # Obter o ID mais recente no banco para referência
+            self.cursor.execute("SELECT MAX(id) AS max_id FROM webhook_signals")
+            max_id_row = self.cursor.fetchone()
+            max_id = max_id_row["max_id"] or 0
+            
+            # Próximo ID esperado seria max_id + 1
+            next_expected_id = max_id + 1
+            
             # Obter o menor ID de sinal não processado (se existir)
+            next_id_to_process = None
             if total_pending > 0:
                 self.cursor.execute("""
                     SELECT MIN(id) AS min_id 
@@ -713,27 +727,22 @@ class DIVAPAnalyzer:
                 next_id_to_process = row["min_id"]
                 last_processed_id = next_id_to_process - 1
             else:
-                # Se não houver sinais pendentes, obtém o maior ID atual como referência
-                self.cursor.execute("SELECT MAX(id) AS max_id FROM webhook_signals")
-                max_id_row = self.cursor.fetchone()
-                last_processed_id = max_id_row["max_id"] or 0
-                next_id_to_process = None
-            
-            # Obter o ID mais recente no banco para referência
-            self.cursor.execute("SELECT MAX(id) AS max_id FROM webhook_signals")
-            max_id_row = self.cursor.fetchone()
-            max_id = max_id_row["max_id"] or 0
+                # Se não houver sinais pendentes, o último processado é o máximo atual
+                last_processed_id = max_id
             
             # Log detalhado da situação atual
-            if total_pending > 0:
-                logger.info(f"Iniciando monitoramento em tempo real - {total_pending} sinais pendentes encontrados")
-                logger.info(f"O próximo sinal a ser processado é o ID {next_id_to_process}")
-            else:
-                logger.info("Iniciando monitoramento em tempo real - Nenhum sinal pendente encontrado")
-                logger.info(f"Todos os {max_id} sinais existentes já foram processados")
+            logger.info(f"Iniciando monitoramento em tempo real")
+            logger.info(f"Total de sinais na tabela: {total_signals}")
             
-            logger.info(f"Maior ID atual no banco de dados: {max_id}")
-            logger.info("Aguardando novos sinais... (pressione Ctrl+C para interromper)")
+            if total_pending > 0:
+                logger.info(f"Sinais pendentes: {total_pending}")
+                logger.info(f"Próximo sinal a ser processado: ID {next_id_to_process}")
+            else:
+                logger.info(f"Nenhum sinal pendente encontrado")
+                logger.info(f"Todos os {total_signals} sinais existentes já foram processados")
+            
+            logger.info(f"Maior ID atual no banco: {max_id}")
+            logger.info(f"Aguardando novos sinais (próximo ID esperado: {next_expected_id})...")
             
             last_check_had_signals = False
             last_status_time = datetime.now()
@@ -788,8 +797,18 @@ class DIVAPAnalyzer:
                         next_id = next_row["next_id"]
                         logger.info(f"Restam {remaining} sinais pendentes. Próximo ID a ser processado: {next_id}")
                     else:
-                        logger.info("Todos os sinais foram processados!")
-                
+                        # Atualizar o total de sinais e o próximo esperado
+                        self.cursor.execute("SELECT COUNT(*) AS total_signals FROM webhook_signals")
+                        current_total_row = self.cursor.fetchone()
+                        current_total = current_total_row["total_signals"] or 0
+                        
+                        self.cursor.execute("SELECT MAX(id) AS current_max FROM webhook_signals")
+                        current_max_row = self.cursor.fetchone()
+                        current_max = current_max_row["current_max"] or 0
+                        
+                        next_expected = current_max + 1
+                        logger.info(f"Todos os {current_total} sinais foram processados! Aguardando novo sinal (próximo ID esperado: {next_expected})")
+            
                 # Mostrar mensagem apenas se mudou de estado ou se passou tempo suficiente
                 elif last_check_had_signals or (datetime.now() - last_status_time).total_seconds() >= 1800:  # 30 minutos
                     # Verificar se há algum novo sinal pendente
@@ -802,6 +821,17 @@ class DIVAPAnalyzer:
                     current_row = self.cursor.fetchone()
                     current_pending = current_row["current_pending"] or 0
                     
+                    # Obter total atualizado e próximo ID esperado
+                    self.cursor.execute("SELECT COUNT(*) AS total_signals FROM webhook_signals")
+                    current_total_row = self.cursor.fetchone()
+                    current_total = current_total_row["total_signals"] or 0
+                    
+                    self.cursor.execute("SELECT MAX(id) AS current_max FROM webhook_signals")
+                    current_max_row = self.cursor.fetchone()
+                    current_max = current_max_row["current_max"] or 0
+                    
+                    next_expected = current_max + 1
+                    
                     if current_pending > 0:
                         self.cursor.execute("""
                             SELECT MIN(id) AS next_id 
@@ -811,17 +841,10 @@ class DIVAPAnalyzer:
                         """)
                         next_row = self.cursor.fetchone()
                         next_id = next_row["next_id"]
-                        logger.info(f"Existem {current_pending} sinais pendentes. Próximo ID a ser processado: {next_id}")
+                        logger.info(f"Existem {current_pending} sinais pendentes de {current_total} total. Próximo ID a ser processado: {next_id}")
                     else:
-                        # Obter o último ID atual
-                        self.cursor.execute("SELECT MAX(id) AS current_max FROM webhook_signals")
-                        current_max_row = self.cursor.fetchone()
-                        current_max = current_max_row["current_max"] or 0
-                        
-                        logger.info(f"Nenhum sinal pendente encontrado. Último ID processado: {last_processed_id}, Último ID no banco: {current_max}")
-                    
-                    last_check_had_signals = False
-                    last_status_time = datetime.now()
+                        logger.info(f"Nenhum sinal pendente encontrado. Total de sinais: {current_total}, Último ID: {current_max}")
+                        logger.info(f"Aguardando novos sinais (próximo ID esperado: {next_expected})...")
                 
                 # Importante: pausa entre verificações
                 time.sleep(2)
