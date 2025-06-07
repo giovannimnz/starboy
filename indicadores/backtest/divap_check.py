@@ -84,7 +84,7 @@ class DIVAPAnalyzer:
         try:
             self.exchange = ccxt.binanceusdm(self.binance_config)
             self.exchange.load_markets()
-            logger.info("Conexão com a Binance estabelecida com sucesso")
+            #logger.info("Conexão com a Binance estabelecida com sucesso")
         except Exception as e:
             logger.error(f"Erro ao conectar à Binance: {e}")
             raise
