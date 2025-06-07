@@ -701,8 +701,14 @@ class DIVAPAnalyzer:
         last_processed_id = row["max_id"] or 0
 
         while True:
+            print(f"[{datetime.now()}] Verificando novos sinais após ID {last_processed_id}...")
             self.cursor.execute("SELECT * FROM webhook_signals WHERE id > %s ORDER BY id ASC", (last_processed_id,))
             new_signals = self.cursor.fetchall()
+            if new_signals:
+                print(f"[{datetime.now()}] Encontrados {len(new_signals)} novos sinais.")
+            else:
+                print(f"[{datetime.now()}] Nenhum novo sinal encontrado.")
+            # resto do código...
             for signal in new_signals:
                 result = self.analyze_signal(signal)
                 self.save_analysis_result(result)
