@@ -342,7 +342,8 @@ class DIVAPAnalyzer:
     def _get_previous_candle_time(self, current_time: datetime, timeframe: str) -> datetime:
         tf_minutes = self._get_timeframe_delta(timeframe)
         if not tf_minutes: return current_time
-        
+    
+        # Calcula o início do candle atual
         current_candle_start = current_time
         if tf_minutes < 60:
             candle_start_minute = (current_time.minute // tf_minutes) * tf_minutes
@@ -354,13 +355,10 @@ class DIVAPAnalyzer:
         else:
             current_candle_start = current_time.replace(hour=0, minute=0, second=0, microsecond=0)
         
-        previous_candle_start = current_candle_start
-        if current_time > current_candle_start:
-             previous_candle_start = current_candle_start
-        else: # Se o sinal chegar exatamente no início do candle, pegue o anterior
-             previous_candle_start = current_candle_start - timedelta(minutes=tf_minutes)
+        # SEMPRE pega o candle anterior ao candle atual
+        previous_candle_start = current_candle_start - timedelta(minutes=tf_minutes)
         
-        logger.info(f"Horário do sinal: {current_time}, Analisando candle que inicia em: {previous_candle_start}")
+        logger.info(f"Horário do sinal: {current_time}, Candle atual inicia em: {current_candle_start}, Analisando candle anterior que inicia em: {previous_candle_start}")
         return previous_candle_start
 
     def save_analysis_result(self, result: Dict) -> None:
