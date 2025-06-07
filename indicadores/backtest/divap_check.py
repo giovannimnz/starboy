@@ -731,18 +731,18 @@ class DIVAPAnalyzer:
                 last_processed_id = max_id
             
             # Log detalhado da situação atual
-            logger.info(f"Iniciando monitoramento em tempo real")
-            logger.info(f"Total de sinais na tabela: {total_signals}")
+            logger.info(f"Monitoramento iniciado...")
+            #logger.info(f"Total de sinais na tabela: {total_signals}")
             
             if total_pending > 0:
                 logger.info(f"Sinais pendentes: {total_pending}")
                 logger.info(f"Próximo sinal a ser processado: ID {next_id_to_process}")
             else:
                 logger.info(f"Nenhum sinal pendente encontrado")
-                logger.info(f"Todos os {total_signals} sinais existentes já foram processados")
+                #logger.info(f"Todos os {total_signals} sinais existentes já foram processados")
             
-            logger.info(f"Maior ID atual no banco: {max_id}")
-            logger.info(f"Aguardando novos sinais (próximo ID esperado: {next_expected_id})...")
+            #logger.info(f"Maior ID atual no banco: {max_id}")
+            logger.info(f"Aguardando novos sinais (Próximo ID: {next_expected_id})...")
             
             last_check_had_signals = False
             last_status_time = datetime.now()
