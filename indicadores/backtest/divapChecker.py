@@ -788,7 +788,6 @@ class DIVAPAnalyzer:
         print(f"{'=' * 60}")
         print(f"📅 Data/Hora do Sinal: {result['created_at']}")
         
-        # >>> ALTERAÇÃO 3: Tratar NaN na exibição dos resultados <<<
         if 'previous_candle_time' in result:
             candle_open_time = result['previous_candle_time']
             tf_minutes = self._get_timeframe_delta(result['timeframe'])
@@ -822,10 +821,14 @@ class DIVAPAnalyzer:
         
         print(f"\n🔍 RESULTADOS DA CONFLUÊNCIA DIVAP:")
         print(f"  • Volume acima da média: {'✅ SIM' if result['high_volume'] else '❌ NÃO'}")
-        print(f"  • Divergência altista: {'✅ SIM' if result['bull_div'] else '❌ NÃO'}")
-        print(f"  • Divergência baixista: {'✅ SIM' if result['bear_div'] else '❌ NÃO'}")
-        print(f"  • Reversão de preço (baixa para alta): {'✅ SIM' if result['price_reversal_up'] else '❌ NÃO'}")
-        print(f"  • Reversão de preço (alta para baixa): {'✅ SIM' if result['price_reversal_down'] else '❌ NÃO'}")
+        
+        # Mostrar apenas as divergências e reversões relevantes para a direção do sinal
+        if result['side'].upper() == "COMPRA":
+            print(f"  • Divergência altista: {'✅ SIM' if result['bull_div'] else '❌ NÃO'}")
+            print(f"  • Reversão de preço (baixa para alta): {'✅ SIM' if result['price_reversal_up'] else '❌ NÃO'}")
+        else:  # VENDA
+            print(f"  • Divergência baixista: {'✅ SIM' if result['bear_div'] else '❌ NÃO'}")
+            print(f"  • Reversão de preço (alta para baixa): {'✅ SIM' if result['price_reversal_down'] else '❌ NÃO'}")
 
         print(f"\n🏆 CONCLUSÃO FINAL:")
         print(f"  {result['message']}")
