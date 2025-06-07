@@ -612,11 +612,7 @@ class DIVAPAnalyzer:
         
         # Se o horário do sinal coincide exatamente com o início de um candle,
         # então o candle anterior é o que acabou de se fechar
-        if current_time == current_candle_start:
-            previous_candle_start = current_candle_start - timedelta(minutes=tf_minutes)
-        else:
-            # Se não, o candle anterior é o último candle completo
-            previous_candle_start = current_candle_start - timedelta(minutes=tf_minutes)
+        previous_candle_start = current_candle_start - timedelta(minutes=tf_minutes)
         
         logger.info(f"Horário do sinal: {current_time}, Candle atual inicia em: {current_candle_start}, Analisando candle anterior que inicia em: {previous_candle_start}")
         return previous_candle_start
