@@ -16,7 +16,7 @@ import re
 
 # Configuração de logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', handlers=[logging.StreamHandler()])
-logger = logging.getLogger("DIVAP_Analyzer")
+logger = logging.getLogger("DIV_Analyzer")
 
 # Carregar variáveis de ambiente do arquivo .env
 env_path = pathlib.Path(__file__).resolve().parents[2] / '.env'
@@ -41,7 +41,7 @@ RSI_PERIODS = 14
 VOLUME_SMA_PERIODS = 20
 PIVOT_LEFT = 2
 
-class DIVAPAnalyzer:
+class DIVAnalyzer:
     def __init__(self, db_config: Dict, binance_config: Dict):
         self.db_config = db_config
         self.binance_config = binance_config
@@ -72,10 +72,13 @@ class DIVAPAnalyzer:
 
     def get_signal_by_id(self, signal_id: int) -> Optional[Dict]:
         try:
-            self.cursor.execute("SELECT * FROM webhook_signals WHERE id = %s", (signal_id,))
+            query = "SELECT * FROM webhook_signals WHERE id = %s"
+            self.cursor.execute(query, (signal_id,))
             signal = self.cursor.fetchone()
-            if signal: logger.info(f"Sinal #{signal_id} encontrado: {signal['symbol']} {signal.get('timeframe', 'N/A')} {signal['side']}")
-            else: logger.warning(f"Nenhum sinal encontrado com ID {signal_id}")
+            if not signal:
+                logger.warning(f"Nenhum sinal encontrado com ID {signal_id}")
+            else:
+                logger.info(f"Sinal #{signal_id} encontrado: {signal['symbol']} {signal.get('timeframe', 'N/A')} {signal['side']}")
             return signal
         except Exception as e:
             logger.error(f"Erro ao buscar sinal por ID {signal_id}: {e}"); raise
@@ -96,6 +99,25 @@ class DIVAPAnalyzer:
             return signals
         except Exception as e:
             logger.error(f"Erro ao buscar sinais por data e símbolo: {e}"); raise
+
+    def get_unanalyzed_signals(self, limit: int = 100) -> List[Dict]:
+        try:
+            query = """
+                SELECT ws.* FROM webhook_signals ws
+                LEFT JOIN divap_analysis da ON ws.id = da.signal_id
+                WHERE da.signal_id IS NULL
+                ORDER BY ws.created_at DESC
+                LIMIT %s
+            """
+            self.cursor.execute(query, (limit,))
+            signals = self.cursor.fetchall()
+            if not signals:
+                logger.info("Nenhum sinal não analisado encontrado")
+            else:
+                logger.info(f"Encontrados {len(signals)} sinais não analisados")
+            return signals
+        except Exception as e:
+            logger.error(f"Erro ao buscar sinais não analisados: {e}"); raise
 
     def fetch_ohlcv_data(self, symbol: str, timeframe: str, since_dt: datetime, limit: int = 500) -> pd.DataFrame:
         try:
@@ -159,29 +181,26 @@ class DIVAPAnalyzer:
         
         df = self.calculate_indicators(df)
         
-        # Obter os três candles anteriores ao sinal
         c1_start_time = self._get_previous_candle_time(created_at, timeframe)
         c2_start_time = c1_start_time - timedelta(minutes=td)
         c3_start_time = c2_start_time - timedelta(minutes=td)
         
-        candles_to_check = []
+        candles_to_check_series = []
         for t in [c1_start_time, c2_start_time, c3_start_time]:
-            try:
-                candles_to_check.append(df.loc[t])
-            except KeyError:
-                logger.warning(f"Candle de {t} não encontrado nos dados. A análise continuará com os candles disponíveis.")
+            if t in df.index:
+                candles_to_check_series.append(df.loc[t])
+            else:
+                logger.warning(f"Candle de {t} não encontrado nos dados.")
         
-        if not candles_to_check:
-            return {"error": f"Nenhum dos 3 candles anteriores ({c1_start_time}, {c2_start_time}, {c3_start_time}) foi encontrado."}
+        if not candles_to_check_series:
+            return {"error": f"Nenhum dos 3 candles anteriores foi encontrado."}
 
-        # --- NOVA LÓGICA DE ANÁLISE DESACOPLADA ---
         has_divergence_in_window = False
         has_high_volume_in_window = False
 
-        for candle in candles_to_check:
-            if side.upper() == 'COMPRA' and candle.get('bull_div'):
-                has_divergence_in_window = True
-            elif side.upper() == 'VENDA' and candle.get('bear_div'):
+        for candle in candles_to_check_series:
+            if (side.upper() == 'COMPRA' and candle.get('bull_div')) or \
+               (side.upper() == 'VENDA' and candle.get('bear_div')):
                 has_divergence_in_window = True
             if candle.get('high_volume'):
                 has_high_volume_in_window = True
@@ -193,9 +212,9 @@ class DIVAPAnalyzer:
             "created_at": created_at, "div_confirmed": div_confirmed,
             "has_divergence_in_window": has_divergence_in_window,
             "has_high_volume_in_window": has_high_volume_in_window,
-            "c1_details": self._get_candle_details(candles_to_check[0]),
-            "c2_details": self._get_candle_details(candles_to_check[1]) if len(candles_to_check) > 1 else None,
-            "c3_details": self._get_candle_details(candles_to_check[2]) if len(candles_to_check) > 2 else None,
+            "c1_details": self._get_candle_details(candles_to_check_series[0]),
+            "c2_details": self._get_candle_details(candles_to_check_series[1]) if len(candles_to_check_series) > 1 else None,
+            "c3_details": self._get_candle_details(candles_to_check_series[2]) if len(candles_to_check_series) > 2 else None,
         }
 
         if div_confirmed:
@@ -274,7 +293,7 @@ class DIVAPAnalyzer:
                 reasons = []
                 if not result.get("has_divergence_in_window"): reasons.append("Nenhuma divergência na janela")
                 if not result.get("has_high_volume_in_window"): reasons.append("Nenhum volume alto na janela")
-                error_message = " e ".join(reasons)
+                error_message = " e ".join(reasons) or "Condições não atendidas"
             
             sql_update = "UPDATE webhook_signals SET divap_confirmado = %s, cancelado_checker = %s, status = %s, error_message = %s WHERE id = %s"
             status = 'CONFIRMED' if div_confirmed else 'CANCELED'
@@ -288,7 +307,6 @@ class DIVAPAnalyzer:
 
     def create_analysis_table_if_not_exists(self) -> None:
         try:
-            # Tabela simplificada para a lógica DIV
             sql = """
                 CREATE TABLE IF NOT EXISTS divap_analysis (
                     id INT AUTO_INCREMENT PRIMARY KEY, signal_id INT,
@@ -331,8 +349,55 @@ class DIVAPAnalyzer:
         
         print(f"\n🏆 CONCLUSÃO FINAL: {result.get('message', 'N/A')}\n{'='*60}\n")
     
-    # As funções de monitoramento foram omitidas para focar na lógica principal,
-    # mas podem ser adicionadas de volta usando a estrutura anterior.
+    def monitor_all_signals(self, period_days: int = None, limit: int = 100) -> Dict:
+        try:
+            if period_days:
+                query = "SELECT * FROM webhook_signals WHERE created_at >= DATE_SUB(NOW(), INTERVAL %s DAY) ORDER BY created_at DESC LIMIT %s"
+                self.cursor.execute(query, (period_days, limit))
+                signals = self.cursor.fetchall()
+                period_desc = f"dos últimos {period_days} dias"
+            else:
+                signals = self.get_unanalyzed_signals(limit=limit)
+                period_desc = "não analisados"
+            
+            if not signals:
+                logger.info(f"Nenhum sinal {period_desc} encontrado para monitorar"); return {"total": 0, "success": 0, "error": 0, "confirmed": 0}
+            
+            stats = {"total": len(signals), "success": 0, "error": 0, "confirmed": 0, "symbols": {}}
+            print(f"\n🔍 Monitorando {len(signals)} sinais {period_desc}...")
+            
+            for i, signal in enumerate(signals):
+                symbol = signal['symbol']
+                stats["symbols"].setdefault(symbol, {"total": 0, "confirmed": 0})["total"] += 1
+                
+                print(f"\nProcessando {i+1}/{len(signals)}: #{signal['id']} - {symbol} {signal.get('timeframe', 'N/A')} {signal['side']}")
+                
+                try:
+                    result = self.analyze_signal(signal)
+                    if "error" in result:
+                        stats["error"] += 1; print(f"❌ Erro: {result['error']}")
+                    else:
+                        stats["success"] += 1
+                        self.save_analysis_result(result)
+                        if result.get("div_confirmed", False):
+                            stats["confirmed"] += 1; stats["symbols"][symbol]["confirmed"] += 1
+                        print(result.get('message', ''))
+                except Exception as e:
+                    logger.error(f"Erro ao processar sinal #{signal['id']}: {e}"); stats["error"] += 1
+            
+            confirmed_percent = round(stats['confirmed']/stats['total']*100 if stats['total'] > 0 else 0, 1)
+            print(f"\n{'='*60}\n📊 RELATÓRIO DE MONITORAMENTO\n  • Sinais Totais: {stats['total']}\n  • Sucesso: {stats['success']}\n  • Erros: {stats['error']}\n  • Confirmados: {stats['confirmed']} ({confirmed_percent}%)\n")
+            if stats["symbols"]:
+                print("🏆 TOP SÍMBOLOS COM DIV:")
+                sorted_symbols = sorted(stats["symbols"].items(), key=lambda x: x[1]["confirmed"], reverse=True)
+                for symbol, data in sorted_symbols[:5]:
+                    if data["confirmed"] > 0:
+                        symbol_percent = round(data["confirmed"]/data["total"]*100, 1)
+                        print(f"  • {symbol}: {data['confirmed']}/{data['total']} ({symbol_percent}%)")
+            print("="*60)
+            return stats
+        except Exception as e:
+            logger.error(f"Erro no monitoramento de sinais: {e}"); raise
 
 def interactive_mode():
     analyzer = DIVAPAnalyzer(DB_CONFIG, BINANCE_CONFIG)
@@ -340,11 +405,12 @@ def interactive_mode():
         analyzer.connect_db()
         analyzer.connect_exchange()
         while True:
-            print("\n" + "="*60 + "\n🔍 ANALISADOR DIV v4.0 - MODO INTERATIVO\n" + "="*60)
+            print("\n" + "="*60 + "\n🔍 ANALISADOR DIV v4.1 (Completo) - MODO INTERATIVO\n" + "="*60)
             print("1. Analisar sinal por ID")
             print("2. Analisar sinais por data")
-            print("3. Sair")
-            choice = input("\nEscolha uma opção (1-3): ").strip()
+            print("3. Monitorar sinais em lote")
+            print("4. Sair")
+            choice = input("\nEscolha uma opção (1-4): ").strip()
             
             if choice == "1":
                 try:
@@ -375,6 +441,17 @@ def interactive_mode():
                 except Exception as e: logger.error(f"Erro na opção 2: {e}")
 
             elif choice == "3":
+                print("\n🔍 MONITOR DE SINAIS\n1. Monitorar sinais não analisados\n2. Monitorar sinais dos últimos X dias\n3. Voltar")
+                monitor_choice = input("\nEscolha uma opção (1-3): ").strip()
+                if monitor_choice == "1":
+                    limit = int(input("Número máximo de sinais (padrão 100): ").strip() or 100)
+                    analyzer.monitor_all_signals(period_days=None, limit=limit)
+                elif monitor_choice == "2":
+                    days = int(input("Número de dias para análise (padrão 7): ").strip() or 7)
+                    limit = int(input("Número máximo de sinais (padrão 100): ").strip() or 100)
+                    analyzer.monitor_all_signals(period_days=days, limit=limit)
+            
+            elif choice == "4":
                 print("\n👋 Saindo..."); break
             else:
                 print("❌ Opção inválida.")
