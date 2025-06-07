@@ -247,7 +247,7 @@ class DIVAPAnalyzer:
         if not td:
             return {"error": f"Timeframe inválido: {timeframe}"}
         
-        required_candles = max(RSI_PERIODS, VOLUME_SMA_PERIODS) + 2 * (PIVOT_LEFT + 1)
+        required_candles = max(RSI_PERIODS, VOLUME_SMA_PERIODS) + PIVOT_LEFT + 30
         since_dt = created_at - timedelta(minutes=td * required_candles)
         
         df = self.fetch_ohlcv_data(symbol_formatted, timeframe, since_dt, limit=500)
