@@ -687,51 +687,70 @@ class DIVAPAnalyzer:
     def monitor_signals_realtime(self):
         """
         Monitora a tabela webhook_signals em tempo real.
-        Inicia pelo menor ID não processado (divap_confirmado=NULL e cancelado_checker=NULL),
+        Processa apenas sinais com divap_confirmado=NULL e cancelado_checker=NULL,
         realizando análise e salvando o resultado.
         """
-        # Buscar o menor ID de sinal não processado (divap_confirmado=NULL e cancelado_checker=NULL)
-        self.cursor.execute("""
-            SELECT COALESCE(MIN(id), 0) AS min_id 
-            FROM webhook_signals 
-            WHERE divap_confirmado IS NULL 
-            AND cancelado_checker IS NULL
-        """)
-        row = self.cursor.fetchone()
-        last_processed_id = (row["min_id"] or 0) - 1  # Subtrair 1 para incluir o primeiro sinal não processado
-        
-        # Buscar o maior ID na tabela para referência
-        self.cursor.execute("SELECT COALESCE(MAX(id), 0) AS max_id FROM webhook_signals")
-        max_id_row = self.cursor.fetchone()
-        max_id = max_id_row["max_id"] or 0
-        
-        if last_processed_id < 0:
-            last_processed_id = 0
-        
-        pending_count = max_id - last_processed_id if last_processed_id > 0 else max_id
-        
-        logger.info(f"Iniciando monitoramento em tempo real.")
-        logger.info(f"Processando sinais a partir do ID {last_processed_id+1} (menor ID não processado)")
-        logger.info(f"Total de sinais pendentes: {pending_count}")
-        logger.info("Aguardando processamento... (pressione Ctrl+C para interromper)")
-        
-        last_check_had_signals = False
-        last_status_time = datetime.now()
-        
         try:
+            # Verificar quantos sinais pendentes existem no total
+            self.cursor.execute("""
+                SELECT COUNT(*) AS total_pending 
+                FROM webhook_signals 
+                WHERE divap_confirmado IS NULL 
+                AND cancelado_checker IS NULL
+            """)
+            pending_count_row = self.cursor.fetchone()
+            total_pending = pending_count_row["total_pending"] or 0
+            
+            # Obter o menor ID de sinal não processado (se existir)
+            if total_pending > 0:
+                self.cursor.execute("""
+                    SELECT MIN(id) AS min_id 
+                    FROM webhook_signals 
+                    WHERE divap_confirmado IS NULL 
+                    AND cancelado_checker IS NULL
+                """)
+                row = self.cursor.fetchone()
+                next_id_to_process = row["min_id"]
+                last_processed_id = next_id_to_process - 1
+            else:
+                # Se não houver sinais pendentes, obtém o maior ID atual como referência
+                self.cursor.execute("SELECT MAX(id) AS max_id FROM webhook_signals")
+                max_id_row = self.cursor.fetchone()
+                last_processed_id = max_id_row["max_id"] or 0
+                next_id_to_process = None
+            
+            # Obter o ID mais recente no banco para referência
+            self.cursor.execute("SELECT MAX(id) AS max_id FROM webhook_signals")
+            max_id_row = self.cursor.fetchone()
+            max_id = max_id_row["max_id"] or 0
+            
+            # Log detalhado da situação atual
+            if total_pending > 0:
+                logger.info(f"Iniciando monitoramento em tempo real - {total_pending} sinais pendentes encontrados")
+                logger.info(f"O próximo sinal a ser processado é o ID {next_id_to_process}")
+            else:
+                logger.info("Iniciando monitoramento em tempo real - Nenhum sinal pendente encontrado")
+                logger.info(f"Todos os {max_id} sinais existentes já foram processados")
+            
+            logger.info(f"Maior ID atual no banco de dados: {max_id}")
+            logger.info("Aguardando novos sinais... (pressione Ctrl+C para interromper)")
+            
+            last_check_had_signals = False
+            last_status_time = datetime.now()
+            
             while True:
                 # Verificar conexão a cada iteração
                 if not self.conn.is_connected():
                     logger.warning("[ALERTA] Conexão perdida, reconectando...")
                     self.connect_db()
                 
-                # Executa a busca de sinais não processados com ID > último processado
+                # Buscar apenas sinais não processados (com ambos campos NULL)
                 self.cursor.execute("""
                     SELECT * FROM webhook_signals 
-                    WHERE id > %s 
-                    AND (divap_confirmado IS NULL OR cancelado_checker IS NULL)
+                    WHERE divap_confirmado IS NULL 
+                    AND cancelado_checker IS NULL
                     ORDER BY id ASC
-                """, (last_processed_id,))
+                """)
                 new_signals = self.cursor.fetchall()
                 
                 # Só mostra mensagens se encontrou sinais
@@ -743,15 +762,64 @@ class DIVAPAnalyzer:
                         logger.info(f"Processando sinal #{signal['id']} - {signal['symbol']} {signal.get('timeframe', 'N/A')} {signal['side']}")
                         result = self.analyze_signal(signal)
                         self.save_analysis_result(result)
-                        if signal["id"] > last_processed_id:
-                            last_processed_id = signal["id"]
+                        last_processed_id = signal["id"]
                     
                     last_check_had_signals = True
                     last_status_time = datetime.now()
+                    
+                    # Após processar todos, verificar quantos ainda estão pendentes
+                    self.cursor.execute("""
+                        SELECT COUNT(*) AS remaining_pending 
+                        FROM webhook_signals 
+                        WHERE divap_confirmado IS NULL 
+                        AND cancelado_checker IS NULL
+                    """)
+                    remaining_row = self.cursor.fetchone()
+                    remaining = remaining_row["remaining_pending"] or 0
+                    
+                    if remaining > 0:
+                        self.cursor.execute("""
+                            SELECT MIN(id) AS next_id 
+                            FROM webhook_signals 
+                            WHERE divap_confirmado IS NULL 
+                            AND cancelado_checker IS NULL
+                        """)
+                        next_row = self.cursor.fetchone()
+                        next_id = next_row["next_id"]
+                        logger.info(f"Restam {remaining} sinais pendentes. Próximo ID a ser processado: {next_id}")
+                    else:
+                        logger.info("Todos os sinais foram processados!")
                 
                 # Mostrar mensagem apenas se mudou de estado ou se passou tempo suficiente
                 elif last_check_had_signals or (datetime.now() - last_status_time).total_seconds() >= 1800:  # 30 minutos
-                    logger.info(f"Nenhum novo sinal não processado encontrado. Última ID processada: {last_processed_id}")
+                    # Verificar se há algum novo sinal pendente
+                    self.cursor.execute("""
+                        SELECT COUNT(*) AS current_pending 
+                        FROM webhook_signals 
+                        WHERE divap_confirmado IS NULL 
+                        AND cancelado_checker IS NULL
+                    """)
+                    current_row = self.cursor.fetchone()
+                    current_pending = current_row["current_pending"] or 0
+                    
+                    if current_pending > 0:
+                        self.cursor.execute("""
+                            SELECT MIN(id) AS next_id 
+                            FROM webhook_signals 
+                            WHERE divap_confirmado IS NULL 
+                            AND cancelado_checker IS NULL
+                        """)
+                        next_row = self.cursor.fetchone()
+                        next_id = next_row["next_id"]
+                        logger.info(f"Existem {current_pending} sinais pendentes. Próximo ID a ser processado: {next_id}")
+                    else:
+                        # Obter o último ID atual
+                        self.cursor.execute("SELECT MAX(id) AS current_max FROM webhook_signals")
+                        current_max_row = self.cursor.fetchone()
+                        current_max = current_max_row["current_max"] or 0
+                        
+                        logger.info(f"Nenhum sinal pendente encontrado. Último ID processado: {last_processed_id}, Último ID no banco: {current_max}")
+                    
                     last_check_had_signals = False
                     last_status_time = datetime.now()
                 
@@ -761,7 +829,10 @@ class DIVAPAnalyzer:
         except KeyboardInterrupt:
             logger.info("\nMonitoramento interrompido pelo usuário.")
             return
-
+        except Exception as e:
+            logger.error(f"Erro no monitoramento em tempo real: {e}")
+            traceback.print_exc()
+            
 def check_pending_signals():
     """
     Função principal para verificar sinais pendentes.
