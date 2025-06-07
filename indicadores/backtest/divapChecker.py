@@ -197,7 +197,7 @@ class DIVAPAnalyzer:
             raise
 
     def fetch_ohlcv_data(self, symbol: str, timeframe: str, since_dt: datetime, 
-                         limit: int = 100) -> pd.DataFrame:
+                     limit: int = 100) -> pd.DataFrame:
         """
         Busca dados OHLCV da Binance.
         
@@ -233,16 +233,16 @@ class DIVAPAnalyzer:
             
             logger.info(f"Dados OHLCV obtidos: {len(df)} candles de {df.index[0]} a {df.index[-1]}")
             
+            # Calcular tf_minutes para verificação de gaps
+            tf_minutes = self._get_timeframe_delta(timeframe)
+            
             # Após receber os dados
-            time_diffs = df.index.to_series().diff()
-            expected_diff = pd.Timedelta(minutes=tf_minutes)
-            if (time_diffs > expected_diff * 1.1).any():
-                logger.warning(f"Detectados gaps nos dados. Isso pode afetar o cálculo do RSI.")
-            
-            logger.info(f"Total de candles: {len(df)}")
-            logger.info(f"Candles com RSI válido: {df['RSI'].notna().sum()}")
-            logger.info(f"Primeiro candle com RSI válido: {df[df['RSI'].notna()].index[0] if df['RSI'].notna().any() else 'Nenhum'}")
-            
+            if tf_minutes:  # Verificar se o timeframe é válido
+                time_diffs = df.index.to_series().diff()
+                expected_diff = pd.Timedelta(minutes=tf_minutes)
+                if (time_diffs > expected_diff * 1.1).any():
+                    logger.warning(f"Detectados gaps nos dados. Isso pode afetar o cálculo do RSI.")
+        
             return df
             
         except Exception as e:
