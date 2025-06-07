@@ -238,79 +238,40 @@ class DIVAPAnalyzer:
             logger.error(f"Erro ao buscar dados OHLCV: {e}")
             raise
 
-    def detect_candlestick_patterns(self, df: pd.DataFrame) -> pd.DataFrame:
+    def detect_price_reversals(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Detecta padrões de velas: Martelo, Engolfo de Alta, Estrela Cadente e Engolfo de Baixa
+        Detecta reversões de preço sem depender de padrões de velas específicos.
+        Uma reversão é identificada quando há uma mudança na direção do preço.
         
         Args:
             df: DataFrame com dados OHLCV
             
         Returns:
-            pd.DataFrame: DataFrame com padrões de velas detectados
+            pd.DataFrame: DataFrame com reversões identificadas
         """
-        # Inicializar colunas para os padrões
-        df['hammer'] = False        # Martelo (bullish)
-        df['bull_engulfing'] = False  # Engolfo de Alta
-        df['shooting_star'] = False   # Estrela Cadente (bearish)
-        df['bear_engulfing'] = False  # Engolfo de Baixa
+        # Inicializar colunas para reversões
+        df['price_reversal_up'] = False  # Reversão de baixa para alta
+        df['price_reversal_down'] = False  # Reversão de alta para baixa
         
-        # Tamanho do corpo da vela (distância entre open e close)
-        df['body_size'] = abs(df['close'] - df['open'])
+        # Calcular média móvel curta para suavizar o preço e identificar tendência
+        df['price_sma_short'] = df['close'].rolling(window=3, min_periods=1).mean()
         
-        # Tamanho das sombras
-        df['upper_shadow'] = df['high'] - df[['open', 'close']].max(axis=1)
-        df['lower_shadow'] = df[['open', 'close']].min(axis=1) - df['low']
+        # Calcular a direção da tendência (positiva = alta, negativa = baixa)
+        df['trend_direction'] = df['price_sma_short'].diff(2).apply(lambda x: 1 if x > 0 else (-1 if x < 0 else 0))
         
-        # Tamanho total da vela
-        df['candle_size'] = df['high'] - df['low']
-        
-        # Detectar Martelo (Hammer) 
-        # Corpo pequeno no topo, sombra inferior longa, sombra superior pequena ou inexistente 
-        # Preço de fechamento acima da abertura (candle de alta)
-        df.loc[
-            (df['close'] > df['open']) & 
-            (df['lower_shadow'] > 2 * df['body_size']) &
-            (df['upper_shadow'] < 0.2 * df['body_size']) &
-            (df['body_size'] < 0.3 * df['candle_size']), 
-            'hammer'
-        ] = True
-
-        # Shooting Star (Estrela Cadente) 
-        # Corpo pequeno na base, sombra superior longa, sombra inferior pequena ou inexistente 
-        # Preço de fechamento abaixo da abertura (candle de baixa)
-        df.loc[
-            (df['close'] < df['open']) & 
-            (df['upper_shadow'] > 2 * abs(df['body_size'])) &
-            (df['lower_shadow'] < 0.2 * abs(df['body_size'])) &
-            (abs(df['body_size']) < 0.3 * df['candle_size']), 
-            'shooting_star'
-        ] = True
+        # Identificar reversões (mudança de direção)
+        for i in range(3, len(df)):
+            # Verificar inversão de baixa para alta
+            if (df['trend_direction'].iloc[i-2] < 0 and 
+                df['trend_direction'].iloc[i-1] <= 0 and 
+                df['trend_direction'].iloc[i] > 0):
+                df.loc[df.index[i], 'price_reversal_up'] = True
             
-        # Bullish Engulfing (Engolfo de Alta) 
-        # Vela anterior de baixa (close < open) engolida por vela atual de alta (close > open) 
-        # O fechamento atual é maior ou igual à abertura anterior 
-        # A abertura atual é menor ou igual ao fechamento anterior 
-        for i in range(1, len(df)):
-            prev = df.iloc[i-1]
-            curr = df.iloc[i]
-            if (prev['close'] < prev['open'] and # Vela anterior bearish
-                curr['close'] > curr['open'] and # Vela atual bullish
-                curr['open'] <= prev['close'] and # Abre abaixo ou no fechamento anterior
-                curr['close'] >= prev['open']):   # Fecha acima ou na abertura anterior
-                df.loc[df.index[i], 'bull_engulfing'] = True
-            
-        # Bearish Engulfing (Engolfo de Baixa) 
-        # Vela anterior de alta (close > open) engolida por vela atual de baixa (close < open) 
-        # O fechamento atual é menor ou igual à abertura anterior 
-        # A abertura atual é maior ou igual ao fechamento anterior 
-        for i in range(1, len(df)):
-            prev = df.iloc[i-1]
-            curr = df.iloc[i]
-            if (prev['close'] > prev['open'] and # Vela anterior bullish
-                curr['close'] < curr['open'] and # Vela atual bearish
-                curr['open'] >= prev['close'] and # Abre acima ou no fechamento anterior
-                curr['close'] <= prev['open']):   # Fecha abaixo ou na abertura anterior
-                df.loc[df.index[i], 'bear_engulfing'] = True
+            # Verificar inversão de alta para baixa
+            if (df['trend_direction'].iloc[i-2] > 0 and 
+                df['trend_direction'].iloc[i-1] >= 0 and 
+                df['trend_direction'].iloc[i] < 0):
+                df.loc[df.index[i], 'price_reversal_down'] = True
         
         return df
 
@@ -331,27 +292,21 @@ class DIVAPAnalyzer:
         # Calcular RSI 
         df["RSI"] = vbt.indicators.basic.RSI.run(df["close"], window=RSI_PERIODS).rsi
         
-        # >>> ALTERAÇÃO 1 (JÁ ESTAVA CORRETA NO SEU CÓDIGO) <<<
         # Calcular média de volume com min_periods=1 para evitar NaN no início.
-        # Esta linha já estava correta no seu código original.
         df["VolSMA"] = df["volume"].rolling(window=VOLUME_SMA_PERIODS, min_periods=1).mean()
         
         # Identificar candles com volume acima da média 
         df["high_volume"] = df["volume"] > df["VolSMA"]
         
         # Detectar pivôs (topos e fundos) para divergência
-        # Usamos apenas PIVOT_LEFT para garantir que o pivô seja confirmado com dados passados
-        # O +1 é para incluir o candle atual na janela de PIVOT_LEFT
         window_pivot = PIVOT_LEFT + 1
         
         # Detectar topos e fundos para divergência
-        # Para um fundo, o low atual deve ser o menor na janela [PIVOT_LEFT candles anteriores + o candle atual]
         df["pivot_low"] = df["low"] == df["low"].rolling(window=window_pivot, min_periods=1).min()
-        # Para um topo, o high atual deve ser o maior na janela [PIVOT_LEFT candles anteriores + o candle atual]
         df["pivot_high"] = df["high"] == df["high"].rolling(window=window_pivot, min_periods=1).max()
         
-        # Detectar padrões de velas 
-        df = self.detect_candlestick_patterns(df)
+        # Detectar reversões de preço (não usamos mais padrões de velas específicos)
+        df = self.detect_price_reversals(df)
         
         # Inicializar séries para armazenar valores de pivôs anteriores
         # Estes armazenarão o último e o penúltimo pivô de cada tipo para cálculo de divergência
@@ -424,13 +379,10 @@ class DIVAPAnalyzer:
         df["bull_div"] = bull_div
         df["bear_div"] = bear_div
         
-        # Definir os padrões de reversão combinados
-        df["bull_reversal_pattern"] = df["hammer"] | df["bull_engulfing"]
-        df["bear_reversal_pattern"] = df["shooting_star"] | df["bear_engulfing"]
-        
         # Identificar DIVAP completo (todos os critérios juntos)
-        df["bull_divap"] = (df["bull_div"] & df["high_volume"] & df["bull_reversal_pattern"])
-        df["bear_divap"] = (df["bear_div"] & df["high_volume"] & df["bear_reversal_pattern"])
+        # Agora usamos reversão de preço em vez de padrões de velas específicos
+        df["bull_divap"] = (df["bull_div"] & df["high_volume"] & df["price_reversal_up"])
+        df["bear_divap"] = (df["bear_div"] & df["high_volume"] & df["price_reversal_down"])
         
         return df
 
@@ -518,10 +470,8 @@ class DIVAPAnalyzer:
             "bull_div": bool(previous_candle["bull_div"]),
             "bear_div": bool(previous_candle["bear_div"]),
             "close_price": float(previous_candle["close"]),
-            "hammer": bool(previous_candle.get("hammer", False)),
-            "bull_engulfing": bool(previous_candle.get("bull_engulfing", False)),
-            "shooting_star": bool(previous_candle.get("shooting_star", False)),
-            "bear_engulfing": bool(previous_candle.get("bear_engulfing", False))
+            "price_reversal_up": bool(previous_candle["price_reversal_up"]),
+            "price_reversal_down": bool(previous_candle["price_reversal_down"])
         }
         
         # Determinar se o sinal é consistente com o DIVAP 
@@ -758,16 +708,16 @@ class DIVAPAnalyzer:
                 INSERT INTO divap_analysis (
                     signal_id, is_bull_divap, is_bear_divap, divap_confirmed, 
                     rsi, volume, volume_sma, high_volume, bull_div, bear_div, 
-                    message, hammer, bull_engulfing, shooting_star, bear_engulfing, analyzed_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    message, price_reversal_up, price_reversal_down, analyzed_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                     is_bull_divap = VALUES(is_bull_divap), is_bear_divap = VALUES(is_bear_divap),
                     divap_confirmed = VALUES(divap_confirmed), rsi = VALUES(rsi),
                     volume = VALUES(volume), volume_sma = VALUES(volume_sma),
                     high_volume = VALUES(high_volume), bull_div = VALUES(bull_div),
                     bear_div = VALUES(bear_div), message = VALUES(message),
-                    hammer = VALUES(hammer), bull_engulfing = VALUES(bull_engulfing),
-                    shooting_star = VALUES(shooting_star), bear_engulfing = VALUES(bear_engulfing),
+                    price_reversal_up = VALUES(price_reversal_up), 
+                    price_reversal_down = VALUES(price_reversal_down),
                     analyzed_at = VALUES(analyzed_at)
             """
             
@@ -783,10 +733,8 @@ class DIVAPAnalyzer:
                 result.get("bull_div", False),
                 result.get("bear_div", False),
                 result.get("message", ""),
-                result.get("hammer", False),
-                result.get("bull_engulfing", False),
-                result.get("shooting_star", False),
-                result.get("bear_engulfing", False),
+                result.get("price_reversal_up", False),
+                result.get("price_reversal_down", False),
                 datetime.now()
             )
             
@@ -807,8 +755,8 @@ class DIVAPAnalyzer:
                     divap_confirmed BOOLEAN DEFAULT FALSE, rsi FLOAT, volume DOUBLE,
                     volume_sma DOUBLE, high_volume BOOLEAN DEFAULT FALSE,
                     bull_div BOOLEAN DEFAULT FALSE, bear_div BOOLEAN DEFAULT FALSE,
-                    message TEXT, hammer BOOLEAN DEFAULT FALSE, bull_engulfing BOOLEAN DEFAULT FALSE,
-                    shooting_star BOOLEAN DEFAULT FALSE, bear_engulfing BOOLEAN DEFAULT FALSE,
+                    message TEXT, price_reversal_up BOOLEAN DEFAULT FALSE, 
+                    price_reversal_down BOOLEAN DEFAULT FALSE,
                     analyzed_at DATETIME, UNIQUE KEY (signal_id)
                 )
             """
@@ -869,8 +817,8 @@ class DIVAPAnalyzer:
         print(f"  • Volume acima da média: {'✅ SIM' if result['high_volume'] else '❌ NÃO'}")
         print(f"  • Divergência altista: {'✅ SIM' if result['bull_div'] else '❌ NÃO'}")
         print(f"  • Divergência baixista: {'✅ SIM' if result['bear_div'] else '❌ NÃO'}")
-        print(f"  • Padrão de Reversão Altista: {'✅ SIM' if (result['hammer'] or result['bull_engulfing']) else '❌ NÃO'}")
-        print(f"  • Padrão de Reversão Baixista: {'✅ SIM' if (result['shooting_star'] or result['bear_engulfing']) else '❌ NÃO'}")
+        print(f"  • Reversão de preço (baixa para alta): {'✅ SIM' if result['price_reversal_up'] else '❌ NÃO'}")
+        print(f"  • Reversão de preço (alta para baixa): {'✅ SIM' if result['price_reversal_down'] else '❌ NÃO'}")
 
         print(f"\n🏆 CONCLUSÃO FINAL:")
         print(f"  {result['message']}")
