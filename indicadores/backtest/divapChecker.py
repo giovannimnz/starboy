@@ -638,7 +638,7 @@ class DIVAPAnalyzer:
                 bear_div.iloc[i] = True
         
         # Adicionar divergências ao DataFrame
-        df_until_signal["bull_div"] = bull_div
+        df_until_signal.loc[:, "bull_div"] = bull_div
         df_until_signal["bear_div"] = bear_div
         
         # Identificar DIVAP completo (todos os critérios juntos)
