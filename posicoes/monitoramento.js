@@ -358,63 +358,51 @@ async function checkNewTrades() {
   }
 }
 
-// Função para processar um sinal recebido via webhook
-/**
- * Processa um sinal de webhook, realizando validações, configurando a exchange,
- * notificando via Telegram e registrando o sinal para monitoramento.
- *
- * @param {object} db - O pool de conexões do banco de dados.
- * @param {object} signal - O objeto do sinal contendo todos os seus dados.
- */
 async function processSignal(db, signal) {
-  // Obter uma conexão do pool que será usada por toda a função
+  // Obtém uma conexão do pool para ser usada em toda a função
   const connection = await db.getConnection(); 
-
+  
   try {
-    // =================================================================================
-    // 1. VERIFICAÇÃO PRELIMINAR (DIVAP)
-    // Esta verificação ocorre antes de iniciar a transação principal.
-    // =================================================================================
+    // Bloco 1: Verificação de confirmação (divap_confirmado)
+    // Esta verificação acontece antes de iniciar a transação principal.
 
-    // Se divap_confirmado for 0, o sinal não é válido.
+    // Se divap_confirmado for 0, o sinal não é válido e deve ser cancelado.
     if (signal.divap_confirmado === 0) {
       console.log(`[MONITOR] Sinal ID ${signal.id} não é Divap (divap_confirmado=0). Cancelando...`);
+      // Atualiza o status do sinal para 'CANCELED' com uma mensagem de erro.
       await connection.query(
         `UPDATE webhook_signals SET status = 'CANCELED', error_message = 'Não é uma Divap' WHERE id = ?`,
         [signal.id]
       );
-      // Retorna para finalizar a execução para este sinal. O `finally` cuidará de liberar a conexão.
+      // Retorna para finalizar a execução para este sinal.
       return;
     }
 
-    // Se divap_confirmado for null, ainda está aguardando a confirmação manual.
+    // Se divap_confirmado for null, o sinal ainda aguarda confirmação manual.
     if (signal.divap_confirmado === null) {
       console.log(`[MONITOR] Sinal ID ${signal.id} ainda sem divap_confirmado definido. Aguardando...`);
+      // Atualiza o status para 'AGUARDANDO_DIVAP_CONFIRMACAO'.
       await connection.query(
         `UPDATE webhook_signals SET status = 'AGUARDANDO_DIVAP_CONFIRMACAO' WHERE id = ?`,
         [signal.id]
       );
-      // Retorna para finalizar a execução. O `finally` cuidará de liberar a conexão.
+      // Retorna para aguardar a confirmação.
       return;
     }
 
-    // Se a função chegou até aqui, significa que divap_confirmado = 1.
-    // O fluxo normal de processamento do sinal pode começar.
-
-    // =================================================================================
-    // 2. INÍCIO DA TRANSAÇÃO PRINCIPAL
-    // Todas as operações a seguir são atômicas. Ou todas funcionam, ou nenhuma.
-    // =================================================================================
+    // Se divap_confirmado for 1, o código continua para o processamento principal.
+    // Bloco 2: Início da transação para o processamento do sinal.
     await connection.beginTransaction();
 
+    // Extrai todas as propriedades necessárias do objeto 'signal'.
     const {
       id, symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price, chat_id, timeframe,
-      message_id: originalMessageId
+      message_id: originalMessageId 
     } = signal;
 
     console.log(`[MONITOR] Processando sinal ID ${id} para ${symbol}: ${side} a ${entry_price}`);
 
-    // Verificar se já existe uma posição aberta para o símbolo
+    // Verifica se já existe uma posição aberta para o mesmo símbolo.
     const positionExists = await checkPositionExists(connection, symbol);
     if (positionExists) {
       console.log(`[MONITOR] Já existe uma posição aberta para ${symbol}. Ignorando sinal ID ${id}.`);
@@ -422,19 +410,22 @@ async function processSignal(db, signal) {
         `UPDATE webhook_signals SET status = 'ERROR', error_message = 'Posição já existe para o símbolo' WHERE id = ?`,
         [id]
       );
-      await connection.commit(); // Comita a atualização de erro e finaliza
+      // Confirma a transação (commit) para salvar o status de erro e finaliza.
+      await connection.commit(); 
       return;
     }
     
-    // Configurar alavancagem e tipo de margem na exchange
+    // Configura a alavancagem e o tipo de margem na corretora.
     try {
       await changeInitialLeverage(symbol, parseInt(leverage));
       try {
         await changeMarginType(symbol, 'CROSSED');
       } catch (marginError) {
+        // Ignora o erro específico que indica que não é preciso mudar o tipo de margem.
         if (marginError.response && marginError.response.data && marginError.response.data.code === -4046) {
           console.log(`[MONITOR] Margem para ${symbol} já está como CROSSED, continuando...`);
         } else {
+          // Lança outros erros de margem para serem tratados pelo catch principal.
           throw marginError;
         }
       }
@@ -448,23 +439,25 @@ async function processSignal(db, signal) {
         `UPDATE webhook_signals SET status = 'ERROR', error_message = ? WHERE id = ?`,
         [errorMessage, id]
       );
-      await connection.commit(); // Comita a atualização de erro e finaliza
+      // Confirma a transação para salvar o erro e finaliza.
+      await connection.commit(); 
       return;
     }
 
-    // Atualizar status inicial para 'AGUARDANDO_ACIONAMENTO'
+    // Atualiza o status do sinal para 'AGUARDANDO_ACIONAMENTO', indicando que está pronto para ser monitorado.
     await connection.query(
       `UPDATE webhook_signals SET status = 'AGUARDANDO_ACIONAMENTO' WHERE id = ?`,
       [id]
     );
     
-    // Garantir que o websocket de preço para o símbolo está ativo
+    // Garante que o websocket de preço para o símbolo está ativo.
     websockets.ensurePriceWebsocketExists(symbol);
 
-    // Enviar mensagem de confirmação para o Telegram
+    // Envia uma mensagem de confirmação para o Telegram, se um chat_id for fornecido.
     if (chat_id) {
       try {
         let telegramOptions = {};
+        // Se houver uma mensagem original, a nova mensagem a responderá.
         if (originalMessageId) {
             telegramOptions = { reply_to_message_id: originalMessageId };
         }
@@ -485,7 +478,7 @@ async function processSignal(db, signal) {
           telegramOptions
         );
         
-        // Salvar o ID da mensagem de registro
+        // Salva o ID da mensagem de registro para futuras referências (ex: cancelamento).
         if (sentMessage && sentMessage.message_id) {
           await connection.query(
             `UPDATE webhook_signals SET registry_message_id = ? WHERE id = ?`,
@@ -494,11 +487,12 @@ async function processSignal(db, signal) {
           console.log(`[MONITOR] Mensagem de registro (${sentMessage.message_id}) enviada e ID salvo para sinal ${id}.`);
         }
       } catch (telegramError) {
+        // Se o envio falhar, registra um aviso mas continua o processo.
         console.error(`[MONITOR] Aviso: Erro ao enviar mensagem Telegram para sinal ID ${id}: ${telegramError.message}. O processamento do sinal continua.`);
       }
     }
 
-    // Calcular e registrar o tempo de timeout do sinal
+    // Calcula e registra o tempo de expiração (timeout) do sinal.
     let timeoutAt = null;
     let maxLifetimeMinutes = null;
 
@@ -513,7 +507,7 @@ async function processSignal(db, signal) {
       }
     }
 
-    // Atualizar o sinal com os dados de timeout
+    // Atualiza o sinal com os dados de timeout.
     await connection.query(
       `UPDATE webhook_signals SET
         timeout_at = ?,
@@ -522,12 +516,12 @@ async function processSignal(db, signal) {
       [timeoutAt, maxLifetimeMinutes, id]
     );
 
-    // Se tudo deu certo, comita a transação
+    // Se tudo deu certo, confirma a transação.
     await connection.commit();
     console.log(`[MONITOR] Sinal ID ${id} para ${symbol} registrado com sucesso. Status: AGUARDANDO_ACIONAMENTO.`);
 
   } catch (error) {
-    // Em caso de qualquer erro durante a transação, reverte todas as alterações
+    // Em caso de qualquer erro durante a transação, reverte todas as alterações.
     console.error(`[MONITOR] Erro crítico ao processar sinal ID ${signal.id || 'N/A'}. Efetuando rollback.`, error);
     if (connection) {
       try {
@@ -539,7 +533,7 @@ async function processSignal(db, signal) {
     }
 
   } finally {
-    // Independentemente de sucesso ou falha, libera a conexão de volta para o pool
+    // Independentemente de sucesso ou falha, libera a conexão de volta para o pool.
     if (connection) {
       connection.release();
     }
