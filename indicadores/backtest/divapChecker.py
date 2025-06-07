@@ -126,7 +126,10 @@ class DIVAPAnalyzer:
     def fetch_ohlcv_data(self, symbol: str, timeframe: str, since_dt: datetime, limit: int = 100) -> pd.DataFrame:
         try:
             since_ts = int(since_dt.timestamp() * 1000)
-            candles = self.exchange.fetch_ohlcv(symbol=symbol, timeframe=timeframe, since=since_ts, limit=limit)
+            normalized_timeframe = self._normalize_timeframe(timeframe)
+            logger.info(f"Buscando dados OHLCV para {symbol} no timeframe {timeframe} (normalizado para {normalized_timeframe})")
+            
+            candles = self.exchange.fetch_ohlcv(symbol=symbol, timeframe=normalized_timeframe, since=since_ts, limit=limit)
             
             if not candles:
                 logger.warning(f"Nenhum dado OHLCV encontrado para {symbol} no timeframe {timeframe}")
@@ -447,6 +450,47 @@ class DIVAPAnalyzer:
                     print(f"  • Detalhe Div.: Fundo Recente {second_low['price']:.2f} -> {last_low['price']:.2f} (RSI indisponível)")
         
         print(f"\n🏆 CONCLUSÃO FINAL: {result.get('message', 'N/A')}\n{'='*60}\n")
+
+    def _normalize_timeframe(self, timeframe: str) -> str:
+        """
+        Normaliza o timeframe para o formato aceito pela Binance.
+        
+        Args:
+            timeframe: O timeframe a ser normalizado (ex: 1D, 4H, etc.)
+            
+        Returns:
+            O timeframe normalizado (ex: 1d, 4h, etc.)
+        """
+        if not timeframe:
+            return timeframe
+            
+        # Mapeia os timeframes comuns para o formato da Binance
+        timeframe_map = {
+            '1M': '1m', '3M': '3m', '5M': '5m', '15M': '15m', '30M': '30m',
+            '1H': '1h', '2H': '2h', '4H': '4h', '6H': '6h', '8H': '8h', '12H': '12h',
+            '1D': '1d', '3D': '3d', '1W': '1w', '1MO': '1M'  # Note que mês é 'M' maiúsculo
+        }
+        
+        upper_tf = timeframe.upper()
+        if upper_tf in timeframe_map:
+            return timeframe_map[upper_tf]
+        
+        # Tenta extrair o número e a unidade para normalizar
+        match = re.match(r'(\d+)([MHDW]O?)', upper_tf)
+        if match:
+            value, unit = match.group(1), match.group(2)
+            if unit == 'M':
+                return f"{value}m"
+            elif unit == 'H':
+                return f"{value}h"
+            elif unit == 'D':
+                return f"{value}d"
+            elif unit == 'W':
+                return f"{value}w"
+            elif unit == 'MO':
+                return f"{value}M"
+        
+        return timeframe.lower()  # Retorna em minúsculas como fallback
 
 def interactive_mode():
     analyzer = DIVAPAnalyzer(DB_CONFIG, BINANCE_CONFIG)
