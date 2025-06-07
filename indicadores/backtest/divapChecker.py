@@ -234,8 +234,8 @@ class DIVAPAnalyzer:
         df['bull_reversal_pattern'] = df["hammer"] | df["bull_engulfing"]
         df['bear_reversal_pattern'] = df["shooting_star"] | df["bear_engulfing"]
         
-        df['bull_divap'] = df["bull_div"] & df["high_volume"] & df["bull_reversal_pattern"]
-        df['bear_divap'] = df["bear_div"] & df["high_volume"] & df["bear_reversal_pattern"]
+        df['bull_divap'] = df["bull_div"] & df["high_volume"]
+        df['bear_divap'] = df["bear_div"] & df["high_volume"]
         
         return df
 
@@ -311,10 +311,10 @@ class DIVAPAnalyzer:
         # Determinar a mensagem final
         if side.upper() == "COMPRA" and result["is_bull_divap"]:
             result["divap_confirmed"] = True
-            result["message"] = "✅ Sinal de COMPRA confirmado como DIVAP altista"
+            result["message"] = "✅ Sinal de COMPRA confirmado como DIVAP altista (Volume + Divergência)"
         elif side.upper() == "VENDA" and result["is_bear_divap"]:
             result["divap_confirmed"] = True
-            result["message"] = "✅ Sinal de VENDA confirmado como DIVAP baixista"
+            result["message"] = "✅ Sinal de VENDA confirmado como DIVAP baixista (Volume + Divergência)"
         else:
             result["divap_confirmed"] = False
             result["message"] = f"❌ Sinal de {side.upper()} NÃO confirmado como DIVAP"
