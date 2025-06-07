@@ -10,11 +10,12 @@ from telethon import TelegramClient, events
 from dotenv import load_dotenv
 import pathlib
 from senhas import pers_api_hash, pers_api_id
-
-# No início do arquivo, após os imports existentes
 import sys
 import os
 from pathlib import Path
+import logging
+
+logging.getLogger('telethon').setLevel(logging.WARNING)
 
 # Adicionar o diretório backtest ao path para permitir a importação
 sys.path.append(str(Path(__file__).parent / 'backtest'))
@@ -319,13 +320,10 @@ def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent, si
 
 def save_to_database(trade_data):
     """
-    Salva as informações de operação de trade no banco de dados MySQL principal e em bancos adicionais,
-    verificando antes se o sinal é uma DIVAP válida.
+    Saves trade operation information to the MySQL database and returns the signal ID.
     """
-    symbol = trade_data["symbol"]
-    message_id_orig = trade_data.get("id_mensagem_origem_sinal")
-    
-    # Verificar se esse sinal já existe
+    conn = None
+    cursor = None
     try:
         conn = mysql.connector.connect(
             host=DB_HOST,
@@ -334,64 +332,10 @@ def save_to_database(trade_data):
             password=DB_PASSWORD,
             database=DB_NAME
         )
-        cursor = conn.cursor(dictionary=True)
+        cursor = conn.cursor()
 
-        check_sql = """
-        SELECT id FROM webhook_signals
-        WHERE symbol = %s 
-            AND message_id_orig = %s
-            AND chat_id_orig_sinal = %s
-        LIMIT 1
-        """
-        cursor.execute(check_sql, (symbol, message_id_orig, trade_data.get("chat_id_origem_sinal")))
-        existing = cursor.fetchone()
-        
-        if existing:
-            print(f"[INFO] Sinal duplicado (symbol={symbol}, message_id_orig={message_id_orig}, chat_id_orig_sinal={trade_data.get('chat_id_origem_sinal')}). Pulando inserção.")
-            return existing["id"]
-        
-        # 1. ANALISE DIVAP - Verificar se o sinal é uma DIVAP válida
-        is_divap = False
-        divap_message = None
-        cancel_reason = None
-        
-        # Inicializar o analisador DIVAP se necessário
-        if initialize_divap_analyzer():
-            try:
-                # Criar um objeto de sinal no formato esperado pelo divapChecker
-                signal_obj = {
-                    "id": 0,  # Será substituído pelo ID real após a inserção
-                    "symbol": trade_data["symbol"],
-                    "timeframe": trade_data.get("timeframe"),
-                    "side": trade_data["side"],
-                    "created_at": datetime.now()
-                }
-                
-                # Analisar o sinal
-                result = divap_analyzer.analyze_signal(signal_obj)
-                
-                # Verificar resultado da análise
-                if "error" not in result:
-                    is_divap = result.get("divap_confirmed", False)
-                    divap_message = result.get("message", "")
-                    
-                    if not is_divap:
-                        if not result.get("high_volume_any", False) and not (result.get("bull_div_any", False) or result.get("bear_div_any", False)):
-                            cancel_reason = "Volume abaixo da média e divergência não encontrada"
-                        elif not result.get("high_volume_any", False):
-                            cancel_reason = "Volume abaixo da média"
-                        else:
-                            cancel_reason = "Divergência não encontrada"
-                
-                print(f"[INFO] Análise DIVAP para {symbol}: {'✅ Confirmado' if is_divap else '❌ Não confirmado'}")
-                if divap_message:
-                    print(f"[INFO] Mensagem: {divap_message}")
-            except Exception as e:
-                print(f"[ERRO] Falha na análise DIVAP: {e}")
-                # Continuar com a inserção mesmo se a análise falhar
-        
         # Prepare TP1 to TP5 values
-        tp_prices = [None] * 5  # Initialize a list with 5 None values by default
+        tp_prices = [None] * 5 # Initialize a list with 5 None values by default
         
         all_tps = trade_data.get('all_tps', []) # Get all TPs from trade_data, default to empty list
         for i in range(min(5, len(all_tps))): # Fill with available values, up to 5
@@ -407,9 +351,6 @@ def save_to_database(trade_data):
               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
               """
 
-        # Definir o status com base na análise DIVAP
-        status = "PENDING" if is_divap else "CANCELED"
-
         values = (
             trade_data["symbol"],
             trade_data["side"],
@@ -419,7 +360,7 @@ def save_to_database(trade_data):
             trade_data["tp"],  # Selected target for tp_price (main TP)
             trade_data["stop_loss"],
             trade_data["chat_id"],
-            status,  # Status baseado na análise DIVAP
+            trade_data.get("status", "PENDING"),  # Status agora vem do trade_data ou é PENDING por padrão
             trade_data.get("timeframe", ""),
             trade_data.get("message_id"),
             trade_data.get("id_mensagem_origem_sinal"),
@@ -428,38 +369,19 @@ def save_to_database(trade_data):
             tp_prices[2],  # tp3_price
             tp_prices[3],  # tp4_price
             tp_prices[4],  # tp5_price
-            trade_data.get("message_source"),  # message_source
-            1 if is_divap else 0,  # divap_confirmado
-            0 if is_divap else 1,  # cancelado_checker
-            cancel_reason  # error_message
+            trade_data.get("message_source"),
+            trade_data.get("divap_confirmado", None),
+            trade_data.get("cancelado_checker", None),
+            trade_data.get("error_message", None)
         )
 
         cursor.execute(sql, values)
         signal_id = cursor.lastrowid # Get the ID of the inserted row
         conn.commit()
 
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Operation saved to database: {trade_data['symbol']} (ID: {signal_id})")
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] DIVAP status: {'Confirmado' if is_divap else 'Não confirmado'}")
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] TPs saved: TP1={tp_prices[0]}, TP2={tp_prices[1]}, TP3={tp_prices[2]}, TP4={tp_prices[3]}, TP5={tp_prices[4]}")
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Message source: {trade_data.get('message_source')}")
-        
-        # Se a análise foi bem-sucedida, salvar também na tabela divap_analysis
-        if is_divap is not None and divap_analyzer and signal_id > 0:
-            try:
-                # Atualizar o ID do sinal no resultado da análise
-                result["signal_id"] = signal_id
-                # Salvar o resultado na tabela divap_analysis
-                divap_analyzer.save_analysis_result(result)
-                print(f"[INFO] Análise DIVAP para sinal ID {signal_id} salva na tabela divap_analysis")
-            except Exception as e:
-                print(f"[ERRO] Falha ao salvar análise DIVAP em divap_analysis: {e}")
-        
-        # 2. Salvar nos bancos adicionais
-        additional_dbs = find_additional_databases()
-        if additional_dbs:
-            for db_name in additional_dbs:
-                save_to_additional_database(trade_data, db_name, tp_prices)
-                
+        #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Operation saved to database: {trade_data['symbol']} (ID: {signal_id})")
+        #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] TPs saved: TP1={tp_prices[0]}, TP2={tp_prices[1]}, TP3={tp_prices[2]}, TP4={tp_prices[3]}, TP5={tp_prices[4]}")
+        #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Message source: {trade_data.get('message_source')}")
         return signal_id
 
     except mysql.connector.Error as db_err:
@@ -703,8 +625,9 @@ def save_to_additional_database(trade_data, db_name, tp_prices):
               INSERT INTO webhook_signals
               (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price,
                chat_id, status, timeframe, message_id, message_id_orig,
-               tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, message_source)
-              VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, message_source,
+               divap_confirmado, cancelado_checker, error_message)
+              VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
               """
 
         values = (
@@ -716,7 +639,7 @@ def save_to_additional_database(trade_data, db_name, tp_prices):
             trade_data["tp"],  # Selected target for tp_price (main TP)
             trade_data["stop_loss"],
             trade_data["chat_id"],
-            "PENDING", # Initial status
+            trade_data.get("status", "PENDING"),  # Status agora vem do trade_data ou é PENDING por padrão
             trade_data.get("timeframe", ""),
             trade_data.get("message_id"),
             trade_data.get("id_mensagem_origem_sinal"),
@@ -725,7 +648,10 @@ def save_to_additional_database(trade_data, db_name, tp_prices):
             tp_prices[2],  # tp3_price
             tp_prices[3],  # tp4_price
             tp_prices[4],  # tp5_price
-            trade_data.get("message_source")  # Nova coluna message_source
+            trade_data.get("message_source"),
+            trade_data.get("divap_confirmado", None),
+            trade_data.get("cancelado_checker", None),
+            trade_data.get("error_message", None)
         )
 
         cursor.execute(sql, values)
@@ -925,6 +851,82 @@ async def extract_trade_info(message_text):
         print(f"[ERRO] Falha ao extrair informações: {e}")
         return None
 
+# Adicionar esta função após a função extract_trade_info() e antes de handle_new_message()
+async def verify_divap_pattern(trade_info):
+    """
+    Verifica se o sinal identificado realmente corresponde a um padrão DIVAP válido.
+    
+    Args:
+        trade_info: Dicionário com informações do trade
+        
+    Returns:
+        tuple: (is_valid_divap, error_message)
+            is_valid_divap: True se for DIVAP válido, False caso contrário
+            error_message: Mensagem de erro se não for DIVAP válido, None caso seja
+    """
+    global divap_analyzer
+    
+    # Verificar se o analisador está inicializado
+    if not divap_analyzer:
+        success = initialize_divap_analyzer()
+        if not success:
+            print(f"[ERRO] Não foi possível inicializar o analisador DIVAP para verificação")
+            return (True, None)  # Falhar para aberto (permitir o sinal) em caso de erro no analisador
+    
+    # Criamos um objeto de sinal que simula um registro do banco de dados
+    # para poder usar a função analyze_signal do DIVAPAnalyzer
+    mock_signal = {
+        "id": 0,  # Será ignorado pois ainda não temos ID
+        "symbol": trade_info["symbol"],
+        "side": trade_info["side"],
+        "timeframe": trade_info.get("timeframe", "15m"),  # Padrão 15m se não especificado
+        "created_at": datetime.now()
+    }
+    
+    try:
+        # Realizar a análise DIVAP
+        analysis_result = divap_analyzer.analyze_signal(mock_signal)
+        
+        # Verificar se há erro na análise
+        if "error" in analysis_result:
+            print(f"[AVISO] Erro na análise DIVAP: {analysis_result['error']}. Permitindo sinal como precaução.")
+            return (True, None)  # Permitir o sinal em caso de erro na análise
+        
+        # Verificar se o padrão DIVAP foi confirmado
+        is_divap_confirmed = analysis_result.get("divap_confirmed", False)
+        
+        if is_divap_confirmed:
+            print(f"[INFO] PADRÃO DIVAP CONFIRMADO para {trade_info['symbol']} {trade_info['side']}")
+            return (True, None)
+        else:
+            # Determinar a mensagem de erro específica
+            error_msg = "Padrão DIVAP não confirmado"
+            
+            has_volume = analysis_result.get("high_volume_any", False)
+            has_divergence = False
+            
+            if trade_info["side"].upper() == "COMPRA":
+                has_divergence = analysis_result.get("bull_div_any", False)
+                divergence_type = "altista"
+            else:  # VENDA
+                has_divergence = analysis_result.get("bear_div_any", False)
+                divergence_type = "baixista"
+            
+            if not has_volume and not has_divergence:
+                error_msg = f"Volume abaixo da média e divergência {divergence_type} não encontrada"
+            elif not has_volume:
+                error_msg = "Volume abaixo da média"
+            elif not has_divergence:
+                error_msg = f"Divergência {divergence_type} não encontrada"
+            
+            #print(f"[AVISO] SINAL REJEITADO: {error_msg}")
+            return (False, error_msg)
+            
+    except Exception as e:
+        print(f"[ERRO] Falha na verificação DIVAP: {e}")
+        print(traceback.format_exc())
+        return (True, None)  # Em caso de erro, permitir o sinal como precaução
+
 # Handler para monitorar mensagens em todos os grupos de origem
 @client.on(events.NewMessage())
 async def handle_new_message(event):
@@ -959,86 +961,121 @@ async def handle_new_message(event):
 
             if trade_info:
                 print(f"[INFO] Sinal de trade detectado em msg ID {incoming_message_id}: {trade_info['symbol']} {trade_info['side']}")
-                # all_tps = trade_info.get('all_tps', []) # Linha de log de TPs pode ser adicionada aqui se útil
-                # tp_log_msg = ", ".join([f"TP{i+1}: {tp}" for i, tp in enumerate(all_tps)])
-                # print(f"[INFO] Alvos detectados para {trade_info['symbol']}: {tp_log_msg}")
-
-                selected_tp = None
-                if ALVO_SELECIONADO is not None:
-                    if trade_info.get('all_tps') and len(trade_info['all_tps']) >= ALVO_SELECIONADO:
-                        selected_tp = trade_info['all_tps'][ALVO_SELECIONADO - 1]
-                    elif trade_info.get('tp'):
-                        selected_tp = trade_info.get('tp')
-                    elif trade_info.get('all_tps'):
-                        selected_tp = trade_info['all_tps'][0]
                 
-                if selected_tp is None and trade_info.get('all_tps'):
-                    print(f"[INFO] Enviando todos os {len(trade_info.get('all_tps'))} alvos.")
-                elif selected_tp is None:
-                    print(f"[AVISO] Sinal da Msg ID {incoming_message_id} (Símbolo: {trade_info['symbol']}) não tem nenhum TP. Enviando apenas com entrada e SL.")
-
-                message_text_to_send = format_trade_message(trade_info, selected_tp)
-                print(f"\n[INFO] Mensagem de sinal formatada para envio (Origem Msg ID: {incoming_message_id}):\n{'-'*50}\n{message_text_to_send}\n{'-'*50}")
-
-                # Garantir que tp_price nunca seja NULL
-                if selected_tp is None:
-                # Se não há TP selecionado, usar o último alvo como tp_price para o banco de dados
-                # Isso evita o erro "Column 'tp_price' cannot be null"
-                    if trade_info.get('all_tps') and len(trade_info['all_tps']) > 0:
-                # Usar o último alvo disponível
-                        trade_info['tp'] = trade_info['all_tps'][-1]
-                        print(f"[INFO] Sem alvo específico selecionado. Usando último alvo ({trade_info['tp']}) como tp_price para o banco.")
-                    else:
-                        # Se não houver alvos disponíveis, usar o preço de entrada como fallback
-                        trade_info['tp'] = trade_info['entry']
-                        print(f"[AVISO] Sem alvos disponíveis. Usando preço de entrada ({trade_info['entry']}) como tp_price para o banco.")
-                else:
-                    trade_info['tp'] = selected_tp
-
-                trade_info['id_mensagem_origem_sinal'] = incoming_message_id
-                trade_info['chat_id_origem_sinal'] = incoming_chat_id
-                trade_info['chat_id'] = GRUPO_DESTINO_ID 
-                trade_info['message_source'] = message_source  # Adicionar message_source                
-
-                sent_message_to_dest = await client.send_message(GRUPO_DESTINO_ID, message_text_to_send)
-                sent_message_id_in_dest = sent_message_to_dest.id
-                sent_message_created_at = sent_message_to_dest.date.strftime("%Y-%m-%d %H:%M:%S")
-                print(f"[INFO] Sinal enviado para GRUPO_DESTINO_ID. Msg ID no destino: {sent_message_id_in_dest}")
+                # NOVO: Verificar se é realmente um padrão DIVAP válido
+                is_valid_divap, error_message = await verify_divap_pattern(trade_info)
                 
-                trade_info['message_id'] = sent_message_id_in_dest 
-                
-                signal_id_from_webhook_db = save_to_database(trade_info) 
-                
-                if signal_id_from_webhook_db:
-                    print(f"[INFO] Sinal salvo em webhook_signals com ID: {signal_id_from_webhook_db}")
-                    save_message_to_database( 
-                        message_id=incoming_message_id,
-                        chat_id=incoming_chat_id,
-                        text=incoming_text,
-                        is_reply=is_incoming_reply,
-                        reply_to_message_id=incoming_reply_to_id,
-                        symbol=trade_info['symbol'], 
-                        signal_id=signal_id_from_webhook_db, 
-                        created_at=incoming_created_at,
-                        message_source=message_source                        
-                    )
-                    print(f"[INFO] Mensagem original ID {incoming_message_id} (Chat {incoming_chat_id}) registrada em signals_msg com Sinal ID {signal_id_from_webhook_db}.")
+                # Se for DIVAP válido, seguir com o fluxo normal de envio
+                if is_valid_divap:
+                    selected_tp = None
+                    if ALVO_SELECIONADO is not None:
+                        if trade_info.get('all_tps') and len(trade_info['all_tps']) >= ALVO_SELECIONADO:
+                            selected_tp = trade_info['all_tps'][ALVO_SELECIONADO - 1]
+                        elif trade_info.get('tp'):
+                            selected_tp = trade_info.get('tp')
+                        elif trade_info.get('all_tps'):
+                            selected_tp = trade_info['all_tps'][0]
                     
-                    save_message_to_database(
-                        message_id=sent_message_id_in_dest,
-                        chat_id=GRUPO_DESTINO_ID,
-                        text=message_text_to_send,
-                        is_reply=False, 
-                        reply_to_message_id=None,
-                        symbol=trade_info['symbol'], 
-                        signal_id=signal_id_from_webhook_db, 
-                        created_at=sent_message_created_at,
-                        message_source=message_source                         
+                    if selected_tp is None and trade_info.get('all_tps'):
+                        print(f"[INFO] Enviando todos os {len(trade_info.get('all_tps'))} alvos.")
+                    elif selected_tp is None:
+                        print(f"[AVISO] Sinal da Msg ID {incoming_message_id} (Símbolo: {trade_info['symbol']}) não tem nenhum TP. Enviando apenas com entrada e SL.")
 
-                    )
-                    print(f"[INFO] Mensagem enviada ID {sent_message_id_in_dest} (Chat {GRUPO_DESTINO_ID}) registrada em signals_msg com Sinal ID {signal_id_from_webhook_db}.")
+                    message_text_to_send = format_trade_message(trade_info, selected_tp)
+                    print(f"\n[INFO] Mensagem de sinal formatada para envio (Origem Msg ID: {incoming_message_id}):\n{'-'*50}\n{message_text_to_send}\n{'-'*50}")
+
+                    # Garantir que tp_price nunca seja NULL
+                    if selected_tp is None:
+                    # Se não há TP selecionado, usar o último alvo como tp_price para o banco de dados
+                    # Isso evita o erro "Column 'tp_price' cannot be null"
+                        if trade_info.get('all_tps') and len(trade_info['all_tps']) > 0:
+                    # Usar o último alvo disponível
+                            trade_info['tp'] = trade_info['all_tps'][-1]
+                            #print(f"[INFO] Sem alvo específico selecionado. Usando último alvo ({trade_info['tp']}) como tp_price para o banco.")
+                        else:
+                            # Se não houver alvos disponíveis, usar o preço de entrada como fallback
+                            trade_info['tp'] = trade_info['entry']
+                            print(f"[AVISO] Sem alvos disponíveis. Usando preço de entrada ({trade_info['entry']}) como tp_price para o banco.")
+                    else:
+                        trade_info['tp'] = selected_tp
+
+                    trade_info['id_mensagem_origem_sinal'] = incoming_message_id
+                    trade_info['chat_id_origem_sinal'] = incoming_chat_id
+                    trade_info['chat_id'] = GRUPO_DESTINO_ID 
+                    trade_info['message_source'] = message_source  # Adicionar message_source                
+
+                    # Enviar a mensagem ao grupo destino
+                    sent_message_to_dest = await client.send_message(GRUPO_DESTINO_ID, message_text_to_send)
+                    sent_message_id_in_dest = sent_message_to_dest.id
+                    sent_message_created_at = sent_message_to_dest.date.strftime("%Y-%m-%d %H:%M:%S")
+                    
+                    trade_info['message_id'] = sent_message_id_in_dest
+                    trade_info['divap_confirmado'] = 1
+                    trade_info['cancelado_checker'] = 0
+                    trade_info['message_source'] = message_source
+                    
+                    # Salvar com status PENDING (padrão)
+                    signal_id_from_webhook_db = save_to_database(trade_info) 
+                    
+                    if signal_id_from_webhook_db:
+                        print(f"[INFO] Sinal salvo em webhook_signals com ID: {signal_id_from_webhook_db}")
+                        save_message_to_database( 
+                            message_id=incoming_message_id,
+                            chat_id=incoming_chat_id,
+                            text=incoming_text,
+                            is_reply=is_incoming_reply,
+                            reply_to_message_id=incoming_reply_to_id,
+                            symbol=trade_info['symbol'], 
+                            signal_id=signal_id_from_webhook_db, 
+                            created_at=incoming_created_at,
+                            message_source=message_source                        
+                        )
+                        #print(f"[INFO] Mensagem original ID {incoming_message_id} (Chat {incoming_chat_id}) registrada em signals_msg com Sinal ID {signal_id_from_webhook_db}.")
+                        
+                        save_message_to_database(
+                            message_id=sent_message_id_in_dest,
+                            chat_id=GRUPO_DESTINO_ID,
+                            text=message_text_to_send,
+                            is_reply=False, 
+                            reply_to_message_id=None,
+                            symbol=trade_info['symbol'], 
+                            signal_id=signal_id_from_webhook_db, 
+                            created_at=sent_message_created_at,
+                            message_source=message_source                         
+
+                        )
+                        #print(f"[INFO] Mensagem enviada ID {sent_message_id_in_dest} (Chat {GRUPO_DESTINO_ID}) registrada em signals_msg com Sinal ID {signal_id_from_webhook_db}.")
+                    else:
+                        print(f"[AVISO] Falha ao salvar sinal em webhook_signals para msg origem {incoming_message_id}. Mensagens em signals_msg não terão signal_id associado por este fluxo.")
+                        save_message_to_database(
+                            message_id=incoming_message_id,
+                            chat_id=incoming_chat_id,
+                            text=incoming_text,
+                            is_reply=is_incoming_reply,
+                            reply_to_message_id=incoming_reply_to_id,
+                            symbol=trade_info.get('symbol'),
+                            signal_id=None,
+                            created_at=incoming_created_at,
+                            message_source=message_source
+                        )
+
                 else:
-                    print(f"[AVISO] Falha ao salvar sinal em webhook_signals para msg origem {incoming_message_id}. Mensagens em signals_msg não terão signal_id associado por este fluxo.")
+                    # DIVAP NÃO confirmado - Salvar no banco com status CANCELED
+                    #print(f"[INFO] Sinal de trade REJEITADO para {trade_info['symbol']}: {error_message}")
+                    
+                    trade_info['id_mensagem_origem_sinal'] = incoming_message_id
+                    trade_info['chat_id_origem_sinal'] = incoming_chat_id
+                    trade_info['chat_id'] = GRUPO_DESTINO_ID
+                    trade_info['message_source'] = message_source
+                    trade_info['divap_confirmado'] = 0
+                    trade_info['cancelado_checker'] = 1
+                    trade_info['status'] = 'CANCELED'
+                    trade_info['error_message'] = error_message
+                    
+                    # Salvar sem enviar para o grupo destino
+                    save_to_database(trade_info)
+                    
+                    # Registrar a mensagem original
                     save_message_to_database(
                         message_id=incoming_message_id,
                         chat_id=incoming_chat_id,
@@ -1153,7 +1190,7 @@ def save_message_to_database(message_id, chat_id, text, is_reply=False,
         cursor.execute(sql, values)
         conn.commit()
         
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Mensagem {message_id} registrada na tabela signals_msg")
+        #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Mensagem {message_id} registrada na tabela signals_msg")
         
     except Exception as e:
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Erro ao registrar mensagem: {e}")
