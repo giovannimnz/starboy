@@ -703,6 +703,7 @@ class DIVAPAnalyzer:
         
         last_check_had_signals = False
         check_count = 0
+        status_interval = 150  # Mostrar status a cada 5 minutos (150 verificações com sleep de 2s)
         
         try:
             while True:
@@ -725,19 +726,20 @@ class DIVAPAnalyzer:
                             last_processed_id = signal["id"]
                     
                     last_check_had_signals = True
-                # Só exibe mensagem de "nenhum sinal" a cada 30 verificações (1 minuto), para não poluir
-                elif last_check_had_signals or check_count % 30 == 0:
+                    check_count = 0  # Reset counter only when finding signals
+                # Só exibe mensagem quando muda de estado ou a cada 5 minutos
+                elif last_check_had_signals or check_count >= status_interval:
                     print(f"[{datetime.now()}] Nenhum novo sinal encontrado. Última ID processada: {last_processed_id}")
                     last_check_had_signals = False
-                    check_count = 0
-                
-                # Reconectar caso a conexão seja perdida
-                if not self.conn.is_connected():
-                    print("[ALERTA] Conexão perdida, reconectando...")
-                    self.connect_db()
-                
-                time.sleep(2)  # Intervalo entre verificações (ajuste conforme necessário)
-        
+                    check_count = 0  # Reset counter after showing status
+            
+            # Reconectar caso a conexão seja perdida
+            if not self.conn.is_connected():
+                print("[ALERTA] Conexão perdida, reconectando...")
+                self.connect_db()
+            
+            time.sleep(2)  # Intervalo entre verificações
+    
         except KeyboardInterrupt:
             print("\n\nMonitoramento interrompido pelo usuário. Voltando ao menu principal...\n")
 
