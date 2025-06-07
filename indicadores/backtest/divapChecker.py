@@ -562,6 +562,97 @@ class DIVAPAnalyzer:
         # Adicionar as informações de diagnóstico ao resultado
         result["candles_info"] = candles_info
         
+        # Ao buscar pivôs para a análise de divergência, filtrar apenas até o candle analisado
+        # Modificar no método analyze_signal:
+
+        # Filtrar o DataFrame para usar apenas dados até o candle analisado
+        df_until_signal = df[df.index <= previous_candle.name]
+
+        # Então usar df_until_signal para detectar pivôs e calcular divergências
+        
+        # Inicializar séries para armazenar valores de pivôs anteriores
+        # Estes armazenarão o último e o penúltimo pivô de cada tipo para cálculo de divergência
+        var_pivot_low_price_1 = pd.Series(float('nan'), index=df_until_signal.index)
+        var_pivot_low_price_2 = pd.Series(float('nan'), index=df_until_signal.index)
+        var_pivot_low_rsi_1 = pd.Series(float('nan'), index=df_until_signal.index)
+        var_pivot_low_rsi_2 = pd.Series(float('nan'), index=df_until_signal.index)
+        
+        var_pivot_high_price_1 = pd.Series(float('nan'), index=df_until_signal.index)
+        var_pivot_high_price_2 = pd.Series(float('nan'), index=df_until_signal.index)
+        var_pivot_high_rsi_1 = pd.Series(float('nan'), index=df_until_signal.index)
+        var_pivot_high_rsi_2 = pd.Series(float('nan'), index=df_until_signal.index)
+        
+        bull_div = pd.Series(False, index=df_until_signal.index)
+        bear_div = pd.Series(False, index=df_until_signal.index)
+        
+        # Processamento de pivôs e detecção de divergências 
+        last_low_pivot_price = np.nan
+        last_low_pivot_rsi = np.nan
+        second_last_low_pivot_price = np.nan
+        second_last_low_pivot_rsi = np.nan
+
+        last_high_pivot_price = np.nan
+        last_high_pivot_rsi = np.nan
+        second_last_high_pivot_price = np.nan
+        second_last_high_pivot_rsi = np.nan
+
+        for i in range(len(df_until_signal)):
+            # Atualizar pivôs de baixa (lows)
+            if df_until_signal["pivot_low"].iloc[i] and not pd.isna(df_until_signal["low"].iloc[i]) and not pd.isna(df_until_signal["RSI"].iloc[i]):
+                second_last_low_pivot_price = last_low_pivot_price
+                second_last_low_pivot_rsi = last_low_pivot_rsi
+                last_low_pivot_price = df_until_signal["low"].iloc[i]
+                last_low_pivot_rsi = df_until_signal["RSI"].iloc[i]
+            
+            var_pivot_low_price_1.iloc[i] = last_low_pivot_price
+            var_pivot_low_price_2.iloc[i] = second_last_low_pivot_price
+            var_pivot_low_rsi_1.iloc[i] = last_low_pivot_rsi
+            var_pivot_low_rsi_2.iloc[i] = second_last_low_pivot_rsi
+
+            # Atualizar pivôs de alta (highs)
+            if df_until_signal["pivot_high"].iloc[i] and not pd.isna(df_until_signal["high"].iloc[i]) and not pd.isna(df_until_signal["RSI"].iloc[i]):
+                second_last_high_pivot_price = last_high_pivot_price
+                second_last_high_pivot_rsi = last_high_pivot_rsi
+                last_high_pivot_price = df_until_signal["high"].iloc[i]
+                last_high_pivot_rsi = df_until_signal["RSI"].iloc[i]
+
+            var_pivot_high_price_1.iloc[i] = last_high_pivot_price
+            var_pivot_high_price_2.iloc[i] = second_last_high_pivot_price
+            var_pivot_high_rsi_1.iloc[i] = last_high_pivot_rsi
+            var_pivot_high_rsi_2.iloc[i] = second_last_high_pivot_rsi
+
+            # Verificar divergência de alta (bullish) 
+            # Preço faz fundo mais baixo, IFR faz fundo mais alto 
+            if (not pd.isna(var_pivot_low_price_1.iloc[i]) and
+                not pd.isna(var_pivot_low_price_2.iloc[i]) and
+                var_pivot_low_price_1.iloc[i] < var_pivot_low_price_2.iloc[i] and
+                var_pivot_low_rsi_1.iloc[i] > var_pivot_low_rsi_2.iloc[i]):
+                bull_div.iloc[i] = True
+            
+            # Verificar divergência de baixa (bearish) 
+            # Preço faz topo mais alto, IFR faz topo mais baixo 
+            if (not pd.isna(var_pivot_high_price_1.iloc[i]) and
+                not pd.isna(var_pivot_high_price_2.iloc[i]) and
+                var_pivot_high_price_1.iloc[i] > var_pivot_high_price_2.iloc[i] and
+                var_pivot_high_rsi_1.iloc[i] < var_pivot_high_rsi_2.iloc[i]):
+                bear_div.iloc[i] = True
+        
+        # Adicionar divergências ao DataFrame
+        df_until_signal["bull_div"] = bull_div
+        df_until_signal["bear_div"] = bear_div
+        
+        # Identificar DIVAP completo (todos os critérios juntos)
+        # Agora usamos reversão de preço em vez de padrões de velas específicos
+        df_until_signal["bull_divap"] = (df_until_signal["bull_div"] & df_until_signal["high_volume"] & df_until_signal["price_reversal_up"])
+        df_until_signal["bear_divap"] = (df_until_signal["bear_div"] & df_until_signal["high_volume"] & df_until_signal["price_reversal_down"])
+        
+        # Obter o último estado de DIVAP até o candle do sinal
+        last_divap_state = df_until_signal.iloc[-1]
+        
+        # Atualizar resultado com base no último estado de DIVAP
+        result["is_bull_divap"] = bool(last_divap_state["bull_divap"])
+        result["is_bear_divap"] = bool(last_divap_state["bear_divap"])
+        
         return result
 
     def _get_timeframe_delta(self, timeframe: str) -> Optional[int]:
