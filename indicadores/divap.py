@@ -13,6 +13,7 @@ from senhas import pers_api_hash, pers_api_id
 import sys
 import os
 from pathlib import Path
+import logging
 
 logging.getLogger('telethon').setLevel(logging.WARNING)
 
