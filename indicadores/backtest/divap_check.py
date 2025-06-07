@@ -741,7 +741,7 @@ class DIVAPAnalyzer:
             logger.info(f"Aguardando novos sinais (Próximo ID: {next_expected_id})...")
 
             # Log detalhado da situação atual
-            logger.info(f"\nMonitoramento iniciado...")
+            logger.info(f"Monitoramento iniciado...")
             #logger.info(f"Total de sinais na tabela: {total_signals}")
             
             last_check_had_signals = False
