@@ -363,7 +363,7 @@ class DIVAPAnalyzer:
 
     def save_analysis_result(self, result: Dict) -> None:
         if "error" in result: return
-    
+        
         try:
             rsi_to_save = result.get("rsi")
             volume_sma_to_save = result.get("volume_sma")
@@ -396,55 +396,6 @@ class DIVAPAnalyzer:
             self.cursor.execute(sql, values)
             self.conn.commit()
             logger.info(f"Análise do sinal {result.get('signal_id')} salva no banco de dados")
-        except Exception as e:
-            logger.error(f"Erro ao salvar análise: {e}")
-        
-        try:
-            # Parte nova: Atualizar a tabela webhook_signals
-            signal_id = result.get("signal_id")
-            is_divap_confirmed = result.get("divap_confirmed", False)
-            
-            # Determinar a mensagem de erro se não for confirmado
-            error_message = None
-            if not is_divap_confirmed:
-                has_volume = result.get("high_volume", False)
-                has_divergence = False
-                
-                if result.get("side", "").upper() == "COMPRA":
-                    has_divergence = result.get("bull_div", False)
-                    divergence_type = "altista"
-                else:  # VENDA
-                    has_divergence = result.get("bear_div", False)
-                    divergence_type = "baixista"
-                
-                if not has_volume and not has_divergence:
-                    error_message = f"Volume abaixo da média e divergência {divergence_type} não ocorreu"
-                elif not has_volume:
-                    error_message = "Volume abaixo da média"
-                elif not has_divergence:
-                    error_message = f"Divergência {divergence_type} não ocorreu"
-            
-            # Atualizar a tabela webhook_signals
-            update_query = """
-                UPDATE webhook_signals 
-                SET divap_confirmado = %s,
-                    cancelado_checker = %s
-            """
-            
-            update_params = [is_divap_confirmed, not is_divap_confirmed]
-            
-            # Se não for confirmado, também atualizar o status e mensagem de erro
-            if not is_divap_confirmed:
-                update_query += ", status = 'CANCELED', error_message = %s"
-                update_params.append(error_message)
-            
-            update_query += " WHERE id = %s"
-            update_params.append(signal_id)
-            
-            self.cursor.execute(update_query, tuple(update_params))
-            self.conn.commit()
-            logger.info(f"Sinal #{signal_id} atualizado: DIVAP confirmado = {is_divap_confirmed}")
-        
         except Exception as e:
             logger.error(f"Erro ao salvar análise: {e}")
 
@@ -539,168 +490,6 @@ class DIVAPAnalyzer:
         
         return timeframe.lower()  # Retorna em minúsculas como fallback
 
-    def get_unanalyzed_signals(self, limit: int = 100) -> List[Dict]:
-        """
-        Busca sinais que ainda não foram analisados pelo sistema DIVAP.
-        
-        Args:
-            limit: Número máximo de sinais a retornar
-            
-        Returns:
-            Lista de sinais não analisados
-        """
-        try:
-            query = """
-                SELECT ws.* FROM webhook_signals ws
-                LEFT JOIN divap_analysis da ON ws.id = da.signal_id
-                WHERE da.signal_id IS NULL
-                ORDER BY ws.created_at DESC
-                LIMIT %s
-            """
-            self.cursor.execute(query, (limit,))
-            signals = self.cursor.fetchall()
-            
-            if not signals:
-                logger.info(f"Nenhum sinal não analisado encontrado")
-            else:
-                logger.info(f"Encontrados {len(signals)} sinais não analisados")
-            return signals
-        except Exception as e:
-            logger.error(f"Erro ao buscar sinais não analisados: {e}")
-            raise
-
-    def monitor_all_signals(self, period_days: int = None, limit: int = 100) -> Dict:
-        """
-        Monitora e analisa múltiplos sinais, salvando os resultados.
-        
-        Args:
-            period_days: Se fornecido, analisa sinais dos últimos X dias. 
-                         Se None, analisa sinais não analisados.
-            limit: Número máximo de sinais a processar
-            
-        Returns:
-            Dicionário com estatísticas da análise
-        """
-        try:
-            if period_days:
-                # Busca sinais dos últimos X dias
-                query = """
-                    SELECT * FROM webhook_signals 
-                    WHERE created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
-                    ORDER BY created_at DESC
-                    LIMIT %s
-                """
-                self.cursor.execute(query, (period_days, limit))
-                signals = self.cursor.fetchall()
-                period_desc = f"dos últimos {period_days} dias"
-            else:
-                signals = self.get_unanalyzed_signals(limit=limit)
-                period_desc = "não analisados"
-            
-            if not signals:
-                logger.info(f"Nenhum sinal {period_desc} encontrado para monitorar")
-                return {"total": 0, "success": 0, "error": 0, "divap_confirmed": 0}
-            
-            results = {
-                "total": len(signals),
-                "success": 0,
-                "error": 0,
-                "divap_confirmed": 0,
-                "symbols": {}
-            }
-            
-            print(f"\n🔍 Monitorando {len(signals)} sinais {period_desc}...")
-            
-            for i, signal in enumerate(signals):
-                symbol = signal['symbol']
-                if symbol not in results["symbols"]:
-                    results["symbols"][symbol] = {"total": 0, "confirmed": 0}
-                results["symbols"][symbol]["total"] += 1
-                
-                print(f"\nProcessando {i+1}/{len(signals)}: #{signal['id']} - {symbol} {signal.get('timeframe', 'N/A')} {signal['side']}")
-                
-                try:
-                    result = self.analyze_signal(signal)
-                    
-                    if "error" in result:
-                        results["error"] += 1
-                        print(f"❌ Erro: {result['error']}")
-                    else:
-                        results["success"] += 1
-                        self.save_analysis_result(result)
-                        
-                        if result.get("divap_confirmed", False):
-                            results["divap_confirmed"] += 1
-                            results["symbols"][symbol]["confirmed"] += 1
-                            print(f"✅ DIVAP confirmado: {result.get('message', '')}")
-                            print(f"   Status do sinal atualizado: divap_confirmado=TRUE, cancelado_checker=FALSE")
-                        else:
-                            print(f"❌ DIVAP não confirmado: {result.get('message', '')}")
-                            print(f"   Status do sinal atualizado: status=CANCELED, divap_confirmado=FALSE, cancelado_checker=TRUE")
-                            reason = ""
-                            if not result.get("high_volume", False):
-                                reason += "Volume abaixo da média"
-                            if not result.get("bull_div", False) and not result.get("bear_div", False):
-                                if reason: reason += " e "
-                                reason += f"Divergência {'altista' if result['side'].upper() == 'COMPRA' else 'baixista'} não ocorreu"
-                            print(f"   Motivo: {reason}")
-                    
-                except Exception as e:
-                    logger.error(f"Erro ao processar sinal #{signal['id']}: {e}")
-                    results["error"] += 1
-            
-            # Exibir relatório final
-            divap_percent = round(results['divap_confirmed']/results['total']*100 if results['total'] > 0 else 0, 1)
-            
-            print("\n" + "="*60)
-            print(f"📊 RELATÓRIO DE MONITORAMENTO")
-            print(f"  • Total de sinais: {results['total']}")
-            print(f"  • Análises com sucesso: {results['success']}")
-            print(f"  • Erros de análise: {results['error']}")
-            print(f"  • DIVAPs confirmados: {results['divap_confirmed']} ({divap_percent}%)")
-            
-            # Top símbolos com mais confirmações DIVAP
-            if results["symbols"]:
-                print("\n🏆 TOP SÍMBOLOS COM DIVAP:")
-                sorted_symbols = sorted(results["symbols"].items(), 
-                                      key=lambda x: x[1]["confirmed"], reverse=True)
-                for symbol, data in sorted_symbols[:5]:
-                    if data["confirmed"] > 0:
-                        symbol_percent = round(data["confirmed"]/data["total"]*100, 1)
-                        print(f"  • {symbol}: {data['confirmed']}/{data['total']} ({symbol_percent}%)")
-            
-            print("="*60)
-            return results
-        
-        except Exception as e:
-            logger.error(f"Erro no monitoramento de sinais: {e}")
-            raise
-
-    def get_signal_by_id(self, signal_id: int) -> Optional[Dict]:
-        """
-        Busca um sinal específico pelo seu ID.
-        
-        Args:
-            signal_id: O ID do sinal a ser buscado
-            
-        Returns:
-            O sinal encontrado ou None se não existir
-        """
-        try:
-            query = "SELECT * FROM webhook_signals WHERE id = %s"
-            self.cursor.execute(query, (signal_id,))
-            signal = self.cursor.fetchone()
-            
-            if not signal:
-                logger.warning(f"Nenhum sinal encontrado com ID {signal_id}")
-                return None
-            
-            logger.info(f"Sinal #{signal_id} encontrado: {signal['symbol']} {signal.get('timeframe', 'N/A')} {signal['side']}")
-            return signal
-        except Exception as e:
-            logger.error(f"Erro ao buscar sinal por ID {signal_id}: {e}")
-            raise
-
 def interactive_mode():
     analyzer = DIVAPAnalyzer(DB_CONFIG, BINANCE_CONFIG)
     try:
@@ -710,21 +499,14 @@ def interactive_mode():
             print("\n" + "="*60 + "\n🔍 ANALISADOR DIVAP - MODO INTERATIVO\n" + "="*60)
             print("1. Analisar sinal por ID")
             print("2. Analisar sinal por data e símbolo")
-            print("3. Monitorar todos os sinais")  # Nova opção
-            print("4. Sair")
-            choice = input("\nEscolha uma opção (1-4): ").strip()
+            print("3. Sair")
+            choice = input("\nEscolha uma opção (1-3): ").strip()
             
             if choice == "1":
                 try:
                     signal_id = int(input("Digite o ID do sinal: ").strip())
-                    signal = analyzer.get_signal_by_id(signal_id)
-        
-                    if signal:
-                        result = analyzer.analyze_signal(signal)
-                        analyzer.print_analysis_result(result)
-                        analyzer.save_analysis_result(result)
-                    else:
-                        print(f"\n❌ Sinal com ID {signal_id} não encontrado.")
+                    # Esta funcionalidade precisaria da função get_signal_by_id, que não está no escopo atual.
+                    print("Funcionalidade de busca por ID a ser implementada.")
                 except (ValueError, TypeError):
                     print("\n❌ ID inválido. Digite um número inteiro.")
             
@@ -761,28 +543,6 @@ def interactive_mode():
                     print("\n❌ Formato de data inválido. Use DD-MM-AAAA.")
             
             elif choice == "3":
-                print("\n🔍 MONITOR DE SINAIS")
-                print("1. Monitorar sinais não analisados")
-                print("2. Monitorar sinais dos últimos X dias")
-                print("3. Voltar")
-                
-                monitor_choice = input("\nEscolha uma opção (1-3): ").strip()
-                
-                if monitor_choice == "1":
-                    limit = input("Número máximo de sinais (padrão: 100): ").strip()
-                    limit = int(limit) if limit.isdigit() else 100
-                    analyzer.monitor_all_signals(period_days=None, limit=limit)
-                
-                elif monitor_choice == "2":
-                    days = input("Número de dias para análise (padrão: 7): ").strip()
-                    days = int(days) if days.isdigit() else 7
-                    
-                    limit = input("Número máximo de sinais (padrão: 100): ").strip()
-                    limit = int(limit) if limit.isdigit() else 100
-                    
-                    analyzer.monitor_all_signals(period_days=days, limit=limit)
-            
-            elif choice == "4":
                 print("\n👋 Saindo...")
                 break
             else:
