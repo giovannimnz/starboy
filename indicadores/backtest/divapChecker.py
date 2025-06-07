@@ -703,11 +703,15 @@ class DIVAPAnalyzer:
         
         last_check_had_signals = False
         check_count = 0
-        status_interval = 150  # Mostrar status a cada 5 minutos (150 verificações com sleep de 2s)
+        status_interval = 900  # Mostrar status a cada 30 minutos (900 verificações com sleep de 2s)
+        last_status_time = datetime.now()
         
         try:
             while True:
-                check_count += 1
+                # Verificar conexão a cada iteração
+                if not self.conn.is_connected():
+                    print("[ALERTA] Conexão perdida, reconectando...")
+                    self.connect_db()
                 
                 # Executa a busca
                 self.cursor.execute("SELECT * FROM webhook_signals WHERE id > %s ORDER BY id ASC", (last_processed_id,))
@@ -726,19 +730,17 @@ class DIVAPAnalyzer:
                             last_processed_id = signal["id"]
                     
                     last_check_had_signals = True
-                    check_count = 0  # Reset counter only when finding signals
-                # Só exibe mensagem quando muda de estado ou a cada 5 minutos
-                elif last_check_had_signals or check_count >= status_interval:
+                    last_status_time = datetime.now()
+                    check_count = 0
+                
+                # Mostrar mensagem apenas se mudou de estado ou se passou tempo suficiente
+                elif last_check_had_signals or (datetime.now() - last_status_time).total_seconds() >= 1800:  # 30 minutos
                     print(f"[{datetime.now()}] Nenhum novo sinal encontrado. Última ID processada: {last_processed_id}")
                     last_check_had_signals = False
-                    check_count = 0  # Reset counter after showing status
-            
-            # Reconectar caso a conexão seja perdida
-            if not self.conn.is_connected():
-                print("[ALERTA] Conexão perdida, reconectando...")
-                self.connect_db()
-            
-            time.sleep(2)  # Intervalo entre verificações
+                    last_status_time = datetime.now()
+                
+                # Importante: pausa entre verificações
+                time.sleep(2)
     
         except KeyboardInterrupt:
             print("\n\nMonitoramento interrompido pelo usuário. Voltando ao menu principal...\n")
