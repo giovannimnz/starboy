@@ -115,7 +115,7 @@ class DIVAPAnalyzer:
             signals = self.cursor.fetchall()
             
             if not signals:
-                logger.warning(f"Nenhum sinal encontrado na data {date_str}" + (f" para o símbolo {symbol}" if symbol else ""))
+                logger.warning(f"\n\nNenhum sinal encontrado na data {date_str}" + (f" para o símbolo {symbol}" if symbol else ""))
             else:
                 logger.info(f"Encontrados {len(signals)} sinais na data {date_str}" + (f" para o símbolo {symbol}" if symbol else ""))
             return signals
@@ -730,10 +730,6 @@ class DIVAPAnalyzer:
                 # Se não houver sinais pendentes, o último processado é o máximo atual
                 last_processed_id = max_id
             
-            # Log detalhado da situação atual
-            logger.info(f"Monitoramento iniciado...")
-            #logger.info(f"Total de sinais na tabela: {total_signals}")
-            
             if total_pending > 0:
                 logger.info(f"Sinais pendentes: {total_pending}")
                 logger.info(f"Próximo sinal a ser processado: ID {next_id_to_process}")
@@ -743,6 +739,10 @@ class DIVAPAnalyzer:
             
             #logger.info(f"Maior ID atual no banco: {max_id}")
             logger.info(f"Aguardando novos sinais (Próximo ID: {next_expected_id})...")
+
+            # Log detalhado da situação atual
+            logger.info(f"\nMonitoramento iniciado...")
+            #logger.info(f"Total de sinais na tabela: {total_signals}")
             
             last_check_had_signals = False
             last_status_time = datetime.now()
