@@ -283,11 +283,11 @@ class DIVAPAnalyzer:
         
         pivot_info = { "last_pivots": {} }
         if side.upper() == 'VENDA' and len(high_pivots_df) >= 2:
-            pivot_info["last_pivots"]["last_high_pivot"] = high_pivots_df.iloc[0][['high', 'RSI']].rename({'high': 'price'}).to_dict()
-            pivot_info["last_pivots"]["second_last_high_pivot"] = high_pivots_df.iloc[1][['high', 'RSI']].rename({'high': 'price'}).to_dict()
+            pivot_info["last_pivots"]["last_high_pivot"] = high_pivots_df.iloc[0][['high', 'RSI']].rename({'high': 'price', 'RSI': 'rsi'}).to_dict()
+            pivot_info["last_pivots"]["second_last_high_pivot"] = high_pivots_df.iloc[1][['high', 'RSI']].rename({'high': 'price', 'RSI': 'rsi'}).to_dict()
         elif side.upper() == 'COMPRA' and len(low_pivots_df) >= 2:
-            pivot_info["last_pivots"]["last_low_pivot"] = low_pivots_df.iloc[0][['low', 'RSI']].rename({'low': 'price'}).to_dict()
-            pivot_info["last_pivots"]["second_last_low_pivot"] = low_pivots_df.iloc[1][['low', 'RSI']].rename({'low': 'price'}).to_dict()
+            pivot_info["last_pivots"]["last_low_pivot"] = low_pivots_df.iloc[0][['low', 'RSI']].rename({'low': 'price', 'RSI': 'rsi'}).to_dict()
+            pivot_info["last_pivots"]["second_last_low_pivot"] = low_pivots_df.iloc[1][['low', 'RSI']].rename({'low': 'price', 'RSI': 'rsi'}).to_dict()
         
         # Preparar resultado da análise
         result = {
@@ -362,7 +362,6 @@ class DIVAPAnalyzer:
 
     def save_analysis_result(self, result: Dict) -> None:
         if "error" in result: return
-        self.create_analysis_table_if_not_exists()
         
         try:
             rsi_to_save = result.get("rsi")
@@ -398,23 +397,6 @@ class DIVAPAnalyzer:
             logger.info(f"Análise do sinal {result.get('signal_id')} salva no banco de dados")
         except Exception as e:
             logger.error(f"Erro ao salvar análise: {e}")
-
-    def create_analysis_table_if_not_exists(self) -> None:
-        try:
-            sql = """
-                CREATE TABLE IF NOT EXISTS divap_analysis (
-                    id INT AUTO_INCREMENT PRIMARY KEY, signal_id INT,
-                    is_bull_divap BOOLEAN, is_bear_divap BOOLEAN, divap_confirmed BOOLEAN, 
-                    rsi FLOAT, volume DOUBLE, volume_sma DOUBLE, high_volume BOOLEAN, 
-                    bull_div BOOLEAN, bear_div BOOLEAN, message TEXT, 
-                    bull_reversal_pattern BOOLEAN, bear_reversal_pattern BOOLEAN,
-                    analyzed_at DATETIME, UNIQUE KEY (signal_id)
-                )
-            """
-            self.cursor.execute(sql)
-            self.conn.commit()
-        except Exception as e:
-            logger.error(f"Erro ao criar tabela de análise: {e}")
 
     def print_analysis_result(self, result: Dict) -> None:
         if "error" in result:
@@ -457,7 +439,12 @@ class DIVAPAnalyzer:
                 print(f"  • Detalhe Div.: Topo Recente {second_high['price']:.2f} (RSI {second_high['rsi']:.1f}) -> {last_high['price']:.2f} (RSI {last_high['rsi']:.1f})")
             elif result['side'].upper() == "COMPRA" and "last_low_pivot" in pivots:
                 last_low, second_low = pivots["last_low_pivot"], pivots["second_last_low_pivot"]
-                print(f"  • Detalhe Div.: Fundo Recente {second_low['price']:.2f} (RSI {second_low['rsi']:.1f}) -> {last_low['price']:.2f} (RSI {last_low['rsi']:.1f})")
+                
+                # Adicionalmente, para maior robustez, você pode modificar a impressão:
+                if 'rsi' in second_low and 'rsi' in last_low:
+                    print(f"  • Detalhe Div.: Fundo Recente {second_low['price']:.2f} (RSI {second_low['rsi']:.1f}) -> {last_low['price']:.2f} (RSI {last_low['rsi']:.1f})")
+                else:
+                    print(f"  • Detalhe Div.: Fundo Recente {second_low['price']:.2f} -> {last_low['price']:.2f} (RSI indisponível)")
         
         print(f"\n🏆 CONCLUSÃO FINAL: {result.get('message', 'N/A')}\n{'='*60}\n")
 
