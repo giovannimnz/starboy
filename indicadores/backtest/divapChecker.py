@@ -27,11 +27,11 @@ load_dotenv(dotenv_path=env_path)
 
 # Configuração de conexão com o banco de dados do arquivo .env
 DB_CONFIG = {
-    "host": os.getenv('DB_HOST', 'localhost'),
-    "port": int(os.getenv('DB_PORT', 3306)),
-    "user": os.getenv('DB_USER', 'root'),
-    "password": os.getenv('DB_PASSWORD', 'password'),
-    "database": os.getenv('DB_NAME', 'starboy')
+    "host": os.getenv('DB_HOST'),
+    "port": int(os.getenv('DB_PORT')),
+    "user": os.getenv('DB_USER'),
+    "password": os.getenv('DB_PASSWORD'),
+    "database": os.getenv('DB_NAME')
 }
 
 # Configuração para API da Binance do arquivo .env
