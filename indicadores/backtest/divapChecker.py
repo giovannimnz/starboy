@@ -420,6 +420,10 @@ class DIVAPAnalyzer:
         df["bull_div"] = bull_div
         df["bear_div"] = bear_div
         
+        # Definir os padrões de reversão combinados - ADICIONE ESTAS LINHAS ANTES DE USAR
+        df["bull_reversal_pattern"] = df["hammer"] | df["bull_engulfing"]
+        df["bear_reversal_pattern"] = df["shooting_star"] | df["bear_engulfing"]
+        
         # Identificar DIVAP completo (todos os critérios juntos, sem pivot_right) 
         df["bull_divap"] = (df["bull_div"] & df["high_volume"] & df["bull_reversal_pattern"])
         df["bear_divap"] = (df["bear_div"] & df["high_volume"] & df["bear_reversal_pattern"])
