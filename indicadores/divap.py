@@ -10,11 +10,11 @@ from telethon import TelegramClient, events
 from dotenv import load_dotenv
 import pathlib
 from senhas import pers_api_hash, pers_api_id
-
-# No início do arquivo, após os imports existentes
 import sys
 import os
 from pathlib import Path
+
+logging.getLogger('telethon').setLevel(logging.WARNING)
 
 # Adicionar o diretório backtest ao path para permitir a importação
 sys.path.append(str(Path(__file__).parent / 'backtest'))
