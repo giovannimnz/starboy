@@ -241,7 +241,13 @@ class DIVAPAnalyzer:
 
     def analyze_signal(self, signal: Dict) -> Dict:
         symbol = signal["symbol"]
-        timeframe = signal.get("timeframe", "15m")
+        
+        # Garantir que timeframe seja válido mesmo quando NULL ou vazio
+        timeframe = signal.get("timeframe")
+        if not timeframe or timeframe.strip() == "":
+            timeframe = "15m"  # Valor padrão quando vazio ou NULL
+            logger.warning(f"Sinal #{signal['id']} - {symbol} com timeframe vazio, usando padrão: {timeframe}")
+    
         side = signal["side"]
         created_at = signal["created_at"]
         
@@ -351,8 +357,29 @@ class DIVAPAnalyzer:
         return previous_candle_start
 
     def save_analysis_result(self, result: Dict) -> None:
-        if "error" in result: return
-    
+        if "error" in result:
+            signal_id = result.get("signal_id")
+            error_msg = result.get("error")
+            logger.error(f"Erro na análise do sinal #{signal_id}: {error_msg}")
+            
+            # Atualizar o sinal no banco para indicar problema
+            try:
+                update_query = """
+                    UPDATE webhook_signals 
+                    SET divap_confirmado = 0,
+                        cancelado_checker = 1,
+                        status = 'CANCELED',
+                        error_message = %s
+                    WHERE id = %s
+                """
+                self.cursor.execute(update_query, (f"Erro na análise: {error_msg}", signal_id))
+                self.conn.commit()
+                logger.info(f"Sinal #{signal_id} marcado como cancelado devido a erro na análise")
+            except Exception as e:
+                logger.error(f"Erro ao atualizar status do sinal com erro: {e}")
+            
+            return
+        
         try:
             rsi_to_save = result.get("rsi")
             volume_sma_to_save = result.get("volume_sma")
