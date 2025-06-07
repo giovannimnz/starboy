@@ -60,8 +60,7 @@ BINANCE_CONFIG = {
 # Parâmetros dos indicadores
 RSI_PERIODS = 14
 VOLUME_SMA_PERIODS = 20
-PIVOT_LEFT = 1  # Períodos à esquerda para determinar pivôs
-PIVOT_RIGHT = 2  # Períodos à direita para determinar pivôs
+PIVOT_LEFT = 2  # Períodos à esquerda para determinar pivôs (ajustado para dar mais contexto histórico)
 
 class DIVAPAnalyzer:
     def __init__(self, db_config: Dict, binance_config: Dict):
@@ -237,6 +236,82 @@ class DIVAPAnalyzer:
             logger.error(f"Erro ao buscar dados OHLCV: {e}")
             raise
 
+    def detect_candlestick_patterns(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Detecta padrões de velas: Martelo, Engolfo de Alta, Estrela Cadente e Engolfo de Baixa
+        
+        Args:
+            df: DataFrame com dados OHLCV
+            
+        Returns:
+            pd.DataFrame: DataFrame com padrões de velas detectados
+        """
+        # Inicializar colunas para os padrões
+        df['hammer'] = False        # Martelo (bullish)
+        df['bull_engulfing'] = False  # Engolfo de Alta
+        df['shooting_star'] = False   # Estrela Cadente (bearish)
+        df['bear_engulfing'] = False  # Engolfo de Baixa
+        
+        # Tamanho do corpo da vela (distância entre open e close)
+        df['body_size'] = abs(df['close'] - df['open'])
+        
+        # Tamanho das sombras
+        df['upper_shadow'] = df['high'] - df[['open', 'close']].max(axis=1)
+        df['lower_shadow'] = df[['open', 'close']].min(axis=1) - df['low']
+        
+        # Tamanho total da vela
+        df['candle_size'] = df['high'] - df['low']
+        
+        # Detectar Martelo (Hammer) 
+        # Corpo pequeno no topo, sombra inferior longa, sombra superior pequena ou inexistente 
+        # Preço de fechamento acima da abertura (candle de alta)
+        df.loc[
+            (df['close'] > df['open']) & 
+            (df['lower_shadow'] > 2 * df['body_size']) &
+            (df['upper_shadow'] < 0.2 * df['body_size']) &
+            (df['body_size'] < 0.3 * df['candle_size']), 
+            'hammer'
+        ] = True
+
+        # Shooting Star (Estrela Cadente) 
+        # Corpo pequeno na base, sombra superior longa, sombra inferior pequena ou inexistente 
+        # Preço de fechamento abaixo da abertura (candle de baixa)
+        df.loc[
+            (df['close'] < df['open']) & 
+            (df['upper_shadow'] > 2 * abs(df['body_size'])) &
+            (df['lower_shadow'] < 0.2 * abs(df['body_size'])) &
+            (abs(df['body_size']) < 0.3 * df['candle_size']), 
+            'shooting_star'
+        ] = True
+            
+        # Bullish Engulfing (Engolfo de Alta) 
+        # Vela anterior de baixa (close < open) engolida por vela atual de alta (close > open) 
+        # O fechamento atual é maior ou igual à abertura anterior 
+        # A abertura atual é menor ou igual ao fechamento anterior 
+        for i in range(1, len(df)):
+            prev = df.iloc[i-1]
+            curr = df.iloc[i]
+            if (prev['close'] < prev['open'] and # Vela anterior bearish
+                curr['close'] > curr['open'] and # Vela atual bullish
+                curr['open'] <= prev['close'] and # Abre abaixo ou no fechamento anterior
+                curr['close'] >= prev['open']):   # Fecha acima ou na abertura anterior
+                df.loc[df.index[i], 'bull_engulfing'] = True
+            
+        # Bearish Engulfing (Engolfo de Baixa) 
+        # Vela anterior de alta (close > open) engolida por vela atual de baixa (close < open) 
+        # O fechamento atual é menor ou igual à abertura anterior 
+        # A abertura atual é maior ou igual ao fechamento anterior 
+        for i in range(1, len(df)):
+            prev = df.iloc[i-1]
+            curr = df.iloc[i]
+            if (prev['close'] > prev['open'] and # Vela anterior bullish
+                curr['close'] < curr['open'] and # Vela atual bearish
+                curr['open'] >= prev['close'] and # Abre acima ou no fechamento anterior
+                curr['close'] <= prev['open']):   # Fecha abaixo ou na abertura anterior
+                df.loc[df.index[i], 'bear_engulfing'] = True
+        
+        return df
+
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Calcula os indicadores necessários para a análise DIVAP.
@@ -251,109 +326,103 @@ class DIVAPAnalyzer:
             logger.error("DataFrame vazio, não é possível calcular indicadores")
             return df
         
-        # Calcular RSI
+        # Calcular RSI 
         df["RSI"] = vbt.indicators.basic.RSI.run(df["close"], window=RSI_PERIODS).rsi
         
-        # Calcular média de volume
+        # Calcular média de volume 
         df["VolSMA"] = df["volume"].rolling(window=VOLUME_SMA_PERIODS).mean()
         
-        # Identificar candles com volume acima da média
+        # Identificar candles com volume acima da média 
         df["high_volume"] = df["volume"] > df["VolSMA"]
         
-        # Detectar pivôs (topos e fundos)
-        window = PIVOT_LEFT + PIVOT_RIGHT + 1
+        # Detectar pivôs (topos e fundos) para divergência
+        # Usamos apenas PIVOT_LEFT para garantir que o pivô seja confirmado com dados passados
+        # O +1 é para incluir o candle atual na janela de PIVOT_LEFT
+        window_pivot = PIVOT_LEFT + 1
         
-        # Centro do pivô
-        pivot_low_center = df["low"] == df["low"].rolling(window, center=True).min()
-        pivot_high_center = df["high"] == df["high"].rolling(window, center=True).max()
+        # Detectar topos e fundos para divergência
+        # Para um fundo, o low atual deve ser o menor na janela [PIVOT_LEFT candles anteriores + o candle atual]
+        df["pivot_low"] = df["low"] == df["low"].rolling(window=window_pivot, min_periods=1).min()
+        # Para um topo, o high atual deve ser o maior na janela [PIVOT_LEFT candles anteriores + o candle atual]
+        df["pivot_high"] = df["high"] == df["high"].rolling(window=window_pivot, min_periods=1).max()
         
-        # Alinhar pivôs
-        df["pivot_low"] = pivot_low_center.shift(PIVOT_RIGHT).fillna(False).astype(bool)
-        df["pivot_high"] = pivot_high_center.shift(PIVOT_RIGHT).fillna(False).astype(bool)
+        # Detectar padrões de velas 
+        df = self.detect_candlestick_patterns(df)
         
-        # Preço e RSI nos pivôs
-        df["pl_price"] = df["low"].where(pivot_low_center).shift(PIVOT_RIGHT)
-        df["pl_rsi"] = df["RSI"].where(pivot_low_center).shift(PIVOT_RIGHT)
-        df["ph_price"] = df["high"].where(pivot_high_center).shift(PIVOT_RIGHT)
-        df["ph_rsi"] = df["RSI"].where(pivot_high_center).shift(PIVOT_RIGHT)
-        
-        # Detectar divergências
         # Inicializar séries para armazenar valores de pivôs anteriores
-        var_pivot_low_price1 = pd.Series(float('nan'), index=df.index)
-        var_pivot_low_price2 = pd.Series(float('nan'), index=df.index)
-        var_pivot_low_rsi1 = pd.Series(float('nan'), index=df.index)
-        var_pivot_low_rsi2 = pd.Series(float('nan'), index=df.index)
+        # Estes armazenarão o último e o penúltimo pivô de cada tipo para cálculo de divergência
+        var_pivot_low_price_1 = pd.Series(float('nan'), index=df.index)
+        var_pivot_low_price_2 = pd.Series(float('nan'), index=df.index)
+        var_pivot_low_rsi_1 = pd.Series(float('nan'), index=df.index)
+        var_pivot_low_rsi_2 = pd.Series(float('nan'), index=df.index)
         
-        var_pivot_high_price1 = pd.Series(float('nan'), index=df.index)
-        var_pivot_high_price2 = pd.Series(float('nan'), index=df.index)
-        var_pivot_high_rsi1 = pd.Series(float('nan'), index=df.index)
-        var_pivot_high_rsi2 = pd.Series(float('nan'), index=df.index)
+        var_pivot_high_price_1 = pd.Series(float('nan'), index=df.index)
+        var_pivot_high_price_2 = pd.Series(float('nan'), index=df.index)
+        var_pivot_high_rsi_1 = pd.Series(float('nan'), index=df.index)
+        var_pivot_high_rsi_2 = pd.Series(float('nan'), index=df.index)
         
-        # Séries para divergências
         bull_div = pd.Series(False, index=df.index)
         bear_div = pd.Series(False, index=df.index)
         
-        # Processamento de pivôs e detecção de divergências
+        # Processamento de pivôs e detecção de divergências 
+        last_low_pivot_price = np.nan
+        last_low_pivot_rsi = np.nan
+        second_last_low_pivot_price = np.nan
+        second_last_low_pivot_rsi = np.nan
+
+        last_high_pivot_price = np.nan
+        last_high_pivot_rsi = np.nan
+        second_last_high_pivot_price = np.nan
+        second_last_high_pivot_rsi = np.nan
+
         for i in range(len(df)):
-            # Para pivôs de baixa (lows)
-            if i > 0 and df["pivot_low"].iloc[i]:
-                # Mover valores do pivô anterior
-                var_pivot_low_price2.iloc[i] = var_pivot_low_price1.iloc[i-1]
-                var_pivot_low_rsi2.iloc[i] = var_pivot_low_rsi1.iloc[i-1]
-                
-                # Atualizar com valores do novo pivô
-                var_pivot_low_price1.iloc[i] = df["low"].iloc[i]
-                var_pivot_low_rsi1.iloc[i] = df["RSI"].iloc[i]
-            else:
-                # Manter valores anteriores
-                if i > 0:
-                    var_pivot_low_price1.iloc[i] = var_pivot_low_price1.iloc[i-1]
-                    var_pivot_low_price2.iloc[i] = var_pivot_low_price2.iloc[i-1]
-                    var_pivot_low_rsi1.iloc[i] = var_pivot_low_rsi1.iloc[i-1]
-                    var_pivot_low_rsi2.iloc[i] = var_pivot_low_rsi2.iloc[i-1]
+            # Atualizar pivôs de baixa (lows)
+            if df["pivot_low"].iloc[i] and not pd.isna(df["low"].iloc[i]) and not pd.isna(df["RSI"].iloc[i]):
+                second_last_low_pivot_price = last_low_pivot_price
+                second_last_low_pivot_rsi = last_low_pivot_rsi
+                last_low_pivot_price = df["low"].iloc[i]
+                last_low_pivot_rsi = df["RSI"].iloc[i]
             
-            # Para pivôs de alta (highs)
-            if i > 0 and df["pivot_high"].iloc[i]:
-                # Mover valores do pivô anterior
-                var_pivot_high_price2.iloc[i] = var_pivot_high_price1.iloc[i-1]
-                var_pivot_high_rsi2.iloc[i] = var_pivot_high_rsi1.iloc[i-1]
-                
-                # Atualizar com valores do novo pivô
-                var_pivot_high_price1.iloc[i] = df["high"].iloc[i]
-                var_pivot_high_rsi1.iloc[i] = df["RSI"].iloc[i]
-            else:
-                # Manter valores anteriores
-                if i > 0:
-                    var_pivot_high_price1.iloc[i] = var_pivot_high_price1.iloc[i-1]
-                    var_pivot_high_price2.iloc[i] = var_pivot_high_price2.iloc[i-1]
-                    var_pivot_high_rsi1.iloc[i] = var_pivot_high_rsi1.iloc[i-1]
-                    var_pivot_high_rsi2.iloc[i] = var_pivot_high_rsi2.iloc[i-1]
-            
-            # Verificar divergência de alta (bullish)
-            if (i > 0 and
-                df["pivot_low"].iloc[i] and
-                not pd.isna(var_pivot_low_price1.iloc[i]) and
-                not pd.isna(var_pivot_low_price2.iloc[i]) and
-                var_pivot_low_price1.iloc[i] < var_pivot_low_price2.iloc[i] and
-                var_pivot_low_rsi1.iloc[i] > var_pivot_low_rsi2.iloc[i]):
+            var_pivot_low_price_1.iloc[i] = last_low_pivot_price
+            var_pivot_low_price_2.iloc[i] = second_last_low_pivot_price
+            var_pivot_low_rsi_1.iloc[i] = last_low_pivot_rsi
+            var_pivot_low_rsi_2.iloc[i] = second_last_low_pivot_rsi
+
+            # Atualizar pivôs de alta (highs)
+            if df["pivot_high"].iloc[i] and not pd.isna(df["high"].iloc[i]) and not pd.isna(df["RSI"].iloc[i]):
+                second_last_high_pivot_price = last_high_pivot_price
+                second_last_high_pivot_rsi = last_high_pivot_rsi
+                last_high_pivot_price = df["high"].iloc[i]
+                last_high_pivot_rsi = df["RSI"].iloc[i]
+
+            var_pivot_high_price_1.iloc[i] = last_high_pivot_price
+            var_pivot_high_price_2.iloc[i] = second_last_high_pivot_price
+            var_pivot_high_rsi_1.iloc[i] = last_high_pivot_rsi
+            var_pivot_high_rsi_2.iloc[i] = second_last_high_pivot_rsi
+
+            # Verificar divergência de alta (bullish) 
+            # Preço faz fundo mais baixo, IFR faz fundo mais alto 
+            if (not pd.isna(var_pivot_low_price_1.iloc[i]) and
+                not pd.isna(var_pivot_low_price_2.iloc[i]) and
+                var_pivot_low_price_1.iloc[i] < var_pivot_low_price_2.iloc[i] and
+                var_pivot_low_rsi_1.iloc[i] > var_pivot_low_rsi_2.iloc[i]):
                 bull_div.iloc[i] = True
             
-            # Verificar divergência de baixa (bearish)
-            if (i > 0 and
-                df["pivot_high"].iloc[i] and
-                not pd.isna(var_pivot_high_price1.iloc[i]) and
-                not pd.isna(var_pivot_high_price2.iloc[i]) and
-                var_pivot_high_price1.iloc[i] > var_pivot_high_price2.iloc[i] and
-                var_pivot_high_rsi1.iloc[i] < var_pivot_high_rsi2.iloc[i]):
+            # Verificar divergência de baixa (bearish) 
+            # Preço faz topo mais alto, IFR faz topo mais baixo 
+            if (not pd.isna(var_pivot_high_price_1.iloc[i]) and
+                not pd.isna(var_pivot_high_price_2.iloc[i]) and
+                var_pivot_high_price_1.iloc[i] > var_pivot_high_price_2.iloc[i] and
+                var_pivot_high_rsi_1.iloc[i] < var_pivot_high_rsi_2.iloc[i]):
                 bear_div.iloc[i] = True
         
         # Adicionar divergências ao DataFrame
         df["bull_div"] = bull_div
         df["bear_div"] = bear_div
         
-        # Identificar DIVAP (Divergência + Volume acima da média)
-        df["bull_divap"] = df["bull_div"] & df["high_volume"]
-        df["bear_divap"] = df["bear_div"] & df["high_volume"]
+        # Identificar DIVAP completo (todos os critérios juntos, sem pivot_right) 
+        df["bull_divap"] = (df["bull_div"] & df["high_volume"] & df["bull_reversal_pattern"])
+        df["bear_divap"] = (df["bear_div"] & df["high_volume"] & df["bear_reversal_pattern"])
         
         return df
 
@@ -381,26 +450,42 @@ class DIVAPAnalyzer:
             logger.error(f"Timeframe inválido: {timeframe}")
             return {"error": f"Timeframe inválido: {timeframe}"}
         
-        # Calcular o horário de início para buscar dados (50 candles antes)
-        since_dt = created_at - timedelta(minutes=td * 50)
+        # Ajustar o 'since_dt' para buscar candles o suficiente para os indicadores e pivôs.
+        # Por exemplo, para um PIVOT_LEFT de 2 e SMA de 20, precisamos de pelo menos 20+2+1 candles antes do sinal.
+        # Um limite de 100 já costuma ser suficiente, mas é bom ter uma margem.
+        required_candles = max(RSI_PERIODS, VOLUME_SMA_PERIODS, PIVOT_LEFT) + 5 # Adicione uma margem
+        since_dt = created_at - timedelta(minutes=td * required_candles)
         
         # Buscar dados OHLCV
-        df = self.fetch_ohlcv_data(symbol_formatted, timeframe, since_dt, limit=100)
+        df = self.fetch_ohlcv_data(symbol_formatted, timeframe, since_dt, limit=200) # Aumentei o limit para garantir dados suficientes
         if df.empty:
             return {"error": f"Não foi possível obter dados para {symbol} no timeframe {timeframe}"}
         
         # Calcular indicadores
         df = self.calculate_indicators(df)
         
-        # Encontrar o candle anterior ao sinal
-        previous_candle_time = self._get_previous_candle_time(created_at, timeframe)
+        # Encontrar o candle ANTERIOR ou o candle que acabou de fechar no momento do sinal
+        # A lógica do sinal pode ser para o candle que ACABOU de fechar.
+        # Vamos encontrar o candle cujo timestamp é o mais próximo e MENOR OU IGUAL ao created_at do sinal.
         
-        # Encontrar o índice do candle mais próximo
-        closest_idx = self._find_closest_candle(df, previous_candle_time)
-        if closest_idx is None:
-            return {"error": f"Não foi possível encontrar o candle anterior ao sinal"}
+        # Calcular o início do candle onde o sinal foi "criado" (ou seja, o candle que fechou e gerou o sinal)
+        signal_candle_start_time = self._get_previous_candle_time(created_at, timeframe)
         
-        previous_candle = df.iloc[closest_idx]
+        # Encontrar o índice do candle mais próximo e que seja o candle do sinal (ou o anterior)
+        # Usamos o 'asof' para garantir que pegamos o último candle ANTES ou IGUAL ao horário do sinal.
+        try:
+            # Encontra o último índice que é menor ou igual ao signal_candle_start_time
+            closest_idx_time = df.index.asof(signal_candle_start_time)
+            if closest_idx_time is None:
+                 raise ValueError("Não foi possível encontrar o candle correspondente ao sinal ou anterior.")
+            
+            previous_candle = df.loc[closest_idx_time]
+
+        except Exception as e:
+            logger.error(f"Erro ao encontrar o candle de análise para o sinal: {e}")
+            logger.info(f"Horário do sinal: {created_at}, Horário de início do candle do sinal: {signal_candle_start_time}")
+            logger.info(f"Índices do DataFrame: {df.index.min()} a {df.index.max()}")
+            return {"error": f"Não foi possível encontrar o candle anterior ao sinal: {e}"}
         
         # Verificar se é um DIVAP
         is_bull_divap = previous_candle["bull_divap"]
@@ -422,10 +507,14 @@ class DIVAPAnalyzer:
             "high_volume": bool(previous_candle["high_volume"]),
             "bull_div": bool(previous_candle["bull_div"]),
             "bear_div": bool(previous_candle["bear_div"]),
-            "close_price": float(previous_candle["close"])
+            "close_price": float(previous_candle["close"]),
+            "hammer": bool(previous_candle.get("hammer", False)),
+            "bull_engulfing": bool(previous_candle.get("bull_engulfing", False)),
+            "shooting_star": bool(previous_candle.get("shooting_star", False)),
+            "bear_engulfing": bool(previous_candle.get("bear_engulfing", False))
         }
         
-        # Determinar se o sinal é consistente com o DIVAP
+        # Determinar se o sinal é consistente com o DIVAP 
         if side.upper() == "COMPRA" and is_bull_divap:
             result["divap_confirmed"] = True
             result["message"] = "✅ Sinal de COMPRA confirmado como DIVAP altista"
@@ -500,62 +589,46 @@ class DIVAPAnalyzer:
 
     def _get_previous_candle_time(self, current_time: datetime, timeframe: str) -> datetime:
         """
-        Calcula o horário do candle anterior.
+        Calcula o horário de INÍCIO do candle anterior ou do candle recém-fechado
+        (o que geraria um sinal).
         
         Args:
-            current_time: Horário atual
+            current_time: Horário atual (timestamp do sinal)
             timeframe: Timeframe em formato string
             
         Returns:
-            datetime: Horário do candle anterior
+            datetime: Horário de início do candle a ser analisado.
         """
         tf_minutes = self._get_timeframe_delta(timeframe)
         if not tf_minutes:
-            return current_time
+            return current_time # Fallback, mas o ideal é que tf_minutes seja válido
         
-        # Calcular o início do candle atual
-        minutes = current_time.minute
-        hours = current_time.hour
-        days = current_time.day
+        # Calcula o horário de início do candle que CONCLUIU no ou pouco antes de `current_time`
+        # Ex: se o sinal é às 10:17 e o timeframe é 15m, o candle que fechou é o de 10:00.
+        # Se o sinal é às 10:00 exato, é o candle de 09:45. Isso depende de como o sinal é gerado.
         
-        if tf_minutes < 60:  # Menos de uma hora
-            candle_start_minute = (minutes // tf_minutes) * tf_minutes
-            current_candle_start = current_time.replace(minute=candle_start_minute, second=0, microsecond=0)
-        elif tf_minutes < 1440:  # Menos de um dia
-            hours_tf = tf_minutes // 60
-            candle_start_hour = (hours // hours_tf) * hours_tf
-            current_candle_start = current_time.replace(hour=candle_start_hour, minute=0, second=0, microsecond=0)
-        else:  # Diário ou maior
-            days_tf = tf_minutes // 1440
-            # Implementação simplificada para diário
-            current_candle_start = current_time.replace(hour=0, minute=0, second=0, microsecond=0)
-        
-        # Calcular o início do candle anterior
-        previous_candle_start = current_candle_start - timedelta(minutes=tf_minutes)
-        
-        return previous_candle_start
-
-    def _find_closest_candle(self, df: pd.DataFrame, target_time: datetime) -> Optional[int]:
-        """
-        Encontra o índice do candle mais próximo do horário alvo.
-        
-        Args:
-            df: DataFrame com dados OHLCV
-            target_time: Horário alvo
+        # Usamos Floor Division (//) para encontrar o início do período do candle
+        if tf_minutes < 60: # Timeframes menores que 1 hora (ex: 15m)
+            # Minutos ajustados para o início do candle
+            candle_start_minute = (current_time.minute // tf_minutes) * tf_minutes
+            candle_start_time = current_time.replace(minute=candle_start_minute, second=0, microsecond=0)
             
-        Returns:
-            int: Índice do candle mais próximo
-        """
-        if df.empty:
-            return None
+            # Se o sinal chegou EXATAMENTE no horário de fechamento do candle (ex: 10:15 para 15m)
+            # então o candle de interesse é o que fechou AGORA (10:15).
+            # Se o sinal chegou um pouco depois (ex: 10:15:01), o candle de interesse ainda é o de 10:00 (que fechou em 10:15).
+            # A lógica `asof` em `analyze_signal` lidará com isso.
+            
+            return candle_start_time
+            
+        elif tf_minutes < 1440: # Timeframes de horas (ex: 4h)
+            hours_tf = tf_minutes // 60
+            candle_start_hour = (current_time.hour // hours_tf) * hours_tf
+            return current_time.replace(hour=candle_start_hour, minute=0, second=0, microsecond=0)
         
-        # Converter para timestamp para comparação
-        target_ts = pd.Timestamp(target_time)
-        
-        # Encontrar o candle mais próximo
-        closest_idx = (df.index - target_ts).abs().argmin()
-        
-        return closest_idx
+        else: # Timeframes diários ou maiores
+            # Para dias, semanas, etc., simplificamos para o início do dia
+            return current_time.replace(hour=0, minute=0, second=0, microsecond=0)
+
 
     def monitor_new_signals(self, poll_interval: int = 10):
         """
@@ -659,9 +732,10 @@ class DIVAPAnalyzer:
                     signal_id, is_bull_divap, is_bear_divap, 
                     divap_confirmed, rsi, volume, volume_sma,
                     high_volume, bull_div, bear_div, message,
+                    hammer, bull_engulfing, shooting_star, bear_engulfing,
                     analyzed_at
                 ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 ON DUPLICATE KEY UPDATE
                     is_bull_divap = VALUES(is_bull_divap),
@@ -674,6 +748,10 @@ class DIVAPAnalyzer:
                     bull_div = VALUES(bull_div),
                     bear_div = VALUES(bear_div),
                     message = VALUES(message),
+                    hammer = VALUES(hammer),
+                    bull_engulfing = VALUES(bull_engulfing),
+                    shooting_star = VALUES(shooting_star),
+                    bear_engulfing = VALUES(bear_engulfing),
                     analyzed_at = VALUES(analyzed_at)
             """
             
@@ -689,6 +767,10 @@ class DIVAPAnalyzer:
                 result.get("bull_div", False),
                 result.get("bear_div", False),
                 result.get("message", ""),
+                result.get("hammer", False),
+                result.get("bull_engulfing", False),
+                result.get("shooting_star", False),
+                result.get("bear_engulfing", False),
                 datetime.now()
             )
             
@@ -716,6 +798,10 @@ class DIVAPAnalyzer:
                     bull_div BOOLEAN DEFAULT FALSE,
                     bear_div BOOLEAN DEFAULT FALSE,
                     message TEXT,
+                    hammer BOOLEAN DEFAULT FALSE,
+                    bull_engulfing BOOLEAN DEFAULT FALSE,
+                    shooting_star BOOLEAN DEFAULT FALSE,
+                    bear_engulfing BOOLEAN DEFAULT FALSE,
                     analyzed_at DATETIME,
                     UNIQUE KEY (signal_id)
                 )
@@ -743,8 +829,8 @@ class DIVAPAnalyzer:
         print(f"\n{'=' * 60}")
         print(f"📊 ANÁLISE DIVAP - SINAL #{result['signal_id']} - {result['symbol']} ({result['timeframe']})")
         print(f"{'=' * 60}")
-        print(f"📅 Data/Hora: {result['created_at']}")
-        print(f"🕯️  Candle analisado: {result['previous_candle_time']}")
+        print(f"📅 Data/Hora do Sinal: {result['created_at']}")
+        print(f"🕯️  Candle analisado (fechamento): {result['previous_candle_time']}")
         print(f"📈 Direção: {result['side']}")
         print(f"💹 Preço de fechamento: {result['close_price']:.8f}")
         print(f"{'=' * 60}")
@@ -755,25 +841,18 @@ class DIVAPAnalyzer:
         print(f"  • Média de Volume: {result['volume_sma']:.0f}")
         
         # Resultados da análise
-        print(f"\n🔍 RESULTADOS:")
+        print(f"\n🔍 RESULTADOS DA CONFLUÊNCIA DIVAP:")
         
         # Formatar com cores e símbolos para melhor visualização (no terminal)
-        if result['high_volume']:
-            print(f"  • Volume acima da média: ✅ SIM")
-        else:
-            print(f"  • Volume acima da média: ❌ NÃO")
+        print(f"  • Volume acima da média: {'✅ SIM' if result['high_volume'] else '❌ NÃO'}")
             
-        if result['bull_div']:
-            print(f"  • Divergência altista: ✅ SIM")
-        else:
-            print(f"  • Divergência altista: ❌ NÃO")
-            
-        if result['bear_div']:
-            print(f"  • Divergência baixista: ✅ SIM")
-        else:
-            print(f"  • Divergência baixista: ❌ NÃO")
+        print(f"  • Divergência altista: {'✅ SIM' if result['bull_div'] else '❌ NÃO'}")
+        print(f"  • Divergência baixista: {'✅ SIM' if result['bear_div'] else '❌ NÃO'}")
         
-        print(f"\n🏆 CONCLUSÃO:")
+        print(f"  • Padrão de Reversão Altista (Martelo/Engolfo de Alta): {'✅ SIM' if (result['hammer'] or result['bull_engulfing']) else '❌ NÃO'}")
+        print(f"  • Padrão de Reversão Baixista (Estrela Cadente/Engolfo de Baixa): {'✅ SIM' if (result['shooting_star'] or result['bear_engulfing']) else '❌ NÃO'}")
+
+        print(f"\n🏆 CONCLUSÃO FINAL:")
         print(f"  {result['message']}")
         print(f"{'=' * 60}\n")
 
