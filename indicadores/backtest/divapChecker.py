@@ -407,19 +407,23 @@ class DIVAPAnalyzer:
                     error_message = "Volume abaixo da média"
                 elif not has_divergence:
                     error_message = f"Divergência {divergence_type} não ocorreu"
-            
+    
             # Atualizar a tabela webhook_signals
             update_query = """
                 UPDATE webhook_signals 
                 SET divap_confirmado = %s,
-                    cancelado_checker = %s
+                    cancelado_checker = %s,
+                    status = CASE 
+                             WHEN %s THEN 'PENDING' 
+                             ELSE 'CANCELED' 
+                             END
             """
             
-            update_params = [is_divap_confirmed, not is_divap_confirmed]
+            update_params = [is_divap_confirmed, not is_divap_confirmed, is_divap_confirmed]
             
-            # Se não for confirmado, também atualizar o status e mensagem de erro
+            # Se não for confirmado, também atualizar a mensagem de erro
             if not is_divap_confirmed:
-                update_query += ", status = 'CANCELED', error_message = %s"
+                update_query += ", error_message = %s"
                 update_params.append(error_message)
             
             update_query += " WHERE id = %s"
@@ -427,7 +431,11 @@ class DIVAPAnalyzer:
             
             self.cursor.execute(update_query, tuple(update_params))
             self.conn.commit()
-            logger.info(f"Sinal #{signal_id} atualizado: DIVAP confirmado = {is_divap_confirmed}")
+            
+            if is_divap_confirmed:
+                logger.info(f"Sinal #{signal_id} atualizado: DIVAP confirmado = {is_divap_confirmed}, status = PENDING")
+            else:
+                logger.info(f"Sinal #{signal_id} atualizado: DIVAP confirmado = {is_divap_confirmed}, status = CANCELED")
         
         except Exception as e:
             logger.error(f"Erro ao salvar análise: {e}")
