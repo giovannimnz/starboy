@@ -690,6 +690,30 @@ class DIVAPAnalyzer:
             logger.error(f"Erro ao buscar sinal por ID {signal_id}: {e}")
             raise
 
+    def monitor_signals_realtime(self):
+        """
+        Monitora a tabela webhook_signals em tempo real.
+        Quando há um novo sinal (id > last_processed_id), realiza a análise e salva o resultado.
+        """
+        last_processed_id = 0  # Para controlar até qual sinal foi processado
+        while True:
+            # Busca sinais com ID maior que o último processado
+            self.cursor.execute("SELECT * FROM webhook_signals WHERE id > %s ORDER BY id ASC", (last_processed_id,))
+            new_signals = self.cursor.fetchall()
+            
+            for signal in new_signals:
+                # Analisar imediatamente
+                result = self.analyze_signal(signal)
+                
+                # Salvar análise no banco
+                self.save_analysis_result(result)
+                
+                # Atualizar o last_processed_id
+                if signal["id"] > last_processed_id:
+                    last_processed_id = signal["id"]
+            
+            time.sleep(5)  # Intervalo entre verificações (ajuste conforme necessário)
+
 def interactive_mode():
     analyzer = DIVAPAnalyzer(DB_CONFIG, BINANCE_CONFIG)
     try:
