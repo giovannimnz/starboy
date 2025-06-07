@@ -75,7 +75,7 @@ class DIVAPAnalyzer:
         try:
             self.conn = mysql.connector.connect(**self.db_config)
             self.cursor = self.conn.cursor(dictionary=True)
-            logger.info("Conexão com o banco de dados estabelecida com sucesso")
+            #logger.info("Conexão com o banco de dados estabelecida com sucesso")
         except Exception as e:
             logger.error(f"Erro ao conectar ao banco de dados: {e}")
             raise
@@ -861,7 +861,7 @@ def check_pending_signals():
     Função principal para verificar sinais pendentes.
     Executada quando o script é iniciado diretamente.
     """
-    logger.info("Iniciando serviço de verificação DIVAP para sinais pendentes")
+    #logger.info("Iniciando serviço de verificação DIVAP para sinais pendentes")
     
     analyzer = DIVAPAnalyzer(DB_CONFIG, BINANCE_CONFIG)
     try:
