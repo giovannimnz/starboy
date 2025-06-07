@@ -170,7 +170,9 @@ class DIVAPAnalyzer:
         """
         try:
             query = """
-                SELECT * FROM webhook_signals
+                SELECT id, symbol, timeframe, side, created_at, updated_at, 
+                       entry_price, tp_price, sl_price, status 
+                FROM webhook_signals
                 WHERE DATE(created_at) = %s
             """
             params = [date_str]
@@ -447,7 +449,7 @@ class DIVAPAnalyzer:
         if not timeframe:
             logger.warning(f"Timeframe não encontrado para o sinal #{signal['id']}. Usando timeframe padrão (15m).")
             timeframe = "15m"
-        logger.info(f"Analisando sinal com timeframe: {timeframe}")
+        logger.info(f"Analisando sinal #{signal['id']} com timeframe: {timeframe}")
         side = signal["side"]
         created_at = signal["created_at"]
         
@@ -771,14 +773,24 @@ class DIVAPAnalyzer:
         print(f"📊 ANÁLISE DIVAP - SINAL #{result['signal_id']} - {result['symbol']} ({result['timeframe']})")
         print(f"{'=' * 60}")
         print(f"📅 Data/Hora do Sinal: {result['created_at']}")
-        print(f"🕯️  Candle analisado (início): {result['previous_candle_time']}")
+        
+        # >>> ALTERAÇÃO 3: Tratar NaN na exibição dos resultados <<<
+        if 'previous_candle_time' in result:
+            candle_open_time = result['previous_candle_time']
+            tf_minutes = self._get_timeframe_delta(result['timeframe'])
+            candle_close_time = candle_open_time + timedelta(minutes=tf_minutes)
+            print(f"🕯️  Candle analisado:")
+            print(f"    • Abertura: {candle_open_time}")
+            print(f"    • Fechamento: {candle_close_time}")
+        else:
+            print(f"🕯️  Candle analisado (início): {result['previous_candle_time']}")
+        
         print(f"📈 Direção: {result['side']}")
         print(f"💹 Preço de fechamento: {result['close_price']:.8f}")
         print(f"{'=' * 60}")
         
         print(f"🔍 INDICADORES:")
         
-        # >>> ALTERAÇÃO 3: Tratar NaN na exibição dos resultados <<<
         rsi_val = result['rsi']
         volume_sma = result['volume_sma']
         
@@ -841,7 +853,8 @@ def interactive_mode():
                     if signals:
                         print(f"\n📋 Encontrados {len(signals)} sinais na data {date_str}" + (f" para {symbol}" if symbol else ""))
                         for i, s in enumerate(signals):
-                            print(f"{i+1}. ID: {s['id']} - {s['symbol']} - {s['side']} - {s['created_at']}")
+                            timeframe = s.get('timeframe', 'N/A')  # Usa 'N/A' se o timeframe não estiver disponível
+                            print(f"{i+1}. ID: {s['id']} - {s['symbol']} - {s['side']} - Timeframe: {timeframe} - {s['created_at']}")
                         try:
                             choice_idx = int(input("\nDigite o número do sinal para analisar (ou 0 para voltar): ").strip())
                             if 1 <= choice_idx <= len(signals):
