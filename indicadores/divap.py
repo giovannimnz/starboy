@@ -303,14 +303,14 @@ def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent, si
 
 def save_to_database(trade_data):
     """
-    Salva as informações de operação de trade no banco de dados MySQL principal e em bancos adicionais.
+    Salva as informações de operação de trade no banco de dados MySQL principal e em bancos adicionais,
+    evitando duplicar se já existir registro com o mesmo message_id e symbol.
     """
-    signal_id = None
-    conn = None
-    cursor = None
+    symbol = trade_data["symbol"]
+    message_id_orig = trade_data.get("id_mensagem_origem_sinal")
     
+    # Verificar se esse sinal já existe
     try:
-        # 1. Primeiro, salvar no banco principal
         conn = mysql.connector.connect(
             host=DB_HOST,
             port=int(DB_PORT),
@@ -318,8 +318,20 @@ def save_to_database(trade_data):
             password=DB_PASSWORD,
             database=DB_NAME
         )
-        cursor = conn.cursor()
+        cursor = conn.cursor(dictionary=True)
 
+        check_sql = """
+          SELECT id FROM webhook_signals
+          WHERE symbol = %s AND message_id_orig = %s
+          LIMIT 1
+        """
+        cursor.execute(check_sql, (symbol, message_id_orig))
+        existing = cursor.fetchone()
+        
+        if existing:
+            print(f"[INFO] Sinal duplicado detectado (symbol={symbol}, message_id_orig={message_id_orig}). Pulando inserção.")
+            return existing["id"]
+        
         # Prepare TP1 to TP5 values
         tp_prices = [None] * 5  # Initialize a list with 5 None values by default
         
@@ -380,7 +392,82 @@ def save_to_database(trade_data):
         if "Unknown column" in str(db_err):
             print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Attempting fallback due to unknown column(s)...")
             
-            # ... código de fallback existente ...
+            sql_fallback = None
+            values_fallback = None
+
+            try:
+                # Case 1: 'timeframe' column is missing
+                if "Unknown column 'timeframe'" in str(db_err):
+                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Fallback: 'timeframe' column missing. Saving with TPs.")
+                    sql_fallback = """
+                        INSERT INTO webhook_signals
+                        (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price, 
+                         chat_id, status, message_id, message_id_orig,
+                         tp1_price, tp2_price, tp3_price, tp4_price, tp5_price) 
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """
+                    # tp_prices is already defined from the main try block
+                    values_fallback = (
+                        trade_data["symbol"], trade_data["side"], trade_data["leverage"],
+                        trade_data["capital_pct"], trade_data["entry"], trade_data["tp"],
+                        trade_data["stop_loss"], trade_data["chat_id"], "PENDING",
+                        trade_data.get("message_id"), trade_data.get("id_mensagem_origem_sinal"),
+                        tp_prices[0], tp_prices[1], tp_prices[2], tp_prices[3], tp_prices[4]
+                    )
+                
+                # Case 2: One of 'tpX_price' columns is missing
+                elif any(f"Unknown column 'tp{i}_price'" in str(db_err) for i in range(1, 6)):
+                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Fallback: TP1-TP5 column(s) missing. Saving with timeframe (if available).")
+                    sql_fallback = """
+                        INSERT INTO webhook_signals
+                        (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price, 
+                         chat_id, status, timeframe, message_id, message_id_orig) 
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """
+                    values_fallback = (
+                        trade_data["symbol"], trade_data["side"], trade_data["leverage"],
+                        trade_data["capital_pct"], trade_data["entry"], trade_data["tp"],
+                        trade_data["stop_loss"], trade_data["chat_id"], "PENDING",
+                        trade_data.get("timeframe", ""), trade_data.get("message_id"),
+                        trade_data.get("id_mensagem_origem_sinal")
+                    )
+                
+                # Case 3: Other "Unknown column" error (e.g. 'message_id_orig' or other combinations)
+                # This attempts a more basic insert without timeframe and without individual TPs.
+                else:
+                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Fallback: Other unknown column. Basic insert attempt.")
+                    sql_fallback = """
+                        INSERT INTO webhook_signals
+                        (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price, 
+                         chat_id, status, message_id, message_id_orig) 
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        """
+                    values_fallback = (
+                        trade_data["symbol"], trade_data["side"], trade_data["leverage"],
+                        trade_data["capital_pct"], trade_data["entry"], trade_data["tp"],
+                        trade_data["stop_loss"], trade_data["chat_id"], "PENDING",
+                        trade_data.get("message_id"), trade_data.get("id_mensagem_origem_sinal")
+                    )
+
+                if sql_fallback and values_fallback:
+                    if cursor is None and conn: # Recreate cursor if it was not created or closed due to severe error
+                        cursor = conn.cursor()
+                    elif cursor is None and conn is None:
+                        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] DB connection not established, fallback cannot proceed.")
+                        return None
+
+                    cursor.execute(sql_fallback, values_fallback)
+                    signal_id_fallback = cursor.lastrowid
+                    conn.commit()
+                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Operation saved with fallback (ID: {signal_id_fallback})")
+                    return signal_id_fallback
+                else: # Should not happen if "Unknown column" was in db_err string
+                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Fallback logic did not determine a query for error: {db_err}")
+
+            except Exception as e2:
+                print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Error during fallback attempt: {e2}")
+        
+        return None # Return None if the main try failed and fallback was not successful or not applicable
 
     except Exception as e_generic:
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Generic error while saving to database: {e_generic}")
