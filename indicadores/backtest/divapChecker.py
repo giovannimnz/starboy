@@ -501,21 +501,19 @@ class DIVAPAnalyzer:
     def _normalize_timeframe(self, timeframe: str) -> str:
         """
         Normaliza o timeframe para o formato aceito pela Binance.
-        
-        Args:
-            timeframe: O timeframe a ser normalizado (ex: 1D, 4H, etc.)
-            
-        Returns:
-            O timeframe normalizado (ex: 1d, 4h, etc.)
         """
         if not timeframe:
             return timeframe
-            
+        
+        # Verificação específica para 240m -> 4h
+        if timeframe.upper() == '240M':
+            return '4h'
+        
         # Mapeia os timeframes comuns para o formato da Binance
         timeframe_map = {
             '1M': '1m', '3M': '3m', '5M': '5m', '15M': '15m', '30M': '30m',
             '1H': '1h', '2H': '2h', '4H': '4h', '6H': '6h', '8H': '8h', '12H': '12h',
-            '1D': '1d', '3D': '3d', '1W': '1w', '1MO': '1M'  # Note que mês é 'M' maiúsculo
+            '1D': '1d', '3D': '3d', '1W': '1w', '1MO': '1M'
         }
         
         upper_tf = timeframe.upper()
@@ -523,9 +521,16 @@ class DIVAPAnalyzer:
             return timeframe_map[upper_tf]
         
         # Tenta extrair o número e a unidade para normalizar
-        match = re.match(r'(\d+)([MHDW]O?)', upper_tf)
+        # Ajustado para aceitar unidades em maiúsculas ou minúsculas
+        match = re.match(r'(\d+)([MmHhDdWw]O?)', timeframe)
         if match:
-            value, unit = match.group(1), match.group(2)
+            value, unit = match.group(1), match.group(2).upper()
+            
+            # Conversões especiais de minutos para horas
+            if unit == 'M' and int(value) % 60 == 0 and int(value) >= 60:
+                hours = int(value) // 60
+                return f"{hours}h"
+                
             if unit == 'M':
                 return f"{value}m"
             elif unit == 'H':
