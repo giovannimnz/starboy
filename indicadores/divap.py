@@ -300,8 +300,6 @@ def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent, si
     print(f"[INFO] Alavancagem final calculada para {cleaned_symbol}: {final_leverage}x (Ideal: {target_leverage}x, Máximo permitido: {max_leverage}x)")
     return final_leverage
 
-# ...existing code...
-
 def save_to_database(trade_data):
     """
     Salva as informações de operação de trade no banco de dados MySQL principal e em bancos adicionais,
@@ -322,11 +320,11 @@ def save_to_database(trade_data):
         cursor = conn.cursor(dictionary=True)
 
         check_sql = """
-          SELECT id FROM webhook_signals
-          WHERE symbol = %s
+        SELECT id FROM webhook_signals
+        WHERE symbol = %s 
             AND message_id_orig = %s
             AND chat_id_orig_sinal = %s
-          LIMIT 1
+        LIMIT 1
         """
         cursor.execute(check_sql, (symbol, message_id_orig, trade_data.get("chat_id_origem_sinal")))
         existing = cursor.fetchone()
