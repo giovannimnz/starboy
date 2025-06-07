@@ -23,7 +23,7 @@ logging.basicConfig(
 logger = logging.getLogger("DIVAP_Analyzer")
 
 # Carregar variáveis de ambiente do arquivo .env na raiz do projeto
-env_path = pathlib.Path(__file__).parents[2] / '.env'
+env_path = pathlib.Path(__file__).resolve().parents[2] / '.env'
 load_dotenv(dotenv_path=env_path)
 
 DB_HOST = os.getenv('DB_HOST')
@@ -32,36 +32,20 @@ DB_USER = os.getenv('DB_USER')
 DB_PASSWORD = os.getenv('DB_PASSWORD')
 DB_NAME = os.getenv('DB_NAME')
 
-# Configuração da conexão com banco de dados
-DB_CONFIG = {
-    "host": DB_HOST,
-    "user": DB_USER,
-    "password": DB_PASSWORD,
-    "database": DB_NAME
-}
-
-# Adicionar porta apenas se estiver definida
+DB_CONFIG = {"host": DB_HOST, "user": DB_USER, "password": DB_PASSWORD, "database": DB_NAME}
 if DB_PORT:
     try:
         DB_CONFIG["port"] = int(DB_PORT)
     except (ValueError, TypeError):
-        logger.warning(f"Valor de porta inválido no .env: '{DB_PORT}'. Usando porta padrão.")
+        logger.warning(f"Valor de porta inválido: '{DB_PORT}'.")
 
-# Configuração para API da Binance do arquivo .env
 API_KEY = os.getenv('API_KEY')
 API_SECRET = os.getenv('API_SECRET')
+BINANCE_CONFIG = {"apiKey": API_KEY, "secret": API_SECRET, "enableRateLimit": True, 'options': {'defaultType': 'future'}}
 
-# Configuração da conexão com Binance
-BINANCE_CONFIG = {
-    "apiKey": API_KEY,
-    "secret": API_SECRET,
-    "enableRateLimit": True
-}
-
-# Parâmetros dos indicadores
 RSI_PERIODS = 14
 VOLUME_SMA_PERIODS = 20
-PIVOT_LEFT = 2  # Períodos à esquerda para determinar pivôs
+PIVOT_LEFT = 2
 
 class DIVAPAnalyzer:
     def __init__(self, db_config: Dict, binance_config: Dict):
@@ -82,7 +66,7 @@ class DIVAPAnalyzer:
 
     def connect_exchange(self) -> None:
         try:
-            self.exchange = ccxt.binanceusdm(self.binance_config)
+            self.exchange = ccxt.binance(self.binance_config)
             self.exchange.load_markets()
             logger.info("Conexão com a Binance estabelecida com sucesso")
         except Exception as e:
@@ -90,40 +74,63 @@ class DIVAPAnalyzer:
             raise
 
     def close_connections(self) -> None:
-        if self.cursor:
-            self.cursor.close()
-        if self.conn:
-            self.conn.close()
+        if self.cursor: self.cursor.close()
+        if self.conn: self.conn.close()
         logger.info("Conexões fechadas")
+
+    def get_signal_by_id(self, signal_id: int) -> Optional[Dict]:
+        try:
+            query = "SELECT * FROM webhook_signals WHERE id = %s"
+            self.cursor.execute(query, (signal_id,))
+            signal = self.cursor.fetchone()
+            if not signal:
+                logger.warning(f"Nenhum sinal encontrado com ID {signal_id}")
+            else:
+                logger.info(f"Sinal #{signal_id} encontrado: {signal['symbol']} {signal.get('timeframe', 'N/A')} {signal['side']}")
+            return signal
+        except Exception as e:
+            logger.error(f"Erro ao buscar sinal por ID {signal_id}: {e}")
+            raise
 
     def get_signals_by_date_symbol(self, date_str: str, symbol: str = None) -> List[Dict]:
         try:
-            # Converte a data de DD-MM-AAAA para AAAA-MM-DD para a consulta SQL
             date_obj = datetime.strptime(date_str, "%d-%m-%Y")
             sql_date_str = date_obj.strftime("%Y-%m-%d")
-            
             query = "SELECT * FROM webhook_signals WHERE DATE(created_at) = %s"
             params = [sql_date_str]
-            
             if symbol:
                 query += " AND symbol = %s"
                 params.append(symbol)
-                
             query += " ORDER BY created_at DESC"
-            
             self.cursor.execute(query, tuple(params))
             signals = self.cursor.fetchall()
-            
-            if not signals:
-                logger.warning(f"Nenhum sinal encontrado na data {date_str}" + (f" para o símbolo {symbol}" if symbol else ""))
-            else:
-                logger.info(f"Encontrados {len(signals)} sinais na data {date_str}" + (f" para o símbolo {symbol}" if symbol else ""))
+            logger.info(f"Encontrados {len(signals)} sinais na data {date_str}" + (f" para {symbol}" if symbol else ""))
             return signals
         except Exception as e:
             logger.error(f"Erro ao buscar sinais por data e símbolo: {e}")
             raise
 
-    def fetch_ohlcv_data(self, symbol: str, timeframe: str, since_dt: datetime, limit: int = 100) -> pd.DataFrame:
+    def get_unanalyzed_signals(self, limit: int = 100) -> List[Dict]:
+        try:
+            query = """
+                SELECT ws.* FROM webhook_signals ws
+                LEFT JOIN divap_analysis da ON ws.id = da.signal_id
+                WHERE da.signal_id IS NULL
+                ORDER BY ws.created_at DESC
+                LIMIT %s
+            """
+            self.cursor.execute(query, (limit,))
+            signals = self.cursor.fetchall()
+            if not signals:
+                logger.info("Nenhum sinal não analisado encontrado")
+            else:
+                logger.info(f"Encontrados {len(signals)} sinais não analisados")
+            return signals
+        except Exception as e:
+            logger.error(f"Erro ao buscar sinais não analisados: {e}")
+            raise
+
+    def fetch_ohlcv_data(self, symbol: str, timeframe: str, since_dt: datetime, limit: int = 500) -> pd.DataFrame:
         try:
             since_ts = int(since_dt.timestamp() * 1000)
             normalized_timeframe = self._normalize_timeframe(timeframe)
@@ -143,49 +150,9 @@ class DIVAPAnalyzer:
         except Exception as e:
             logger.error(f"Erro ao buscar dados OHLCV: {e}")
             raise
-
-    def detect_candlestick_patterns(self, df: pd.DataFrame) -> pd.DataFrame:
-        df['body_size'] = abs(df['close'] - df['open'])
-        df['upper_shadow'] = df['high'] - df[['open', 'close']].max(axis=1)
-        df['lower_shadow'] = df[['open', 'close']].min(axis=1) - df['low']
-        df['candle_size'] = df['high'] - df['low']
-        
-        df['hammer'] = (
-            (df['close'] > df['open']) & 
-            (df['lower_shadow'] > 2 * df['body_size']) &
-            (df['upper_shadow'] < 0.2 * df['body_size']) &
-            (df['body_size'] < 0.3 * df['candle_size'])
-        )
-
-        df['shooting_star'] = (
-            (df['close'] < df['open']) & 
-            (df['upper_shadow'] > 2 * abs(df['body_size'])) &
-            (df['lower_shadow'] < 0.2 * abs(df['body_size'])) &
-            (abs(df['body_size']) < 0.3 * df['candle_size'])
-        )
-            
-        bull_engulfing = pd.Series(False, index=df.index)
-        bear_engulfing = pd.Series(False, index=df.index)
-        
-        for i in range(1, len(df)):
-            prev = df.iloc[i-1]
-            curr = df.iloc[i]
-            if (prev['close'] < prev['open'] and curr['close'] > curr['open'] and
-                curr['open'] <= prev['close'] and curr['close'] >= prev['open']):
-                bull_engulfing.iloc[i] = True
-            
-            if (prev['close'] > prev['open'] and curr['close'] < curr['open'] and
-                curr['open'] >= prev['close'] and curr['close'] <= prev['open']):
-                bear_engulfing.iloc[i] = True
-        
-        df['bull_engulfing'] = bull_engulfing
-        df['bear_engulfing'] = bear_engulfing
-        return df
-
+    
     def calculate_indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        if df.empty:
-            return df
-        
+        if df.empty: return df
         df['RSI'] = vbt.indicators.basic.RSI.run(df["close"], window=RSI_PERIODS).rsi
         df['VolSMA'] = df["volume"].rolling(window=VOLUME_SMA_PERIODS, min_periods=1).mean()
         df['high_volume'] = df["volume"] > df["VolSMA"]
@@ -194,97 +161,78 @@ class DIVAPAnalyzer:
         df['pivot_low'] = df["low"] == df["low"].rolling(window=window_pivot, min_periods=1).min()
         df['pivot_high'] = df["high"] == df["high"].rolling(window=window_pivot, min_periods=1).max()
         
-        df = self.detect_candlestick_patterns(df)
-        
-        var_pivot_low_price_1 = pd.Series(np.nan, index=df.index)
-        var_pivot_low_rsi_1 = pd.Series(np.nan, index=df.index)
-        var_pivot_high_price_1 = pd.Series(np.nan, index=df.index)
-        var_pivot_high_rsi_1 = pd.Series(np.nan, index=df.index)
-
-        bull_div = pd.Series(False, index=df.index)
-        bear_div = pd.Series(False, index=df.index)
-        
         last_low_pivot_price, last_low_pivot_rsi = np.nan, np.nan
         second_last_low_pivot_price, second_last_low_pivot_rsi = np.nan, np.nan
         last_high_pivot_price, last_high_pivot_rsi = np.nan, np.nan
         second_last_high_pivot_price, second_last_high_pivot_rsi = np.nan, np.nan
 
+        bull_div = pd.Series(False, index=df.index)
+        bear_div = pd.Series(False, index=df.index)
+
         for i in range(len(df)):
             if df["pivot_low"].iloc[i]:
                 second_last_low_pivot_price, second_last_low_pivot_rsi = last_low_pivot_price, last_low_pivot_rsi
                 last_low_pivot_price, last_low_pivot_rsi = df["low"].iloc[i], df["RSI"].iloc[i]
-            
             if df["pivot_high"].iloc[i]:
                 second_last_high_pivot_price, second_last_high_pivot_rsi = last_high_pivot_price, last_high_pivot_rsi
                 last_high_pivot_price, last_high_pivot_rsi = df["high"].iloc[i], df["RSI"].iloc[i]
 
             if not pd.isna(last_low_pivot_price) and not pd.isna(second_last_low_pivot_price):
-                if (last_low_pivot_price < second_last_low_pivot_price and 
-                    last_low_pivot_rsi > second_last_low_pivot_rsi):
+                if (last_low_pivot_price < second_last_low_pivot_price and last_low_pivot_rsi > second_last_low_pivot_rsi):
                     bull_div.iloc[i] = True
-
             if not pd.isna(last_high_pivot_price) and not pd.isna(second_last_high_pivot_price):
-                if (last_high_pivot_price > second_last_high_pivot_price and 
-                    last_high_pivot_rsi < second_last_high_pivot_rsi):
+                if (last_high_pivot_price > second_last_high_pivot_price and last_high_pivot_rsi < second_last_high_pivot_rsi):
                     bear_div.iloc[i] = True
         
         df['bull_div'] = bull_div
         df['bear_div'] = bear_div
         
-        df['bull_reversal_pattern'] = df["hammer"] | df["bull_engulfing"]
-        df['bear_reversal_pattern'] = df["shooting_star"] | df["bear_engulfing"]
-        
+        # Lógica DIV simplificada: Divergência + Volume
         df['bull_divap'] = df["bull_div"] & df["high_volume"]
         df['bear_divap'] = df["bear_div"] & df["high_volume"]
         
         return df
 
     def analyze_signal(self, signal: Dict) -> Dict:
-        symbol = signal["symbol"]
-        timeframe = signal.get("timeframe", "15m")
-        side = signal["side"]
-        created_at = signal["created_at"]
-        
+        symbol, timeframe, side, created_at = signal["symbol"], signal.get("timeframe", "15m"), signal["side"], signal["created_at"]
         symbol_formatted = self._format_symbol_for_binance(symbol)
         td = self._get_timeframe_delta(timeframe)
-        if not td:
-            return {"error": f"Timeframe inválido: {timeframe}"}
+        if not td: return {"error": f"Timeframe inválido: {timeframe}"}
         
-        required_candles = max(RSI_PERIODS, VOLUME_SMA_PERIODS) + PIVOT_LEFT + 30
+        required_candles = max(RSI_PERIODS, VOLUME_SMA_PERIODS) + PIVOT_LEFT + 50
         since_dt = created_at - timedelta(minutes=td * required_candles)
         
-        df = self.fetch_ohlcv_data(symbol_formatted, timeframe, since_dt, limit=500)
-        if df.empty:
-            return {"error": f"Não foi possível obter dados para {symbol}"}
+        df = self.fetch_ohlcv_data(symbol_formatted, timeframe, since_dt)
+        if df.empty: return {"error": f"Não foi possível obter dados para {symbol}"}
         
         df = self.calculate_indicators(df)
         
         previous_candle_start_time = self._get_previous_candle_time(created_at, timeframe)
+        second_previous_candle_start_time = previous_candle_start_time - timedelta(minutes=td)
         
         try:
             previous_candle = df.loc[previous_candle_start_time]
-            logger.info(f"Analisando candle que inicia em: {previous_candle.name}")
+            has_second_candle = False
+            second_previous_candle = None
+            if second_previous_candle_start_time in df.index:
+                second_previous_candle = df.loc[second_previous_candle_start_time]
+                has_second_candle = True
         except KeyError:
-            return {"error": f"Candle de {previous_candle_start_time} não encontrado nos dados buscados."}
+            return {"error": f"Candle principal de {previous_candle_start_time} não encontrado nos dados buscados."}
 
-        # --- SEÇÃO DE DIAGNÓSTICO REATORADA ---
-        # 1. Filtra o DataFrame para criar um recorte com dados até o candle do sinal.
-        #    Usamos .copy() para evitar SettingWithCopyWarning.
+        is_bull_divap_previous = bool(previous_candle.get("bull_divap", False))
+        is_bear_divap_previous = bool(previous_candle.get("bear_divap", False))
+        
+        is_bull_divap_second = bool(has_second_candle and second_previous_candle.get("bull_divap", False))
+        is_bear_divap_second = bool(has_second_candle and second_previous_candle.get("bear_divap", False))
+        
+        is_bull_divap = is_bull_divap_previous or is_bull_divap_second
+        is_bear_divap = is_bear_divap_previous or is_bear_divap_second
+        
         df_until_signal = df.loc[df.index <= previous_candle.name].copy()
-
-        # 2. Coleta informações de diagnóstico a partir do DataFrame JÁ FILTRADO.
-        candles_info = {
-            "total_candles": len(df_until_signal),
-            "first_candle_time": df_until_signal.index[0],
-            "last_candle_time": df_until_signal.index[-1],
-            "valid_rsi_candles": df_until_signal["RSI"].notna().sum(),
-        }
-
-        # 3. Coleta informações sobre os pivôs a partir do DataFrame JÁ FILTRADO.
         high_pivots_df = df_until_signal[df_until_signal["pivot_high"]].sort_index(ascending=False)
         low_pivots_df = df_until_signal[df_until_signal["pivot_low"]].sort_index(ascending=False)
-        
-        pivot_info = { "last_pivots": {} }
+        pivot_info = {"last_pivots": {}}
         if side.upper() == 'VENDA' and len(high_pivots_df) >= 2:
             pivot_info["last_pivots"]["last_high_pivot"] = high_pivots_df.iloc[0][['high', 'RSI']].rename({'high': 'price', 'RSI': 'rsi'}).to_dict()
             pivot_info["last_pivots"]["second_last_high_pivot"] = high_pivots_df.iloc[1][['high', 'RSI']].rename({'high': 'price', 'RSI': 'rsi'}).to_dict()
@@ -292,58 +240,62 @@ class DIVAPAnalyzer:
             pivot_info["last_pivots"]["last_low_pivot"] = low_pivots_df.iloc[0][['low', 'RSI']].rename({'low': 'price', 'RSI': 'rsi'}).to_dict()
             pivot_info["last_pivots"]["second_last_low_pivot"] = low_pivots_df.iloc[1][['low', 'RSI']].rename({'low': 'price', 'RSI': 'rsi'}).to_dict()
         
-        # Preparar resultado da análise
         result = {
             "signal_id": signal["id"], "symbol": symbol, "timeframe": timeframe, "side": side,
-            "created_at": created_at, "previous_candle_time": previous_candle.name,
-            "is_bull_divap": bool(previous_candle["bull_divap"]),
-            "is_bear_divap": bool(previous_candle["bear_divap"]),
-            "rsi": float(previous_candle["RSI"]), "volume": float(previous_candle["volume"]),
-            "volume_sma": float(previous_candle["VolSMA"]),
-            "high_volume": bool(previous_candle["high_volume"]),
-            "bull_div": bool(previous_candle["bull_div"]), "bear_div": bool(previous_candle["bear_div"]),
-            "close_price": float(previous_candle["close"]),
-            "bull_reversal_pattern": bool(previous_candle["bull_reversal_pattern"]),
-            "bear_reversal_pattern": bool(previous_candle["bear_reversal_pattern"]),
-            "candles_info": candles_info, "pivot_info": pivot_info
+            "created_at": created_at, "pivot_info": pivot_info,
+            "previous_candle": self._get_candle_details(previous_candle),
+            "second_previous_candle": self._get_candle_details(second_previous_candle)
         }
-        
-        # Determinar a mensagem final
-        if side.upper() == "COMPRA" and result["is_bull_divap"]:
+
+        if (side.upper() == "COMPRA" and is_bull_divap) or (side.upper() == "VENDA" and is_bear_divap):
             result["divap_confirmed"] = True
-            result["message"] = "✅ Sinal de COMPRA confirmado como DIVAP altista (Volume + Divergência)"
-        elif side.upper() == "VENDA" and result["is_bear_divap"]:
-            result["divap_confirmed"] = True
-            result["message"] = "✅ Sinal de VENDA confirmado como DIVAP baixista (Volume + Divergência)"
+            confirmed_on = "primeiro candle anterior" if (is_bull_divap_previous or is_bear_divap_previous) else "segundo candle anterior"
+            result["message"] = f"✅ Sinal de {side.upper()} confirmado como DIV no {confirmed_on}"
         else:
             result["divap_confirmed"] = False
-            result["message"] = f"❌ Sinal de {side.upper()} NÃO confirmado como DIVAP"
+            result["message"] = f"❌ Sinal de {side.upper()} NÃO confirmado como DIV em nenhum dos 2 candles"
         
         return result
 
+    def _get_candle_details(self, candle_series: Optional[pd.Series]) -> Optional[Dict]:
+        if candle_series is None: return None
+        return {
+            "time": candle_series.name, "close_price": float(candle_series.get("close", 0)),
+            "rsi": float(candle_series.get("RSI", np.nan)), "volume": float(candle_series.get("volume", 0)),
+            "volume_sma": float(candle_series.get("VolSMA", np.nan)), "high_volume": bool(candle_series.get("high_volume", False)),
+            "bull_div": bool(candle_series.get("bull_div", False)), "bear_div": bool(candle_series.get("bear_div", False))
+        }
+
+    def _normalize_timeframe(self, timeframe: str) -> str:
+        if not timeframe: return '15m'
+        upper_tf = timeframe.upper()
+        if upper_tf == '240M': return '4h'
+        timeframe_map = {
+            '1M': '1m', '3M': '3m', '5M': '5m', '15M': '15m', '30M': '30m',
+            '1H': '1h', '2H': '2h', '4H': '4h', '6H': '6h', '8H': '8h', '12H': '12h',
+            '1D': '1d', '3D': '3d', '1W': '1w', '1MO': '1M'
+        }
+        return timeframe_map.get(upper_tf, timeframe.lower())
+
     def _get_timeframe_delta(self, timeframe: str) -> Optional[int]:
         if not timeframe: return None
-        tf = timeframe.strip().lower()
+        tf = self._normalize_timeframe(timeframe).lower()
         match = re.match(r'(\d+)([mhdw])', tf)
         if match:
             value, unit = int(match.group(1)), match.group(2)
             multipliers = {'m': 1, 'h': 60, 'd': 1440, 'w': 10080}
-            return value * multipliers[unit]
-        logger.warning(f"Formato de timeframe não reconhecido: {timeframe}")
+            return value * multipliers.get(unit, 0)
         return None
 
     def _format_symbol_for_binance(self, symbol: str) -> str:
         if '/' in symbol: return symbol
         for quote in ["USDT", "BUSD", "USDC", "BTC", "USD"]:
-            if symbol.endswith(quote):
-                return f"{symbol[:-len(quote)]}/{quote}"
+            if symbol.endswith(quote): return f"{symbol[:-len(quote)]}/{quote}"
         return symbol
 
     def _get_previous_candle_time(self, current_time: datetime, timeframe: str) -> datetime:
         tf_minutes = self._get_timeframe_delta(timeframe)
         if not tf_minutes: return current_time
-    
-        # Calcula o início do candle atual
         current_candle_start = current_time
         if tf_minutes < 60:
             candle_start_minute = (current_time.minute // tf_minutes) * tf_minutes
@@ -354,247 +306,115 @@ class DIVAPAnalyzer:
             current_candle_start = current_time.replace(hour=candle_start_hour, minute=0, second=0, microsecond=0)
         else:
             current_candle_start = current_time.replace(hour=0, minute=0, second=0, microsecond=0)
-        
-        # SEMPRE pega o candle anterior ao candle atual
         previous_candle_start = current_candle_start - timedelta(minutes=tf_minutes)
-        
         logger.info(f"Horário do sinal: {current_time}, Candle atual inicia em: {current_candle_start}, Analisando candle anterior que inicia em: {previous_candle_start}")
         return previous_candle_start
 
     def save_analysis_result(self, result: Dict) -> None:
         if "error" in result: return
-    
-        try:
-            rsi_to_save = result.get("rsi")
-            volume_sma_to_save = result.get("volume_sma")
-            values = (
-                result.get("signal_id"), result.get("is_bull_divap", False),
-                result.get("is_bear_divap", False), result.get("divap_confirmed", False),
-                0 if pd.isna(rsi_to_save) else rsi_to_save,
-                result.get("volume", 0),
-                0 if pd.isna(volume_sma_to_save) else volume_sma_to_save,
-                result.get("high_volume", False), result.get("bull_div", False),
-                result.get("bear_div", False), result.get("message", ""),
-                result.get("bull_reversal_pattern", False),
-                result.get("bear_reversal_pattern", False), datetime.now()
-            )
-
-            sql = """
-                INSERT INTO divap_analysis (
-                    signal_id, is_bull_divap, is_bear_divap, divap_confirmed, 
-                    rsi, volume, volume_sma, high_volume, bull_div, bear_div, 
-                    message, bull_reversal_pattern, bear_reversal_pattern, analyzed_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                    is_bull_divap=VALUES(is_bull_divap), is_bear_divap=VALUES(is_bear_divap),
-                    divap_confirmed=VALUES(divap_confirmed), rsi=VALUES(rsi), volume=VALUES(volume), 
-                    volume_sma=VALUES(volume_sma), high_volume=VALUES(high_volume), 
-                    bull_div=VALUES(bull_div), bear_div=VALUES(bear_div), message=VALUES(message),
-                    bull_reversal_pattern=VALUES(bull_reversal_pattern),
-                    bear_reversal_pattern=VALUES(bear_reversal_pattern), analyzed_at=VALUES(analyzed_at)
-            """
-            self.cursor.execute(sql, values)
-            self.conn.commit()
-            logger.info(f"Análise do sinal {result.get('signal_id')} salva no banco de dados")
-        except Exception as e:
-            logger.error(f"Erro ao salvar análise: {e}")
+        self.create_analysis_table_if_not_exists()
         
         try:
-            # Parte nova: Atualizar a tabela webhook_signals
-            signal_id = result.get("signal_id")
+            prev_candle = result.get("previous_candle", {})
             is_divap_confirmed = result.get("divap_confirmed", False)
+            rsi_val = prev_candle.get("rsi")
+            vol_sma_val = prev_candle.get("volume_sma")
+
+            sql_analysis = """
+                INSERT INTO divap_analysis (signal_id, is_bull_divap, is_bear_divap, divap_confirmed, rsi, volume, volume_sma, high_volume, bull_div, bear_div, message, analyzed_at) 
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE is_bull_divap=VALUES(is_bull_divap), is_bear_divap=VALUES(is_bear_divap), divap_confirmed=VALUES(divap_confirmed), 
+                rsi=VALUES(rsi), volume=VALUES(volume), volume_sma=VALUES(volume_sma), high_volume=VALUES(high_volume), 
+                bull_div=VALUES(bull_div), bear_div=VALUES(bear_div), message=VALUES(message), analyzed_at=VALUES(analyzed_at)"""
             
-            # Determinar a mensagem de erro se não for confirmado
+            values_analysis = (
+                result.get("signal_id"), bool(prev_candle.get("bull_divap", False)), bool(prev_candle.get("bear_divap", False)),
+                is_divap_confirmed, (None if pd.isna(rsi_val) else rsi_val), prev_candle.get("volume"),
+                (None if pd.isna(vol_sma_val) else vol_sma_val), prev_candle.get("high_volume"),
+                prev_candle.get("bull_div"), prev_candle.get("bear_div"), result.get("message", ""), datetime.now()
+            )
+            self.cursor.execute(sql_analysis, values_analysis)
+            
             error_message = None
             if not is_divap_confirmed:
-                has_volume = result.get("high_volume", False)
-                has_divergence = False
-                
-                if result.get("side", "").upper() == "COMPRA":
-                    has_divergence = result.get("bull_div", False)
-                    divergence_type = "altista"
-                else:  # VENDA
-                    has_divergence = result.get("bear_div", False)
-                    divergence_type = "baixista"
-                
-                if not has_volume and not has_divergence:
-                    error_message = f"Volume abaixo da média e divergência {divergence_type} não ocorreu"
-                elif not has_volume:
-                    error_message = "Volume abaixo da média"
-                elif not has_divergence:
-                    error_message = f"Divergência {divergence_type} não ocorreu"
+                def get_reason(candle_data, side):
+                    if not candle_data: return "dados ausentes"
+                    reason = []
+                    if not candle_data.get('high_volume'): reason.append("Vol N/OK")
+                    is_div = candle_data.get('bull_div') if side == 'COMPRA' else candle_data.get('bear_div')
+                    if not is_div: reason.append("Div N/OK")
+                    return ", ".join(reason) if reason else "N/A"
+
+                reason1 = get_reason(result.get("previous_candle"), result.get("side").upper())
+                reason2 = get_reason(result.get("second_previous_candle"), result.get("side").upper())
+                error_message = f"C1: {reason1} | C2: {reason2}"
             
-            # Atualizar a tabela webhook_signals
-            update_query = """
-                UPDATE webhook_signals 
-                SET divap_confirmado = %s,
-                    cancelado_checker = %s
-            """
-            
-            update_params = [is_divap_confirmed, not is_divap_confirmed]
-            
-            # Se não for confirmado, também atualizar o status e mensagem de erro
-            if not is_divap_confirmed:
-                update_query += ", status = 'CANCELED', error_message = %s"
-                update_params.append(error_message)
-            
-            update_query += " WHERE id = %s"
-            update_params.append(signal_id)
-            
-            self.cursor.execute(update_query, tuple(update_params))
+            sql_update = "UPDATE webhook_signals SET divap_confirmado = %s, cancelado_checker = %s, status = %s, error_message = %s WHERE id = %s"
+            status = 'CONFIRMED' if is_divap_confirmed else 'CANCELED'
+            params_update = (is_divap_confirmed, not is_divap_confirmed, status, error_message, result.get("signal_id"))
+            self.cursor.execute(sql_update, params_update)
+
             self.conn.commit()
-            logger.info(f"Sinal #{signal_id} atualizado: DIVAP confirmado = {is_divap_confirmed}")
-        
+            logger.info(f"Análise e status do sinal #{result.get('signal_id')} salvos/atualizados.")
         except Exception as e:
-            logger.error(f"Erro ao salvar análise: {e}")
+            logger.error(f"Erro ao salvar análise e atualizar sinal: {e}")
+            self.conn.rollback()
+
+    def create_analysis_table_if_not_exists(self) -> None:
+        try:
+            sql = """
+                CREATE TABLE IF NOT EXISTS divap_analysis (
+                    id INT AUTO_INCREMENT PRIMARY KEY, signal_id INT,
+                    is_bull_divap BOOLEAN, is_bear_divap BOOLEAN, divap_confirmed BOOLEAN, 
+                    rsi FLOAT, volume DOUBLE, volume_sma DOUBLE, high_volume BOOLEAN, 
+                    bull_div BOOLEAN, bear_div BOOLEAN, message TEXT, 
+                    analyzed_at DATETIME, UNIQUE KEY (signal_id)
+                )"""
+            self.cursor.execute(sql)
+            self.conn.commit()
+        except Exception as e:
+            logger.error(f"Erro ao criar tabela de análise: {e}")
 
     def print_analysis_result(self, result: Dict) -> None:
         if "error" in result:
             print(f"\n{'='*60}\n❌ ERRO: {result['error']}\n{'='*60}\n")
             return
         
-        print(f"\n{'='*60}\n📊 ANÁLISE DIVAP - SINAL #{result['signal_id']} - {result['symbol']} ({result['timeframe']})\n{'='*60}")
+        print(f"\n{'='*60}\n📊 ANÁLISE DIV - SINAL #{result['signal_id']} - {result['symbol']} ({result['timeframe']})\n{'='*60}")
         print(f"📅 Data/Hora do Sinal: {result['created_at']}")
         
-        if 'candles_info' in result:
-            print(f"📈 Período dos Dados: {result['candles_info']['first_candle_time']} a {result['candles_info']['last_candle_time']} ({result['candles_info']['total_candles']} candles)")
-        
-        candle_open_time = result['previous_candle_time']
         tf_minutes = self._get_timeframe_delta(result['timeframe'])
-        candle_close_time = candle_open_time + timedelta(minutes=tf_minutes)
-        print(f"🕯️  Candle Analisado: {candle_open_time} (Fechou em {candle_close_time})")
-        
-        print(f"📈 Direção: {result['side']} | 💹 Preço de Fechamento: {result['close_price']:.4f}\n{'-'*60}")
-        
-        print(f"🔍 INDICADORES DO CANDLE:")
-        rsi_val, volume_sma = result.get('rsi'), result.get('volume_sma')
-        print(f"  • RSI: {'Indisponível' if pd.isna(rsi_val) else f'{rsi_val:.2f}'}")
-        print(f"  • Volume: {result.get('volume', 0):.0f} (Média: {'Indisponível' if pd.isna(volume_sma) else f'{volume_sma:.0f}'})")
-        print(f"{'-'*60}")
-        
-        print("🔍 CONDIÇÕES DIVAP:")
-        print(f"  • Volume > Média: {'✅ SIM' if result.get('high_volume') else '❌ NÃO'}")
-        
-        if result['side'].upper() == "COMPRA":
-            print(f"  • Divergência Altista: {'✅ SIM' if result.get('bull_div') else '❌ NÃO'}")
-            #print(f"  • Padrão de Reversão de Alta: {'✅ SIM' if result.get('bull_reversal_pattern') else '❌ NÃO'}")
-        else:
-            print(f"  • Divergência Baixista: {'✅ SIM' if result.get('bear_div') else '❌ NÃO'}")
-            #print(f"  • Padrão de Reversão de Baixa: {'✅ SIM' if result.get('bear_reversal_pattern') else '❌ NÃO'}")
+
+        def print_candle_info(candle_data, title):
+            if not candle_data: return
+            open_time = candle_data['time']
+            close_time = open_time + timedelta(minutes=tf_minutes if tf_minutes else 0)
+            print(f"\n🕯️ {title}:")
+            print(f"  • Período: {open_time} a {close_time}")
+            rsi, vol_sma = candle_data.get('rsi'), candle_data.get('volume_sma')
+            print(f"  • RSI: {'N/A' if pd.isna(rsi) else f'{rsi:.2f}'} | Volume: {candle_data.get('volume', 0):.0f} (Média: {'N/A' if pd.isna(vol_sma) else f'{vol_sma:.0f}'})")
+            is_div = candle_data.get('bull_div') if result['side'].upper() == 'COMPRA' else candle_data.get('bear_div')
+            print(f"  • CONDIÇÕES DIV: Volume > Média: {'✅' if candle_data.get('high_volume') else '❌'} | Divergência: {'✅' if is_div else '❌'}")
+
+        print_candle_info(result.get("previous_candle"), "PRIMEIRO CANDLE ANTERIOR (C1)")
+        print_candle_info(result.get("second_previous_candle"), "SEGUNDO CANDLE ANTERIOR (C2)")
         
         if 'pivot_info' in result and 'last_pivots' in result['pivot_info']:
             pivots = result['pivot_info']['last_pivots']
+            if pivots: print(f"\n📊 DETALHES DA DIVERGÊNCIA:")
             if result['side'].upper() == "VENDA" and "last_high_pivot" in pivots:
-                last_high, second_high = pivots["last_high_pivot"], pivots["second_last_high_pivot"]
-                print(f"  • Detalhe Div.: Topo Recente {second_high['price']:.2f} (RSI {second_high['rsi']:.1f}) -> {last_high['price']:.2f} (RSI {last_high['rsi']:.1f})")
+                last_h, second_h = pivots["last_high_pivot"], pivots["second_last_high_pivot"]
+                print(f"  • Topo Recente {second_h['price']:.2f} (RSI {second_h.get('rsi', 0):.1f}) -> {last_h['price']:.2f} (RSI {last_h.get('rsi', 0):.1f})")
             elif result['side'].upper() == "COMPRA" and "last_low_pivot" in pivots:
-                last_low, second_low = pivots["last_low_pivot"], pivots["second_last_low_pivot"]
-                
-                # Adicionalmente, para maior robustez, você pode modificar a impressão:
-                if 'rsi' in second_low and 'rsi' in last_low:
-                    print(f"  • Detalhe Div.: Fundo Recente {second_low['price']:.2f} (RSI {second_low['rsi']:.1f}) -> {last_low['price']:.2f} (RSI {last_low['rsi']:.1f})")
-                else:
-                    print(f"  • Detalhe Div.: Fundo Recente {second_low['price']:.2f} -> {last_low['price']:.2f} (RSI indisponível)")
+                last_l, second_l = pivots["last_low_pivot"], pivots["second_last_low_pivot"]
+                print(f"  • Fundo Recente {second_l['price']:.2f} (RSI {second_l.get('rsi', 0):.1f}) -> {last_l['price']:.2f} (RSI {last_l.get('rsi', 0):.1f})")
         
         print(f"\n🏆 CONCLUSÃO FINAL: {result.get('message', 'N/A')}\n{'='*60}\n")
-
-    def _normalize_timeframe(self, timeframe: str) -> str:
-        """
-        Normaliza o timeframe para o formato aceito pela Binance.
-        """
-        if not timeframe:
-            return timeframe
-        
-        # Verificação específica para 240m -> 4h
-        if timeframe.upper() == '240M':
-            return '4h'
-        
-        # Mapeia os timeframes comuns para o formato da Binance
-        timeframe_map = {
-            '1M': '1m', '3M': '3m', '5M': '5m', '15M': '15m', '30M': '30m',
-            '1H': '1h', '2H': '2h', '4H': '4h', '6H': '6h', '8H': '8h', '12H': '12h',
-            '1D': '1d', '3D': '3d', '1W': '1w', '1MO': '1M'
-        }
-        
-        upper_tf = timeframe.upper()
-        if upper_tf in timeframe_map:
-            return timeframe_map[upper_tf]
-        
-        # Tenta extrair o número e a unidade para normalizar
-        # Ajustado para aceitar unidades em maiúsculas ou minúsculas
-        match = re.match(r'(\d+)([MmHhDdWw]O?)', timeframe)
-        if match:
-            value, unit = match.group(1), match.group(2).upper()
-            
-            # Conversões especiais de minutos para horas
-            if unit == 'M' and int(value) % 60 == 0 and int(value) >= 60:
-                hours = int(value) // 60
-                return f"{hours}h"
-                
-            if unit == 'M':
-                return f"{value}m"
-            elif unit == 'H':
-                return f"{value}h"
-            elif unit == 'D':
-                return f"{value}d"
-            elif unit == 'W':
-                return f"{value}w"
-            elif unit == 'MO':
-                return f"{value}M"
-        
-        return timeframe.lower()  # Retorna em minúsculas como fallback
-
-    def get_unanalyzed_signals(self, limit: int = 100) -> List[Dict]:
-        """
-        Busca sinais que ainda não foram analisados pelo sistema DIVAP.
-        
-        Args:
-            limit: Número máximo de sinais a retornar
-            
-        Returns:
-            Lista de sinais não analisados
-        """
-        try:
-            query = """
-                SELECT ws.* FROM webhook_signals ws
-                LEFT JOIN divap_analysis da ON ws.id = da.signal_id
-                WHERE da.signal_id IS NULL
-                ORDER BY ws.created_at DESC
-                LIMIT %s
-            """
-            self.cursor.execute(query, (limit,))
-            signals = self.cursor.fetchall()
-            
-            if not signals:
-                logger.info(f"Nenhum sinal não analisado encontrado")
-            else:
-                logger.info(f"Encontrados {len(signals)} sinais não analisados")
-            return signals
-        except Exception as e:
-            logger.error(f"Erro ao buscar sinais não analisados: {e}")
-            raise
-
+    
     def monitor_all_signals(self, period_days: int = None, limit: int = 100) -> Dict:
-        """
-        Monitora e analisa múltiplos sinais, salvando os resultados.
-        
-        Args:
-            period_days: Se fornecido, analisa sinais dos últimos X dias. 
-                         Se None, analisa sinais não analisados.
-            limit: Número máximo de sinais a processar
-            
-        Returns:
-            Dicionário com estatísticas da análise
-        """
         try:
             if period_days:
-                # Busca sinais dos últimos X dias
-                query = """
-                    SELECT * FROM webhook_signals 
-                    WHERE created_at >= DATE_SUB(NOW(), INTERVAL %s DAY)
-                    ORDER BY created_at DESC
-                    LIMIT %s
-                """
+                query = "SELECT * FROM webhook_signals WHERE created_at >= DATE_SUB(NOW(), INTERVAL %s DAY) ORDER BY created_at DESC LIMIT %s"
                 self.cursor.execute(query, (period_days, limit))
                 signals = self.cursor.fetchall()
                 period_desc = f"dos últimos {period_days} dias"
@@ -606,104 +426,44 @@ class DIVAPAnalyzer:
                 logger.info(f"Nenhum sinal {period_desc} encontrado para monitorar")
                 return {"total": 0, "success": 0, "error": 0, "divap_confirmed": 0}
             
-            results = {
-                "total": len(signals),
-                "success": 0,
-                "error": 0,
-                "divap_confirmed": 0,
-                "symbols": {}
-            }
-            
+            stats = {"total": len(signals), "success": 0, "error": 0, "confirmed": 0, "symbols": {}}
             print(f"\n🔍 Monitorando {len(signals)} sinais {period_desc}...")
             
             for i, signal in enumerate(signals):
                 symbol = signal['symbol']
-                if symbol not in results["symbols"]:
-                    results["symbols"][symbol] = {"total": 0, "confirmed": 0}
-                results["symbols"][symbol]["total"] += 1
+                stats["symbols"].setdefault(symbol, {"total": 0, "confirmed": 0})["total"] += 1
                 
                 print(f"\nProcessando {i+1}/{len(signals)}: #{signal['id']} - {symbol} {signal.get('timeframe', 'N/A')} {signal['side']}")
                 
                 try:
                     result = self.analyze_signal(signal)
-                    
                     if "error" in result:
-                        results["error"] += 1
+                        stats["error"] += 1
                         print(f"❌ Erro: {result['error']}")
                     else:
-                        results["success"] += 1
+                        stats["success"] += 1
                         self.save_analysis_result(result)
-                        
                         if result.get("divap_confirmed", False):
-                            results["divap_confirmed"] += 1
-                            results["symbols"][symbol]["confirmed"] += 1
-                            print(f"✅ DIVAP confirmado: {result.get('message', '')}")
-                            print(f"   Status do sinal atualizado: divap_confirmado=TRUE, cancelado_checker=FALSE")
-                        else:
-                            print(f"❌ DIVAP não confirmado: {result.get('message', '')}")
-                            print(f"   Status do sinal atualizado: status=CANCELED, divap_confirmado=FALSE, cancelado_checker=TRUE")
-                            reason = ""
-                            if not result.get("high_volume", False):
-                                reason += "Volume abaixo da média"
-                            if not result.get("bull_div", False) and not result.get("bear_div", False):
-                                if reason: reason += " e "
-                                reason += f"Divergência {'altista' if result['side'].upper() == 'COMPRA' else 'baixista'} não ocorreu"
-                            print(f"   Motivo: {reason}")
-                    
+                            stats["confirmed"] += 1
+                            stats["symbols"][symbol]["confirmed"] += 1
+                        print(result.get('message', ''))
                 except Exception as e:
                     logger.error(f"Erro ao processar sinal #{signal['id']}: {e}")
-                    results["error"] += 1
+                    stats["error"] += 1
             
-            # Exibir relatório final
-            divap_percent = round(results['divap_confirmed']/results['total']*100 if results['total'] > 0 else 0, 1)
-            
-            print("\n" + "="*60)
-            print(f"📊 RELATÓRIO DE MONITORAMENTO")
-            print(f"  • Total de sinais: {results['total']}")
-            print(f"  • Análises com sucesso: {results['success']}")
-            print(f"  • Erros de análise: {results['error']}")
-            print(f"  • DIVAPs confirmados: {results['divap_confirmed']} ({divap_percent}%)")
-            
-            # Top símbolos com mais confirmações DIVAP
-            if results["symbols"]:
-                print("\n🏆 TOP SÍMBOLOS COM DIVAP:")
-                sorted_symbols = sorted(results["symbols"].items(), 
-                                      key=lambda x: x[1]["confirmed"], reverse=True)
+            confirmed_percent = round(stats['confirmed']/stats['total']*100 if stats['total'] > 0 else 0, 1)
+            print(f"\n{'='*60}\n📊 RELATÓRIO DE MONITORAMENTO\n  • Sinais Totais: {stats['total']}\n  • Sucesso: {stats['success']}\n  • Erros: {stats['error']}\n  • Confirmados: {stats['confirmed']} ({confirmed_percent}%)\n")
+            if stats["symbols"]:
+                print("🏆 TOP SÍMBOLOS COM DIV:")
+                sorted_symbols = sorted(stats["symbols"].items(), key=lambda x: x[1]["confirmed"], reverse=True)
                 for symbol, data in sorted_symbols[:5]:
                     if data["confirmed"] > 0:
                         symbol_percent = round(data["confirmed"]/data["total"]*100, 1)
                         print(f"  • {symbol}: {data['confirmed']}/{data['total']} ({symbol_percent}%)")
-            
             print("="*60)
-            return results
-        
+            return stats
         except Exception as e:
             logger.error(f"Erro no monitoramento de sinais: {e}")
-            raise
-
-    def get_signal_by_id(self, signal_id: int) -> Optional[Dict]:
-        """
-        Busca um sinal específico pelo seu ID.
-        
-        Args:
-            signal_id: O ID do sinal a ser buscado
-            
-        Returns:
-            O sinal encontrado ou None se não existir
-        """
-        try:
-            query = "SELECT * FROM webhook_signals WHERE id = %s"
-            self.cursor.execute(query, (signal_id,))
-            signal = self.cursor.fetchone()
-            
-            if not signal:
-                logger.warning(f"Nenhum sinal encontrado com ID {signal_id}")
-                return None
-            
-            logger.info(f"Sinal #{signal_id} encontrado: {signal['symbol']} {signal.get('timeframe', 'N/A')} {signal['side']}")
-            return signal
-        except Exception as e:
-            logger.error(f"Erro ao buscar sinal por ID {signal_id}: {e}")
             raise
 
 def interactive_mode():
@@ -712,10 +472,10 @@ def interactive_mode():
         analyzer.connect_db()
         analyzer.connect_exchange()
         while True:
-            print("\n" + "="*60 + "\n🔍 ANALISADOR DIVAP - MODO INTERATIVO\n" + "="*60)
+            print("\n" + "="*60 + "\n🔍 ANALISADOR DIV - MODO INTERATIVO v3.0\n" + "="*60)
             print("1. Analisar sinal por ID")
-            print("2. Analisar sinal por data e símbolo")
-            print("3. Monitorar todos os sinais")  # Nova opção
+            print("2. Analisar sinais por data")
+            print("3. Monitorar sinais em lote")
             print("4. Sair")
             choice = input("\nEscolha uma opção (1-4): ").strip()
             
@@ -723,85 +483,50 @@ def interactive_mode():
                 try:
                     signal_id = int(input("Digite o ID do sinal: ").strip())
                     signal = analyzer.get_signal_by_id(signal_id)
-        
                     if signal:
                         result = analyzer.analyze_signal(signal)
                         analyzer.print_analysis_result(result)
                         analyzer.save_analysis_result(result)
-                    else:
-                        print(f"\n❌ Sinal com ID {signal_id} não encontrado.")
-                except (ValueError, TypeError):
-                    print("\n❌ ID inválido. Digite um número inteiro.")
+                except (ValueError, TypeError): print("❌ ID inválido.")
             
             elif choice == "2":
-                date_str = input("Digite a data (DD-MM-AAAA): ").strip()
-                symbol_input = input("Digite o símbolo (ex: ETH ou ETHUSDT): ").strip()
-                
                 try:
-                    datetime.strptime(date_str, "%d-%m-%Y")
-                    
-                    if symbol_input:
-                        symbol = symbol_input.upper()
-                        if not symbol.endswith("USDT"):
-                            symbol += "USDT"
-                    else:
-                        symbol = None
-
+                    date_str = input("Digite a data (DD-MM-AAAA): ").strip()
+                    symbol_input = input("Digite o símbolo (ex: ETH ou ETHUSDT, opcional): ").strip()
+                    symbol = symbol_input.upper() if symbol_input else None
+                    if symbol and not symbol.endswith("USDT"): symbol += "USDT"
                     signals = analyzer.get_signals_by_date_symbol(date_str, symbol)
                     if signals:
-                        print(f"\n📋 Encontrados {len(signals)} sinais:")
-                        for i, s in enumerate(signals):
-                            tf = s.get('timeframe', 'N/A')
-                            print(f"{i+1}. ID: {s['id']} - {s['symbol']} {tf} {s['side']} @ {s['created_at']}")
-                        
-                        try:
-                            choice_idx = int(input("\nDigite o número do sinal para analisar (ou 0 para voltar): ").strip())
-                            if 1 <= choice_idx <= len(signals):
-                                result = analyzer.analyze_signal(signals[choice_idx-1])
-                                analyzer.print_analysis_result(result)
-                                analyzer.save_analysis_result(result)
-                        except (ValueError, TypeError):
-                            print("\n❌ Digite um número válido.")
-                except ValueError:
-                    print("\n❌ Formato de data inválido. Use DD-MM-AAAA.")
-            
+                        print(f"\n📋 Sinais encontrados:")
+                        for i, s in enumerate(signals): print(f"{i+1}. ID:{s['id']} {s['symbol']} {s.get('timeframe','N/A')} {s['side']}")
+                        choice_idx = int(input("\nDigite o número do sinal para analisar (ou 0 para voltar): ").strip())
+                        if 1 <= choice_idx <= len(signals):
+                            result = analyzer.analyze_signal(signals[choice_idx-1])
+                            analyzer.print_analysis_result(result)
+                            analyzer.save_analysis_result(result)
+                except ValueError: print("❌ Formato de data inválido.")
+                except Exception as e: logger.error(f"Erro na opção 2: {e}")
+
             elif choice == "3":
-                print("\n🔍 MONITOR DE SINAIS")
-                print("1. Monitorar sinais não analisados")
-                print("2. Monitorar sinais dos últimos X dias")
-                print("3. Voltar")
-                
+                print("\n🔍 MONITOR DE SINAIS\n1. Monitorar sinais não analisados\n2. Monitorar sinais dos últimos X dias\n3. Voltar")
                 monitor_choice = input("\nEscolha uma opção (1-3): ").strip()
-                
                 if monitor_choice == "1":
-                    limit = input("Número máximo de sinais (padrão: 100): ").strip()
-                    limit = int(limit) if limit.isdigit() else 100
+                    limit = int(input("Número máximo de sinais (padrão 100): ").strip() or 100)
                     analyzer.monitor_all_signals(period_days=None, limit=limit)
-                
                 elif monitor_choice == "2":
-                    days = input("Número de dias para análise (padrão: 7): ").strip()
-                    days = int(days) if days.isdigit() else 7
-                    
-                    limit = input("Número máximo de sinais (padrão: 100): ").strip()
-                    limit = int(limit) if limit.isdigit() else 100
-                    
+                    days = int(input("Número de dias para análise (padrão 7): ").strip() or 7)
+                    limit = int(input("Número máximo de sinais (padrão 100): ").strip() or 100)
                     analyzer.monitor_all_signals(period_days=days, limit=limit)
             
             elif choice == "4":
-                print("\n👋 Saindo...")
-                break
+                print("\n👋 Saindo..."); break
             else:
-                print("\n❌ Opção inválida.")
+                print("❌ Opção inválida.")
     except Exception as e:
-        logger.error(f"ERRO CRÍTICO NO MODO INTERATIVO: {e}")
+        logger.error(f"ERRO CRÍTICO: {e}")
         traceback.print_exc()
     finally:
         analyzer.close_connections()
 
-def main():
-    print("\n" + "="*60 + "\n💎 ANALISADOR DIVAP v2.0\n" + "="*60)
-    print("Este programa analisa sinais para a estratégia DIVAP.")
-    interactive_mode()
-
 if __name__ == "__main__":
-    main()
+    interactive_mode()
