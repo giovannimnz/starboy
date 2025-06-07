@@ -697,22 +697,49 @@ class DIVAPAnalyzer:
         self.cursor.execute("SELECT COALESCE(MAX(id), 0) AS max_id FROM webhook_signals")
         row = self.cursor.fetchone()
         last_processed_id = row["max_id"] or 0
-
-        while True:
-            print(f"[{datetime.now()}] Verificando novos sinais após ID {last_processed_id}...")
-            self.cursor.execute("SELECT * FROM webhook_signals WHERE id > %s ORDER BY id ASC", (last_processed_id,))
-            new_signals = self.cursor.fetchall()
-            if new_signals:
-                print(f"[{datetime.now()}] Encontrados {len(new_signals)} novos sinais.")
-            else:
-                print(f"[{datetime.now()}] Nenhum novo sinal encontrado.")
-            # resto do código...
-            for signal in new_signals:
-                result = self.analyze_signal(signal)
-                self.save_analysis_result(result)
-                if signal["id"] > last_processed_id:
-                    last_processed_id = signal["id"]
-            time.sleep(2)  # Intervalo entre verificações (ajuste conforme necessário)
+        
+        print(f"[{datetime.now()}] Iniciando monitoramento em tempo real. Processando sinais a partir do ID {last_processed_id+1}...")
+        print("Aguardando novos sinais... (pressione Ctrl+C para interromper)")
+        
+        last_check_had_signals = False
+        check_count = 0
+        
+        try:
+            while True:
+                check_count += 1
+                
+                # Executa a busca
+                self.cursor.execute("SELECT * FROM webhook_signals WHERE id > %s ORDER BY id ASC", (last_processed_id,))
+                new_signals = self.cursor.fetchall()
+                
+                # Só mostra mensagens se encontrou sinais
+                if new_signals:
+                    print(f"\n[{datetime.now()}] Encontrados {len(new_signals)} novos sinais!")
+                    
+                    # Processa os sinais
+                    for signal in new_signals:
+                        print(f"Processando sinal #{signal['id']} - {signal['symbol']} {signal.get('timeframe', 'N/A')} {signal['side']}")
+                        result = self.analyze_signal(signal)
+                        self.save_analysis_result(result)
+                        if signal["id"] > last_processed_id:
+                            last_processed_id = signal["id"]
+                    
+                    last_check_had_signals = True
+                # Só exibe mensagem de "nenhum sinal" a cada 30 verificações (1 minuto), para não poluir
+                elif last_check_had_signals or check_count % 30 == 0:
+                    print(f"[{datetime.now()}] Nenhum novo sinal encontrado. Última ID processada: {last_processed_id}")
+                    last_check_had_signals = False
+                    check_count = 0
+                
+                # Reconectar caso a conexão seja perdida
+                if not self.conn.is_connected():
+                    print("[ALERTA] Conexão perdida, reconectando...")
+                    self.connect_db()
+                
+                time.sleep(2)  # Intervalo entre verificações (ajuste conforme necessário)
+        
+        except KeyboardInterrupt:
+            print("\n\nMonitoramento interrompido pelo usuário. Voltando ao menu principal...\n")
 
 def interactive_mode():
     analyzer = DIVAPAnalyzer(DB_CONFIG, BINANCE_CONFIG)
