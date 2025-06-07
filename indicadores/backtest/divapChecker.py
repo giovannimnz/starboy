@@ -542,19 +542,78 @@ class DIVAPAnalyzer:
 
     def _get_timeframe_delta(self, timeframe: str) -> Optional[int]:
         """
-        Converte o timeframe para um valor em minutos.
+        Converte o timeframe para um valor em minutos, aceitando múltiplos formatos.
         
         Args:
-            timeframe: String do timeframe (1m, 5m, 15m, 1h, etc.)
-            
+            timeframe: String do timeframe em vários formatos possíveis
+                      (1m, 5m, 15m, 1h, 1H, 60m, 4h, 4H, 240m, etc.)
+                
         Returns:
-            int: Número de minutos correspondente ao timeframe
+            int: Número de minutos correspondente ao timeframe ou None se inválido
         """
+        if not timeframe:
+            return None
+            
+        # Normalizar o input (remover espaços, converter para minúsculas)
+        tf = timeframe.strip().lower()
+        
+        # Dicionário expandido com múltiplos formatos para cada timeframe
         tf_dict = {
-            "1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30, "1h": 60, "2h": 120,
-            "4h": 240, "6h": 360, "8h": 480, "12h": 720, "1d": 1440, "3d": 4320, "1w": 10080
+            # Formatos para minutos
+            "1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30, 
+            # Formatos para horas (tanto em 'h' quanto equivalente em minutos)
+            "1h": 60, "60m": 60, 
+            "2h": 120, "120m": 120,
+            "4h": 240, "240m": 240, 
+            "6h": 360, "360m": 360,
+            "8h": 480, "480m": 480,
+            "12h": 720, "720m": 720,
+            # Formatos para dias
+            "1d": 1440, "1440m": 1440, "24h": 1440,
+            "3d": 4320, "4320m": 4320, "72h": 4320,
+            # Formatos para semanas
+            "1w": 10080, "10080m": 10080, "168h": 10080, "7d": 10080
         }
-        return tf_dict.get(timeframe.lower())
+        
+        # Verificar no dicionário
+        if tf in tf_dict:
+            return tf_dict[tf]
+        
+        # Se não encontrou, tentar analisar o padrão
+        import re
+        match = re.match(r'(\d+)([mhdw])', tf)
+        if match:
+            value, unit = match.groups()
+            value = int(value)
+            
+            # Converter para minutos baseado na unidade
+            if unit == 'm':
+                return value
+            elif unit == 'h':
+                return value * 60
+            elif unit == 'd':
+                return value * 1440  # 24h * 60m
+            elif unit == 'w':
+                return value * 10080  # 7d * 24h * 60m
+        
+        # Suporte especial para formatos com letras maiúsculas (1H, 4H, etc)
+        match = re.match(r'(\d+)([MHDW])', timeframe)
+        if match:
+            value, unit = match.groups()
+            value = int(value)
+            
+            # Converter para minutos baseado na unidade
+            if unit == 'M':
+                return value
+            elif unit == 'H':
+                return value * 60
+            elif unit == 'D':
+                return value * 1440
+            elif unit == 'W':
+                return value * 10080
+                
+        logger.warning(f"Formato de timeframe não reconhecido: {timeframe}")
+        return None
 
     def _format_symbol_for_binance(self, symbol: str) -> str:
         """
