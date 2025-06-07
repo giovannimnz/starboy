@@ -11,6 +11,15 @@ from dotenv import load_dotenv
 import pathlib
 from senhas import pers_api_hash, pers_api_id
 
+# No início do arquivo, após os imports existentes
+import sys
+import os
+from pathlib import Path
+
+# Adicionar o diretório backtest ao path para permitir a importação
+sys.path.append(str(Path(__file__).parent / 'backtest'))
+from backtest.divap_check import DIVAPAnalyzer, DB_CONFIG, BINANCE_CONFIG
+
 # Carregar variáveis de ambiente do arquivo .env na raiz do projeto
 env_path = pathlib.Path(__file__).parents[1] / '.env'
 load_dotenv(dotenv_path=env_path)
@@ -52,6 +61,14 @@ async def shutdown(client):
     try:
         print("[INFO] Desconectando cliente Telegram...")
         await client.disconnect()
+
+        # Fechar conexões do analisador DIVAP
+        if divap_analyzer:
+            try:
+                divap_analyzer.close_connections()
+                print("[INFO] Conexões do analisador DIVAP fechadas")
+            except Exception as e:
+                print(f"[ERRO] Erro ao fechar conexões do analisador DIVAP: {e}")
 
         # Aguardar um pouco para garantir que todas as tarefas sejam encerradas
         await asyncio.sleep(1)
@@ -303,7 +320,7 @@ def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent, si
 def save_to_database(trade_data):
     """
     Salva as informações de operação de trade no banco de dados MySQL principal e em bancos adicionais,
-    evitando duplicar se já existir registro com o mesmo message_id e symbol.
+    verificando antes se o sinal é uma DIVAP válida.
     """
     symbol = trade_data["symbol"]
     message_id_orig = trade_data.get("id_mensagem_origem_sinal")
@@ -333,6 +350,46 @@ def save_to_database(trade_data):
             print(f"[INFO] Sinal duplicado (symbol={symbol}, message_id_orig={message_id_orig}, chat_id_orig_sinal={trade_data.get('chat_id_origem_sinal')}). Pulando inserção.")
             return existing["id"]
         
+        # 1. ANALISE DIVAP - Verificar se o sinal é uma DIVAP válida
+        is_divap = False
+        divap_message = None
+        cancel_reason = None
+        
+        # Inicializar o analisador DIVAP se necessário
+        if initialize_divap_analyzer():
+            try:
+                # Criar um objeto de sinal no formato esperado pelo divapChecker
+                signal_obj = {
+                    "id": 0,  # Será substituído pelo ID real após a inserção
+                    "symbol": trade_data["symbol"],
+                    "timeframe": trade_data.get("timeframe"),
+                    "side": trade_data["side"],
+                    "created_at": datetime.now()
+                }
+                
+                # Analisar o sinal
+                result = divap_analyzer.analyze_signal(signal_obj)
+                
+                # Verificar resultado da análise
+                if "error" not in result:
+                    is_divap = result.get("divap_confirmed", False)
+                    divap_message = result.get("message", "")
+                    
+                    if not is_divap:
+                        if not result.get("high_volume_any", False) and not (result.get("bull_div_any", False) or result.get("bear_div_any", False)):
+                            cancel_reason = "Volume abaixo da média e divergência não encontrada"
+                        elif not result.get("high_volume_any", False):
+                            cancel_reason = "Volume abaixo da média"
+                        else:
+                            cancel_reason = "Divergência não encontrada"
+                
+                print(f"[INFO] Análise DIVAP para {symbol}: {'✅ Confirmado' if is_divap else '❌ Não confirmado'}")
+                if divap_message:
+                    print(f"[INFO] Mensagem: {divap_message}")
+            except Exception as e:
+                print(f"[ERRO] Falha na análise DIVAP: {e}")
+                # Continuar com a inserção mesmo se a análise falhar
+        
         # Prepare TP1 to TP5 values
         tp_prices = [None] * 5  # Initialize a list with 5 None values by default
         
@@ -345,9 +402,13 @@ def save_to_database(trade_data):
               INSERT INTO webhook_signals
               (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price,
                chat_id, status, timeframe, message_id, message_id_orig,
-               tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, message_source)
-              VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, message_source,
+               divap_confirmado, cancelado_checker, error_message)
+              VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
               """
+
+        # Definir o status com base na análise DIVAP
+        status = "PENDING" if is_divap else "CANCELED"
 
         values = (
             trade_data["symbol"],
@@ -358,7 +419,7 @@ def save_to_database(trade_data):
             trade_data["tp"],  # Selected target for tp_price (main TP)
             trade_data["stop_loss"],
             trade_data["chat_id"],
-            "PENDING", # Initial status
+            status,  # Status baseado na análise DIVAP
             trade_data.get("timeframe", ""),
             trade_data.get("message_id"),
             trade_data.get("id_mensagem_origem_sinal"),
@@ -367,7 +428,10 @@ def save_to_database(trade_data):
             tp_prices[2],  # tp3_price
             tp_prices[3],  # tp4_price
             tp_prices[4],  # tp5_price
-            trade_data.get("message_source")  # Nova coluna message_source
+            trade_data.get("message_source"),  # message_source
+            1 if is_divap else 0,  # divap_confirmado
+            0 if is_divap else 1,  # cancelado_checker
+            cancel_reason  # error_message
         )
 
         cursor.execute(sql, values)
@@ -375,8 +439,20 @@ def save_to_database(trade_data):
         conn.commit()
 
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Operation saved to database: {trade_data['symbol']} (ID: {signal_id})")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] DIVAP status: {'Confirmado' if is_divap else 'Não confirmado'}")
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] TPs saved: TP1={tp_prices[0]}, TP2={tp_prices[1]}, TP3={tp_prices[2]}, TP4={tp_prices[3]}, TP5={tp_prices[4]}")
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Message source: {trade_data.get('message_source')}")
+        
+        # Se a análise foi bem-sucedida, salvar também na tabela divap_analysis
+        if is_divap is not None and divap_analyzer and signal_id > 0:
+            try:
+                # Atualizar o ID do sinal no resultado da análise
+                result["signal_id"] = signal_id
+                # Salvar o resultado na tabela divap_analysis
+                divap_analyzer.save_analysis_result(result)
+                print(f"[INFO] Análise DIVAP para sinal ID {signal_id} salva na tabela divap_analysis")
+            except Exception as e:
+                print(f"[ERRO] Falha ao salvar análise DIVAP em divap_analysis: {e}")
         
         # 2. Salvar nos bancos adicionais
         additional_dbs = find_additional_databases()
@@ -1273,11 +1349,45 @@ def format_trade_message(trade_info, selected_tp):
     message_text += f"STOP LOSS: {trade_info['stop_loss']}"
     return message_text
 
+# Após a definição das constantes globais
+
+# Inicializar o analisador DIVAP
+divap_analyzer = None
+
+def initialize_divap_analyzer():
+    global divap_analyzer
+    if divap_analyzer is None:
+        try:
+            divap_analyzer = DIVAPAnalyzer(
+                db_config={
+                    "host": DB_HOST,
+                    "user": DB_USER,
+                    "password": DB_PASSWORD,
+                    "database": DB_NAME
+                },
+                binance_config={
+                    "apiKey": os.getenv('API_KEY'),
+                    "secret": os.getenv('API_SECRET'),
+                    "enableRateLimit": True
+                }
+            )
+            divap_analyzer.connect_db()
+            divap_analyzer.connect_exchange()
+            print(f"[INFO] Analisador DIVAP inicializado com sucesso")
+            return True
+        except Exception as e:
+            print(f"[ERRO] Falha ao inicializar analisador DIVAP: {e}")
+            return False
+    return True
+
 async def main():
     """
     Função principal para iniciar o cliente
     """
     print("[INFO] Iniciando monitoramento do Telegram...")
+
+    # Inicializar o analisador DIVAP
+    initialize_divap_analyzer()
 
     # Iniciar o cliente
     await client.start()
