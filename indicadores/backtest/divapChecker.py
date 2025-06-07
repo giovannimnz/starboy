@@ -303,6 +303,11 @@ class DIVAPAnalyzer:
             result["divap_confirmed"] = False
             result["message"] = f"❌ Sinal de {side.upper()} NÃO confirmado (não houve volume e divergência simultâneos em até 3 candles)."
         
+        # Adicionar informações para compatibilidade com print_analysis_result
+        result["high_volume_any"] = high_volume_any
+        result["bull_div_any"] = bull_div_any if side.upper() == "COMPRA" else False
+        result["bear_div_any"] = bear_div_any if side.upper() == "VENDA" else False
+        
         return result
 
     def _get_timeframe_delta(self, timeframe: str) -> Optional[int]:
@@ -448,47 +453,32 @@ class DIVAPAnalyzer:
         print(f"\n{'='*60}\n📊 ANÁLISE DIVAP - SINAL #{result['signal_id']} - {result['symbol']} ({result['timeframe']})\n{'='*60}")
         print(f"📅 Data/Hora do Sinal: {result['created_at']}")
         
-        if 'candles_info' in result:
-            print(f"📈 Período dos Dados: {result['candles_info']['first_candle_time']} a {result['candles_info']['last_candle_time']} ({result['candles_info']['total_candles']} candles)")
-        
-        candle_open_time = result['previous_candle_time']
+        # Informações sobre os candles analisados
         tf_minutes = self._get_timeframe_delta(result['timeframe'])
-        candle_close_time = candle_open_time + timedelta(minutes=tf_minutes)
-        print(f"🕯️  Candle Analisado: {candle_open_time} (Fechou em {candle_close_time})")
         
-        print(f"📈 Direção: {result['side']} | 💹 Preço de Fechamento: {result['close_price']:.4f}\n{'-'*60}")
+        # Mostrar os candles analisados (até 3)
+        if 'candles_used' in result:
+            print(f"\n🕯️ CANDLES ANALISADOS:")
+            for i, candle_time in enumerate(result['candles_used']):
+                print(f"  • Candle {i+1}: {candle_time} a {candle_time + timedelta(minutes=tf_minutes)}")
         
-        print(f"🔍 INDICADORES DO CANDLE:")
-        rsi_val, volume_sma = result.get('rsi'), result.get('volume_sma')
-        print(f"  • RSI: {'Indisponível' if pd.isna(rsi_val) else f'{rsi_val:.2f}'}")
-        print(f"  • Volume: {result.get('volume', 0):.0f} (Média: {'Indisponível' if pd.isna(volume_sma) else f'{volume_sma:.0f}'})")
-        print(f"{'-'*60}")
+        # Mostrar volume e divergência encontrados
+        print(f"\n🔍 CONDIÇÕES DIVAP:")
         
-        print("🔍 CONDIÇÕES DIVAP:")
-        print(f"  • Volume > Média: {'✅ SIM' if result.get('high_volume') else '❌ NÃO'}")
+        # Volume acima da média em algum dos candles?
+        print(f"  • Volume > Média: {'✅ SIM' if result.get('high_volume_any', False) else '❌ NÃO'}")
         
+        # Divergência encontrada em algum dos candles?
         if result['side'].upper() == "COMPRA":
-            print(f"  • Divergência Altista: {'✅ SIM' if result.get('bull_div') else '❌ NÃO'}")
-            #print(f"  • Padrão de Reversão de Alta: {'✅ SIM' if result.get('bull_reversal_pattern') else '❌ NÃO'}")
+            print(f"  • Divergência Altista: {'✅ SIM' if result.get('bull_div_any', False) else '❌ NÃO'}")
         else:
-            print(f"  • Divergência Baixista: {'✅ SIM' if result.get('bear_div') else '❌ NÃO'}")
-            #print(f"  • Padrão de Reversão de Baixa: {'✅ SIM' if result.get('bear_reversal_pattern') else '❌ NÃO'}")
+            print(f"  • Divergência Baixista: {'✅ SIM' if result.get('bear_div_any', False) else '❌ NÃO'}")
         
-        if 'pivot_info' in result and 'last_pivots' in result['pivot_info']:
-            pivots = result['pivot_info']['last_pivots']
-            if result['side'].upper() == "VENDA" and "last_high_pivot" in pivots:
-                last_high, second_high = pivots["last_high_pivot"], pivots["second_last_high_pivot"]
-                print(f"  • Detalhe Div.: Topo Recente {second_high['price']:.2f} (RSI {second_high['rsi']:.1f}) -> {last_high['price']:.2f} (RSI {last_high['rsi']:.1f})")
-            elif result['side'].upper() == "COMPRA" and "last_low_pivot" in pivots:
-                last_low, second_low = pivots["last_low_pivot"], pivots["second_last_low_pivot"]
-                
-                # Adicionalmente, para maior robustez, você pode modificar a impressão:
-                if 'rsi' in second_low and 'rsi' in last_low:
-                    print(f"  • Detalhe Div.: Fundo Recente {second_low['price']:.2f} (RSI {second_low['rsi']:.1f}) -> {last_low['price']:.2f} (RSI {last_low['rsi']:.1f})")
-                else:
-                    print(f"  • Detalhe Div.: Fundo Recente {second_low['price']:.2f} -> {last_low['price']:.2f} (RSI indisponível)")
-        
-        print(f"\n🏆 CONCLUSÃO FINAL: {result.get('message', 'N/A')}\n{'='*60}\n")
+        # Conclusão final
+        print(f"\n🏆 CONCLUSÃO FINAL: {result.get('message', 'N/A')}")
+        status = "✅ CONFIRMADO" if result.get('divap_confirmed', False) else "❌ NÃO CONFIRMADO"
+        print(f"📊 Status DIVAP: {status}")
+        print(f"{'='*60}\n")
 
     def _normalize_timeframe(self, timeframe: str) -> str:
         """
