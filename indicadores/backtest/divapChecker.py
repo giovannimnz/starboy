@@ -232,6 +232,17 @@ class DIVAPAnalyzer:
             df.set_index("timestamp", inplace=True)
             
             logger.info(f"Dados OHLCV obtidos: {len(df)} candles de {df.index[0]} a {df.index[-1]}")
+            
+            # Após receber os dados
+            time_diffs = df.index.to_series().diff()
+            expected_diff = pd.Timedelta(minutes=tf_minutes)
+            if (time_diffs > expected_diff * 1.1).any():
+                logger.warning(f"Detectados gaps nos dados. Isso pode afetar o cálculo do RSI.")
+            
+            logger.info(f"Total de candles: {len(df)}")
+            logger.info(f"Candles com RSI válido: {df['RSI'].notna().sum()}")
+            logger.info(f"Primeiro candle com RSI válido: {df[df['RSI'].notna()].index[0] if df['RSI'].notna().any() else 'Nenhum'}")
+            
             return df
             
         except Exception as e:
@@ -415,7 +426,7 @@ class DIVAPAnalyzer:
             return {"error": f"Timeframe inválido: {timeframe}"}
         
         # Ajustar o 'since_dt' para buscar candles o suficiente para os indicadores e pivôs.
-        required_candles = max(RSI_PERIODS, VOLUME_SMA_PERIODS, PIVOT_LEFT) + 5 # Adicione uma margem
+        required_candles = max(RSI_PERIODS, VOLUME_SMA_PERIODS, PIVOT_LEFT) + 30
         since_dt = created_at - timedelta(minutes=td * required_candles)
         
         # Buscar dados OHLCV
