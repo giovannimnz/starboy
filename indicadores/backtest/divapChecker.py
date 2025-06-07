@@ -521,7 +521,7 @@ class DIVAPAnalyzer:
         last_pivots = {}
         
         # Tenta identificar os últimos pivôs de baixa
-        low_pivots = df[df["pivot_low"]].sort_index(ascending=False)
+        low_pivots = df_until_signal[df_until_signal["pivot_low"]].sort_index(ascending=False)
         if len(low_pivots) >= 1:
             last_low = low_pivots.iloc[0]
             last_pivots["last_low_pivot"] = {
@@ -539,7 +539,7 @@ class DIVAPAnalyzer:
                 }
         
         # Tenta identificar os últimos pivôs de alta
-        high_pivots = df[df["pivot_high"]].sort_index(ascending=False)
+        high_pivots = df_until_signal[df_until_signal["pivot_high"]].sort_index(ascending=False)
         if len(high_pivots) >= 1:
             last_high = high_pivots.iloc[0]
             last_pivots["last_high_pivot"] = {
@@ -638,13 +638,9 @@ class DIVAPAnalyzer:
                 bear_div.iloc[i] = True
         
         # Adicionar divergências ao DataFrame
-        df_until_signal.loc[:, "bull_div"] = bull_div
-        df_until_signal["bear_div"] = bear_div
-        
-        # Identificar DIVAP completo (todos os critérios juntos)
-        # Agora usamos reversão de preço em vez de padrões de velas específicos
-        df_until_signal["bull_divap"] = (df_until_signal["bull_div"] & df_until_signal["high_volume"] & df_until_signal["price_reversal_up"])
-        df_until_signal["bear_divap"] = (df_until_signal["bear_div"] & df_until_signal["high_volume"] & df_until_signal["price_reversal_down"])
+        df_until_signal.loc[:, "bear_div"] = bear_div
+        df_until_signal.loc[:, "bull_divap"] = (df_until_signal["bull_div"] & df_until_signal["high_volume"] & df_until_signal["price_reversal_up"])
+        df_until_signal.loc[:, "bear_divap"] = (df_until_signal["bear_div"] & df_until_signal["high_volume"] & df_until_signal["price_reversal_down"])
         
         # Obter o último estado de DIVAP até o candle do sinal
         last_divap_state = df_until_signal.iloc[-1]
