@@ -322,14 +322,16 @@ def save_to_database(trade_data):
 
         check_sql = """
           SELECT id FROM webhook_signals
-          WHERE symbol = %s AND message_id_orig = %s
+          WHERE symbol = %s
+            AND message_id_orig = %s
+            AND chat_id_orig_sinal = %s
           LIMIT 1
         """
-        cursor.execute(check_sql, (symbol, message_id_orig))
+        cursor.execute(check_sql, (symbol, message_id_orig, trade_data.get("chat_id_origem_sinal")))
         existing = cursor.fetchone()
         
         if existing:
-            print(f"[INFO] Sinal duplicado detectado (symbol={symbol}, message_id_orig={message_id_orig}). Pulando inserção.")
+            print(f"[INFO] Sinal duplicado (symbol={symbol}, message_id_orig={message_id_orig}, chat_id_orig_sinal={trade_data.get('chat_id_origem_sinal')}). Pulando inserção.")
             return existing["id"]
         
         # Prepare TP1 to TP5 values
@@ -615,7 +617,7 @@ def save_to_additional_database(trade_data, db_name, tp_prices):
         cursor = conn.cursor()
 
         # Prepare TP1 to TP5 values
-        tp_prices = [None] * 5  # Initialize a list with 5 None values by default
+        tp_prices = [None] # Initialize a list with 5 None values by default
         
         all_tps = trade_data.get('all_tps', []) # Get all TPs from trade_data, default to empty list
         for i in range(min(5, len(all_tps))): # Fill with available values, up to 5
