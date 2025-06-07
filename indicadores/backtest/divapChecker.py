@@ -499,6 +499,69 @@ class DIVAPAnalyzer:
             else:
                 result["message"] = "❌ Sinal de VENDA NÃO confirmado como DIVAP baixista"
         
+        # Após calcular os indicadores, adicionar informações sobre os candles e pivôs
+        # (após a linha df = self.calculate_indicators(df))
+        
+        # Informações sobre candles
+        candles_info = {
+            "total_candles": len(df),
+            "first_candle_time": df.index[0],
+            "last_candle_time": df.index[-1],
+            "valid_rsi_candles": df["RSI"].notna().sum(),
+            "valid_volume_sma_candles": df["VolSMA"].notna().sum(),
+        }
+        
+        # Informações sobre pivôs
+        pivot_info = {
+            "total_highs": df["pivot_high"].sum(),
+            "total_lows": df["pivot_low"].sum(),
+        }
+        
+        # Coletar informações sobre os últimos pivôs para diagnóstico
+        last_pivots = {}
+        
+        # Tenta identificar os últimos pivôs de baixa
+        low_pivots = df[df["pivot_low"]].sort_index(ascending=False)
+        if len(low_pivots) >= 1:
+            last_low = low_pivots.iloc[0]
+            last_pivots["last_low_pivot"] = {
+                "time": low_pivots.index[0],
+                "price": last_low["low"],
+                "rsi": last_low["RSI"]
+            }
+            
+            if len(low_pivots) >= 2:
+                second_last_low = low_pivots.iloc[1]
+                last_pivots["second_last_low_pivot"] = {
+                    "time": low_pivots.index[1],
+                    "price": second_last_low["low"],
+                    "rsi": second_last_low["RSI"]
+                }
+        
+        # Tenta identificar os últimos pivôs de alta
+        high_pivots = df[df["pivot_high"]].sort_index(ascending=False)
+        if len(high_pivots) >= 1:
+            last_high = high_pivots.iloc[0]
+            last_pivots["last_high_pivot"] = {
+                "time": high_pivots.index[0],
+                "price": last_high["high"],
+                "rsi": last_high["RSI"]
+            }
+            
+            if len(high_pivots) >= 2:
+                second_last_high = high_pivots.iloc[1]
+                last_pivots["second_last_high_pivot"] = {
+                    "time": high_pivots.index[1],
+                    "price": second_last_high["high"],
+                    "rsi": second_last_high["RSI"]
+                }
+        
+        pivot_info["last_pivots"] = last_pivots
+        candles_info["pivot_info"] = pivot_info
+        
+        # Adicionar as informações de diagnóstico ao resultado
+        result["candles_info"] = candles_info
+        
         return result
 
     def _get_timeframe_delta(self, timeframe: str) -> Optional[int]:
@@ -774,7 +837,7 @@ class DIVAPAnalyzer:
 
     def print_analysis_result(self, result: Dict) -> None:
         """
-        Imprime os resultados da análise de forma formatada.
+        Imprime os resultados da análise de forma formatada com logs detalhados.
         
         Args:
             result: Resultado da análise
@@ -788,15 +851,56 @@ class DIVAPAnalyzer:
         print(f"{'=' * 60}")
         print(f"📅 Data/Hora do Sinal: {result['created_at']}")
         
+        # Informações detalhadas sobre o período analisado
+        if 'candles_info' in result:
+            print(f"\n📈 DADOS UTILIZADOS NA ANÁLISE:")
+            print(f"  • Total de candles analisados: {result['candles_info']['total_candles']}")
+            print(f"  • Período analisado: de {result['candles_info']['first_candle_time']} a {result['candles_info']['last_candle_time']}")
+            print(f"  • Candles com RSI válido: {result['candles_info']['valid_rsi_candles']} (período RSI: {RSI_PERIODS})")
+            print(f"  • Candles com média de volume válida: {result['candles_info']['valid_volume_sma_candles']} (período Volume SMA: {VOLUME_SMA_PERIODS})")
+            print(f"  • Candles com detecção de pivôs: {result['candles_info']['total_candles']} (período pivôs: {PIVOT_LEFT})")
+            
+            # Informações sobre pivôs detectados
+            if 'pivot_info' in result['candles_info']:
+                pivot_info = result['candles_info']['pivot_info']
+                print(f"\n🔍 PIVÔS DETECTADOS:")
+                print(f"  • Topos (highs) detectados: {pivot_info['total_highs']}")
+                print(f"  • Fundos (lows) detectados: {pivot_info['total_lows']}")
+                
+                if 'last_pivots' in pivot_info:
+                    last_pivots = pivot_info['last_pivots']
+                    if result['side'].upper() == "COMPRA":
+                        if 'last_low_pivot' in last_pivots and 'second_last_low_pivot' in last_pivots:
+                            last_low = last_pivots['last_low_pivot']
+                            second_last_low = last_pivots['second_last_low_pivot']
+                            print(f"\n📊 DETALHES DA DIVERGÊNCIA ALTISTA:")
+                            print(f"  • Último fundo (preço): {last_low['price']:.8f} em {last_low['time']}")
+                            print(f"  • Último fundo (RSI): {last_low['rsi']:.2f}")
+                            print(f"  • Penúltimo fundo (preço): {second_last_low['price']:.8f} em {second_last_low['time']}")
+                            print(f"  • Penúltimo fundo (RSI): {second_last_low['rsi']:.2f}")
+                            print(f"  • Comparação de preço: {'MAIS BAIXO ✅' if last_low['price'] < second_last_low['price'] else 'MAIS ALTO ❌'}")
+                            print(f"  • Comparação de RSI: {'MAIS ALTO ✅' if last_low['rsi'] > second_last_low['rsi'] else 'MAIS BAIXO ❌'}")
+                    else:  # VENDA
+                        if 'last_high_pivot' in last_pivots and 'second_last_high_pivot' in last_pivots:
+                            last_high = last_pivots['last_high_pivot']
+                            second_last_high = last_pivots['second_last_high_pivot']
+                            print(f"\n📊 DETALHES DA DIVERGÊNCIA BAIXISTA:")
+                            print(f"  • Último topo (preço): {last_high['price']:.8f} em {last_high['time']}")
+                            print(f"  • Último topo (RSI): {last_high['rsi']:.2f}")
+                            print(f"  • Penúltimo topo (preço): {second_last_high['price']:.8f} em {second_last_high['time']}")
+                            print(f"  • Penúltimo topo (RSI): {second_last_high['rsi']:.2f}")
+                            print(f"  • Comparação de preço: {'MAIS ALTO ✅' if last_high['price'] > second_last_high['price'] else 'MAIS BAIXO ❌'}")
+                            print(f"  • Comparação de RSI: {'MAIS BAIXO ✅' if last_high['rsi'] < second_last_high['rsi'] else 'MAIS ALTO ❌'}")
+        
         if 'previous_candle_time' in result:
             candle_open_time = result['previous_candle_time']
             tf_minutes = self._get_timeframe_delta(result['timeframe'])
             candle_close_time = candle_open_time + timedelta(minutes=tf_minutes)
-            print(f"🕯️  Candle analisado:")
+            print(f"\n🕯️  Candle analisado:")
             print(f"    • Abertura: {candle_open_time}")
             print(f"    • Fechamento: {candle_close_time}")
         else:
-            print(f"🕯️  Candle analisado (início): {result['previous_candle_time']}")
+            print(f"\n🕯️  Candle analisado (início): {result['previous_candle_time']}")
         
         print(f"📈 Direção: {result['side']}")
         print(f"💹 Preço de fechamento: {result['close_price']:.8f}")
