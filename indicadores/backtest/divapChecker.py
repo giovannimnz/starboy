@@ -428,10 +428,10 @@ class DIVAPAnalyzer:
         
         if result['side'].upper() == "COMPRA":
             print(f"  • Divergência Altista: {'✅ SIM' if result.get('bull_div') else '❌ NÃO'}")
-            print(f"  • Padrão de Reversão de Alta: {'✅ SIM' if result.get('bull_reversal_pattern') else '❌ NÃO'}")
+            #print(f"  • Padrão de Reversão de Alta: {'✅ SIM' if result.get('bull_reversal_pattern') else '❌ NÃO'}")
         else:
             print(f"  • Divergência Baixista: {'✅ SIM' if result.get('bear_div') else '❌ NÃO'}")
-            print(f"  • Padrão de Reversão de Baixa: {'✅ SIM' if result.get('bear_reversal_pattern') else '❌ NÃO'}")
+            #print(f"  • Padrão de Reversão de Baixa: {'✅ SIM' if result.get('bear_reversal_pattern') else '❌ NÃO'}")
         
         if 'pivot_info' in result and 'last_pivots' in result['pivot_info']:
             pivots = result['pivot_info']['last_pivots']
