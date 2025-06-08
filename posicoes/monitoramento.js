@@ -361,7 +361,7 @@ async function checkNewTrades() {
       ORDER BY created_at ASC
     `);
 
-    console.log(`[MONITOR] Encontrados ${canceledSignals.length} sinais cancelados pendentes de notificação`);
+    //console.log(`[MONITOR] Encontrados ${canceledSignals.length} sinais cancelados pendentes de notificação`);
 
 for (const signal of canceledSignals) {
   try {
