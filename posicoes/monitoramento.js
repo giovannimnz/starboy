@@ -403,7 +403,7 @@ for (const signal of canceledSignals) {
       } catch (replyError) {
         // Se falhar com erro de mensagem não encontrada, envia sem resposta
         if (replyError.message.includes('message to be replied not found')) {
-          console.log(`[MONITOR] Mensagem original não encontrada para sinal ${signal.id}. Enviando sem resposta.`);
+          //console.log(`[MONITOR] Mensagem original não encontrada para sinal ${signal.id}. Enviando sem resposta.`);
           await bot.telegram.sendMessage(
             signal.chat_id,
             `⚠️ Sinal para ${signal.symbol} Cancelado ⚠️\n(ID: ${signal.id})\n\nMotivo: ${formattedReason}`
