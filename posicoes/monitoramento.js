@@ -361,49 +361,71 @@ async function checkNewTrades() {
       ORDER BY created_at ASC
     `);
 
-    for (const signal of canceledSignals) {
+    console.log(`[MONITOR] Encontrados ${canceledSignals.length} sinais cancelados pendentes de notificação`);
+
+for (const signal of canceledSignals) {
+  try {
+    // Verificar se temos chat_id e message_id para enviar a notificação
+    if (signal.chat_id && bot) {
+      const errorMessage = signal.error_message || 'Motivo não especificado';
+      
+      // Extrair o message_id da mesma forma que em processSignal
+      const originalMessageId = signal.message_id; // Extrair message_id como é feito em processSignal
+      
+      let telegramOptions = {};
+      
+      // Verificar se temos um ID de mensagem original para responder
+      if (originalMessageId) {
+        telegramOptions = { reply_to_message_id: originalMessageId };
+      } else if (signal.message_id_orig) {
+        telegramOptions = { reply_to_message_id: signal.message_id_orig };
+      } else if (signal.registry_message_id) {
+        telegramOptions = { reply_to_message_id: signal.registry_message_id };
+      }
+      
+      // Extrair preço do motivo se existir para formatar corretamente
+      let formattedReason = errorMessage;
+      if (errorMessage && errorMessage.includes('\nPreço:')) {
+        // Extrair valores numéricos para formatação
+        formattedReason = errorMessage.replace(/(\d+\.\d+)/g, match => {
+          return formatDecimal(parseFloat(match), 4);
+        });
+      }
+      
       try {
-        // Verificar se temos chat_id e message_id para enviar a notificação
-        if (signal.chat_id && bot) {
-          const errorMessage = signal.error_message || 'Motivo não especificado';
-          
-          // Determinar qual mensagem responder (mensagem original ou registry_message_id)
-          const telegramOptions = {};
-          if (signal.message_id_orig) {
-            telegramOptions.reply_to_message_id = signal.message_id_orig;
-          } else if (signal.registry_message_id) {
-            telegramOptions.reply_to_message_id = signal.registry_message_id;
-          }
-          
-          // Extrair preço do motivo se existir para formatar corretamente
-          let formattedReason = errorMessage;
-          if (errorMessage && errorMessage.includes('\nPreço:')) {
-            // Extrair valores numéricos para formatação
-            formattedReason = errorMessage.replace(/(\d+\.\d+)/g, match => {
-              return formatDecimal(parseFloat(match), 4);
-            });
-          }
-          
+        // Tenta enviar a mensagem como resposta primeiro
+        await bot.telegram.sendMessage(
+          signal.chat_id,
+          `⚠️ Sinal para ${signal.symbol} Cancelado ⚠️\n(ID: ${signal.id})\n\nMotivo: ${formattedReason}`,
+          telegramOptions
+        );
+        console.log(`[MONITOR] Notificação de cancelamento enviada para Sinal ID ${signal.id}`);
+      } catch (replyError) {
+        // Se falhar com erro de mensagem não encontrada, envia sem resposta
+        if (replyError.message.includes('message to be replied not found')) {
+          console.log(`[MONITOR] Mensagem original não encontrada para sinal ${signal.id}. Enviando sem resposta.`);
           await bot.telegram.sendMessage(
             signal.chat_id,
-            `⚠️ Sinal para ${signal.symbol} Cancelado ⚠️\n(ID: ${signal.id})\n\nMotivo: ${formattedReason}`,
-            telegramOptions
+            `⚠️ Sinal para ${signal.symbol} Cancelado ⚠️\n(ID: ${signal.id})\n\nMotivo: ${formattedReason}`
           );
-          
-          console.log(`[MONITOR] Notificação de cancelamento enviada para Sinal ID ${signal.id}`);
         } else {
-          console.log(`[MONITOR] Não foi possível enviar notificação para sinal ${signal.id}: ${!signal.chat_id ? 'chat_id não disponível' : 'bot não inicializado'}`);
+          // Se for outro tipo de erro, relança
+          throw replyError;
         }
-        
-        // Marcar como notificado
-        await db.query(
-          'UPDATE webhook_signals SET sent_msg = 1 WHERE id = ?',
-          [signal.id]
-        );
-      } catch (notifyError) {
-        console.error(`[MONITOR] Erro ao notificar cancelamento do sinal ${signal.id}:`, notifyError.message);
       }
+    } else {
+      console.log(`[MONITOR] Não foi possível enviar notificação para sinal ${signal.id}: ${!signal.chat_id ? 'chat_id não disponível' : 'bot não inicializado'}`);
     }
+    
+    // Marcar como notificado
+    await db.query(
+      'UPDATE webhook_signals SET sent_msg = 1 WHERE id = ?',
+      [signal.id]
+    );
+  } catch (notifyError) {
+    console.error(`[MONITOR] Erro ao notificar cancelamento do sinal ${signal.id}:`, notifyError.message);
+  }
+}
 
   } catch (error) {
     console.error('[MONITOR] Erro ao verificar novas operações:', error);
