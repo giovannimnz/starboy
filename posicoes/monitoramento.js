@@ -150,9 +150,9 @@ async function initializeMonitoring() {
     console.error('[MONITOR] Erro ao iniciar monitoramento de preços:', error);
   }
 
-  scheduledJobs.checkWebsocketsForOpenPositions = schedule.scheduleJob('*/1 * * * *', async () => {
+scheduledJobs.checkWebsocketsForOpenPositions = schedule.scheduleJob('*/1 * * * *', async () => {
   try {
-    //console.log('[MONITOR] Verificando websockets para posições abertas...');
+    console.log('[MONITOR] Verificando websockets para posições abertas...');
     const db = await getDatabaseInstance();
     if (!db) {
       console.error('[MONITOR] Falha ao obter instância do banco de dados');
@@ -169,7 +169,7 @@ async function initializeMonitoring() {
     `);
 
     if (symbols.length > 0) {
-      //console.log(`[MONITOR] Encontrados ${symbols.length} símbolos com atividade que requerem websocket`);
+      console.log(`[MONITOR] Encontrados ${symbols.length} símbolos com atividade que requerem websocket`);
       
       for (const row of symbols) {
         const symbol = row.simbolo || row.symbol;
@@ -178,10 +178,14 @@ async function initializeMonitoring() {
         // Verificar se o websocket está ativo e reabrir se necessário
         if (!websockets.priceWebsockets[symbol] || 
             (websockets.priceWebsockets[symbol] && websockets.priceWebsockets[symbol].readyState !== 1)) {
-          //console.log(`[MONITOR] Reabrindo websocket para ${symbol} (posição/ordem ativa)`);
+          console.log(`[MONITOR] Reabrindo websocket para ${symbol} (posição/ordem ativa)`);
           websockets.ensurePriceWebsocketExists(symbol);
+        } else {
+          console.log(`[MONITOR] Websocket para ${symbol} já está ativo (estado: ${websockets.priceWebsockets[symbol].readyState})`);
         }
       }
+    } else {
+      console.log('[MONITOR] Nenhum símbolo com atividade que requer websocket');
     }
   } catch (error) {
     console.error('[MONITOR] Erro ao verificar websockets para posições abertas:', error);
@@ -263,6 +267,13 @@ async function syncPositionsWithExchange() {
       }
     }
 
+    for (const pos of exchangePositions) {
+      if (Math.abs(pos.quantidade) > 0) {
+      console.log(`[SYNC] Garantindo websocket ativo para ${pos.simbolo} com posição aberta`);
+      websockets.ensurePriceWebsocketExists(pos.simbolo);
+    }
+}
+
   } catch (error) {
     console.error(`[SYNC] Erro crítico ao sincronizar posições com a corretora: ${error.message}`, error.stack || error);
   }
@@ -338,7 +349,6 @@ async function startPriceMonitoring() {
           try {
             const price = await getCurrentPrice(signal.symbol);
             if (price) {
-              // Acionar callback onPriceUpdate para verificar condições
               await onPriceUpdate(signal.symbol, price, db);
             }
           } catch (priceError) {
@@ -1136,6 +1146,18 @@ async function handleAccountUpdate(message, db) {
     } else {
       console.log('[ACCOUNT UPDATE] Sem atualizações de posição nesta mensagem');
     }
+
+    if (message.a && message.a.P) {
+      const positions = message.a.P;
+      for (const position of positions) {
+      const symbol = position.s;
+    if (Math.abs(parseFloat(position.pa)) > 0) {
+      // Se a posição tem quantidade não-zero, garantir que o websocket esteja ativo
+      console.log(`[ACCOUNT UPDATE] Garantindo websocket ativo para ${symbol} com posição aberta`);
+      websockets.ensurePriceWebsocketExists(symbol);
+    }
+  }
+}
   } catch (error) {
     console.error('[ACCOUNT UPDATE] Erro ao processar atualização da conta:', error);
   }
@@ -1481,30 +1503,28 @@ async function updatePositionPrices(db, symbol, currentPrice) {
   try {
     // 1. Buscar posições abertas para o símbolo
     const [positions] = await db.query(
-      'SELECT * FROM posicoes WHERE simbolo = ? AND status = "OPEN"', // Aspas duplas em "OPEN" para consistência com SQL
+      'SELECT * FROM posicoes WHERE simbolo = ? AND status = "OPEN"',
       [symbol]
     );
 
     if (positions.length === 0) {
-        // console.log(`[PRICE UPDATE] Nenhuma posição aberta encontrada para ${symbol} para atualizar preços.`);
-        return; // Não há posições para atualizar
+      // Log menos frequente para não poluir console
+      return;
     }
 
-    // console.log(`[PRICE UPDATE] Encontradas ${positions.length} posições abertas para ${symbol}. Atualizando preços...`);
+    // Log mais detalhado para ajudar no diagnóstico
+    console.log(`[PRICE UPDATE] Atualizando ${positions.length} posições para ${symbol}. Preço atual: ${currentPrice}`);
 
     // 2. Para cada posição, atualizar o preço corrente
     for (const position of positions) {
       const positionId = position.id;
       
-      // Evitar log excessivo se a função for chamada muito frequentemente. Pode ser útil para debug inicial.
-      // console.log(`[PRICE UPDATE] Atualizando preço da posição ${positionId} (${symbol}) para ${currentPrice}`);
-      
       await db.query(
         `UPDATE posicoes SET 
          preco_corrente = ?, 
          data_hora_ultima_atualizacao = ? 
-         WHERE id = ?`, // Removido espaço extra antes de preco_corrente e data_hora_ultima_atualizacao
-        [currentPrice, formatDateForMySQL(new Date()), positionId] // Usa o placeholder formatDateForMySQL
+         WHERE id = ?`,
+        [currentPrice, formatDateForMySQL(new Date()), positionId]
       );
       
       // 3. Verificar se há ordens SL/TP ativas que precisam ser monitoradas
@@ -1512,8 +1532,6 @@ async function updatePositionPrices(db, symbol, currentPrice) {
     }
   } catch (error) {
     console.error(`[PRICE UPDATE] Erro ao atualizar preços das posições para ${symbol}: ${error.message}`, error);
-    // Considerar se este erro deve ser propagado para onPriceUpdate ou tratado aqui.
-    // Se propagar, onPriceUpdate pode parar o processamento de sinais pendentes.
   }
 }
 
