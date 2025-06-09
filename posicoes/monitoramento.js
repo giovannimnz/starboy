@@ -2879,7 +2879,7 @@ async function executeLimitMakerEntry(db, signal, currentPriceTrigger) {
                 } catch (slError) { console.error(`[LIMIT_ENTRY] Erro ao criar SL:`, slError.response?.data || slError.message); }
             } else { console.warn(`[LIMIT_ENTRY] Preço de SL inválido ou não fornecido (${slPriceVal}). SL não será criado.`); }
             
-            const reductionPercentages = [0.10, 0.40, 0.30, 0.10];
+            const reductionPercentages = [0.15, 0.35, 0.25, 0.10];
             let cumulativeQtyForRps = 0;
             for (let i = 0; i < rpTargetKeys.length; i++) {
                 const rpKey = rpTargetKeys[i];
