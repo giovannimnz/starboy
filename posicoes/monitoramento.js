@@ -258,7 +258,7 @@ async function syncPositionsWithExchange() {
 
     for (const pos of exchangePositions) {
       if (Math.abs(pos.quantidade) > 0) {
-        console.log(`[SYNC] Garantindo websocket ativo para ${pos.simbolo} com posição aberta`);
+        //console.log(`[SYNC] Garantindo websocket ativo para ${pos.simbolo} com posição aberta`);
         websockets.ensurePriceWebsocketExists(pos.simbolo);
       }
     }
