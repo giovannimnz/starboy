@@ -169,7 +169,7 @@ async function initializeMonitoring() {
     `);
 
     if (symbols.length > 0) {
-      console.log(`[MONITOR] Encontrados ${symbols.length} símbolos com atividade que requerem websocket`);
+      //console.log(`[MONITOR] Encontrados ${symbols.length} símbolos com atividade que requerem websocket`);
       
       for (const row of symbols) {
         const symbol = row.simbolo || row.symbol;
@@ -258,7 +258,7 @@ async function syncPositionsWithExchange() {
 
     for (const pos of exchangePositions) {
       if (Math.abs(pos.quantidade) > 0) {
-        console.log(`[SYNC] Garantindo websocket ativo para ${pos.simbolo} com posição aberta`);
+        //console.log(`[SYNC] Garantindo websocket ativo para ${pos.simbolo} com posição aberta`);
         websockets.ensurePriceWebsocketExists(pos.simbolo);
       }
     }

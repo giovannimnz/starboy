@@ -159,7 +159,7 @@ async function startUserDataStream(getDatabaseInstance) {
 // Função para garantir que um websocket de preço existe para o símbolo - CORRIGIDO FORMATO DA URL
 function ensurePriceWebsocketExists(symbol) {
     if (priceWebsockets[symbol] && priceWebsockets[symbol].readyState === WebSocket.OPEN) {
-        console.log(`[WEBSOCKET] WebSocket já existe e está conectado para ${symbol}`);
+        //console.log(`[WEBSOCKET] WebSocket já existe e está conectado para ${symbol}`);
         return; // Websocket já existe e está conectado
     }
 
