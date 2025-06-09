@@ -1550,6 +1550,7 @@ async function checkOrderTriggers(db, position, currentPrice) {
         if (slResponse && slResponse.data && slResponse.data.orderId) {
           const newOrderId = String(slResponse.data.orderId);
           console.log(`${functionPrefix} Nova ordem SL automática criada: ${newOrderId} a ${slPrice} para posição ${positionId}`);
+          const newSLBreakevenPrice = entryPrice;
           await insertNewOrder(db, {
             tipo_ordem: 'STOP_MARKET',
             preco: newSLBreakevenPrice,
@@ -1662,6 +1663,7 @@ async function checkOrderTriggers(db, position, currentPrice) {
         if (slResponse && slResponse.data && slResponse.data.orderId) {
           const newOrderId = String(slResponse.data.orderId);
           console.log(`${functionPrefix} Nova SL (breakeven) criada: ID ${newOrderId} @ ${newSLBreakevenPrice}`);
+          const newSLBreakevenPrice = entryPrice;
           await insertNewOrder(db, {
             tipo_ordem: 'STOP_MARKET', preco: newSLBreakevenPrice, quantidade: quantity,
             id_posicao: positionId, status: 'NEW', data_hora_criacao: formatDateForMySQL(new Date()),
