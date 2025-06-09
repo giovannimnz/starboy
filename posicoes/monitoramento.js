@@ -142,7 +142,6 @@ async function initializeMonitoring() {
       console.error('[MONITOR] Erro geral no job de sincronizar posições:', error);
     }
   });
-  // ***** FIM DA IMPLEMENTAÇÃO SOLICITADA *****
 
   // Iniciar monitoramento de preços para posições abertas
   try {
@@ -151,11 +150,47 @@ async function initializeMonitoring() {
     console.error('[MONITOR] Erro ao iniciar monitoramento de preços:', error);
   }
 
+  scheduledJobs.checkWebsocketsForOpenPositions = schedule.scheduleJob('*/1 * * * *', async () => {
+  try {
+    //console.log('[MONITOR] Verificando websockets para posições abertas...');
+    const db = await getDatabaseInstance();
+    if (!db) {
+      console.error('[MONITOR] Falha ao obter instância do banco de dados');
+      return;
+    }
+
+    // Obter todos os símbolos com posições abertas ou ordens pendentes
+    const [symbols] = await db.query(`
+      SELECT simbolo FROM posicoes WHERE status = 'OPEN'
+      UNION
+      SELECT simbolo FROM ordens WHERE status IN ('NEW', 'PARTIALLY_FILLED')
+      UNION
+      SELECT symbol FROM webhook_signals WHERE status = 'AGUARDANDO_ACIONAMENTO'
+    `);
+
+    if (symbols.length > 0) {
+      console.log(`[MONITOR] Encontrados ${symbols.length} símbolos com atividade que requerem websocket`);
+      
+      for (const row of symbols) {
+        const symbol = row.simbolo || row.symbol;
+        if (!symbol) continue;
+        
+        // Verificar se o websocket está ativo e reabrir se necessário
+        if (!websockets.priceWebsockets[symbol] || 
+            (websockets.priceWebsockets[symbol] && websockets.priceWebsockets[symbol].readyState !== 1)) {
+          //console.log(`[MONITOR] Reabrindo websocket para ${symbol} (posição/ordem ativa)`);
+          websockets.ensurePriceWebsocketExists(symbol);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('[MONITOR] Erro ao verificar websockets para posições abertas:', error);
+  }
+});
+
   //console.log('[MONITOR] Sistema de monitoramento inicializado com sucesso!');
 }
 
-// ***** INÍCIO DA IMPLEMENTAÇÃO SOLICITADA *****
-// Nova função para sincronizar posições:
 async function syncPositionsWithExchange() {
   try {
     const db = await getDatabaseInstance(); // Presume que getDatabaseInstance() está definida
@@ -220,6 +255,14 @@ async function syncPositionsWithExchange() {
         }, 5000);
       }
     }
+
+    for (const pos of exchangePositions) {
+      if (Math.abs(pos.quantidade) > 0) {
+        console.log(`[SYNC] Garantindo websocket ativo para ${pos.simbolo} com posição aberta`);
+        websockets.ensurePriceWebsocketExists(pos.simbolo);
+      }
+    }
+
   } catch (error) {
     console.error(`[SYNC] Erro crítico ao sincronizar posições com a corretora: ${error.message}`, error.stack || error);
   }
@@ -1012,6 +1055,11 @@ async function handleAccountUpdate(message, db) {
         const positionAmt = parseFloat(position.pa);
         const entryPrice = parseFloat(position.ep);
         const updateTime = new Date(); // Timestamp atual do servidor
+        
+        if (Math.abs(parseFloat(position.pa)) > 0) {
+          console.log(`[ACCOUNT UPDATE] Garantindo websocket ativo para ${symbol} com posição aberta`);
+          websockets.ensurePriceWebsocketExists(symbol);
+        }
         
         console.log(`[ACCOUNT UPDATE] Posição atualizada: ${symbol}, Quantidade: ${positionAmt}, Preço Entrada: ${entryPrice}`);
 
@@ -2252,7 +2300,6 @@ function timeframeToMs(timeframe) {
   }
 })();
 
-// NOVA FUNÇÃO: Verificar e encerrar websocket se não houver posições ou ordens ativas
 async function checkAndCloseWebsocket(db, symbol) {
   try {
     console.log(`[MONITOR] Verificando se o WebSocket para ${symbol} pode ser fechado...`);
@@ -2262,8 +2309,6 @@ async function checkAndCloseWebsocket(db, symbol) {
       SELECT COUNT(*) as count FROM webhook_signals 
       WHERE symbol = ? AND status = 'AGUARDANDO_ACIONAMENTO'
     `, [symbol]);
-    // Acesso direto à contagem - assume que pendingSignalsRows[0] sempre existirá.
-    // A versão anterior era: const pendingSignalsCount = (pendingSignalsRows && pendingSignalsRows[0]) ? pendingSignalsRows[0].count : 0;
     const pendingSignalsCount = pendingSignalsRows[0].count;
 
     // 2. Verificar se ainda existem posições abertas para o símbolo
@@ -2271,45 +2316,51 @@ async function checkAndCloseWebsocket(db, symbol) {
       SELECT COUNT(*) as count FROM posicoes 
       WHERE simbolo = ? AND status = 'OPEN'
     `, [symbol]);
-    // Acesso direto à contagem
     const activePositionsCount = activePositionsRows[0].count;
     
     // 3. Verificar se ainda existem ordens pendentes
     const [pendingOrdersRows] = await db.query(`
       SELECT COUNT(*) as count FROM ordens
-      WHERE simbolo = ? AND status = 'NEW'
+      WHERE simbolo = ? AND status IN ('NEW', 'PARTIALLY_FILLED')
     `, [symbol]);
-    // Acesso direto à contagem
     const pendingOrdersCount = pendingOrdersRows[0].count;
     
     console.log(`[MONITOR] Estado para ${symbol}: Sinais=${pendingSignalsCount}, Posições=${activePositionsCount}, Ordens=${pendingOrdersCount}`);
 
+    // 4. VERIFICA MAIS RIGOROSAMENTE - Apenas fecha se TODAS as condições forem satisfeitas
     if (pendingSignalsCount === 0 && 
         activePositionsCount === 0 && 
         pendingOrdersCount === 0) {
-        
-      console.log(`[MONITOR] Nenhuma atividade para ${symbol}. Fechando WebSocket.`);
       
-      // Verificar se o websocket para este símbolo existe no nosso gerenciador
-      // (Assumindo que 'websockets' é um objeto acessível que gerencia os websockets)
-      if (websockets.priceWebsockets && websockets.priceWebsockets[symbol]) {
-        if (websockets.stopPriceMonitoring(symbol)) { // Assumindo que esta função existe e retorna boolean
-          console.log(`[MONITOR] WebSocket para ${symbol} fechado com sucesso.`);
-          return true;
-        } else {
-          console.warn(`[MONITOR] Falha ao fechar WebSocket para ${symbol}.`); // Mensagem de log alterada
+      console.log(`[MONITOR] Não há atividade para ${symbol}. Fechando WebSocket.`);
+      
+      if (websockets.stopPriceMonitoring(symbol)) {
+        console.log(`[MONITOR] WebSocket para ${symbol} fechado com sucesso.`);
+        
+        // Limpar estado registrado no lastLoggedWebsocketStates
+        if (lastLoggedWebsocketStates[symbol]) {
+          delete lastLoggedWebsocketStates[symbol];
         }
+        
+        return true;
       } else {
-        console.log(`[MONITOR] WebSocket para ${symbol} já não existe.`); // Mensagem de log alterada
+        console.log(`[MONITOR] WebSocket para ${symbol} não encontrado ou já fechado.`);
       }
     } else {
-      console.log(`[MONITOR] Mantendo WebSocket para ${symbol} devido a: Sinais=${pendingSignalsCount}, Posições=${activePositionsCount}, Ordens=${pendingOrdersCount}`);
+      console.log(`[MONITOR] WebSocket para ${symbol} NÃO será fechado pois ainda há atividade.`);
+      
+      // IMPORTANTE: Garantir que o websocket esteja aberto quando há atividade
+      if (!websockets.priceWebsockets[symbol] || 
+          (websockets.priceWebsockets[symbol] && websockets.priceWebsockets[symbol].readyState !== 1)) {
+        console.log(`[MONITOR] WebSocket para ${symbol} não existe ou não está aberto. Reabrindo...`);
+        websockets.ensurePriceWebsocketExists(symbol);
+      }
     }
     
-    return false; // Retorna false se o websocket não foi fechado ou se deveria ser mantido
+    return false;
   } catch (error) {
-    console.error(`[MONITOR] Erro ao verificar WebSocket para ${symbol}: ${error.message}`); // Mensagem de log alterada
-    return false; // Erro durante o processo
+    console.error(`[MONITOR] Erro ao verificar WebSocket para ${symbol}: ${error.message}`);
+    return false;
   }
 }
 
