@@ -191,8 +191,6 @@ async function initializeMonitoring() {
   //console.log('[MONITOR] Sistema de monitoramento inicializado com sucesso!');
 }
 
-// ***** INÍCIO DA IMPLEMENTAÇÃO SOLICITADA *****
-// Nova função para sincronizar posições:
 async function syncPositionsWithExchange() {
   try {
     const db = await getDatabaseInstance(); // Presume que getDatabaseInstance() está definida
@@ -257,6 +255,14 @@ async function syncPositionsWithExchange() {
         }, 5000);
       }
     }
+
+    for (const pos of exchangePositions) {
+      if (Math.abs(pos.quantidade) > 0) {
+        console.log(`[SYNC] Garantindo websocket ativo para ${pos.simbolo} com posição aberta`);
+        websockets.ensurePriceWebsocketExists(pos.simbolo);
+      }
+    }
+
   } catch (error) {
     console.error(`[SYNC] Erro crítico ao sincronizar posições com a corretora: ${error.message}`, error.stack || error);
   }
@@ -1049,6 +1055,11 @@ async function handleAccountUpdate(message, db) {
         const positionAmt = parseFloat(position.pa);
         const entryPrice = parseFloat(position.ep);
         const updateTime = new Date(); // Timestamp atual do servidor
+        
+        if (Math.abs(parseFloat(position.pa)) > 0) {
+          console.log(`[ACCOUNT UPDATE] Garantindo websocket ativo para ${symbol} com posição aberta`);
+          websockets.ensurePriceWebsocketExists(symbol);
+        }
         
         console.log(`[ACCOUNT UPDATE] Posição atualizada: ${symbol}, Quantidade: ${positionAmt}, Preço Entrada: ${entryPrice}`);
 
