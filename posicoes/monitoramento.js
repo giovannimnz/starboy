@@ -1708,56 +1708,69 @@ async function checkOrderTriggers(db, position, currentPrice) {
     }
 
     // --- INÍCIO DAS MODIFICAÇÕES PARA USAR cancelAllActiveStopLosses ---
-    if (priceHitTP1) {
-      console.log(`${functionPrefix} Preço (${currentPrice}) atingiu TP1 (${tp1Price}) para Posição ID ${positionId} (${side}). Nível Trailing: ${currentTrailingLevel}. Iniciando SL para Breakeven (${entryPrice}).`);
-      
-      console.log(`${functionPrefix} Cancelando ordens SL existentes ANTES de mover para breakeven...`);
-      await cancelAllActiveStopLosses(db, position); // <--- CHAMADA DA NOVA FUNÇÃO
-      
-      await new Promise(resolve => setTimeout(resolve, 2500)); // Pausa para processamento da corretora
+if (priceHitTP1) {
+  console.log(`${functionPrefix} Preço (${currentPrice}) atingiu TP1 (${tp1Price}) para Posição ID ${positionId} (${side}). Nível Trailing: ${currentTrailingLevel}. Iniciando SL para Breakeven (${entryPrice}).`);
+  
+  console.log(`${functionPrefix} Cancelando ordens SL existentes ANTES de mover para breakeven...`);
+  await cancelAllActiveStopLosses(db, position);
+  
+  await new Promise(resolve => setTimeout(resolve, 2500)); // Pausa para processamento da corretora
 
+  try {
+    // CORREÇÃO: Definir newSLBreakevenPrice ANTES de usá-la
+    const newSLBreakevenPrice = entryPrice; // Definindo a variável aqui
+    const quantity = parseFloat(position.quantidade);
+    const oppositeSide = side === 'BUY' || side === 'COMPRA' ? 'SELL' : 'BUY';
+    
+    console.log(`${functionPrefix} Criando nova ordem SL (breakeven) para ${position.simbolo} @ ${newSLBreakevenPrice}`);
+    const slResponse = await newStopOrder(
+      position.simbolo, quantity, oppositeSide, newSLBreakevenPrice, null, true, true
+    );
+    
+    if (slResponse && slResponse.data && slResponse.data.orderId) {
+      const newOrderId = String(slResponse.data.orderId);
+      console.log(`${functionPrefix} Nova SL (breakeven) criada: ID ${newOrderId} @ ${newSLBreakevenPrice}`);
+      await insertNewOrder(db, {
+        tipo_ordem: 'STOP_MARKET', 
+        preco: newSLBreakevenPrice, // Usando a variável corretamente
+        quantidade: quantity,
+        id_posicao: positionId, 
+        status: 'NEW', 
+        data_hora_criacao: formatDateForMySQL(new Date()),
+        id_externo: newOrderId, 
+        side: oppositeSide, 
+        simbolo: position.simbolo,
+        tipo_ordem_bot: 'STOP_LOSS', 
+        target: null, 
+        reduce_only: true, 
+        close_position: true,
+        last_update: formatDateForMySQL(new Date()), 
+        orign_sig: position.orign_sig,
+        observacao: 'Trailing Stop - Breakeven'
+      });
+      await db.query(
+        `UPDATE posicoes SET trailing_stop_level = 'BREAKEVEN', data_hora_ultima_atualizacao = ? WHERE id = ?`,
+        [formatDateForMySQL(new Date()), positionId]
+      );
+      
+      console.log(`${functionPrefix} SL Breakeven (${newOrderId}) criado e posição atualizada para BREAKEVEN.`);
+      
+      // Notificação Telegram (se necessário)
       try {
-        const newSLBreakevenPrice = entryPrice;
-        const quantity = parseFloat(position.quantidade);
-        const oppositeSide = side === 'BUY' || side === 'COMPRA' ? 'SELL' : 'BUY';
-        
-        console.log(`${functionPrefix} Criando nova ordem SL (breakeven) para ${position.simbolo} @ ${newSLBreakevenPrice}`);
-        const slResponse = await newStopOrder(
-          position.simbolo, quantity, oppositeSide, newSLBreakevenPrice, null, true, true
-        );
-        
-        if (slResponse && slResponse.data && slResponse.data.orderId) {
-          const newOrderId = String(slResponse.data.orderId);
-          console.log(`${functionPrefix} Nova SL (breakeven) criada: ID ${newOrderId} @ ${newSLBreakevenPrice}`);
-          const newSLBreakevenPrice = entryPrice;
-          await insertNewOrder(db, {
-            tipo_ordem: 'STOP_MARKET', preco: newSLBreakevenPrice, quantidade: quantity,
-            id_posicao: positionId, status: 'NEW', data_hora_criacao: formatDateForMySQL(new Date()),
-            id_externo: newOrderId, side: oppositeSide, simbolo: position.simbolo,
-            tipo_ordem_bot: 'STOP_LOSS', target: null, reduce_only: true, close_position: true,
-            last_update: formatDateForMySQL(new Date()), orign_sig: position.orign_sig,
-            observacao: 'Trailing Stop - Breakeven (CancelAll)'
-          });
-          await db.query(
-            `UPDATE posicoes SET trailing_stop_level = 'BREAKEVEN', data_hora_ultima_atualizacao = ? WHERE id = ?`,
-            [formatDateForMySQL(new Date()), positionId]
-          );
-          
-          // Notificação Telegram (adapte se necessário)
-          try {
-            const [webhookInfo] = await db.query(`SELECT chat_id FROM webhook_signals WHERE position_id = ? ORDER BY created_at DESC LIMIT 1`, [positionId]);
-            if (webhookInfo.length > 0 && webhookInfo[0].chat_id && typeof bot !== 'undefined' && bot && bot.telegram) {
-              await bot.telegram.sendMessage(webhookInfo[0].chat_id, `✅ Trailing Stop Ativado para ${position.simbolo}\n\nAlvo 1 atingido\nSL movido para breakeven: (${newSLBreakevenPrice})`);
-            }
-          } catch (notifyError) { console.error(`${functionPrefix} Erro ao notificar SL breakeven: ${notifyError.message}`); }
-
-        } else {
-          console.error(`${functionPrefix} Falha ao criar nova SL (breakeven) para ${position.simbolo}. Resposta:`, slResponse);
+        const [webhookInfo] = await db.query(`SELECT chat_id FROM webhook_signals WHERE position_id = ? ORDER BY created_at DESC LIMIT 1`, [positionId]);
+        if (webhookInfo.length > 0 && webhookInfo[0].chat_id && typeof bot !== 'undefined' && bot && bot.telegram) {
+          await bot.telegram.sendMessage(webhookInfo[0].chat_id, `✅ Trailing Stop Ativado para ${position.simbolo}\n\nAlvo 1 atingido\nSL movido para breakeven: (${newSLBreakevenPrice})`);
         }
-      } catch (error) {
-        const errorMsg = error.response?.data?.msg || error.message || String(error);
-        console.error(`${functionPrefix} Erro crítico ao criar nova SL (breakeven) para ${position.simbolo}: ${errorMsg}`, error.stack);
+      } catch (notifyError) { 
+        console.error(`${functionPrefix} Erro ao notificar SL breakeven: ${notifyError.message}`); 
       }
+    } else {
+      console.error(`${functionPrefix} Falha ao criar nova SL (breakeven) para ${position.simbolo}. Resposta:`, slResponse);
+    }
+  } catch (error) {
+    const errorMsg = error.response?.data?.msg || error.message || String(error);
+    console.error(`${functionPrefix} Erro crítico ao criar nova SL (breakeven) para ${position.simbolo}: ${errorMsg}`, error.stack);
+  }
     } else if (priceHitTP3) {
       console.log(`${functionPrefix} Preço (${currentPrice}) atingiu TP3 (${tp3Price}) para Posição ID ${positionId} (${side}). Nível Trailing: ${currentTrailingLevel}. Iniciando SL para TP1 (${tp1Price}).`);
 
