@@ -262,17 +262,10 @@ async function syncPositionsWithExchange() {
 
     for (const pos of exchangePositions) {
       if (Math.abs(pos.quantidade) > 0) {
-        //console.log(`[SYNC] Garantindo websocket ativo para ${pos.simbolo} com posição aberta`);
-        websockets.ensurePriceWebsocketExists(pos.simbolo);
-      }
-    }
-
-    for (const pos of exchangePositions) {
-      if (Math.abs(pos.quantidade) > 0) {
-      console.log(`[SYNC] Garantindo websocket ativo para ${pos.simbolo} com posição aberta`);
+      //console.log(`[SYNC] Garantindo websocket ativo para ${pos.simbolo} com posição aberta`);
       websockets.ensurePriceWebsocketExists(pos.simbolo);
     }
-}
+  }
 
   } catch (error) {
     console.error(`[SYNC] Erro crítico ao sincronizar posições com a corretora: ${error.message}`, error.stack || error);
@@ -2307,7 +2300,7 @@ async function checkAndCloseWebsocket(db, symbol) {
       console.log(`[MONITOR] Não há atividade para ${symbol}. Fechando WebSocket.`);
       
       if (websockets.stopPriceMonitoring(symbol)) {
-        console.log(`[MONITOR] WebSocket para ${symbol} fechado com sucesso.`);
+        //console.log(`[MONITOR] WebSocket para ${symbol} fechado com sucesso.`);
         
         // Limpar estado registrado no lastLoggedWebsocketStates
         if (lastLoggedWebsocketStates[symbol]) {
