@@ -1513,7 +1513,7 @@ async function updatePositionPrices(db, symbol, currentPrice) {
     }
 
     // Log mais detalhado para ajudar no diagnóstico
-    console.log(`[PRICE UPDATE] Atualizando ${positions.length} posições para ${symbol}. Preço atual: ${currentPrice}`);
+    //console.log(`[PRICE UPDATE] Atualizando ${positions.length} posições para ${symbol}. Preço atual: ${currentPrice}`);
 
     // 2. Para cada posição, atualizar o preço corrente
     for (const position of positions) {
