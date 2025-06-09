@@ -185,7 +185,7 @@ scheduledJobs.checkWebsocketsForOpenPositions = schedule.scheduleJob('*/1 * * * 
         }
       }
     } else {
-      console.log('[MONITOR] Nenhum símbolo com atividade que requer websocket');
+      //console.log('[MONITOR] Nenhum símbolo com atividade que requer websocket');
     }
   } catch (error) {
     console.error('[MONITOR] Erro ao verificar websockets para posições abertas:', error);
