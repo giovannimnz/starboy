@@ -169,7 +169,7 @@ async function initializeMonitoring() {
     `);
 
     if (symbols.length > 0) {
-      console.log(`[MONITOR] Encontrados ${symbols.length} símbolos com atividade que requerem websocket`);
+      //console.log(`[MONITOR] Encontrados ${symbols.length} símbolos com atividade que requerem websocket`);
       
       for (const row of symbols) {
         const symbol = row.simbolo || row.symbol;
