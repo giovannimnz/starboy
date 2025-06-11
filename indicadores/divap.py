@@ -1155,11 +1155,13 @@ async def handle_new_message(event):
                 if replied_sid:
                     related_symbol = replied_s
                     related_signal_id = replied_sid
-                    print(f"[INFO] Mensagem ID {incoming_message_id} é resposta ao Sinal ID {related_signal_id}.")
+                    #print(f"[INFO] Mensagem ID {incoming_message_id} é resposta ao Sinal ID {related_signal_id}.")
+                    pass
                 else:
                     # IMPORTANTE: Mesmo que a mensagem respondida não esteja relacionada a um sinal,
                     # ainda assim registramos a mensagem atual
-                    print(f"[INFO] Mensagem ID {incoming_message_id} é resposta a uma mensagem sem relação com sinais.")
+                    #print(f"[INFO] Mensagem ID {incoming_message_id} é resposta a uma mensagem sem relação com sinais.")
+                    pass
             
             # SEMPRE registrar a mensagem em signals_msg, independente de ser uma resposta ou ter relação com sinal
             save_message_to_database(
@@ -1175,9 +1177,11 @@ async def handle_new_message(event):
             )
             
             if related_signal_id:
-                print(f"[INFO] Mensagem ID {incoming_message_id} registrada e associada ao Sinal ID: {related_signal_id}")
+                #print(f"[INFO] Mensagem ID {incoming_message_id} registrada e associada ao Sinal ID: {related_signal_id}")
+                pass
             else:
-                print(f"[INFO] Mensagem ID {incoming_message_id} registrada sem associação a um sinal.")
+                #print(f"[INFO] Mensagem ID {incoming_message_id} registrada sem associação a um sinal.")
+                pass
 
         else:
             # Esta mensagem não é de um grupo de origem (para sinais) nem de um grupo permitido para registro geral.
