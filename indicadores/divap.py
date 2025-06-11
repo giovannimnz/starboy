@@ -1017,7 +1017,8 @@ async def handle_new_message(event):
                             selected_tp = trade_info['all_tps'][0]
                     
                     if selected_tp is None and trade_info.get('all_tps'):
-                        print(f"[INFO] Enviando todos os {len(trade_info.get('all_tps'))} alvos.")
+                        #print(f"[INFO] Enviando todos os {len(trade_info.get('all_tps'))} alvos.")
+                        pass
                     elif selected_tp is None:
                         print(f"[AVISO] Sinal da Msg ID {incoming_message_id} (Símbolo: {trade_info['symbol']}) não tem nenhum TP. Enviando apenas com entrada e SL.")
 
