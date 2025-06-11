@@ -179,7 +179,7 @@ async function checkPositionExists(db, symbol) {
 
 // Atualizar função insertPosition para usar formatDateForMySQL
 
-async function insertPosition(connection, positionData) {
+async function insertPosition(connection, positionData, webhookSignalId = null) {
   try {
     // Verificar se o status é válido
     const validStatus = ['PENDING', 'OPEN', 'CLOSED', 'CANCELED', 'PENDING_ENTRY'];
@@ -249,9 +249,48 @@ async function insertPosition(connection, positionData) {
       }
 
       const [result] = await connection.query(query, params);
-
-      console.log(`Posição inserida com sucesso com ID: ${result.insertId}`);
-      return result.insertId;
+      const positionId = result.insertId;
+      
+      console.log(`Posição inserida com sucesso com ID: ${positionId}`);
+      
+      // NOVO: Atualizar position_id no webhook_signals se tiver um webhook_signal_id
+      if (webhookSignalId) {
+        try {
+          console.log(`Atualizando webhook_signals com position_id=${positionId} para signal_id=${webhookSignalId}`);
+          await connection.query(
+            `UPDATE webhook_signals SET position_id = ? WHERE id = ?`,
+            [positionId, webhookSignalId]
+          );
+        } catch (updateError) {
+          console.error(`Erro ao atualizar position_id no webhook_signals: ${updateError.message}`);
+          // Não interromper o fluxo por falha nessa atualização
+        }
+      } else {
+        // Tentar encontrar um sinal correspondente por símbolo, mesmo sem o ID explícito
+        try {
+          // Buscar o sinal mais recente com status='EXECUTADO' e position_id=NULL para este símbolo
+          const [signalRows] = await connection.query(
+            `SELECT id FROM webhook_signals 
+             WHERE symbol = ? AND status = 'EXECUTADO' AND position_id IS NULL 
+             ORDER BY created_at DESC LIMIT 1`,
+            [positionData.simbolo]
+          );
+          
+          if (signalRows.length > 0) {
+            const signalId = signalRows[0].id;
+            console.log(`Encontrado webhook_signal_id=${signalId} para símbolo ${positionData.simbolo}. Atualizando com position_id=${positionId}`);
+            await connection.query(
+              `UPDATE webhook_signals SET position_id = ? WHERE id = ?`,
+              [positionId, signalId]
+            );
+          }
+        } catch (findError) {
+          console.error(`Erro ao buscar/atualizar sinal para posição: ${findError.message}`);
+          // Não interromper o fluxo por falha nessa atualização
+        }
+      }
+      
+      return positionId;
     }
   } catch (error) {
     console.error(`Erro ao inserir posição: ${error.message}`);
