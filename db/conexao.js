@@ -311,37 +311,75 @@ async function checkOrderExists(db, id_externo) {
 
 // Atualizar função insertNewOrder para usar formatDateForMySQL
 
-async function insertNewOrder(db, orderDetails) {
+async function insertNewOrder(connection, orderData) {
   try {
-    const { tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao, id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only, close_position, last_update, orign_sig } = orderDetails;
-
-    const reduceOnlyValue = reduce_only ? 1 : 0; // MySQL usa 1/0 para boolean
-    const closePositionValue = close_position ? 1 : 0;
-
-    // Formatar datas antes da inserção
-    const formattedCreationTime = formatDateForMySQL(data_hora_criacao);
-    const formattedUpdateTime = formatDateForMySQL(last_update);
-
-    const [result] = await db.query(
-        `INSERT INTO ordens (
-        tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao, 
-        id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only, close_position, last_update, orign_sig
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          tipo_ordem, preco, quantidade, id_posicao, status, formattedCreationTime,
-          id_externo, side, simbolo, tipo_ordem_bot, target, reduceOnlyValue, closePositionValue, formattedUpdateTime, orign_sig
-        ]
+    // Verificar se a coluna id_externo existe na tabela ordens
+    const [checkColumns] = await connection.query(
+      `SHOW COLUMNS FROM ordens LIKE 'id_externo'`
     );
-
-    if (tipo_ordem_bot === "REDUCAO PARCIAL" && target) {
-      console.log(`Ordem de ${tipo_ordem_bot} ${target} inserida com sucesso: ${result.insertId}`);
-    } else {
-      console.log(`Ordem de ${tipo_ordem_bot} inserida com sucesso: ${result.insertId}`);
+    
+    const hasIdOriginalColumn = checkColumns.length > 0;
+    
+    // Se id_externo não existe no orderData mas id_externo existe, usar id_externo como id_externo
+    if (hasIdOriginalColumn && !orderData.id_externo && orderData.id_externo) {
+      orderData.id_externo = orderData.id_externo;
     }
-
+    
+    // Construir a query dinamicamente com base nas colunas disponíveis
+    let columns = ['tipo_ordem', 'preco', 'quantidade', 'id_posicao', 'status', 
+                  'data_hora_criacao', 'id_externo', 'side', 'simbolo', 
+                  'tipo_ordem_bot', 'target', 'reduce_only', 'close_position', 
+                  'last_update'];
+                  
+    let placeholders = Array(columns.length).fill('?');
+    let values = [
+      orderData.tipo_ordem,
+      orderData.preco,
+      orderData.quantidade,
+      orderData.id_posicao,
+      orderData.status,
+      orderData.data_hora_criacao,
+      orderData.id_externo,
+      orderData.side,
+      orderData.simbolo,
+      orderData.tipo_ordem_bot,
+      orderData.target,
+      orderData.reduce_only ? 1 : 0,
+      orderData.close_position ? 1 : 0,
+      orderData.last_update
+    ];
+    
+    // Adicionar id_externo se a coluna existir
+    if (hasIdOriginalColumn) {
+      columns.push('id_externo');
+      placeholders.push('?');
+      values.push(orderData.id_externo || orderData.id_externo); // Usar id_externo como fallback
+    }
+    
+    // Verificar e adicionar orign_sig se existir no orderData e na tabela
+    const [orignSigCheck] = await connection.query(`SHOW COLUMNS FROM ordens LIKE 'orign_sig'`);
+    if (orignSigCheck.length > 0 && orderData.orign_sig) {
+      columns.push('orign_sig');
+      placeholders.push('?');
+      values.push(orderData.orign_sig);
+    }
+    
+    // Verificar e adicionar observacao se existir no orderData e na tabela
+    const [observacaoCheck] = await connection.query(`SHOW COLUMNS FROM ordens LIKE 'observacao'`);
+    if (observacaoCheck.length > 0 && orderData.observacao) {
+      columns.push('observacao');
+      placeholders.push('?');
+      values.push(orderData.observacao);
+    }
+    
+    const query = `INSERT INTO ordens (${columns.join(', ')}) VALUES (${placeholders.join(', ')})`;
+    
+    const [result] = await connection.query(query, values);
+    console.log(`Ordem de ${orderData.tipo_ordem_bot} inserida com sucesso: ${result.insertId}`);
+    
     return result.insertId;
   } catch (error) {
-    console.error(`Erro ao inserir ordem: ${error.message}`);
+    console.error(`Erro ao inserir ordem: ${error.message}`, error);
     throw error;
   }
 }
