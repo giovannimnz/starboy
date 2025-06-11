@@ -17,6 +17,11 @@ import logging
 
 logging.getLogger('telethon').setLevel(logging.WARNING)
 
+# Parâmetros para cálculo de capital alocado baseado em risco
+PREJUIZO_MAXIMO_PERCENTUAL_DO_CAPITAL_TOTAL = 4.90  # 4.90% do capital total
+TAXA_ENTRADA_LIMIT = 0.02  # 0.02% do valor nocional da posição
+TAXA_SAIDA_MARKET = 0.05  # 0.05% do valor nocional da posição
+
 # Adicionar o diretório backtest ao path para permitir a importação
 sys.path.append(str(Path(__file__).parent / 'backtest'))
 from backtest.divap_check import DIVAPAnalyzer, DB_CONFIG, BINANCE_CONFIG
@@ -232,6 +237,9 @@ def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent, si
     """
     Calcula a alavancagem ideal para margem cruzada baseada na distância entrada/SL
     e verifica se está condizente com o saldo disponível
+    
+    Returns:
+        tuple: (final_leverage, sl_distance_pct) - Alavancagem final e distância percentual até o SL
     """
     cleaned_symbol = clean_symbol(symbol)
 
@@ -316,7 +324,9 @@ def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent, si
     final_leverage = max(1, final_leverage)  # Mínimo de 1x
 
     print(f"[INFO] Alavancagem final calculada para {cleaned_symbol}: {final_leverage}x (Ideal: {target_leverage}x, Máximo permitido: {max_leverage}x)")
-    return final_leverage
+    
+    # Retornar tanto a alavancagem final quanto a distância percentual até o SL
+    return final_leverage, sl_distance_pct
 
 def save_to_database(trade_data):
     """
@@ -767,7 +777,7 @@ async def extract_trade_info(message_text):
         required_terms = ["DIVAP", "Entrada", "Alvo", "Stop"]
         for term in required_terms:
             if term.lower() not in message_text.lower():
-                print(f"[INFO] Termo obrigatório '{term}' não encontrado na mensagem")
+                #print(f"[INFO] Termo obrigatório '{term}' não encontrado na mensagem")
                 return None
 
         # Padrões para extrair informações
@@ -826,20 +836,49 @@ async def extract_trade_info(message_text):
         timeframe = timeframe_match.group(1).lower() if timeframe_match else ""
         entry = float(normalize_number(entry_match.group(1)))
         stop_loss = float(normalize_number(sl_match.group(1)))
-        capital_pct = float(capital_match.group(1)) if capital_match else 5.0  # Valor padrão
+        
+        # Capital percentual da mensagem original (usado apenas para cálculo de alavancagem)
+        original_capital_pct = float(capital_match.group(1)) if capital_match else 5.0  # Valor padrão
+
+        # Calcular alavancagem, agora recebendo também a distância do stop loss
+        leverage, sl_distance_pct = calculate_ideal_leverage(symbol, entry, stop_loss, original_capital_pct, side)
+
+        # Cálculo do percentual de capital dinâmico baseado em risco
+        # Converter taxas para decimal
+        taxa_entrada_decimal = TAXA_ENTRADA_LIMIT / 100  # 0.02% -> 0.0002
+        taxa_saida_decimal = TAXA_SAIDA_MARKET / 100     # 0.05% -> 0.0005
+        prejuizo_maximo_decimal = PREJUIZO_MAXIMO_PERCENTUAL_DO_CAPITAL_TOTAL / 100  # 4.90% -> 0.0490
+        
+        # Aplicar a fórmula: capital_pct = (Prejuízo Máximo / (L * (P + taxas))) * 100
+        taxas_totais = taxa_entrada_decimal + taxa_saida_decimal
+        risco_por_operacao = sl_distance_pct + taxas_totais
+        
+        # Evitar divisão por zero
+        if leverage * risco_por_operacao > 0:
+            capital_pct = (prejuizo_maximo_decimal / (leverage * risco_por_operacao)) * 100
+            
+            # Limitar o capital_pct a valores razoáveis
+            capital_pct = min(100.0, max(0.1, capital_pct))
+            
+            # Formatar para 2 casas decimais
+            capital_pct = round(capital_pct, 2)
+            
+            print(f"[INFO] Capital calculado: {capital_pct:.2f}% (baseado em risco máximo de {PREJUIZO_MAXIMO_PERCENTUAL_DO_CAPITAL_TOTAL}%, "
+                  f"distância SL de {sl_distance_pct*100:.2f}%, alavancagem {leverage}x, taxas totais {taxas_totais*100:.2f}%)")
+        else:
+            # Em caso de erro, usar o capital da mensagem original ou o padrão
+            capital_pct = original_capital_pct
+            print(f"[AVISO] Erro no cálculo dinâmico de capital. Usando valor original: {capital_pct:.2f}%")
 
         # Usar o primeiro alvo como TP principal
         tp = float(normalize_number(tp_matches[0])) if tp_matches else None
-
-        # Calcular alavancagem
-        leverage = calculate_ideal_leverage(symbol, entry, stop_loss, capital_pct, side)
 
         return {
             "symbol": symbol,
             "timeframe": timeframe,
             "side": side,
             "leverage": leverage,
-            "capital_pct": capital_pct,
+            "capital_pct": capital_pct,  # Agora usando o capital_pct calculado dinamicamente
             "entry": entry,
             "tp": tp,
             "stop_loss": stop_loss,
@@ -849,6 +888,7 @@ async def extract_trade_info(message_text):
 
     except Exception as e:
         print(f"[ERRO] Falha ao extrair informações: {e}")
+        traceback.print_exc()
         return None
 
 # Adicionar esta função após a função extract_trade_info() e antes de handle_new_message()
@@ -955,12 +995,12 @@ async def handle_new_message(event):
         # 1. PRIMEIRO, processar se for um SINAL DE TRADE de um GRUPO DE ORIGEM
         if incoming_chat_id in GRUPOS_ORIGEM_IDS:
             chat_obj = await event.get_chat() 
-            print(f"[INFO] Mensagem ID {incoming_message_id} de GRUPO DE ORIGEM {chat_obj.id if chat_obj else incoming_chat_id}. Verificando se é sinal...")
+            #print(f"[INFO] Mensagem ID {incoming_message_id} de GRUPO DE ORIGEM {chat_obj.id if chat_obj else incoming_chat_id}. Verificando se é sinal...")
             
             trade_info = await extract_trade_info(incoming_text)
 
             if trade_info:
-                print(f"[INFO] Sinal de trade detectado em msg ID {incoming_message_id}: {trade_info['symbol']} {trade_info['side']}")
+                #print(f"[INFO] Sinal de trade detectado em msg ID {incoming_message_id}: {trade_info['symbol']} {trade_info['side']}")
                 
                 # NOVO: Verificar se é realmente um padrão DIVAP válido
                 is_valid_divap, error_message = await verify_divap_pattern(trade_info)
@@ -1090,13 +1130,14 @@ async def handle_new_message(event):
 
                 return 
             else: 
-                print(f"[INFO] Mensagem ID {incoming_message_id} de GRUPO DE ORIGEM não é um sinal de trade parseável.")
+                #print(f"[INFO] Mensagem ID {incoming_message_id} de GRUPO DE ORIGEM não é um sinal de trade parseável.")
+                pass
 
         # --- INÍCIO DO TRECHO MODIFICADO (ETAPA 4) ---
         # 4. Para mensagens de GRUPOS PERMITIDOS que NÃO SÃO SINAIS DE TRADE PROCESSADOS ACIMA
         #    (ou seja, msgs de GRUPO_DESTINO_ID, ou msgs de GRUPO_ORIGEM_ID que não eram sinais válidos)
         if incoming_chat_id in GRUPOS_PERMITIDOS_PARA_REGISTRO:
-            print(f"[INFO] Processando mensagem ID {incoming_message_id} de Chat ID {incoming_chat_id} para registro geral em signals_msg.")
+            #print(f"[INFO] Processando mensagem ID {incoming_message_id} de Chat ID {incoming_chat_id} para registro geral em signals_msg.")
             
             related_symbol = None
             related_signal_id = None
@@ -1350,6 +1391,25 @@ def format_trade_message(trade_info, selected_tp):
     """
     Formata a mensagem de trade para envio ao grupo de destino
     """
+    # Formatação inteligente do percentual de capital
+    capital_value = trade_info['capital_pct']
+    
+    # Lógica melhorada para formatação de números
+    if capital_value == int(capital_value):
+        # Se for um valor inteiro exato (como 5.0), mostrar como inteiro
+        capital_display = str(int(capital_value))
+    else:
+        # Formatar com 2 casas decimais primeiro
+        formatted = f"{capital_value:.2f}"
+        
+        # Verificar se a última casa decimal é zero
+        if formatted.endswith('0'):
+            # Remover o último zero (por exemplo, 5.10 -> 5.1)
+            capital_display = formatted[:-1]
+        else:
+            # Manter as duas casas decimais (por exemplo, 5.12 -> 5.12)
+            capital_display = formatted
+    
     message_text = (
         f"#{trade_info['symbol']}  {trade_info['side']}\n"
     )
@@ -1359,7 +1419,7 @@ def format_trade_message(trade_info, selected_tp):
         "Divap\n\n" 
         f"ALAVANCAGEM: {trade_info['leverage']}x\n"
         "MARGEM: CRUZADA\n"
-        f"CAPITAL: {int(trade_info['capital_pct'])}%\n\n"
+        f"CAPITAL: {capital_display}%\n\n"
         f"ENTRADA: {trade_info['entry']}\n\n"
     )
 
