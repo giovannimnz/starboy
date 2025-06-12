@@ -313,18 +313,6 @@ async function checkOrderExists(db, id_externo) {
 
 async function insertNewOrder(connection, orderData) {
   try {
-    // Verificar se a coluna id_externo existe na tabela ordens
-    const [checkColumns] = await connection.query(
-      `SHOW COLUMNS FROM ordens LIKE 'id_externo'`
-    );
-    
-    const hasIdOriginalColumn = checkColumns.length > 0;
-    
-    // Se id_externo não existe no orderData mas id_externo existe, usar id_externo como id_externo
-    if (hasIdOriginalColumn && !orderData.id_externo && orderData.id_externo) {
-      orderData.id_externo = orderData.id_externo;
-    }
-    
     // Construir a query dinamicamente com base nas colunas disponíveis
     let columns = ['tipo_ordem', 'preco', 'quantidade', 'id_posicao', 'status', 
                   'data_hora_criacao', 'id_externo', 'side', 'simbolo', 
@@ -348,13 +336,6 @@ async function insertNewOrder(connection, orderData) {
       orderData.close_position ? 1 : 0,
       orderData.last_update
     ];
-    
-    // Adicionar id_externo se a coluna existir
-    if (hasIdOriginalColumn) {
-      columns.push('id_externo');
-      placeholders.push('?');
-      values.push(orderData.id_externo || orderData.id_externo); // Usar id_externo como fallback
-    }
     
     // Verificar e adicionar orign_sig se existir no orderData e na tabela
     const [orignSigCheck] = await connection.query(`SHOW COLUMNS FROM ordens LIKE 'orign_sig'`);
