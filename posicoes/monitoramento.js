@@ -2469,25 +2469,23 @@ async function executeLimitMakerEntry(db, signal, currentPriceTrigger) {
                 currentBestAsk = parseFloat(depthData.bestAsk);
                 lastDepthUpdateTimestamp = Date.now();
                 wsUpdateErrorCount = 0; // Resetar contador de erro se recebermos dados
-                // console.log(`[LIMIT_ENTRY_DEPTH_WS] ${signal.symbol} - Bid: ${currentBestBid}, Ask: ${currentBestAsk}`);
             } else {
                 wsUpdateErrorCount++;
                 console.warn(`[LIMIT_ENTRY_DEPTH_WS] Dados de profundidade inválidos recebidos para ${signal.symbol}:`, depthData);
             }
         });
-        // Lidar com erros de conexão do WS de profundidade principal aqui, se necessário, ou confiar na lógica interna de setupBookDepthWebsocket.
-        // Adicionar uma pequena pausa para permitir que o WebSocket conecte e receba os primeiros dados.
-        await new Promise(resolve => setTimeout(resolve, 1500)); // 1.5 segundos de cortesia para conexão WS
+        
+        await new Promise(resolve => setTimeout(resolve, 1500)); // 1.5 segundos para conexão WS
 
-        // Obter dados iniciais do book via REST como fallback ou para início rápido
+        // Obter dados iniciais do book via REST como fallback
         if (!currentBestBid || !currentBestAsk) {
             try {
                 console.log(`[LIMIT_ENTRY] WebSocket de profundidade ainda não forneceu dados. Buscando book inicial via REST para ${signal.symbol}...`);
-                const initialBookData = await getBookTicker(signal.symbol); // Sua função existente
+                const initialBookData = await getBookTicker(signal.symbol);
                 if (initialBookData && initialBookData.bidPrice && initialBookData.askPrice) {
                     currentBestBid = parseFloat(initialBookData.bidPrice);
                     currentBestAsk = parseFloat(initialBookData.askPrice);
-                    lastDepthUpdateTimestamp = Date.now(); // Atualiza o timestamp
+                    lastDepthUpdateTimestamp = Date.now();
                     console.log(`[LIMIT_ENTRY] Book inicial obtido via REST: Bid ${currentBestBid}, Ask ${currentBestAsk}`);
                 } else {
                      console.warn(`[LIMIT_ENTRY] Book ticker inicial via REST não retornou dados válidos para ${signal.symbol}.`);
@@ -2503,13 +2501,11 @@ async function executeLimitMakerEntry(db, signal, currentPriceTrigger) {
                (Date.now() - executionStartTime) < CHASE_TIMEOUT_MS) {
             
             chaseAttempts++;
-            // Removido o log de tentativa daqui para reduzir verbosidade, pode ser adicionado se necessário.
 
-            // Sincronizar preenchimentos antes de obter o book para ter o `totalFilledSize` mais atual
+            // Sincronizar preenchimentos antes de obter o book
             try {
-                // ... (lógica de getRecentOrders e processamento de filledExchangeOrders - MANTIDA) ...
-                 const recentOrders = await getRecentOrders(signal.symbol, 15); // Sua função existente
-                 const filledExchangeOrders = recentOrders.filter(order =>
+                const recentOrders = await getRecentOrders(signal.symbol, 15);
+                const filledExchangeOrders = recentOrders.filter(order =>
                     order.status === 'FILLED' &&
                     order.side === binanceSide &&
                     parseFloat(order.executedQty) > 0 &&
@@ -2534,7 +2530,6 @@ async function executeLimitMakerEntry(db, signal, currentPriceTrigger) {
                 console.error(`[LIMIT_ENTRY] Erro ao buscar/sincronizar ordens recentes:`, checkError.message);
             }
 
-
             const remainingSizeCurrentLoop = parseFloat((totalEntrySize - totalFilledSize).toFixed(quantityPrecision));
             if (remainingSizeCurrentLoop <= 0) {
                 console.log(`[LIMIT_ENTRY] Quantidade restante (${remainingSizeCurrentLoop.toFixed(quantityPrecision)}) zerada ou negativa. Saindo do loop de chasing.`);
@@ -2551,39 +2546,36 @@ async function executeLimitMakerEntry(db, signal, currentPriceTrigger) {
                 if (isDepthDataStale || wsUpdateErrorCount > 3) {
                     console.warn(`[LIMIT_ENTRY] Tentando fallback para API REST para obter book de ${signal.symbol}`);
                     try {
-                        const fallbackBookData = await getBookTicker(signal.symbol); // Sua função existente
+                        const fallbackBookData = await getBookTicker(signal.symbol);
                         if (fallbackBookData && fallbackBookData.bidPrice && fallbackBookData.askPrice) {
                             currentBestBid = parseFloat(fallbackBookData.bidPrice);
                             currentBestAsk = parseFloat(fallbackBookData.askPrice);
-                            // Não atualize lastDepthUpdateTimestamp aqui, para não mascarar o problema do WS
                             console.log(`[LIMIT_ENTRY] Book obtido via REST (fallback): Bid ${currentBestBid}, Ask ${currentBestAsk}`);
-                            wsUpdateErrorCount = 0; // Resetar contador se o fallback funcionar
+                            wsUpdateErrorCount = 0;
                         } else {
                              console.error(`[LIMIT_ENTRY] Fallback REST para ${signal.symbol} não retornou dados válidos.`);
-                             await new Promise(resolve => setTimeout(resolve, 1000)); // Pausa maior se REST também falha
+                             await new Promise(resolve => setTimeout(resolve, 1000));
                              continue;
                         }
                     } catch (e) {
                         console.error(`[LIMIT_ENTRY] Falha ao obter book ticker via REST (fallback) para ${signal.symbol}: ${e.message}`);
-                        await new Promise(resolve => setTimeout(resolve, 1000)); // Pausa maior
+                        await new Promise(resolve => setTimeout(resolve, 1000));
                         continue;
                     }
                 } else {
-                    await new Promise(resolve => setTimeout(resolve, 300)); // Pausa curta se os dados do WS ainda não chegaram
+                    await new Promise(resolve => setTimeout(resolve, 300));
                     continue;
                 }
             }
             // --- FIM USO DOS DADOS DO WEBSOCKET ---
 
-            const bestBid = currentBestBid; // Usar os valores atualizados pelo WS (ou fallback REST)
+            const bestBid = currentBestBid;
             const bestAsk = currentBestAsk;
             const spread = bestAsk - bestBid;
 
             const tickSizeData = await getTickSize(signal.symbol);
             const tickSize = parseFloat(tickSizeData.tickSize);
             
-            // A lógica para definir currentLocalMakerPrice (renomeado para evitar confusão) e gerenciar ordens é mantida.
-            // 'currentMakerPrice' dentro do loop while agora é 'currentLocalMakerPrice'
             let currentLocalMakerPrice;
             if (binanceSide === 'BUY') {
                 currentLocalMakerPrice = bestAsk - tickSize;
@@ -2878,7 +2870,7 @@ async function executeLimitMakerEntry(db, signal, currentPriceTrigger) {
             quantidade_aberta: totalFilledSize,
         };
         
-        positionId = await insertPosition(connection, positionData);
+        positionId = await insertPosition(connection, positionData, signal.id);
         if (!positionId) throw new Error(`Falha ao inserir posição no banco de dados para Sinal ID ${signal.id}`);
         console.log(`[LIMIT_ENTRY] Posição ID ${positionId} criada no banco de dados para Sinal ID ${signal.id}`);
         
@@ -2886,10 +2878,10 @@ async function executeLimitMakerEntry(db, signal, currentPriceTrigger) {
             const orderData = {
                 tipo_ordem: (marketOrderResponseForDb && fill.orderId === String(marketOrderResponseForDb.orderId)) ? 'MARKET' : 'LIMIT',
                 preco: fill.price, quantidade: fill.qty, id_posicao: positionId, status: 'FILLED', 
-                data_hora_criacao: new Date().toISOString(), 
+                data_hora_criacao: formatDateForMySQL(new Date()), 
                 id_externo: String(fill.orderId || `fill_${Date.now()}_${Math.random().toString(36).substring(7)}`).substring(0, 90), 
                 side: binanceSide, simbolo: signal.symbol, tipo_ordem_bot: 'ENTRADA', target: null,
-                reduce_only: false, close_position: false, last_update: new Date().toISOString(),
+                reduce_only: false, close_position: false, last_update: formatDateForMySQL(new Date()),
                 orign_sig: `WEBHOOK_${signal.id}`, preco_executado: fill.price, quantidade_executada: fill.qty,
             };
             await insertNewOrder(connection, orderData);
@@ -2926,9 +2918,9 @@ async function executeLimitMakerEntry(db, signal, currentPriceTrigger) {
                     if (slResponse && slResponse.data && slResponse.data.orderId) {
                         const slOrderData = { 
                             tipo_ordem: 'STOP_MARKET', preco: slPriceVal, quantidade: totalFilledSize, id_posicao: positionId, status: 'NEW', 
-                            data_hora_criacao: new Date().toISOString(), id_externo: String(slResponse.data.orderId).substring(0,90), side: binanceOppositeSide, 
+                            data_hora_criacao: formatDateForMySQL(new Date()), id_externo: String(slResponse.data.orderId).substring(0,90), side: binanceOppositeSide, 
                             simbolo: signal.symbol, tipo_ordem_bot: 'STOP_LOSS', reduce_only: true, close_position: true, orign_sig: `WEBHOOK_${signal.id}`,
-                            last_update: new Date().toISOString(), target: null
+                            last_update: formatDateForMySQL(new Date()), target: null
                         };
                         await insertNewOrder(connection, slOrderData); 
                         console.log(`[LIMIT_ENTRY] SL criado: ${slResponse.data.orderId}`);
@@ -2937,7 +2929,7 @@ async function executeLimitMakerEntry(db, signal, currentPriceTrigger) {
                 } catch (slError) { console.error(`[LIMIT_ENTRY] Erro ao criar SL:`, slError.response?.data || slError.message); }
             } else { console.warn(`[LIMIT_ENTRY] Preço de SL inválido ou não fornecido (${slPriceVal}). SL não será criado.`); }
             
-            const reductionPercentages = [0.10, 0.40, 0.30, 0.10];
+            const reductionPercentages = [0.15, 0.35, 0.25, 0.10];
             let cumulativeQtyForRps = 0;
             for (let i = 0; i < rpTargetKeys.length; i++) {
                 const rpKey = rpTargetKeys[i];
@@ -2958,7 +2950,7 @@ async function executeLimitMakerEntry(db, signal, currentPriceTrigger) {
                         if (rpResponse && rpResponse.data && rpResponse.data.orderId) {
                             const rpOrderData = { 
                                 tipo_ordem: 'LIMIT', preco: rpPrice, quantidade: reductionQty, id_posicao: positionId, status: 'NEW',
-                                data_hora_criacao: new Date().toISOString(), id_externo: String(rpResponse.data.orderId).substring(0,90), side: binanceOppositeSide,
+                                data_hora_criacao: formatDateForMySQL(new Date()), id_externo: String(rpResponse.data.orderId).substring(0,90), side: binanceOppositeSide,
                                 simbolo: signal.symbol, tipo_ordem_bot: 'REDUCAO_PARCIAL', target: i + 1, reduce_only: true, close_position: false, orign_sig: `WEBHOOK_${signal.id}`,
                                 last_update: new Date().toISOString()
                             };
@@ -2986,7 +2978,7 @@ async function executeLimitMakerEntry(db, signal, currentPriceTrigger) {
                             tipo_ordem: 'TAKE_PROFIT_MARKET', preco: finalTpPrice, 
                             quantidade: qtyForFinalTp, 
                             id_posicao: positionId, status: 'NEW',
-                            data_hora_criacao: new Date().toISOString(), id_externo: String(tpResponse.data.orderId).substring(0,90), side: binanceOppositeSide,
+                            data_hora_criacao: formatDateForMySQL(new Date()), id_externo: String(tpResponse.data.orderId).substring(0,90), side: binanceOppositeSide,
                             simbolo: signal.symbol, tipo_ordem_bot: 'TAKE_PROFIT', target: 5, reduce_only: true, close_position: true, orign_sig: `WEBHOOK_${signal.id}`,
                             last_update: new Date().toISOString()
                         };
@@ -3102,9 +3094,9 @@ async function executeLimitMakerEntry(db, signal, currentPriceTrigger) {
                     if (slResponse && slResponse.data && slResponse.data.orderId) {
                         const slOrderData = { 
                             tipo_ordem: 'STOP_MARKET', preco: slPriceVal, quantidade: totalFilledSize, id_posicao: positionId, status: 'NEW', 
-                            data_hora_criacao: new Date().toISOString(), id_externo: String(slResponse.data.orderId).substring(0,90), side: binanceOppositeSide, 
+                            data_hora_criacao: formatDateForMySQL(new Date()), id_externo: String(slResponse.data.orderId).substring(0,90), side: binanceOppositeSide, 
                             simbolo: signal.symbol, tipo_ordem_bot: 'STOP_LOSS', reduce_only: true, close_position: true, orign_sig: `WEBHOOK_${signal.id}`,
-                            last_update: new Date().toISOString(), target: null, observacao: 'SL Enviado em Recuperação de Erro'
+                            last_update: formatDateForMySQL(new Date()), target: null, observacao: 'SL Enviado em Recuperação de Erro'
                         };
                         await insertNewOrder(connection, slOrderData); 
                         console.log(`[LIMIT_ENTRY_RECOVERY] SL de emergência (recuperação) criado: ${slResponse.data.orderId}`);
@@ -3124,9 +3116,9 @@ async function executeLimitMakerEntry(db, signal, currentPriceTrigger) {
                     if (tpResponse && tpResponse.data && tpResponse.data.orderId) {
                         const tpOrderData = {
                             tipo_ordem: 'TAKE_PROFIT_MARKET', preco: finalTpPriceVal, quantidade: totalFilledSize, id_posicao: positionId, status: 'NEW',
-                            data_hora_criacao: new Date().toISOString(), id_externo: String(tpResponse.data.orderId).substring(0,90), side: binanceOppositeSide,
+                            data_hora_criacao: formatDateForMySQL(new Date()), id_externo: String(tpResponse.data.orderId).substring(0,90), side: binanceOppositeSide,
                             simbolo: signal.symbol, tipo_ordem_bot: 'TAKE_PROFIT', target: 5, reduce_only: true, close_position: true, orign_sig: `WEBHOOK_${signal.id}`,
-                            last_update: new Date().toISOString(), observacao: 'TP Enviado em Recuperação de Erro'
+                            last_update: formatDateForMySQL(new Date()), observacao: 'TP Enviado em Recuperação de Erro'
                         };
                         await insertNewOrder(connection, tpOrderData); 
                         console.log(`[LIMIT_ENTRY_RECOVERY] TP de emergência (recuperação) criado: ${tpResponse.data.orderId}`);
