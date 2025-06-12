@@ -2469,25 +2469,23 @@ async function executeLimitMakerEntry(db, signal, currentPriceTrigger) {
                 currentBestAsk = parseFloat(depthData.bestAsk);
                 lastDepthUpdateTimestamp = Date.now();
                 wsUpdateErrorCount = 0; // Resetar contador de erro se recebermos dados
-                // console.log(`[LIMIT_ENTRY_DEPTH_WS] ${signal.symbol} - Bid: ${currentBestBid}, Ask: ${currentBestAsk}`);
             } else {
                 wsUpdateErrorCount++;
                 console.warn(`[LIMIT_ENTRY_DEPTH_WS] Dados de profundidade inválidos recebidos para ${signal.symbol}:`, depthData);
             }
         });
-        // Lidar com erros de conexão do WS de profundidade principal aqui, se necessário, ou confiar na lógica interna de setupBookDepthWebsocket.
-        // Adicionar uma pequena pausa para permitir que o WebSocket conecte e receba os primeiros dados.
-        await new Promise(resolve => setTimeout(resolve, 1500)); // 1.5 segundos de cortesia para conexão WS
+        
+        await new Promise(resolve => setTimeout(resolve, 1500)); // 1.5 segundos para conexão WS
 
-        // Obter dados iniciais do book via REST como fallback ou para início rápido
+        // Obter dados iniciais do book via REST como fallback
         if (!currentBestBid || !currentBestAsk) {
             try {
                 console.log(`[LIMIT_ENTRY] WebSocket de profundidade ainda não forneceu dados. Buscando book inicial via REST para ${signal.symbol}...`);
-                const initialBookData = await getBookTicker(signal.symbol); // Sua função existente
+                const initialBookData = await getBookTicker(signal.symbol);
                 if (initialBookData && initialBookData.bidPrice && initialBookData.askPrice) {
                     currentBestBid = parseFloat(initialBookData.bidPrice);
                     currentBestAsk = parseFloat(initialBookData.askPrice);
-                    lastDepthUpdateTimestamp = Date.now(); // Atualiza o timestamp
+                    lastDepthUpdateTimestamp = Date.now();
                     console.log(`[LIMIT_ENTRY] Book inicial obtido via REST: Bid ${currentBestBid}, Ask ${currentBestAsk}`);
                 } else {
                      console.warn(`[LIMIT_ENTRY] Book ticker inicial via REST não retornou dados válidos para ${signal.symbol}.`);
@@ -2503,13 +2501,11 @@ async function executeLimitMakerEntry(db, signal, currentPriceTrigger) {
                (Date.now() - executionStartTime) < CHASE_TIMEOUT_MS) {
             
             chaseAttempts++;
-            // Removido o log de tentativa daqui para reduzir verbosidade, pode ser adicionado se necessário.
 
-            // Sincronizar preenchimentos antes de obter o book para ter o `totalFilledSize` mais atual
+            // Sincronizar preenchimentos antes de obter o book
             try {
-                // ... (lógica de getRecentOrders e processamento de filledExchangeOrders - MANTIDA) ...
-                 const recentOrders = await getRecentOrders(signal.symbol, 15); // Sua função existente
-                 const filledExchangeOrders = recentOrders.filter(order =>
+                const recentOrders = await getRecentOrders(signal.symbol, 15);
+                const filledExchangeOrders = recentOrders.filter(order =>
                     order.status === 'FILLED' &&
                     order.side === binanceSide &&
                     parseFloat(order.executedQty) > 0 &&
@@ -2534,7 +2530,6 @@ async function executeLimitMakerEntry(db, signal, currentPriceTrigger) {
                 console.error(`[LIMIT_ENTRY] Erro ao buscar/sincronizar ordens recentes:`, checkError.message);
             }
 
-
             const remainingSizeCurrentLoop = parseFloat((totalEntrySize - totalFilledSize).toFixed(quantityPrecision));
             if (remainingSizeCurrentLoop <= 0) {
                 console.log(`[LIMIT_ENTRY] Quantidade restante (${remainingSizeCurrentLoop.toFixed(quantityPrecision)}) zerada ou negativa. Saindo do loop de chasing.`);
@@ -2551,39 +2546,36 @@ async function executeLimitMakerEntry(db, signal, currentPriceTrigger) {
                 if (isDepthDataStale || wsUpdateErrorCount > 3) {
                     console.warn(`[LIMIT_ENTRY] Tentando fallback para API REST para obter book de ${signal.symbol}`);
                     try {
-                        const fallbackBookData = await getBookTicker(signal.symbol); // Sua função existente
+                        const fallbackBookData = await getBookTicker(signal.symbol);
                         if (fallbackBookData && fallbackBookData.bidPrice && fallbackBookData.askPrice) {
                             currentBestBid = parseFloat(fallbackBookData.bidPrice);
                             currentBestAsk = parseFloat(fallbackBookData.askPrice);
-                            // Não atualize lastDepthUpdateTimestamp aqui, para não mascarar o problema do WS
                             console.log(`[LIMIT_ENTRY] Book obtido via REST (fallback): Bid ${currentBestBid}, Ask ${currentBestAsk}`);
-                            wsUpdateErrorCount = 0; // Resetar contador se o fallback funcionar
+                            wsUpdateErrorCount = 0;
                         } else {
                              console.error(`[LIMIT_ENTRY] Fallback REST para ${signal.symbol} não retornou dados válidos.`);
-                             await new Promise(resolve => setTimeout(resolve, 1000)); // Pausa maior se REST também falha
+                             await new Promise(resolve => setTimeout(resolve, 1000));
                              continue;
                         }
                     } catch (e) {
                         console.error(`[LIMIT_ENTRY] Falha ao obter book ticker via REST (fallback) para ${signal.symbol}: ${e.message}`);
-                        await new Promise(resolve => setTimeout(resolve, 1000)); // Pausa maior
+                        await new Promise(resolve => setTimeout(resolve, 1000));
                         continue;
                     }
                 } else {
-                    await new Promise(resolve => setTimeout(resolve, 300)); // Pausa curta se os dados do WS ainda não chegaram
+                    await new Promise(resolve => setTimeout(resolve, 300));
                     continue;
                 }
             }
             // --- FIM USO DOS DADOS DO WEBSOCKET ---
 
-            const bestBid = currentBestBid; // Usar os valores atualizados pelo WS (ou fallback REST)
+            const bestBid = currentBestBid;
             const bestAsk = currentBestAsk;
             const spread = bestAsk - bestBid;
 
             const tickSizeData = await getTickSize(signal.symbol);
             const tickSize = parseFloat(tickSizeData.tickSize);
             
-            // A lógica para definir currentLocalMakerPrice (renomeado para evitar confusão) e gerenciar ordens é mantida.
-            // 'currentMakerPrice' dentro do loop while agora é 'currentLocalMakerPrice'
             let currentLocalMakerPrice;
             if (binanceSide === 'BUY') {
                 currentLocalMakerPrice = bestAsk - tickSize;
