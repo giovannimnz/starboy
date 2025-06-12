@@ -6,10 +6,10 @@ const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 // Variáveis de ambiente para API da Binance
-const apiKey = process.env.API_KEY;
-const apiSecret = process.env.API_SECRET;
-const apiUrl = process.env.API_URL;  // Deve ser https://fapi.binance.com/fapi
-const ws_apiUrl = process.env.WS_URL;
+const apiKey = process.env.TESTNET_API_KEY;
+const apiSecret = process.env.TESTNET_API_SECRET;
+const apiUrl = process.env.TESTNET_API_URL;  // Deve ser https://fapi.binance.com/fapi
+const ws_apiUrl = process.env.TESTNET_WS_URL;
 
 // Variável para armazenar os websockets de preço
 const priceWebsockets = {};
@@ -245,42 +245,62 @@ async function handlePriceUpdate(symbol, tickerData) {
 }
 
 function setupBookDepthWebsocket(symbol, callback) {
-    const wsEndpoint = `${process.env.WS_URL}/ws/${symbol.toLowerCase()}@depth`;
+    // Garantir o uso da URL correta e consistente
+    const wsEndpoint = `${ws_apiUrl}/ws/${symbol.toLowerCase()}@bookTicker`;
+    console.log(`[WEBSOCKET] Conectando ao BookTicker em tempo real: ${wsEndpoint}`);
+    
     const ws = new WebSocket(wsEndpoint);
     
     ws.on('open', () => {
-        console.log(`[WEBSOCKET] WebSocket de profundidade conectado para ${symbol}`);
+        console.log(`[WEBSOCKET] BookTicker WebSocket conectado para ${symbol}`);
     });
     
     ws.on('message', (data) => {
         try {
-            const depthData = JSON.parse(data);
+            const tickerData = JSON.parse(data);
             
-            // Verificar se os dados têm o formato esperado antes de processar
-            if (depthData && depthData.bids && Array.isArray(depthData.bids) && 
-                depthData.bids.length > 0 && Array.isArray(depthData.bids[0]) && 
-                depthData.asks && Array.isArray(depthData.asks) && 
-                depthData.asks.length > 0 && Array.isArray(depthData.asks[0])) {
+            // Adicionar log detalhado para debug
+            // console.log(`[WEBSOCKET] Dados recebidos de ${symbol}: ${JSON.stringify(tickerData)}`);
+            
+            // Validação mais robusta para o formato bookTicker
+            if (tickerData && 
+                (tickerData.e === 'bookTicker' || tickerData.e === undefined) && 
+                typeof tickerData.b === 'string' && 
+                typeof tickerData.a === 'string') {
                 
-                const bestBid = parseFloat(depthData.bids[0][0]);
-                const bestAsk = parseFloat(depthData.asks[0][0]);
-                callback({bestBid, bestAsk});
+                // Extrair diretamente os valores do bestBid e bestAsk
+                const bestBid = parseFloat(tickerData.b);
+                const bestAsk = parseFloat(tickerData.a);
+                const bestBidQty = parseFloat(tickerData.B || '0');
+                const bestAskQty = parseFloat(tickerData.A || '0');
+                
+                // Verificação adicional para garantir valores numéricos válidos
+                if (!isNaN(bestBid) && !isNaN(bestAsk) && bestBid > 0 && bestAsk > 0) {
+                    // Enviar apenas os dados relevantes para o callback
+                    callback({
+                        bestBid, 
+                        bestAsk,
+                        bestBidQty,
+                        bestAskQty,
+                        timestamp: tickerData.E || Date.now() // Usar o timestamp do evento ou o atual se não existir
+                    });
+                } else {
+                    console.log(`[WEBSOCKET] Valores numéricos inválidos em BookTicker para ${symbol}: bid=${bestBid}, ask=${bestAsk}`);
+                }
             } else {
-                // Se os dados não têm o formato esperado, registre isso mas não falhe
-                // console.log(`[WEBSOCKET] Dados de profundidade para ${symbol} em formato inesperado:`, 
-                //              depthData.e || 'formato desconhecido');
+                console.log(`[WEBSOCKET] Formato inesperado de dados BookTicker para ${symbol}: ${JSON.stringify(tickerData).substring(0, 200)}`);
             }
         } catch (error) {
-            console.error(`[WEBSOCKET] Erro ao processar dados de profundidade para ${symbol}:`, error.message);
+            console.error(`[WEBSOCKET] Erro ao processar BookTicker para ${symbol}:`, error.message);
         }
     });
     
     ws.on('error', (error) => {
-        console.error(`[WEBSOCKET] Erro na conexão de profundidade para ${symbol}:`, error.message);
+        console.error(`[WEBSOCKET] Erro na conexão BookTicker para ${symbol}:`, error.message);
     });
     
     ws.on('close', () => {
-        console.log(`[WEBSOCKET] WebSocket de profundidade fechado para ${symbol}`);
+        console.log(`[WEBSOCKET] BookTicker WebSocket fechado para ${symbol}`);
     });
     
     return ws;

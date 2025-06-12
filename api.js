@@ -3,10 +3,10 @@ const crypto = require("crypto");
 require('dotenv').config();
 const { getDatabaseInstance } = require('./db/conexao');
 
-const apiKey = process.env.API_KEY;
-const apiSecret = process.env.API_SECRET;
-const apiUrl = process.env.API_URL;
-const apiUrlSpot = process.env.API_URL_SPOT;
+const apiKey = process.env.TESTNET_API_KEY;
+const apiSecret = process.env.TESTNET_API_SECRET;
+const apiUrl = process.env.TESTNET_API_URL;
+const apiUrlSpot = process.env.TESTNET_API_URL_SPOT;
 
 async function newEntryOrder(symbol, quantity, side) {
   try {
@@ -124,14 +124,15 @@ async function newLimitMakerOrder(symbol, quantity, side, price) {
   }
 }
 
-async function editOrder(symbol, orderId, newPrice, quantity = null) {
+async function editOrder(symbol, orderId, newPrice, side, quantity = null) {
   try {
-    console.log(`[API] Editando ordem ${orderId} para ${symbol}: novo preço ${newPrice}`);
+    console.log(`[API] Editando ordem ${orderId} para ${symbol}: novo preço ${newPrice}, lado ${side}`);
     
     // Preparar dados para a requisição
     const data = {
       symbol,
       orderId,
+      side, // Parâmetro side adicionado - ESSENCIAL
       timestamp: Date.now(),
       recvWindow: 60000
     };
