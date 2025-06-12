@@ -1327,7 +1327,7 @@ async def check_if_reply_to_signal(reply_to_message_id, chat_id=None):
                 
                 if parent_message_info and parent_message_info.get('reply_to_message_id'):
                     parent_msg_id = parent_message_info['reply_to_message_id']
-                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Recursão: Verificando mensagem pai ID {parent_msg_id} para o sinal.")
+                    #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Recursão: Verificando mensagem pai ID {parent_msg_id} para o sinal.")
                     # O chat_id passado para a recursão deve ser o da mensagem pai,
                     return await check_if_reply_to_signal(parent_msg_id, chat_id) 
             else:
