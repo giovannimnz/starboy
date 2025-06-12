@@ -617,7 +617,7 @@ if (fillRatio >= ENTRY_COMPLETE_THRESHOLD_RATIO) {
         }
         
         // Agora criar as ordens RP
-        const reductionPercentages = [0.15, 0.35, 0.25, 0.10];
+        const reductionPercentages = [0.25, 0.30, 0.25, 0.10];
         let cumulativeQtyForRps = 0;
         for (let i = 0; i < rpTargetKeys.length; i++) {
             const rpKey = rpTargetKeys[i];
@@ -710,7 +710,7 @@ if (fillRatio >= ENTRY_COMPLETE_THRESHOLD_RATIO) {
                     tp4: signal.tp4_price ? parseFloat(signal.tp4_price) : null,
                     tp5: signal.tp5_price ? parseFloat(signal.tp5_price) : (signal.tp_price ? parseFloat(signal.tp_price) : null) 
                 };
-                const reductionPercentages = [0.15, 0.35, 0.25, 0.10]; 
+                const reductionPercentages = [0.25, 0.30, 0.25, 0.10]; 
 
                 rpTargetKeys.forEach((key, index) => {
                     const price = targetPrices[key];
