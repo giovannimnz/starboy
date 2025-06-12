@@ -6,10 +6,10 @@ const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 // Variáveis de ambiente para API da Binance
-const apiKey = process.env.TESTNET_API_KEY;
-const apiSecret = process.env.TESTNET_API_SECRET;
-const apiUrl = process.env.TESTNET_API_URL;  // Deve ser https://fapi.binance.com/fapi
-const ws_apiUrl = process.env.TESTNET_WS_URL;
+const apiKey = process.env.API_KEY;
+const apiSecret = process.env.API_SECRET;
+const apiUrl = process.env.API_URL;  // Deve ser https://fapi.binance.com/fapi
+const ws_apiUrl = process.env.WS_API_URL;
 
 // Variável para armazenar os websockets de preço
 const priceWebsockets = {};
