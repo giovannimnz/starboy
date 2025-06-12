@@ -2011,7 +2011,7 @@ async function triggerMarketEntry(db, entry, currentPrice) {
         quantidade: executedQty,
         id_posicao: positionId,
         status: 'FILLED',
-        data_hora_criacao: new Date().toISOString(),
+        data_hora_criacao: formatDateForMySQL(new Date()),
         id_externo: orderId,
         side: binanceSide,
         simbolo: entry.simbolo,
@@ -2019,7 +2019,7 @@ async function triggerMarketEntry(db, entry, currentPrice) {
         target: null,
         reduce_only: false,
         close_position: false,
-        last_update: new Date().toISOString(),
+        last_update: formatDateForMySQL(new Date()),
         orign_sig: `WEBHOOK_${entry.webhook_id}`
       };
 
@@ -2061,7 +2061,7 @@ async function triggerMarketEntry(db, entry, currentPrice) {
           quantidade: executedQty,
           id_posicao: positionId,
           status: 'OPEN',
-          data_hora_criacao: new Date().toISOString(),
+          data_hora_criacao: formatDateForMySQL(new Date()),
           id_externo: slResponse.data.orderId,
           side: binanceOppositeSide,
           simbolo: entry.simbolo,
@@ -2069,7 +2069,7 @@ async function triggerMarketEntry(db, entry, currentPrice) {
           target: null,
           reduce_only: false,
           close_position: true,
-          last_update: new Date().toISOString(),
+          last_update: formatDateForMySQL(new Date()),
           orign_sig: `WEBHOOK_${entry.webhook_id}`
         };
 
@@ -2105,7 +2105,7 @@ async function triggerMarketEntry(db, entry, currentPrice) {
           quantidade: executedQty,
           id_posicao: positionId,
           status: 'OPEN',
-          data_hora_criacao: new Date().toISOString(),
+          data_hora_criacao: formatDateForMySQL(new Date()),
           id_externo: tpResponse.data.orderId,
           side: binanceOppositeSide,
           simbolo: entry.simbolo,
@@ -2113,7 +2113,7 @@ async function triggerMarketEntry(db, entry, currentPrice) {
           target: 5,
           reduce_only: true,
           close_position: false,
-          last_update: new Date().toISOString(),
+          last_update: formatDateForMySQL(new Date()),
           orign_sig: `WEBHOOK_${entry.webhook_id}`
         };
 
@@ -2886,10 +2886,10 @@ async function executeLimitMakerEntry(db, signal, currentPriceTrigger) {
             const orderData = {
                 tipo_ordem: (marketOrderResponseForDb && fill.orderId === String(marketOrderResponseForDb.orderId)) ? 'MARKET' : 'LIMIT',
                 preco: fill.price, quantidade: fill.qty, id_posicao: positionId, status: 'FILLED', 
-                data_hora_criacao: new Date().toISOString(), 
+                data_hora_criacao: formatDateForMySQL(new Date()), 
                 id_externo: String(fill.orderId || `fill_${Date.now()}_${Math.random().toString(36).substring(7)}`).substring(0, 90), 
                 side: binanceSide, simbolo: signal.symbol, tipo_ordem_bot: 'ENTRADA', target: null,
-                reduce_only: false, close_position: false, last_update: new Date().toISOString(),
+                reduce_only: false, close_position: false, last_update: formatDateForMySQL(new Date()),
                 orign_sig: `WEBHOOK_${signal.id}`, preco_executado: fill.price, quantidade_executada: fill.qty,
             };
             await insertNewOrder(connection, orderData);
@@ -2926,9 +2926,9 @@ async function executeLimitMakerEntry(db, signal, currentPriceTrigger) {
                     if (slResponse && slResponse.data && slResponse.data.orderId) {
                         const slOrderData = { 
                             tipo_ordem: 'STOP_MARKET', preco: slPriceVal, quantidade: totalFilledSize, id_posicao: positionId, status: 'NEW', 
-                            data_hora_criacao: new Date().toISOString(), id_externo: String(slResponse.data.orderId).substring(0,90), side: binanceOppositeSide, 
+                            data_hora_criacao: formatDateForMySQL(new Date()), id_externo: String(slResponse.data.orderId).substring(0,90), side: binanceOppositeSide, 
                             simbolo: signal.symbol, tipo_ordem_bot: 'STOP_LOSS', reduce_only: true, close_position: true, orign_sig: `WEBHOOK_${signal.id}`,
-                            last_update: new Date().toISOString(), target: null
+                            last_update: formatDateForMySQL(new Date()), target: null
                         };
                         await insertNewOrder(connection, slOrderData); 
                         console.log(`[LIMIT_ENTRY] SL criado: ${slResponse.data.orderId}`);
@@ -2958,7 +2958,7 @@ async function executeLimitMakerEntry(db, signal, currentPriceTrigger) {
                         if (rpResponse && rpResponse.data && rpResponse.data.orderId) {
                             const rpOrderData = { 
                                 tipo_ordem: 'LIMIT', preco: rpPrice, quantidade: reductionQty, id_posicao: positionId, status: 'NEW',
-                                data_hora_criacao: new Date().toISOString(), id_externo: String(rpResponse.data.orderId).substring(0,90), side: binanceOppositeSide,
+                                data_hora_criacao: formatDateForMySQL(new Date()), id_externo: String(rpResponse.data.orderId).substring(0,90), side: binanceOppositeSide,
                                 simbolo: signal.symbol, tipo_ordem_bot: 'REDUCAO_PARCIAL', target: i + 1, reduce_only: true, close_position: false, orign_sig: `WEBHOOK_${signal.id}`,
                                 last_update: new Date().toISOString()
                             };
@@ -2986,7 +2986,7 @@ async function executeLimitMakerEntry(db, signal, currentPriceTrigger) {
                             tipo_ordem: 'TAKE_PROFIT_MARKET', preco: finalTpPrice, 
                             quantidade: qtyForFinalTp, 
                             id_posicao: positionId, status: 'NEW',
-                            data_hora_criacao: new Date().toISOString(), id_externo: String(tpResponse.data.orderId).substring(0,90), side: binanceOppositeSide,
+                            data_hora_criacao: formatDateForMySQL(new Date()), id_externo: String(tpResponse.data.orderId).substring(0,90), side: binanceOppositeSide,
                             simbolo: signal.symbol, tipo_ordem_bot: 'TAKE_PROFIT', target: 5, reduce_only: true, close_position: true, orign_sig: `WEBHOOK_${signal.id}`,
                             last_update: new Date().toISOString()
                         };
@@ -3102,9 +3102,9 @@ async function executeLimitMakerEntry(db, signal, currentPriceTrigger) {
                     if (slResponse && slResponse.data && slResponse.data.orderId) {
                         const slOrderData = { 
                             tipo_ordem: 'STOP_MARKET', preco: slPriceVal, quantidade: totalFilledSize, id_posicao: positionId, status: 'NEW', 
-                            data_hora_criacao: new Date().toISOString(), id_externo: String(slResponse.data.orderId).substring(0,90), side: binanceOppositeSide, 
+                            data_hora_criacao: formatDateForMySQL(new Date()), id_externo: String(slResponse.data.orderId).substring(0,90), side: binanceOppositeSide, 
                             simbolo: signal.symbol, tipo_ordem_bot: 'STOP_LOSS', reduce_only: true, close_position: true, orign_sig: `WEBHOOK_${signal.id}`,
-                            last_update: new Date().toISOString(), target: null, observacao: 'SL Enviado em Recuperação de Erro'
+                            last_update: formatDateForMySQL(new Date()), target: null, observacao: 'SL Enviado em Recuperação de Erro'
                         };
                         await insertNewOrder(connection, slOrderData); 
                         console.log(`[LIMIT_ENTRY_RECOVERY] SL de emergência (recuperação) criado: ${slResponse.data.orderId}`);
@@ -3124,9 +3124,9 @@ async function executeLimitMakerEntry(db, signal, currentPriceTrigger) {
                     if (tpResponse && tpResponse.data && tpResponse.data.orderId) {
                         const tpOrderData = {
                             tipo_ordem: 'TAKE_PROFIT_MARKET', preco: finalTpPriceVal, quantidade: totalFilledSize, id_posicao: positionId, status: 'NEW',
-                            data_hora_criacao: new Date().toISOString(), id_externo: String(tpResponse.data.orderId).substring(0,90), side: binanceOppositeSide,
+                            data_hora_criacao: formatDateForMySQL(new Date()), id_externo: String(tpResponse.data.orderId).substring(0,90), side: binanceOppositeSide,
                             simbolo: signal.symbol, tipo_ordem_bot: 'TAKE_PROFIT', target: 5, reduce_only: true, close_position: true, orign_sig: `WEBHOOK_${signal.id}`,
-                            last_update: new Date().toISOString(), observacao: 'TP Enviado em Recuperação de Erro'
+                            last_update: formatDateForMySQL(new Date()), observacao: 'TP Enviado em Recuperação de Erro'
                         };
                         await insertNewOrder(connection, tpOrderData); 
                         console.log(`[LIMIT_ENTRY_RECOVERY] TP de emergência (recuperação) criado: ${tpResponse.data.orderId}`);
