@@ -9,7 +9,7 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 const apiKey = process.env.API_KEY;
 const apiSecret = process.env.API_SECRET;
 const apiUrl = process.env.API_URL;  // Deve ser https://fapi.binance.com/fapi
-const ws_apiUrl = process.env.WS_API_URL;
+const ws_apiUrl = process.env.WS_URL;
 
 // Variável para armazenar os websockets de preço
 const priceWebsockets = {};
