@@ -5,7 +5,7 @@ const axios = require('axios');
 const schedule = require('node-schedule');
 const fs = require('fs').promises;
 const { Telegraf } = require("telegraf");
-const { newEntryOrder, getRecentOrders, editOrder, roundPriceToTickSize, newLimitMakerOrder, newReduceOnlyOrder, cancelOrder, newStopOrder, cancelAllOpenOrders, getAllLeverageBrackets, getFuturesAccountBalanceDetails, getPrecision, changeInitialLeverage, changeMarginType, getPositionDetails, setPositionMode, getOpenOrders, getOrderStatus, getAllOpenPositions, updateLeverageBracketsInDatabase, cancelPendingEntry, getTickSize } = require('../api');
+const { newEntryOrder, getRecentOrders, editOrder, roundPriceToTickSize, newLimitMakerOrder, newReduceOnlyOrder, getCurrentMarginType, cancelOrder, newStopOrder, cancelAllOpenOrders, getAllLeverageBrackets, getFuturesAccountBalanceDetails, getPrecision, changeInitialLeverage, changeMarginType, getPositionDetails, setPositionMode, getOpenOrders, getOrderStatus, getAllOpenPositions, updateLeverageBracketsInDatabase, cancelPendingEntry, getTickSize } = require('../api');
 const {getDatabaseInstance, getPositionIdBySymbol, updatePositionInDb, updatePositionStatus, insertNewOrder, disconnectDatabase, getAllPositionsFromDb, getOpenOrdersFromDb, getOrdersFromDb, updateOrderStatus, getPositionsFromDb, insertPosition, moveClosedPositionsAndOrders, formatDateForMySQL, getBaseCalculoBalance, updateAccountBalance} = require('../db/conexao');
 const { executeLimitMakerEntry } = require('./limitMakerEntry');
 const websockets = require('../websockets');
@@ -558,23 +558,65 @@ async function processSignal(db, signal) {
     }
 
     // 2. Configurar alavancagem e tipo de margem
+try {
+  // Configurar alavancagem com valor enviado pelo divap.py
+  await changeInitialLeverage(symbol, leverage);
+  console.log(`[MONITOR] Alavancagem configurada: ${leverage}x para ${symbol}`);
+} catch (error) {
+  // Se falhar com erro 400, tentar algumas vezes mais
+  if (error.response && error.response.status === 400) {
+    console.log(`[MONITOR] Erro inicial ao configurar alavancagem ${leverage}x para ${symbol}. Tentando novamente...`);
+    
     try {
-      await changeInitialLeverage(symbol, parseInt(leverage));
-      try {
-        await changeMarginType(symbol, 'CROSSED'); // Or 'ISOLATED' as per your strategy
-      } catch (marginError) {
-        if (marginError.response && marginError.response.data && marginError.response.data.code === -4046) { // -4046: "No need to change margin type"
-          console.log(`[MONITOR] Margem para ${symbol} já está como CROSSED (ou o tipo desejado), continuando...`);
-        } else {
-          throw marginError; // Re-throw other margin errors
-        }
-      }
-    } catch (configError) {
-      console.error(`[MONITOR] Erro ao configurar alavancagem/margem para ${symbol} (Sinal ID ${id}):`, configError.message);
-      let errorMessage = `Erro config.: ${configError.message}`;
-      if (configError.response && configError.response.data && configError.response.data.msg) {
-        errorMessage = `Erro config. API: ${configError.response.data.msg}`;
-      }
+      // Segunda tentativa após um pequeno delay
+      await new Promise(resolve => setTimeout(resolve, 500));
+      await changeInitialLeverage(symbol, leverage);
+      console.log(`[MONITOR] Alavancagem configurada na segunda tentativa: ${leverage}x para ${symbol}`);
+    } catch (retryError) {
+      // Se falhar novamente, tentar com um valor um pouco menor
+      console.log(`[MONITOR] Segunda tentativa de configurar alavancagem falhou. Continuando mesmo assim, pois valor foi validado anteriormente pelo divap.py`);
+      // Apenas logar o erro, mas continuar o processo
+    }
+  } else {
+    // Para outros erros, também continuar pois divap.py já validou a alavancagem
+    console.log(`[MONITOR] Erro ao configurar alavancagem para ${symbol}, mas continuando pois valor foi validado pelo divap.py: ${error.message}`);
+  }
+}
+
+// Verificar margem atual e tentar configurar como CROSSED se necessário
+try {
+  const currentMarginType = await getCurrentMarginType(symbol);
+  //console.log(`Tipo de margem atual para ${symbol}: ${currentMarginType}`);
+  
+  // Se o tipo já for "cross", não precisa alterar
+  if (currentMarginType === 'cross' || currentMarginType === 'crossed') {
+    //console.log(`[MONITOR] Margem para ${symbol} já está como CROSSED (ou o tipo desejado), continuando...`);
+  } else {
+    // Se não for "cross", tentar alterar
+    try {
+      await changeMarginType(symbol, 'CROSSED');
+      console.log(`[MONITOR] Margem para ${symbol} configurada como CROSSED`);
+    } catch (marginChangeError) {
+      // Definir a mensagem de erro aqui, para evitar variável indefinida
+      const marginErrorMessage = marginChangeError.message || 'Erro desconhecido ao configurar tipo de margem';
+      
+      console.log(`[MONITOR] Erro ao configurar tipo de margem, mas continuando: ${marginErrorMessage}`);
+      // Não lançar o erro - continuar o fluxo mesmo com falha na configuração de margem
+    }
+  }
+} catch (marginTypeError) {
+  // Erro ao obter o tipo de margem atual
+  const marginTypeErrorMessage = marginTypeError.message || 'Erro desconhecido ao obter tipo de margem atual';
+  console.log(`[MONITOR] Erro ao verificar tipo de margem atual, mas continuando: ${marginTypeErrorMessage}`);
+  
+  // Como não sabemos o tipo atual, tentar configurar para CROSSED mesmo assim
+  try {
+    await changeMarginType(symbol, 'CROSSED');
+    console.log(`[MONITOR] Margem para ${symbol} configurada como CROSSED`);
+  } catch (fallbackError) {
+    // Ignorar erro aqui também, apenas registrar
+    console.log(`[MONITOR] Erro ao configurar tipo de margem no fallback, continuando mesmo assim: ${fallbackError.message}`);
+  }
       await connection.query(
           `UPDATE webhook_signals SET status = 'ERROR', error_message = ? WHERE id = ?`,
           [errorMessage, id]
@@ -842,7 +884,7 @@ async function handleOrderUpdate(orderMsg, db) {
            }
         }
       } else {
-        console.log(`[MONITOR] Nenhuma posição aberta encontrada para ${orderMsg.s}. Ordem "fantasma" ${orderMsg.i} não pôde ser associada e registrada.`);
+        //console.log(`[MONITOR] Nenhuma posição aberta encontrada para ${orderMsg.s}. Ordem "fantasma" ${orderMsg.i} não pôde ser associada e registrada.`);
       }
       
       return; // Finaliza o processamento aqui para ordens "fantasmas"
@@ -853,7 +895,7 @@ async function handleOrderUpdate(orderMsg, db) {
     if (orders.length === 0) {
       // Esta condição agora só será verdadeira se a ordem não foi encontrada E NÃO era FILLED/PARTIALLY_FILLED
       // ou se era FILLED/PARTIALLY_FILLED mas não tinha posição aberta correspondente.
-      console.log(`[MONITOR] Ordem ${orderMsg.i} (Status: ${orderMsg.X}) não encontrada no banco de dados e não tratada como "fantasma" preenchida.`);
+      //console.log(`[MONITOR] Ordem ${orderMsg.i} (Status: ${orderMsg.X}) não encontrada no banco de dados e não tratada como "fantasma" preenchida.`);
       return;
     }
 
@@ -1137,7 +1179,7 @@ async function handleOrderUpdate(orderMsg, db) {
 // Função corrigida para processar atualizações de conta via WebSocket
 async function handleAccountUpdate(message, db) {
   try {
-    console.log('[ACCOUNT UPDATE] Recebido atualização de conta');
+    //console.log('[ACCOUNT UPDATE] Recebido atualização de conta');
 
     // Se não houver conexão com o banco, tentar estabelecer
     if (!db) {

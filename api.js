@@ -3,6 +3,13 @@ const crypto = require("crypto");
 require('dotenv').config();
 const { getDatabaseInstance } = require('./db/conexao');
 
+let websockets;
+try {
+  websockets = require('./websockets');
+} catch (e) {
+  console.warn('[API] Módulo websockets não disponível diretamente (evitando referência circular)');
+}
+
 const apiKey = process.env.API_KEY;
 const apiSecret = process.env.API_SECRET;
 const apiUrl = process.env.API_URL;
@@ -124,37 +131,151 @@ async function newLimitMakerOrder(symbol, quantity, side, price) {
   }
 }
 
-async function editOrder(symbol, orderId, newPrice, side, quantity = null) {
+/**
+ * Edita uma ordem existente, ou cancela e recria caso esteja parcialmente preenchida
+ * @param {string} symbol - Símbolo do par de negociação
+ * @param {string|number} orderId - ID da ordem a ser editada
+ * @param {number} newPrice - Novo preço da ordem
+ * @param {string} side - Lado da ordem (BUY/SELL)
+ * @param {number} [quantity=null] - Quantidade desejada (opcional, será obtida da ordem existente)
+ * @param {boolean} [retryIfPartiallyFilled=true] - Se deve recriar automaticamente ordens parcialmente preenchidas
+ * @returns {Promise<Object>} Resposta da API com detalhes da ordem editada ou recriada
+ */
+async function editOrder(symbol, orderId, newPrice, side, quantity = null, retryIfPartiallyFilled = true) {
   try {
     console.log(`[API] Editando ordem ${orderId} para ${symbol}: novo preço ${newPrice}, lado ${side}`);
     
-    // Preparar dados para a requisição
+    // Verificar se orderId e symbol estão na ordem correta
+    if (typeof orderId === 'string' && orderId.includes('USDT') && 
+        (typeof symbol === 'number' || !isNaN(parseInt(symbol)))) {
+      console.log(`[API] Detectada troca de parâmetros. Corrigindo symbol=${orderId}, orderId=${symbol}`);
+      [symbol, orderId] = [orderId, symbol];
+    }
+    
+    // Obter detalhes atuais da ordem para verificação
+    let orderDetails;
+    try {
+      orderDetails = await getOrderStatus(symbol, orderId);
+      if (!orderDetails) {
+        throw new Error(`Ordem ${orderId} não encontrada`);
+      }
+    } catch (error) {
+      console.error(`[API] Erro ao obter status da ordem ${orderId}:`, error);
+      throw error;
+    }
+    
+    // Verificar se a ordem está parcialmente preenchida
+    if (orderDetails.status === 'PARTIALLY_FILLED') {
+      // Se não quiser a lógica automatica para ordens parciais, retornar erro
+      if (!retryIfPartiallyFilled) {
+        throw {
+          isPartiallyFilled: true,
+          message: `Não é possível editar ordem parcialmente preenchida (${orderId}). Cancele e recrie.`,
+          orderDetails,
+          code: 'ORDER_PARTIALLY_FILLED'
+        };
+      }
+      
+      console.log(`[API] Ordem ${orderId} está parcialmente preenchida (${orderDetails.executedQty}/${orderDetails.origQty}). Cancelando e recriando.`);
+      
+      // Calcular quantidade restante (não preenchida)
+      const origQty = parseFloat(orderDetails.origQty);
+      const executedQty = parseFloat(orderDetails.executedQty);
+      const remainingQty = parseFloat((origQty - executedQty).toFixed(8));
+      
+      if (remainingQty <= 0) {
+        console.log(`[API] Ordem ${orderId} já foi totalmente preenchida. Nada a fazer.`);
+        return orderDetails;
+      }
+      
+      // Cancelar a ordem parcial
+      try {
+        await cancelOrder(orderId, symbol);
+        console.log(`[API] Ordem parcial ${orderId} cancelada com sucesso.`);
+      } catch (cancelError) {
+        // Se o erro for "ordem não encontrada", prosseguir com a criação da nova ordem
+        if (cancelError.response && cancelError.response.data && cancelError.response.data.code === -2011) {
+          console.log(`[API] Ordem ${orderId} já não existe, continuando com criação de nova ordem`);
+        } else {
+          console.error(`[API] Erro ao cancelar ordem parcial ${orderId}:`, cancelError);
+          throw cancelError;
+        }
+      }
+      
+      // Criar nova ordem com a quantidade restante e o novo preço
+      try {
+        console.log(`[API] Criando nova ordem para quantidade restante: ${remainingQty} @ ${newPrice}`);
+        const newOrderResponse = await newLimitMakerOrder(
+          symbol, remainingQty, side, newPrice
+        );
+        
+        if (!newOrderResponse || !newOrderResponse.orderId) {
+          throw new Error(`Falha ao criar nova ordem após cancelamento da parcial: resposta inválida`);
+        }
+        
+        console.log(`[API] Nova ordem criada com sucesso após cancelamento da parcial: ${newOrderResponse.orderId}`);
+        
+        // Retornar informação sobre a ordem antiga e nova
+        return {
+          ...newOrderResponse,
+          oldOrderId: orderId,
+          wasPartiallyFilled: true,
+          executedQty,
+          originalPrice: orderDetails.price,
+        };
+      } catch (newOrderError) {
+        console.error(`[API] Erro ao criar nova ordem após cancelamento da parcial:`, newOrderError);
+        throw {
+          message: `Ordem parcial ${orderId} cancelada mas falha ao criar nova ordem: ${newOrderError.message}`,
+          originalError: newOrderError,
+          oldOrderId: orderId,
+          wasPartiallyFilled: true,
+          orderCanceled: true
+        };
+      }
+    } else if (orderDetails.status !== 'NEW') {
+      // Se não for NEW nem PARTIALLY_FILLED, não pode ser editada
+      throw new Error(`Ordem ${orderId} tem status ${orderDetails.status} e não pode ser editada.`);
+    }
+    
+    // Se chegou aqui, a ordem está no estado NEW e pode ser editada normalmente
+    
+    // Se não temos a quantidade e precisamos dela, obtê-la da ordem
+    let orderQuantity = quantity;
+    if (orderQuantity === null || orderQuantity === undefined) {
+      orderQuantity = parseFloat(orderDetails.origQty);
+      console.log(`[API] Usando quantidade da ordem ${orderId}: ${orderQuantity}`);
+    }
+    
+    // Verificar se a quantidade é válida
+    if (orderQuantity === null || orderQuantity === undefined || isNaN(orderQuantity)) {
+      throw new Error(`Quantidade inválida para edição de ordem: ${orderQuantity}`);
+    }
+    
+    const timestamp = Date.now();
+    const recvWindow = 60000;
+    
+    // Incluir TODOS os parâmetros necessários
     const data = {
       symbol,
       orderId,
-      side, // Parâmetro side adicionado - ESSENCIAL
-      timestamp: Date.now(),
-      recvWindow: 60000
+      side,
+      quantity: orderQuantity, // Incluir a quantidade aqui é ESSENCIAL
+      price: newPrice,
+      timestamp,
+      recvWindow
     };
-    
-    // Adicionar novo preço (obrigatório)
-    data.price = newPrice;
-    
-    // Adicionar nova quantidade (opcional)
-    if (quantity !== null) {
-      data.quantity = quantity;
-    }
 
     const queryString = new URLSearchParams(data).toString();
     const signature = crypto
-        .createHmac('sha256', apiSecret)
-        .update(queryString)
-        .digest('hex');
+      .createHmac('sha256', apiSecret)
+      .update(queryString)
+      .digest('hex');
 
     const url = `${apiUrl}/v1/order?${queryString}&signature=${signature}`;
 
     const result = await axios({
-      method: "PUT",  // Método PUT para editar ordens
+      method: "PUT",
       url: url,
       headers: { "X-MBX-APIKEY": apiKey }
     });
@@ -568,7 +689,7 @@ async function getOrderStatus(symbol, orderId) {
     // Verificar se orderId e symbol estão na ordem correta
     // Se orderId parece ser um símbolo, trocar os parâmetros
     if (typeof orderId === 'string' && orderId.includes('USDT') && !symbol.includes('USDT')) {
-      console.log(`[API] Detectada troca de parâmetros. Corrigindo symbol=${orderId}, orderId=${symbol}`);
+      //console.log(`[API] Detectada troca de parâmetros. Corrigindo symbol=${orderId}, orderId=${symbol}`);
       [symbol, orderId] = [orderId, symbol];
     }
 
@@ -871,7 +992,7 @@ async function getCurrentMarginType(symbol) {
     const position = response.data.find(pos => pos.symbol === symbol);
     if (position) {
       const currentMarginType = position.marginType.toLowerCase();
-      console.log(`Tipo de margem atual para ${symbol}: ${currentMarginType}`);
+      //console.log(`Tipo de margem atual para ${symbol}: ${currentMarginType}`);
       return currentMarginType; // Retornar em minúsculas para garantir a comparação correta
     } else {
       throw new Error('Tipo de margem atual não encontrado.');
