@@ -564,7 +564,7 @@ if (fillRatio >= ENTRY_COMPLETE_THRESHOLD_RATIO) {
             } else { console.warn(`[LIMIT_ENTRY] Falha criar SL, resposta inválida:`, slResponse); }
         } catch (slError) { console.error(`[LIMIT_ENTRY] Erro ao criar SL:`, slError.response?.data || slError.message); }
     } else { console.warn(`[LIMIT_ENTRY] Preço de SL inválido ou não fornecido (${slPriceVal}). SL não será criado.`); }
-    
+/*    
     // NOVA IMPLEMENTAÇÃO: Esperar confirmação da posição antes de criar RPs e TP
     console.log(`[LIMIT_ENTRY] Aguardando confirmação da posição na corretora antes de criar RPs e TP...`);
     
@@ -615,7 +615,7 @@ if (fillRatio >= ENTRY_COMPLETE_THRESHOLD_RATIO) {
         if (!positionConfirmed) {
             await new Promise(resolve => setTimeout(resolve, 5000));
         }
-        
+*/        
         // Agora criar as ordens RP
         const reductionPercentages = [0.25, 0.30, 0.25, 0.10];
         let cumulativeQtyForRps = 0;
@@ -683,7 +683,7 @@ if (fillRatio >= ENTRY_COMPLETE_THRESHOLD_RATIO) {
         } else if (!finalTpPrice || finalTpPrice <= 0) {
             console.warn(`[LIMIT_ENTRY] Preço do TP Final (tp5/tp_price) inválido (${finalTpPrice}). TP Final não será criado.`);
         }
-    }
+    //}
 } else if (totalFilledSize > 0) { 
     console.warn(`[LIMIT_ENTRY] Entrada NÃO COMPLETAMENTE PREENCHIDA (${(fillRatio * 100).toFixed(1)}% < ${(ENTRY_COMPLETE_THRESHOLD_RATIO*100).toFixed(1)}%). SL/TP/RPs AUTOMÁTICOS NÃO SERÃO CRIADOS para Posição ID: ${positionId}. Requer manejo manual ou configuração de SL/TP fallback!`);
     if (typeof bot !== 'undefined' && signal.chat_id && bot) {
