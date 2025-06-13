@@ -9,7 +9,8 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 const apiKey = process.env.API_KEY;
 const apiSecret = process.env.API_SECRET;
 const apiUrl = process.env.API_URL;  // Deve ser https://fapi.binance.com/fapi
-const ws_apiUrl = process.env.WS_URL;
+const ws_apiUrl = process.env.WS_API_URL;
+const wss_market_Url = process.env.WS_URL;
 
 // Variável para armazenar os websockets de preço
 const priceWebsockets = {};
@@ -36,6 +37,8 @@ async function createListenKey() {
         // Endpoint correto para API de Futuros da Binance (USDT-M)
         const endpoint = '/v1/listenKey';
         const fullUrl = `${apiUrl}${endpoint}`;
+
+        console.log(`[WEBSOCKET] Obtendo listenKey via: ${fullUrl}`);
 
         const response = await axios.post(fullUrl, null, {
             headers: {
@@ -88,7 +91,8 @@ async function startUserDataStream(getDatabaseInstance) {
 
         // URL CORRIGIDA para conexão do WebSocket usando o listenKey
         // Formato correto para Futuros USDT-M: wss://fstream.binance.com/ws/<listenKey>
-        const wsUrl = `${ws_apiUrl}/ws/${listenKey}`;
+        const wsUrl = `${wss_market_Url}/${listenKey}`;
+        //console.log(`[WEBSOCKET] Configuração atual: apiUrl=${apiUrl}, ws_apiUrl=${ws_apiUrl}, wss_market_Url=${wss_market_Url}`);
 
         const ws = new WebSocket(wsUrl);
 
@@ -107,7 +111,7 @@ async function startUserDataStream(getDatabaseInstance) {
                         await handlers.handleOrderUpdate(message.o, dbInstance); // Passe message.o para o handler
                     }
                 } else if (message.e === 'ACCOUNT_UPDATE' || message.e === 'outboundAccountPosition') {
-                    console.log('[WEBSOCKET] Atualização de posição na conta');
+                    //console.log('[WEBSOCKET] Atualização de posição na conta');
                     if (handlers.handleAccountUpdate) {
                         await handlers.handleAccountUpdate(message, dbInstance);
                     }
@@ -177,7 +181,7 @@ function ensurePriceWebsocketExists(symbol) {
     console.log(`[WEBSOCKET] Iniciando monitoramento de preço para ${symbol}`);
 
     // URL para Futuros USDT-M
-    const wsUrl = `${ws_apiUrl}/ws/${symbol.toLowerCase()}@bookTicker`;
+    const wsUrl = `${wss_market_Url}/${symbol.toLowerCase()}@bookTicker`;
     console.log(`[WEBSOCKET] URL para monitoramento de preço: ${wsUrl}`);
 
     const ws = new WebSocket(wsUrl);
@@ -246,23 +250,42 @@ async function handlePriceUpdate(symbol, tickerData) {
 
 function setupBookDepthWebsocket(symbol, callback) {
     // Garantir o uso da URL correta e consistente
-    const wsEndpoint = `${ws_apiUrl}/ws/${symbol.toLowerCase()}@bookTicker`;
+    const wsEndpoint = `${wss_market_Url}/${symbol.toLowerCase()}@bookTicker`;
     console.log(`[WEBSOCKET] Conectando ao BookTicker em tempo real: ${wsEndpoint}`);
     
-    const ws = new WebSocket(wsEndpoint);
-    
+    // Importante: mudar de const para let para permitir reatribuição durante a reconexão
+    let ws = new WebSocket(wsEndpoint);
+    let connectionTimeout = null;
+    let heartbeatInterval = null;
+    let reconnectAttempt = 0;
+    const MAX_RECONNECT_ATTEMPTS = 5;
+
+    // Definir um timeout para estabelecimento da conexão
+    connectionTimeout = setTimeout(() => {
+        if (ws.readyState !== WebSocket.OPEN) {
+            console.error(`[WEBSOCKET] Timeout ao estabelecer conexão para ${symbol} BookTicker`);
+            ws.terminate();  // Forçar o encerramento da conexão
+        }
+    }, 10000);  // 10 segundos para estabelecer conexão
+
     ws.on('open', () => {
         console.log(`[WEBSOCKET] BookTicker WebSocket conectado para ${symbol}`);
+        clearTimeout(connectionTimeout);
+        reconnectAttempt = 0;
+
+        // Configurar heartbeat para manter a conexão ativa
+        heartbeatInterval = setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+                ws.ping();
+            }
+        }, 15000);  // A cada 15 segundos
     });
     
     ws.on('message', (data) => {
         try {
             const tickerData = JSON.parse(data);
             
-            // Adicionar log detalhado para debug
-            // console.log(`[WEBSOCKET] Dados recebidos de ${symbol}: ${JSON.stringify(tickerData)}`);
-            
-            // Validação mais robusta para o formato bookTicker
+            // Validação robusta para o formato bookTicker
             if (tickerData && 
                 (tickerData.e === 'bookTicker' || tickerData.e === undefined) && 
                 typeof tickerData.b === 'string' && 
@@ -296,11 +319,57 @@ function setupBookDepthWebsocket(symbol, callback) {
     });
     
     ws.on('error', (error) => {
+        clearTimeout(connectionTimeout);
+        clearInterval(heartbeatInterval);
         console.error(`[WEBSOCKET] Erro na conexão BookTicker para ${symbol}:`, error.message);
     });
     
     ws.on('close', () => {
+        clearTimeout(connectionTimeout);
+        clearInterval(heartbeatInterval);
         console.log(`[WEBSOCKET] BookTicker WebSocket fechado para ${symbol}`);
+        
+        // Implementar reconexão automática com limite de tentativas
+        if (reconnectAttempt < MAX_RECONNECT_ATTEMPTS) {
+            reconnectAttempt++;
+            const delay = Math.min(1000 * Math.pow(2, reconnectAttempt - 1), 30000);
+            console.log(`[WEBSOCKET] Tentando reconectar BookTicker para ${symbol} em ${delay/1000}s (tentativa ${reconnectAttempt}/${MAX_RECONNECT_ATTEMPTS})...`);
+            
+            const shouldReconnect = false; // Desabilitar tentativas de reconexão aqui
+
+            if (shouldReconnect && reconnectAttempt < MAX_RECONNECT_ATTEMPTS) {
+              
+            setTimeout(() => {
+                try {
+                    // Criar um novo WebSocket e reatribuir à variável ws
+                    ws = new WebSocket(wsEndpoint);
+                    
+                    // Configurar os event listeners para o novo WebSocket
+                    
+                    ws.on('open', function() {
+                        console.log(`[WEBSOCKET] BookTicker WebSocket reconectado para ${symbol}`);
+                        clearTimeout(connectionTimeout);
+                        reconnectAttempt = 0;
+                        
+                        // Reiniciar o heartbeat
+                        heartbeatInterval = setInterval(() => {
+                            if (ws.readyState === WebSocket.OPEN) {
+                                ws.ping();
+                            }
+                        }, 15000);
+                    });
+                    
+                    // Reatribuir os outros event handlers
+                    ws.on('message', ws.listeners('message')[0]);
+                    ws.on('error', ws.listeners('error')[0]);
+                    ws.on('close', ws.listeners('close')[0]);
+                    
+                } catch (reconnectError) {
+                    console.error(`[WEBSOCKET] Erro ao reconectar BookTicker para ${symbol}:`, reconnectError.message);
+                }
+          }, delay);
+        }   
+        }
     });
     
     return ws;
