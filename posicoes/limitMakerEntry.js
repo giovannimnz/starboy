@@ -1050,12 +1050,12 @@ async function getBookTicker(symbol) {
 }
 
 // Função otimizada para aguardar a execução de uma ordem
-async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3000) {
+async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3000, accountId) {
     const startTime = Date.now();
     
     try {
         // Verificar imediatamente o status da ordem (sem espera inicial)
-        const orderStatus = await getOrderStatus(numericAccountId, signal.symbol, orderId);
+        const orderStatus = await getOrderStatus(accountId, symbol, orderId);
         
         // Se a ordem foi executada (total ou parcialmente), retornar imediatamente
         if (orderStatus.status === 'FILLED' || orderStatus.status === 'PARTIALLY_FILLED') {
@@ -1069,7 +1069,7 @@ async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3000) {
     while (Date.now() - startTime < maxWaitMs) {
         try {
             // Verificar status da ordem
-            const orderStatus = await getOrderStatus(numericAccountId, signal.symbol, orderId);
+            const orderStatus = await getOrderStatus(accountId, symbol, orderId);
             
             // Se a ordem foi executada (total ou parcialmente), retornar imediatamente
             if (orderStatus.status === 'FILLED' || orderStatus.status === 'PARTIALLY_FILLED') {
@@ -1087,7 +1087,7 @@ async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3000) {
     
     // Timeout atingido, tentar obter o status atual
     try {
-        return await getOrderStatus(orderId, symbol);
+        return await getOrderStatus(accountId, symbol, orderId);
     } catch (error) {
         return { status: 'UNKNOWN', executedQty: '0', avgPrice: '0' };
     }

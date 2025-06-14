@@ -1015,6 +1015,32 @@ function clearCredentialsCache() {
   lastCacheTime = 0;
 }
 
+/**
+ * Obtém as URLs da corretora do banco de dados
+ * @param {Object} db - Conexão com o banco de dados
+ * @param {number} corretoraId - ID da corretora (padrão: 1 para Binance)
+ * @returns {Promise<Object>} - Objeto com as URLs da corretora
+ */
+async function getCorretoraPorId(db, corretoraId = 1) {
+  try {
+    const [rows] = await db.query(
+      `SELECT id, corretora, ambiente, spot_rest_api_url, futures_rest_api_url, 
+              futures_ws_market_url, futures_ws_api_url, ativa
+       FROM corretoras 
+       WHERE id = ? AND ativa = 1`,
+      [corretoraId]
+    );
+
+    if (rows.length === 0) {
+      throw new Error(`Corretora com ID ${corretoraId} não encontrada ou não está ativa`);
+    }
+
+    return rows[0];
+  } catch (error) {
+    console.error(`[DB] Erro ao obter informações da corretora ID ${corretoraId}:`, error.message);
+    throw error;
+  }
+}
 
 // Exportar as funções
 module.exports = {
@@ -1045,5 +1071,6 @@ module.exports = {
   insertWebhookSignalWithDetails,
   formatDateForMySQL,
   updateAccountBalance,
-  getBaseCalculoBalance
+  getBaseCalculoBalance,
+  getCorretoraPorId
 };
