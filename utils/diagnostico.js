@@ -1,17 +1,95 @@
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '../.env') });
 
+const fs = require('fs').promises;
 const { getDatabaseInstance } = require('../db/conexao');
-const websockets = require('../websockets'); // Adicione esta linha
-const websocketApi = require('../websocketApi');
-const { executeLimitMakerEntry } = require('../posicoes/limitMakerEntry');
-const axios = require('axios');
 
-// Função de diagnóstico e correção
+// Função para verificar integridade das exportações antes de importar os módulos
+async function verificarExportacoes(filePath) {
+  try {
+    const conteudo = await fs.readFile(filePath, 'utf8');
+    
+    // Encontrar objeto de exportação
+    const matchExport = conteudo.match(/module\.exports\s*=\s*\{([\s\S]*?)\}/);
+    if (!matchExport) {
+      return false;
+    }
+    
+    // Extrair os nomes das funções exportadas
+    const exportContent = matchExport[1];
+    const exportedFunctions = exportContent
+      .split(',')
+      .map(item => item.trim())
+      .filter(item => item && !item.startsWith('//'))
+      .map(item => item.split('//')[0].trim());
+    
+    // Verificar se cada função está declarada
+    for (const funcName of exportedFunctions) {
+      if (!funcName) continue;
+      
+      const functionPattern = new RegExp(`(async\\s+)?function\\s+${funcName}\\s*\\(`);
+      const arrowPattern = new RegExp(`(const|let|var)\\s+${funcName}\\s*=\\s*(async\\s*)?\\(`);
+      
+      if (!functionPattern.test(conteudo) && !arrowPattern.test(conteudo)) {
+        console.log(`❌ Função exportada não encontrada: ${funcName} em ${filePath}`);
+        // Corrigir automaticamente removendo a exportação
+        const fixedContent = conteudo.replace(
+          new RegExp(`(,\\s*|\\{\\s*)${funcName}(\\s*,|\\s*\\})`, 'g'),
+          (match) => {
+            if (match.includes('{')) return match.replace(funcName, '');
+            if (match.includes('}')) return match.replace(`,\\s*${funcName}`, '');
+            return ',';
+          }
+        );
+        
+        // Salvar arquivo corrigido
+        await fs.writeFile(filePath, fixedContent, 'utf8');
+        console.log(`✅ Exportação problemática removida de ${filePath}`);
+        return true; // Indica que correções foram feitas
+      }
+    }
+    
+    return false; // Não foram encontrados problemas
+  } catch (error) {
+    console.error(`Erro ao verificar exportações em ${filePath}:`, error);
+    return false;
+  }
+}
+
+// Função principal de diagnóstico
 async function diagnosticarECorrigirSinaisPendentes() {
+  console.log('=== VERIFICANDO INTEGRIDADE DOS MÓDULOS ===');
+  
+  // Verificar e corrigir problemas nos principais arquivos
+  const arquivosParaVerificar = [
+    path.join(__dirname, '../api.js'),
+    path.join(__dirname, '../websocketApi.js'),
+    path.join(__dirname, '../websockets.js'),
+    path.join(__dirname, '../posicoes/limitMakerEntry.js')
+  ];
+  
+  let correcoesFeitasFlag = false;
+  
+  for (const arquivo of arquivosParaVerificar) {
+    console.log(`Verificando ${path.basename(arquivo)}...`);
+    const correcoes = await verificarExportacoes(arquivo);
+    if (correcoes) correcoesFeitasFlag = true;
+  }
+  
+  if (correcoesFeitasFlag) {
+    console.log('\n⚠️ Foram feitas correções automáticas nos arquivos. Por favor, execute o script novamente.');
+    process.exit(0);
+  }
+  
   console.log('=== DIAGNÓSTICO DE SINAIS PENDENTES ===');
   
   try {
+    // Importamos os módulos apenas após a verificação de integridade
+    const websockets = require('../websockets');
+    const websocketApi = require('../websocketApi');
+    const { executeLimitMakerEntry } = require('../posicoes/limitMakerEntry');
+    const axios = require('axios');
+    
     // Obter conexão com o banco
     const db = await getDatabaseInstance();
     console.log('✅ Conexão com o banco de dados estabelecida');
