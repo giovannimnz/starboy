@@ -2,6 +2,7 @@ const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const { getDatabaseInstance } = require('./db/conexao');
+const websockets = require('./websockets'); // Adicione esta linha
 const websocketApi = require('./websocketApi');
 const { executeLimitMakerEntry } = require('./posicoes/limitMakerEntry');
 const axios = require('axios');
@@ -125,7 +126,7 @@ async function diagnosticarECorrigirSinaisPendentes() {
   }
 }
 
-// Substituir getCurrentPrice por uma função que tenta usar WebSocket primeiro
+// Função para obter preço via WebSocket
 async function getCurrentPrice(symbol) {
   try {
     console.log(`[DIAGNÓSTICO] Tentando obter preço de ${symbol} via WebSocket API...`);
@@ -134,24 +135,25 @@ async function getCurrentPrice(symbol) {
     await websocketApi.initializeHandlers(1); // accountId = 1
     
     // Iniciar o WebSocket de preço se necessário
-    await websockets.ensurePriceWebsocketExists(symbol, 1);
-    
-    // Aguardar um momento para o WebSocket receber dados
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    // Tentar obter o preço do cache de WebSocket
-    // (assumindo que você implementou a função getWebSocketPrice)
-    const price = await getWebSocketPrice(symbol);
-    
-    if (price && !isNaN(price) && price > 0) {
-      console.log(`[DIAGNÓSTICO] Preço obtido via WebSocket: ${price}`);
-      return price;
+    try {
+      await websockets.ensurePriceWebsocketExists(symbol, 1);
+      
+      // Aguardar um momento para o WebSocket receber dados
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      // Tentar obter o preço do cache de WebSocket
+      const price = await getWebSocketPrice(symbol);
+      
+      if (price && !isNaN(price) && price > 0) {
+        console.log(`[DIAGNÓSTICO] Preço obtido via WebSocket: ${price}`);
+        return price;
+      }
+    } catch (wsError) {
+      console.log(`[DIAGNÓSTICO] Erro ao usar WebSocket: ${wsError.message}`);
     }
     
     // Fallback para API REST
-    throw new Error('Preço não disponível via WebSocket, usando fallback REST API');
-  } catch (error) {
-    console.log(`[DIAGNÓSTICO] Usando fallback REST API para obter preço: ${error.message}`);
+    console.log('[DIAGNÓSTICO] Usando fallback REST API para obter preço');
     
     // Fallback para REST API
     const response = await axios.get(`https://fapi.binance.com/fapi/v1/ticker/price?symbol=${symbol}`);
@@ -161,6 +163,9 @@ async function getCurrentPrice(symbol) {
       return price;
     }
     throw new Error('Preço não disponível na resposta da REST API');
+  } catch (error) {
+    console.log(`[DIAGNÓSTICO] Erro ao obter preço: ${error.message}`);
+    throw error;
   }
 }
 

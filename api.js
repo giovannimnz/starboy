@@ -617,10 +617,23 @@ async function getOpenOrders(accountId, symbol = null) {
   }
 }
 
-async function getAllOpenPositions(accountId) {
+async function getAllOpenPositions(accountId, symbolFilter = null) {
   try {
+    // Garantir que accountId seja um número
+    const numericAccountId = (typeof accountId === 'number') ? accountId : 
+                            (parseInt(accountId) || 1);
+    
+    // Se o primeiro parâmetro for uma string, é provavelmente o símbolo
+    if (typeof accountId === 'string' && accountId.includes('USDT')) {
+      console.log(`[API] Detectado símbolo passado como accountId. Corrigindo parâmetros. Symbol: ${accountId}`);
+      symbolFilter = accountId;
+      accountId = 1;  // Usar conta default
+    }
+    
     // Obter credenciais da conta específica
-    const credentials = await loadCredentialsFromDatabase(accountId);
+    const credentials = await loadCredentialsFromDatabase(numericAccountId);
+    
+    console.log(`[API] Obtendo posições abertas para conta ${numericAccountId}${symbolFilter ? `, filtro: ${symbolFilter}` : ''}`);
     
     const timestamp = Date.now();
     const recvWindow = 60000;
@@ -639,7 +652,7 @@ async function getAllOpenPositions(accountId) {
     });
     
     // Filtrar posições com quantidade diferente de zero
-    const openPositions = response.data
+    let openPositions = response.data
       .filter(position => parseFloat(position.positionAmt) !== 0)
       .map(position => ({
         simbolo: position.symbol,
@@ -648,15 +661,18 @@ async function getAllOpenPositions(accountId) {
         side: parseFloat(position.positionAmt) > 0 ? 'BUY' : 'SELL',
         leverage: parseInt(position.leverage, 10)
       }));
+      
+    // Aplicar filtro por símbolo se especificado
+    if (symbolFilter) {
+      openPositions = openPositions.filter(p => p.simbolo === symbolFilter);
+    }
     
-    //console.log(`[API] Posições abertas encontradas: ${openPositions.length}`);
     return openPositions;
   } catch (error) {
-    console.error(`[API] Erro ao obter posições abertas: ${error.message}`);
+    console.error(`[API] Erro ao obter posições abertas para conta ${accountId}: ${error.message}`);
     throw error;
   }
 }
-
 
 async function obterSaldoPosicao(accountId = 1) {
   try {

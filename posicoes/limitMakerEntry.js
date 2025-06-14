@@ -429,44 +429,39 @@ console.log(`[LIMIT_ENTRY] Preço MAKER ${binanceSide}: ${currentLocalMakerPrice
                     break; 
                 }
                 try {
-                    console.log(`[LIMIT_ENTRY] Enviando NOVA LIMIT ${signal.symbol} via WebSocket: ${binanceSide} ${newOrderQty.toFixed(quantityPrecision)} @ ${currentLocalMakerPrice.toFixed(pricePrecision)}`);
+                    console.log(`[LIMIT_ENTRY] Enviando NOVA LIMIT ${signal.symbol} via API REST: ${binanceSide} ${newOrderQty.toFixed(quantityPrecision)} @ ${currentLocalMakerPrice.toFixed(pricePrecision)}`);
                     
-                    const orderResponse = await websocketApi.placeLimitMakerOrderViaWebSocket(
-                        signal.symbol, 
-                        newOrderQty.toFixed(quantityPrecision), 
-                        binanceSide, 
-                        currentLocalMakerPrice.toFixed(pricePrecision)
+                    // Usar diretamente a API REST em vez da WebSocket
+                    const restOrderResponse = await newLimitMakerOrder(
+                        numericAccountId, signal.symbol, newOrderQty, binanceSide, currentLocalMakerPrice
                     );
                     
-                    if (!orderResponse || !orderResponse.orderId) {
-                        throw new Error('Resposta da WebSocket API não contém orderId');
-                    }
-                    
-                    activeOrderId = String(orderResponse.orderId);
-                    orderPlacedOrEditedThisIteration = true;
-                    console.log(`[LIMIT_ENTRY] Nova LIMIT criada via WebSocket: ID ${activeOrderId}`);
-                } catch (newOrderError) {
-                    console.error(`[LIMIT_ENTRY] Erro ao criar NOVA LIMIT via WebSocket:`, newOrderError);
-                    
-                    // Fallback para API REST em caso de falha
-                    try {
-                        console.log(`[LIMIT_ENTRY] Tentando fallback para API REST após falha na WebSocket API`);
-                        const restOrderResponse = await newLimitMakerOrder(
-                            numericAccountId, signal.symbol, newOrderQty, binanceSide, currentLocalMakerPrice
-                        );
-                        
-                        if (restOrderResponse.orderId) {
+                    // Verificar se a resposta contém dados válidos
+                    if (restOrderResponse && restOrderResponse.data && restOrderResponse.data.orderId) {
+                        activeOrderId = String(restOrderResponse.data.orderId);
+                        orderPlacedOrEditedThisIteration = true;
+                        console.log(`[LIMIT_ENTRY] Nova LIMIT criada via REST API: ID ${activeOrderId}`);
+                    } else {
+                        // Verificar se a resposta tem o orderId diretamente (formato inconsistente)
+                        if (restOrderResponse && restOrderResponse.orderId) {
                             activeOrderId = String(restOrderResponse.orderId);
                             orderPlacedOrEditedThisIteration = true;
-                            console.log(`[LIMIT_ENTRY] Nova LIMIT criada via REST API (fallback): ID ${activeOrderId}`);
+                            console.log(`[LIMIT_ENTRY] Nova LIMIT criada via REST API (formato alternativo): ID ${activeOrderId}`);
                         } else {
-                            throw new Error('Resposta da REST API não contém orderId');
+                            throw new Error('Resposta da REST API não contém orderId em formato reconhecível');
                         }
-                    } catch (fallbackError) {
-                        console.error(`[LIMIT_ENTRY] Erro também no fallback REST:`, fallbackError.response?.data || fallbackError.message);
-                        await new Promise(resolve => setTimeout(resolve, 1000)); 
-                        continue;
                     }
+                } catch (error) {
+                    console.error(`[LIMIT_ENTRY] Erro ao criar NOVA LIMIT via REST API:`, error.message);
+                    
+                    // Log detalhado da resposta para diagnóstico
+                    if (error.response && error.response.data) {
+                        console.error(`[LIMIT_ENTRY] Detalhes da resposta de erro:`, JSON.stringify(error.response.data));
+                    }
+                    
+                    // Esperar um tempo antes de tentar novamente
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                    continue;
                 }
             }
             
@@ -658,24 +653,49 @@ if (fillRatio >= ENTRY_COMPLETE_THRESHOLD_RATIO) {
     // Primeiro criar apenas o Stop Loss
     if (slPriceVal && slPriceVal > 0) {
         try {
-            console.log(`[LIMIT_ENTRY] Criando SL: ${totalFilledSize.toFixed(quantityPrecision)} ${signal.symbol} @ ${slPriceVal.toFixed(pricePrecision)}`);
-            const slResponse = await newStopOrder( 
-                signal.symbol, totalFilledSize.toFixed(quantityPrecision), 
-                binanceOppositeSide, slPriceVal.toFixed(pricePrecision), null, true, true 
+            console.log(`[LIMIT_ENTRY] Criando SL: ${totalFilledSize} ${signal.symbol} @ ${slPriceVal}`);
+            
+            // IMPORTANTE: Usar numericAccountId, não o símbolo como accountId
+            const stopOrderResult = await newStopOrder(
+                numericAccountId,  // Usar o ID numérico da conta
+                signal.symbol,
+                totalFilledSize,
+                binanceOppositeSide,
+                slPriceVal,
+                null,
+                true // reduceOnly
             );
-            if (slResponse && slResponse.data && slResponse.data.orderId) {
-                const slOrderData = { 
-                    tipo_ordem: 'STOP_MARKET', preco: slPriceVal, quantidade: totalFilledSize, id_posicao: positionId, status: 'NEW', 
-                    data_hora_criacao: formatDateForMySQL(new Date()), id_externo: String(slResponse.data.orderId).substring(0,90), side: binanceOppositeSide, 
-                    simbolo: signal.symbol, tipo_ordem_bot: 'STOP_LOSS', reduce_only: true, close_position: true, orign_sig: `WEBHOOK_${signal.id}`,
-                    last_update: formatDateForMySQL(new Date()), target: null
+            
+            if (stopOrderResult && stopOrderResult.data && stopOrderResult.data.orderId) {
+                console.log(`[LIMIT_ENTRY] SL criado com ID: ${stopOrderResult.data.orderId}`);
+                
+                // Inserir ordem no banco
+                const slOrderData = {
+                    tipo_ordem: 'STOP_MARKET',
+                    preco: slPriceVal,
+                    quantidade: totalFilledSize,
+                    id_posicao: positionId,
+                    status: 'OPEN',
+                    data_hora_criacao: formatDateForMySQL(new Date()),
+                    id_externo: String(stopOrderResult.data.orderId),
+                    side: binanceOppositeSide,
+                    simbolo: signal.symbol,
+                    tipo_ordem_bot: 'STOP_LOSS',
+                    target: null,
+                    reduce_only: true,
+                    close_position: false,
+                    last_update: formatDateForMySQL(new Date()),
+                    orign_sig: `WEBHOOK_${signal.id}`
                 };
-                await insertNewOrder(connection, slOrderData); 
-                console.log(`[LIMIT_ENTRY] SL criado: ${slResponse.data.orderId}`);
-                await connection.query( `UPDATE webhook_signals SET sl_order_id = ? WHERE id = ?`, [String(slResponse.data.orderId), signal.id] );
-            } else { console.warn(`[LIMIT_ENTRY] Falha criar SL, resposta inválida:`, slResponse); }
-        } catch (slError) { console.error(`[LIMIT_ENTRY] Erro ao criar SL:`, slError.response?.data || slError.message); }
-    } else { console.warn(`[LIMIT_ENTRY] Preço de SL inválido ou não fornecido (${slPriceVal}). SL não será criado.`); }
+                
+                await insertNewOrder(connection, slOrderData);
+            }
+        } catch (slError) {
+            console.error(`[LIMIT_ENTRY] Erro ao criar SL:`, slError.message);
+        }
+    } else {
+        console.warn(`[LIMIT_ENTRY] Preço de SL inválido ou não fornecido (${slPriceVal}). SL não será criado.`);
+    }
 
         // Agora criar as ordens RP
         const reductionPercentages = [0.25, 0.30, 0.25, 0.10];
@@ -849,7 +869,7 @@ if (fillRatio >= ENTRY_COMPLETE_THRESHOLD_RATIO) {
                             tipo_ordem: 'STOP_MARKET', preco: slPriceVal, quantidade: totalFilledSize, id_posicao: positionId, status: 'NEW', 
                             data_hora_criacao: formatDateForMySQL(new Date()), id_externo: String(slResponse.data.orderId).substring(0,90), side: binanceOppositeSide, 
                             simbolo: signal.symbol, tipo_ordem_bot: 'STOP_LOSS', reduce_only: true, close_position: true, orign_sig: `WEBHOOK_${signal.id}`,
-                            last_update: formatDateForMySQL(new Date()), target: null, observacao: 'SL Enviado em Recuperação de Erro'
+                            last_update: formatDateForMySQL(new Date()), observacao: 'SL Enviado em Recuperação de Erro'
                         };
                         await insertNewOrder(connection, slOrderData); 
                         console.log(`[LIMIT_ENTRY_RECOVERY] SL de emergência (recuperação) criado: ${slResponse.data.orderId}`);
