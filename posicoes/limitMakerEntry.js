@@ -7,7 +7,8 @@ const { newEntryOrder, getRecentOrders, editOrder, roundPriceToTickSize, newLimi
 const { getDatabaseInstance, insertPosition, insertNewOrder, formatDateForMySQL } = require('../db/conexao');
 const websockets = require('../websockets');
 
-async function executeLimitMakerEntry(db, signal, currentPriceTrigger) {
+async function executeLimitMakerEntry(db, signal, currentPriceTrigger, accountId = 1) {
+    // Obter a conexão do banco de dados para a conta específica
     const connection = await db.getConnection();
     const MAX_CHASE_ATTEMPTS = 100;
     const CHASE_TIMEOUT_MS = 60000; // 1 minuto
@@ -40,7 +41,7 @@ async function executeLimitMakerEntry(db, signal, currentPriceTrigger) {
     let wsUpdateErrorCount = 0;
 
     try {
-        const existingPositionsOnExchange = await getAllOpenPositions(signal.symbol);
+        const existingPositionsOnExchange = await getAllOpenPositions(accountId, signal.symbol);
         const positionAlreadyExists = existingPositionsOnExchange.some(p =>
             p.simbolo === signal.symbol && Math.abs(p.quantidade) > 0
         );
@@ -62,7 +63,7 @@ async function executeLimitMakerEntry(db, signal, currentPriceTrigger) {
         quantityPrecision = precisionInfo.quantityPrecision;
         pricePrecision = precisionInfo.pricePrecision;
         
-        const availableBalance = await getAvailableBalance();
+        const availableBalance = await getAvailableBalance(accountId);
         const capitalPercentage = parseFloat(signal.capital_pct) / 100;
         leverage = parseInt(signal.leverage); 
         
@@ -923,25 +924,25 @@ if (fillRatio >= ENTRY_COMPLETE_THRESHOLD_RATIO) {
 }
 
 // Função auxiliar para obter saldo disponível
-async function getAvailableBalance() {
+async function getAvailableBalance(accountId = 1) {
     try {
-        const db = await getDatabaseInstance();
+        const db = await getDatabaseInstance(accountId);
         if (!db) {
-            throw new Error('[MONITOR] Falha ao obter instância do banco de dados');
+            throw new Error(`[MONITOR] Falha ao obter instância do banco de dados para conta ${accountId}`);
         }
 
         // Obter saldo_base_calculo do banco de dados
-        const [rows] = await db.query('SELECT saldo_base_calculo FROM conta WHERE id = 1');
+        const [rows] = await db.query('SELECT saldo_base_calculo FROM contas WHERE id = ?', [accountId]);
         const baseCalculo = rows.length > 0 ? parseFloat(rows[0].saldo_base_calculo || 0) : 0;
 
         if (baseCalculo <= 0) {
-            throw new Error('Saldo base de cálculo inválido ou zero');
+            throw new Error(`Saldo base de cálculo inválido ou zero para conta ${accountId}`);
         }
 
-        console.log(`[MONITOR] Usando saldo base de cálculo: ${baseCalculo.toFixed(2)} USDT`);
+        console.log(`[MONITOR] Usando saldo base de cálculo para conta ${accountId}: ${baseCalculo.toFixed(2)} USDT`);
         return baseCalculo;
     } catch (error) {
-        console.error(`[MONITOR] Erro ao obter saldo base de cálculo: ${error.message}`);
+        console.error(`[MONITOR] Erro ao obter saldo base de cálculo para conta ${accountId}: ${error.message}`);
         return 0;
     }
 }
