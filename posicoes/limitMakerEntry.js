@@ -52,29 +52,29 @@ async function executeLimitMakerEntry(db, signal, currentPrice, accountId = 1) {
     let wsUpdateErrorCount = 0;
 
       // Verificar se já existe ordem ativa para este sinal
-  const [existingOrders] = await db.query(
-    `SELECT order_id FROM ordens WHERE webhook_id = ? AND status IN ('NEW', 'PARTIALLY_FILLED')`,
-    [signal.id]
-  );
+const [existingOrders] = await db.query(
+  `SELECT id_externo FROM ordens WHERE orign_sig = ? AND status IN ('NEW', 'PARTIALLY_FILLED')`,
+  [`WEBHOOK_${signal.id}`]
+);
   
   if (existingOrders.length > 0) {
     console.log(`[LIMIT_ENTRY] ⚠️ Já existem ${existingOrders.length} ordens ativas para este sinal. Cancelando...`);
     
     // Cancelar todas as ordens existentes
-    for (const order of existingOrders) {
-      try {
-        await api.cancelOrder(accountId, signal.symbol, order.order_id);
-        console.log(`[LIMIT_ENTRY] Ordem ${order.order_id} cancelada com sucesso.`);
-        
-        // Atualizar status no banco
-        await db.query(
-          `UPDATE orders SET status = 'CANCELED', updated_at = NOW() WHERE order_id = ?`,
-          [order.order_id]
-        );
-      } catch (cancelError) {
-        console.error(`[LIMIT_ENTRY] Erro ao cancelar ordem ${order.order_id}:`, cancelError.message);
-      }
-    }
+for (const order of existingOrders) {
+  try {
+    await api.cancelOrder(accountId, signal.symbol, order.id_externo);
+    console.log(`[LIMIT_ENTRY] Ordem ${order.id_externo} cancelada com sucesso.`);
+    
+    // Atualizar status no banco
+    await db.query(
+      `UPDATE ordens SET status = 'CANCELED', last_update = NOW() WHERE id_externo = ?`,
+      [order.id_externo]
+    );
+  } catch (cancelError) {
+    console.error(`[LIMIT_ENTRY] Erro ao cancelar ordem ${order.id_externo}:`, cancelError.message);
+  }
+}
   }
   
   // Criar ID único para controle de idempotência

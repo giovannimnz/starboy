@@ -455,9 +455,18 @@ async function startPriceMonitoring(accountId = 1) {
 }
 
 // Função auxiliar para obter preço atual via API
-async function getCurrentPrice(symbol) {
+async function getCurrentPrice(symbol, accountId = 1) {
   try {
-    const response = await axios.get(`${process.env.API_URL}/v1/ticker/price?symbol=${symbol}`);
+    // Obter as credenciais específicas para esta conta
+    const credentials = await require('../api').loadCredentialsFromDatabase(accountId);
+    if (!credentials || !credentials.apiUrl) {
+      throw new Error(`Credenciais ou URL da API não disponível para conta ${accountId}`);
+    }
+    
+    const url = `${credentials.apiUrl}/v1/ticker/price?symbol=${symbol}`;
+    console.log(`[MONITOR] Obtendo preço atual via REST API: ${url}`);
+    
+    const response = await axios.get(url);
     if (response.data && response.data.price) {
       return parseFloat(response.data.price);
     }
