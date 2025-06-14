@@ -2,16 +2,65 @@ const websockets = require('./websockets');
 const { getDatabaseInstance, formatDateForMySQL } = require('./db/conexao');
 let handlers = null;
 
-// Adicione uma função para inicialização dos handlers
+/**
+ * Inicializa os handlers de webhook para uma conta específica
+ * @param {number} accountId - ID da conta a ser inicializada
+ */
 async function initializeHandlers(accountId = 1) {
   try {
-    // Chamar loadCredentialsFromDatabase no websockets.js com o accountId correto
+    // Verificar se já inicializamos
+    if (handlers && handlers.initialized) {
+      console.log(`[WS-API] Handlers já estão inicializados para conta ${accountId}`);
+      return;
+    }
+    
+    console.log(`[WS-API] Inicializando handlers para WebSocket API (conta ${accountId})...`);
+    
+    // Carregar credenciais
     await websockets.loadCredentialsFromDatabase({ accountId });
+    const credentials = await websockets.getCredentials(accountId);
+    
+    // Verificar se a URL da WebSocket API corresponde ao ambiente
+    // da REST API (produção ou testnet)
+    if (credentials.apiUrl.includes('testnet') !== credentials.wsApiUrl.includes('testnet')) {
+      console.error(`[WS-API] ⚠️ ERRO CRÍTICO: Conflito de ambientes entre REST API e WebSocket API!`);
+      console.error(`[WS-API] REST API: ${credentials.apiUrl}`);
+      console.error(`[WS-API] WebSocket API: ${credentials.wsApiUrl}`);
+      
+      // Obter DB para corrigir
+      const db = await getDatabaseInstance();
+      
+      // Corrigir automaticamente
+      if (credentials.apiUrl.includes('testnet')) {
+        // Se REST é testnet, WS também deve ser testnet
+        await db.query(
+          `UPDATE corretoras SET futures_ws_api_url = 'wss://testnet.binancefuture.com/ws-fapi' 
+           WHERE id = (SELECT id_corretora FROM contas WHERE id = ?)`,
+          [accountId]
+        );
+        console.log(`[WS-API] URL do WebSocket API corrigida para testnet`);
+      } else {
+        // Se REST é produção, WS também deve ser produção
+        await db.query(
+          `UPDATE corretoras SET futures_ws_api_url = 'wss://ws-fapi.binance.com/ws-fapi' 
+           WHERE id = (SELECT id_corretora FROM contas WHERE id = ?)`,
+          [accountId]
+        );
+        console.log(`[WS-API] URL do WebSocket API corrigida para produção`);
+      }
+      
+      // Recarregar credenciais com a URL correta
+      await websockets.loadCredentialsFromDatabase({ accountId, forceRefresh: true });
+    }
+    
+    // Inicializar conexão WebSocket se não existir
+    await websockets.ensureWebSocketApiExists(accountId);
+    
     handlers = await websockets.getHandlers();
     return handlers !== null;
   } catch (error) {
-    console.error('[WS-API] Erro ao inicializar handlers:', error.message);
-    return false;
+    console.error(`[WS-API] Erro ao inicializar handlers: ${error.message}`);
+    throw error;
   }
 }
 
