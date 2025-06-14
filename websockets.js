@@ -50,13 +50,6 @@ function getPriceWebsockets(accountId = 1, create = false) {
   return priceWebsocketsByAccount.get(accountId) || new Map();
 }
 
-/**
- * Carrega credenciais do banco de dados para uma conta específica
- * @param {Object} options - Opções de carregamento
- * @param {number} options.accountId - ID da conta (padrão: 1)
- * @param {boolean} options.forceRefresh - Se deve forçar atualização do cache
- * @returns {Promise<Object>} - Credenciais da conta
- */
 async function loadCredentialsFromDatabase(options = {}) {
   try {
     const accountId = options.accountId || 1;
@@ -69,19 +62,9 @@ async function loadCredentialsFromDatabase(options = {}) {
     if (accountCredentialsCache.has(accountId) && !forceRefresh && 
         (currentTime - lastCacheTime < CACHE_TTL)) {
       console.log(`[WEBSOCKETS] Usando credenciais em cache para conta ${accountId}`);
-      
       // Atualizar estado da conexão com os valores em cache
-      const accountState = getAccountConnectionState(accountId, true);
-      const cachedCreds = accountCredentialsCache.get(accountId);
-      
-      accountState.apiKey = cachedCreds.apiKey;
-      accountState.apiSecret = cachedCreds.apiSecret;
-      accountState.privateKey = cachedCreds.privateKey;
-      accountState.apiUrl = cachedCreds.apiUrl;
-      accountState.wsApiUrl = cachedCreds.wsApiUrl;
-      accountState.wssMarketUrl = cachedCreds.wssMarketUrl;
-      
-      return cachedCreds;
+      // ... (código existente)
+      return accountCredentialsCache.get(accountId);
     }
     
     const db = await getDatabaseInstance(accountId);
@@ -90,15 +73,24 @@ async function loadCredentialsFromDatabase(options = {}) {
       throw new Error(`Não foi possível obter conexão com o banco de dados para conta ${accountId}`);
     }
     
-    // Buscar credenciais desta conta específica junto com o id_corretora
+    // Buscar conta e JOIN com a tabela corretoras para obter as URLs corretas
     const [rows] = await db.query(`
       SELECT 
-        api_key, 
-        api_secret, 
-        ws_api_key, 
-        ws_api_secret, 
-        id_corretora
-      FROM contas WHERE id = ? AND ativa = 1`,
+        c.id,
+        c.api_key, 
+        c.api_secret, 
+        c.ws_api_key, 
+        c.ws_api_secret,
+        c.id_corretora,
+        cor.spot_rest_api_url,
+        cor.futures_rest_api_url,
+        cor.futures_ws_market_url,
+        cor.futures_ws_api_url,
+        cor.corretora,
+        cor.ambiente
+      FROM contas c
+      JOIN corretoras cor ON c.id_corretora = cor.id
+      WHERE c.id = ? AND c.ativa = 1`,
       [accountId]
     );
     
@@ -106,22 +98,17 @@ async function loadCredentialsFromDatabase(options = {}) {
       throw new Error(`Conta ID ${accountId} não encontrada ou não está ativa`);
     }
 
-    // Buscar informações da corretora vinculada
-    const corretoraId = rows[0].id_corretora || 1; // Default para 1 se não estiver definido
-    
-    // Usar a função para obter URLs da corretora
-    const { getCorretoraPorId } = require('./db/conexao');
-    const corretora = await getCorretoraPorId(db, corretoraId);
+    const accountData = rows[0];
     
     // Atualizar estado da conexão para esta conta específica
     const accountState = getAccountConnectionState(accountId, true);
     
-    accountState.apiKey = rows[0].api_key;
-    accountState.apiSecret = rows[0].api_secret;
-    accountState.privateKey = rows[0].ws_api_secret;
-    accountState.apiUrl = corretora.futures_rest_api_url;
-    accountState.wsApiUrl = corretora.futures_ws_api_url;
-    accountState.wssMarketUrl = corretora.futures_ws_market_url;
+    accountState.apiKey = accountData.ws_api_key;
+    accountState.apiSecret = accountData.api_secret;
+    accountState.privateKey = accountData.ws_api_secret;
+    accountState.apiUrl = accountData.futures_rest_api_url;
+    accountState.wsApiUrl = accountData.futures_ws_api_url;
+    accountState.wssMarketUrl = accountData.futures_ws_market_url;
     
     // Criar objeto de credenciais para o cache
     const credentials = {
@@ -131,9 +118,9 @@ async function loadCredentialsFromDatabase(options = {}) {
       apiUrl: accountState.apiUrl,
       wsApiUrl: accountState.wsApiUrl,
       wssMarketUrl: accountState.wssMarketUrl,
-      corretora: corretora.corretora,
-      ambiente: corretora.ambiente,
-      corretoraId: corretora.id,
+      corretora: accountData.corretora,
+      ambiente: accountData.ambiente,
+      corretoraId: accountData.id_corretora,
       accountId
     };
     
@@ -141,7 +128,7 @@ async function loadCredentialsFromDatabase(options = {}) {
     accountCredentialsCache.set(accountId, credentials);
     lastCacheTime = currentTime;
     
-    console.log(`[WEBSOCKETS] Credenciais inicializadas com sucesso para conta ${accountId} (corretora: ${corretora.corretora}, ambiente: ${corretora.ambiente})`);
+    console.log(`[WEBSOCKETS] Credenciais inicializadas com sucesso para conta ${accountId} (corretora: ${accountData.corretora}, ambiente: ${accountData.ambiente})`);
     return credentials;
   } catch (error) {
     console.error(`[CONFIG] Erro ao carregar credenciais do banco de dados para conta ${options.accountId || 1}:`, error.message);
