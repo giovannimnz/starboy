@@ -530,32 +530,63 @@ async function getCurrentPrice(symbol) {
 }
 
 // Função para verificar novas operações e criar ordens
-async function checkNewTrades() {
+async function checkNewTrades(accountId = 1) {
   try {
-    const db = await getDatabaseInstance();
+    const db = await getDatabaseInstance(accountId);
     if (!db) {
-      console.error('[MONITOR] Falha ao obter instância do banco de dados');
+      console.error(`[MONITOR] Falha ao obter instância do banco de dados para conta ${accountId}`);
       return;
     }
 
-    // Verificar apenas sinais PENDING na tabela webhook_signals
+    // Verificar sinais PENDING na tabela webhook_signals
     const [pendingSignals] = await db.query(`
       SELECT * FROM webhook_signals
-      WHERE status = 'PENDING'
+      WHERE status = 'PENDING' AND conta_id = ?
       ORDER BY created_at ASC
-    `);
+    `, [accountId]);
 
-    //console.log(`[MONITOR] Encontrados ${pendingSignals.length} sinais pendentes para processar`);
+    console.log(`[MONITOR] Encontrados ${pendingSignals.length} sinais pendentes para processar (Conta ${accountId})`);
 
-    for (const signal of pendingSignals) {
-      // Atualizar status para PROCESSANDO antes de processar para evitar duplicação
-      await db.query(
-          'UPDATE webhook_signals SET status = "PROCESSANDO" WHERE id = ?',
-          [signal.id]
-      );
+    if (pendingSignals.length > 0) {
+      // Mostrar informações detalhadas para ajudar no diagnóstico
+      for (const signal of pendingSignals) {
+        console.log(`[MONITOR] Sinal pendente: ID=${signal.id}, Symbol=${signal.symbol}, Side=${signal.side}, Entry=${signal.entry_price}`);
+        
+        // Verificar se o sinal já está sendo processado
+        if (processingSignals.has(signal.id)) {
+          console.log(`[MONITOR] Sinal ID ${signal.id} já está em processamento, pulando...`);
+          continue;
+        }
 
-      // Processar o sinal
-      await processSignal(db, signal);
+        // Marcar como em processamento
+        processingSignals.add(signal.id);
+
+        try {
+          // Atualizar status para PROCESSANDO antes de processar para evitar duplicação
+          await db.query(
+            'UPDATE webhook_signals SET status = "PROCESSANDO" WHERE id = ?',
+            [signal.id]
+          );
+
+          // Processar o sinal
+          await processSignal(db, signal, accountId);
+        } catch (procError) {
+          console.error(`[MONITOR] Erro ao processar sinal ID ${signal.id}:`, procError);
+          
+          // Se houver erro, tentar atualizar o status
+          try {
+            await db.query(
+              'UPDATE webhook_signals SET status = "ERROR", error_message = ? WHERE id = ?',
+              [procError.message.substring(0, 250), signal.id]
+            );
+          } catch (updateError) {
+            console.error(`[MONITOR] Erro adicional ao atualizar status do sinal ID ${signal.id}:`, updateError);
+          }
+        } finally {
+          // Remover da lista de processamento
+          processingSignals.delete(signal.id);
+        }
+      }
     }
 
     // NOVO: Verificar sinais CANCELED que ainda não tiveram mensagem enviada
@@ -563,279 +594,143 @@ async function checkNewTrades() {
       SELECT * FROM webhook_signals
       WHERE status = 'CANCELED' 
       AND (sent_msg = 0 OR sent_msg IS NULL)
+      AND conta_id = ?
       ORDER BY created_at ASC
-    `);
+    `, [accountId]);
 
-    //console.log(`[MONITOR] Encontrados ${canceledSignals.length} sinais cancelados pendentes de notificação`);
-
-for (const signal of canceledSignals) {
-  try {
-    // Verificar se temos chat_id e message_id para enviar a notificação
-    if (signal.chat_id && bot) {
-      const errorMessage = signal.error_message || 'Motivo não especificado';
+    if (canceledSignals.length > 0) {
+      console.log(`[MONITOR] Encontrados ${canceledSignals.length} sinais cancelados pendentes de notificação`);
       
-      // Extrair o message_id da mesma forma que em processSignal
-      const originalMessageId = signal.message_id; // Extrair message_id como é feito em processSignal
-      
-      let telegramOptions = {};
-      
-      // Verificar se temos um ID de mensagem original para responder
-      if (originalMessageId) {
-        telegramOptions = { reply_to_message_id: originalMessageId };
-      } else if (signal.message_id_orig) {
-        telegramOptions = { reply_to_message_id: signal.message_id_orig };
-      } else if (signal.registry_message_id) {
-        telegramOptions = { reply_to_message_id: signal.registry_message_id };
-      }
-      
-      // Extrair preço do motivo se existir para formatar corretamente
-      let formattedReason = errorMessage;
-      if (errorMessage && errorMessage.includes('\nPreço:')) {
-        // Extrair valores numéricos para formatação
-        formattedReason = errorMessage.replace(/(\d+\.\d+)/g, match => {
-          return formatDecimal(parseFloat(match), 4);
-        });
-      }
-      
-      try {
-        // Tenta enviar a mensagem como resposta primeiro
-        await bot.telegram.sendMessage(
-          signal.chat_id,
-          `⚠️ Sinal para ${signal.symbol} Cancelado ⚠️\n(ID: ${signal.id})\n\nMotivo: ${formattedReason}`,
-          telegramOptions
-        );
-        console.log(`[MONITOR] Notificação de cancelamento enviada para Sinal ID ${signal.id}`);
-      } catch (replyError) {
-        // Se falhar com erro de mensagem não encontrada, envia sem resposta
-        if (replyError.message.includes('message to be replied not found')) {
-          //console.log(`[MONITOR] Mensagem original não encontrada para sinal ${signal.id}. Enviando sem resposta.`);
-          await bot.telegram.sendMessage(
-            signal.chat_id,
-            `⚠️ Sinal para ${signal.symbol} Cancelado ⚠️\n(ID: ${signal.id})\n\nMotivo: ${formattedReason}`
-          );
-        } else {
-          // Se for outro tipo de erro, relança
-          throw replyError;
+      for (const signal of canceledSignals) {
+        try {
+          // Lógica para notificar sobre sinais cancelados...
+          const bot = getTelegramBot(accountId);
+          
+          if (bot && signal.chat_id) {
+            await bot.telegram.sendMessage(
+              signal.chat_id,
+              `❌ Sinal cancelado: ${signal.symbol} ${signal.side}\nMotivo: ${signal.error_message || 'Não especificado'}`
+            );
+            
+            await db.query(
+              'UPDATE webhook_signals SET sent_msg = 1 WHERE id = ?',
+              [signal.id]
+            );
+          }
+        } catch (notifyError) {
+          console.error(`[MONITOR] Erro ao notificar sobre sinal cancelado ID ${signal.id}:`, notifyError);
         }
       }
-    } else {
-      console.log(`[MONITOR] Não foi possível enviar notificação para sinal ${signal.id}: ${!signal.chat_id ? 'chat_id não disponível' : 'bot não inicializado'}`);
     }
-    
-    // Marcar como notificado
-    await db.query(
-      'UPDATE webhook_signals SET sent_msg = 1 WHERE id = ?',
-      [signal.id]
-    );
-  } catch (notifyError) {
-    console.error(`[MONITOR] Erro ao notificar cancelamento do sinal ${signal.id}:`, notifyError.message);
-  }
-}
-
   } catch (error) {
-    console.error('[MONITOR] Erro ao verificar novas operações:', error);
+    console.error(`[MONITOR] Erro ao verificar novas operações (conta ${accountId}):`, error);
   }
 }
 
 // Função para processar um sinal recebido via webhook
-async function processSignal(db, signal) {
-  const connection = await db.getConnection(); // Get a connection from the pool
+async function processSignal(db, signal, accountId = 1) {
+  const connection = await db.getConnection();
 
   try {
-    await connection.beginTransaction(); // Start a transaction
+    await connection.beginTransaction();
 
     const {
       id, symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price, chat_id, timeframe,
-      message_id: originalMessageId // <<< Extract originalMessageId from signal
+      message_id: originalMessageId,
+      tp1_price, tp2_price, tp3_price, tp4_price, tp5_price // Garantindo que todos os TPs são extraídos
     } = signal;
 
-    console.log(`[MONITOR] Processando sinal ID ${id} para ${symbol}: ${side} a ${entry_price}`);
+    console.log(`[MONITOR] Processando sinal ID ${id} para ${symbol}: ${side} a ${entry_price} (Conta ${accountId})`);
 
-    const positionExists = await checkPositionExists(connection, symbol);
+    // Verificar se já existe uma posição aberta para este símbolo
+    const positionExists = await checkPositionExists(db, symbol, accountId);
     if (positionExists) {
       console.log(`[MONITOR] Já existe uma posição aberta para ${symbol}. Ignorando sinal ID ${id}.`);
       await connection.query(
-          `UPDATE webhook_signals SET status = 'ERROR', error_message = 'Posição já existe para o símbolo' WHERE id = ?`,
-          [id]
-      );
-      await connection.commit();
-      return;
-    }
-
-    // 2. Configurar alavancagem e tipo de margem
-try {
-  // Configurar alavancagem com valor enviado pelo divap.py
-  await changeInitialLeverage(symbol, leverage);
-  console.log(`[MONITOR] Alavancagem configurada: ${leverage}x para ${symbol}`);
-} catch (error) {
-  // Se falhar com erro 400, tentar algumas vezes mais
-  if (error.response && error.response.status === 400) {
-    console.log(`[MONITOR] Erro inicial ao configurar alavancagem ${leverage}x para ${symbol}. Tentando novamente...`);
-    
-    try {
-      // Segunda tentativa após um pequeno delay
-      await new Promise(resolve => setTimeout(resolve, 500));
-      await changeInitialLeverage(symbol, leverage);
-      console.log(`[MONITOR] Alavancagem configurada na segunda tentativa: ${leverage}x para ${symbol}`);
-    } catch (retryError) {
-      // Se falhar novamente, tentar com um valor um pouco menor
-      console.log(`[MONITOR] Segunda tentativa de configurar alavancagem falhou. Continuando mesmo assim, pois valor foi validado anteriormente pelo divap.py`);
-      // Apenas logar o erro, mas continuar o processo
-    }
-  } else {
-    // Para outros erros, também continuar pois divap.py já validou a alavancagem
-    console.log(`[MONITOR] Erro ao configurar alavancagem para ${symbol}, mas continuando pois valor foi validado pelo divap.py: ${error.message}`);
-  }
-}
-
-// Verificar margem atual e tentar configurar como CROSSED se necessário
-try {
-  const currentMarginType = await getCurrentMarginType(symbol);
-  //console.log(`Tipo de margem atual para ${symbol}: ${currentMarginType}`);
-  
-  // Se o tipo já for "cross", não precisa alterar
-  if (currentMarginType === 'cross' || currentMarginType === 'crossed') {
-    //console.log(`[MONITOR] Margem para ${symbol} já está como CROSSED (ou o tipo desejado), continuando...`);
-  } else {
-    // Se não for "cross", tentar alterar
-    try {
-      await changeMarginType(symbol, 'CROSSED');
-      console.log(`[MONITOR] Margem para ${symbol} configurada como CROSSED`);
-    } catch (marginChangeError) {
-      // Definir a mensagem de erro aqui, para evitar variável indefinida
-      const marginErrorMessage = marginChangeError.message || 'Erro desconhecido ao configurar tipo de margem';
-      
-      console.log(`[MONITOR] Erro ao configurar tipo de margem, mas continuando: ${marginErrorMessage}`);
-      // Não lançar o erro - continuar o fluxo mesmo com falha na configuração de margem
-    }
-  }
-} catch (marginTypeError) {
-  // Erro ao obter o tipo de margem atual
-  const marginTypeErrorMessage = marginTypeError.message || 'Erro desconhecido ao obter tipo de margem atual';
-  console.log(`[MONITOR] Erro ao verificar tipo de margem atual, mas continuando: ${marginTypeErrorMessage}`);
-  
-  // Como não sabemos o tipo atual, tentar configurar para CROSSED mesmo assim
-  try {
-    await changeMarginType(symbol, 'CROSSED');
-    console.log(`[MONITOR] Margem para ${symbol} configurada como CROSSED`);
-  } catch (fallbackError) {
-    // Ignorar erro aqui também, apenas registrar
-    console.log(`[MONITOR] Erro ao configurar tipo de margem no fallback, continuando mesmo assim: ${fallbackError.message}`);
-  }
-      await connection.query(
-          `UPDATE webhook_signals SET status = 'ERROR', error_message = ? WHERE id = ?`,
-          [errorMessage, id]
-      );
-      await connection.commit();
-      return;
-    }
-
-    // 3. Atualizar webhook_signals para 'AGUARDANDO_ACIONAMENTO' (inicialmente)
-    await connection.query(
-        `UPDATE webhook_signals SET
-            status = 'AGUARDANDO_ACIONAMENTO'
-         WHERE id = ?`,
+        `UPDATE webhook_signals SET status = 'ERROR', error_message = 'Posição já existe para o símbolo' WHERE id = ?`,
         [id]
-    );
+      );
+      await connection.commit();
+      return;
+    }
 
-    // 4. Iniciar monitoramento de preço para este símbolo (se não estiver ativo)
-    websockets.ensurePriceWebsocketExists(symbol);
+    // Verificar se o símbolo é válido e se o preço de entrada é válido
+    if (!symbol || !entry_price || parseFloat(entry_price) <= 0) {
+      throw new Error(`Símbolo ou preço de entrada inválidos: ${symbol}, ${entry_price}`);
+    }
 
-if (chat_id) {
+    // Obter o preço atual do símbolo
+    const currentPrice = await getCurrentPrice(symbol);
+    if (!currentPrice) {
+      throw new Error(`Não foi possível obter o preço atual para ${symbol}`);
+    }
+    console.log(`[MONITOR] Preço atual de ${symbol}: ${currentPrice}`);
+
+    // Configurar alavancagem e tipo de margem
     try {
-        let telegramOptions = {};
-        
-        // Verificar se temos um ID de mensagem original para responder
-        if (originalMessageId) {
-            try {
-                // Verificar se a mensagem original existe antes de tentar responder
-                // Usar uma abordagem mais segura sem tentar verificar a mensagem diretamente
-                telegramOptions = { reply_to_message_id: originalMessageId };
-            } catch (telegramCheckError) {
-                console.log(`[MONITOR] Aviso: Erro ao verificar mensagem original ID ${originalMessageId}. Enviando sem resposta.`);
-                // Continue sem reply_to_message_id
-            }
-        }
-        
-        const triggerCondition = side.toUpperCase() === 'COMPRA' || side.toUpperCase() === 'BUY'
-            ? `Acima de ${formatDecimal(entry_price)}`
-            : `Abaixo de ${formatDecimal(entry_price)}`;
-        
-        // Enviar a mensagem sem try-catch específico para este envio
-        // Se houver erro, ele será capturado pelo try-catch externo
-        const sentMessage = await bot.telegram.sendMessage(chat_id,
-            `🔄 Sinal Registrado para ${symbol}\n\n` +
-            `🆔 Sinal Ref: WEBHOOK_${id}\n` +
-            `Direção: ${side.charAt(0).toUpperCase() + side.slice(1).toLowerCase()}\n` +
-            `Alavancagem: ${leverage}x\n\n` +
-            `Entrada: ${triggerCondition}\n` +
-            `TP: ${formatDecimal(tp_price)}\n` +
-            `SL: ${formatDecimal(sl_price)}\n\n` +
-            `Aguardando gatilho de preço...`,
-            telegramOptions
-        );
-        
-        // Salvar o ID da mensagem de confirmação
-        if (sentMessage && sentMessage.message_id) {
-            await connection.query(
-                `UPDATE webhook_signals SET registry_message_id = ? WHERE id = ?`,
-                [sentMessage.message_id, id]
-            );
-            console.log(`[MONITOR] Mensagem de confirmação (${sentMessage.message_id}) enviada e ID salvo para sinal ${id}.`);
-        }
-    } catch (telegramError) {
-        // Simplificar mensagem de erro e continuar o processamento
-        console.error(`[MONITOR] Erro ao enviar mensagem Telegram para sinal ID ${id}: ${telegramError.message}`);
-        // Não reexibir o objeto de erro completo para evitar poluição do log
+      // Configurar alavancagem com valor enviado pelo divap.py
+      await changeInitialLeverage(accountId, symbol, parseInt(leverage));
+      console.log(`[MONITOR] Alavancagem configurada: ${leverage}x para ${symbol}`);
+      
+      // Alterar o tipo de margem para CROSSED
+      await changeMarginType(accountId, symbol, 'CROSSED');
+      console.log(`[MONITOR] Tipo de margem configurado para CROSSED em ${symbol}`);
+    } catch (error) {
+      console.log(`[MONITOR] Erro ao configurar alavancagem/margem (não crítico): ${error.message}`);
+      // Continuar mesmo com erro, pois isso não é crítico para a operação
     }
-}
 
-    // 6. Calcular e registrar o tempo de timeout e atualizar o sinal novamente
-    let timeoutAt = null;
-    let maxLifetimeMinutes = null;
+    // Iniciar monitoramento de preço via WebSocket
+    websockets.ensurePriceWebsocketExists(symbol, accountId);
 
-    if (timeframe) {
-        const timeframeMs = timeframeToMs(timeframe); // Garanta que timeframeToMs está definida
-        if (timeframeMs > 0) {
-            const maxLifetimeMs = timeframeMs * 3; // Exemplo: timeout é 3x o timeframe do sinal
-            const now = new Date();
-            timeoutAt = new Date(now.getTime() + maxLifetimeMs);
-            maxLifetimeMinutes = Math.floor(maxLifetimeMs / (60 * 1000));
-            
-            console.log(`[MONITOR] Timeout para sinal ID ${id} (${symbol}) definido para: ${timeoutAt.toISOString()} (${maxLifetimeMinutes} min)`);
-        } else {
-            console.log(`[MONITOR] Timeframe inválido ou zero para sinal ID ${id} (${symbol}). Timeout não será definido.`);
-        }
+    // Para sinais PENDING, executar a entrada imediatamente
+    if (side.toUpperCase() === 'COMPRA' || side.toUpperCase() === 'BUY') {
+      console.log(`[MONITOR] Executando entrada LIMIT MAKER para sinal ID ${id} (${symbol})`);
+      
+      // Atualizar status antes da execução
+      await connection.query(
+        `UPDATE webhook_signals SET status = 'EXECUTANDO' WHERE id = ?`,
+        [id]
+      );
+      
+      await connection.commit();
+      
+      // Executar a entrada LIMIT MAKER
+      const entryResult = await executeLimitMakerEntry(db, signal, currentPrice);
+      
+      if (entryResult && entryResult.success) {
+        console.log(`[MONITOR] Entrada executada com sucesso para sinal ID ${id}: posição ID ${entryResult.positionId}`);
+        return true;
+      } else {
+        throw new Error(`Falha ao executar entrada: ${entryResult?.error || 'Motivo desconhecido'}`);
+      }
     } else {
-        console.log(`[MONITOR] Timeframe não fornecido para sinal ID ${id} (${symbol}). Timeout não será definido.`);
+      throw new Error(`Lado da operação inválido: ${side}`);
     }
-
-    await connection.query(
-        `UPDATE webhook_signals SET
-            status = 'AGUARDANDO_ACIONAMENTO', 
-            timeout_at = ?,
-            max_lifetime_minutes = ?
-         WHERE id = ?`,
-        [timeoutAt, maxLifetimeMinutes, id]
-    );
-
-    await connection.commit(); // Comita a transação
-    console.log(`[MONITOR] Sinal ID ${id} para ${symbol} registrado com sucesso. Status: AGUARDANDO_ACIONAMENTO.`);
-
   } catch (error) {
-    console.error(`[MONITOR] Erro crítico ao processar sinal ID ${signal.id || 'N/A'} para ${signal.symbol || 'N/A'}:`, error);
-    if (connection) { // Garante que connection existe antes de tentar rollback
-        try {
-            await connection.rollback(); // Reverte a transação em caso de erro
-            console.log(`[MONITOR] Rollback efetuado para sinal ID ${signal.id || 'N/A'}.`);
-        } catch (rollbackError) {
-            console.error(`[MONITOR] Erro crítico ao tentar fazer rollback para sinal ID ${signal.id || 'N/A'}:`, rollbackError);
-        }
+    console.error(`[MONITOR] Erro ao processar sinal ID ${signal.id || 'N/A'} para ${signal.symbol || 'N/A'}:`, error);
+    if (connection) {
+      try {
+        await connection.rollback();
+      } catch (rollbackError) {
+        console.error(`[MONITOR] Erro ao fazer rollback: ${rollbackError.message}`);
+      }
     }
-
+    
+    // Atualizar status para ERROR
+    try {
+      await db.query(
+        `UPDATE webhook_signals SET status = 'ERROR', error_message = ? WHERE id = ?`,
+        [String(error.message).substring(0, 250), signal.id]
+      );
+    } catch (updateError) {
+      console.error(`[MONITOR] Erro ao atualizar status do sinal para ERROR: ${updateError.message}`);
+    }
+    
+    throw error;
   } finally {
-    if (connection) { // Garante que connection existe antes de tentar release
-        connection.release(); // Libera a conexão de volta para o pool
+    if (connection) {
+      connection.release();
     }
   }
 }
@@ -889,11 +784,11 @@ async function getAvailableBalance() {
 }
 
 // Verificar se existe uma posição aberta para um símbolo
-async function checkPositionExists(db, symbol) {
+async function checkPositionExists(db, symbol, accountId = 1) {
   try {
     const [rows] = await db.query(
-        "SELECT id FROM posicoes WHERE simbolo = ? AND (status = 'OPEN' OR status = 'PENDING')",
-        [symbol]
+      "SELECT id FROM posicoes WHERE simbolo = ? AND (status = 'OPEN' OR status = 'PENDING') AND conta_id = ?",
+      [symbol, accountId]
     );
     return rows.length > 0;
   } catch (error) {
