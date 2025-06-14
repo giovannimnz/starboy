@@ -9,7 +9,16 @@ const websocketApi = require('../websocketApi');
 const websockets = require('../websockets');
 
 
-async function executeLimitMakerEntry(db, signal, currentPriceTrigger, accountId = 1) {
+/**
+ * Executa entrada usando Limit Maker
+ * @param {Object} db - Conexão com o banco de dados
+ * @param {Object} signal - Sinal a ser processado
+ * @param {number} currentPrice - Preço atual do mercado
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} Resultado da operação
+ */
+async function executeLimitMakerEntry(db, signal, currentPrice, accountId = 1) {
+  console.log(`[LIMIT_ENTRY] Iniciando LIMIT MAKER para Sinal ID ${signal.id} (${signal.symbol})`);
     // Obter a conexão do banco de dados para a conta específica
     const connection = await db.getConnection();
     const MAX_CHASE_ATTEMPTS = 100;
@@ -41,6 +50,35 @@ async function executeLimitMakerEntry(db, signal, currentPriceTrigger, accountId
     let lastDepthUpdateTimestamp = 0;
     const MAX_DEPTH_STALENESS_MS = 3000; // Considerar dados do book "velhos" após 2 segundos sem atualização do WS
     let wsUpdateErrorCount = 0;
+
+      // Verificar se já existe ordem ativa para este sinal
+  const [existingOrders] = await db.query(
+    `SELECT order_id FROM orders WHERE webhook_id = ? AND status IN ('NEW', 'PARTIALLY_FILLED')`,
+    [signal.id]
+  );
+  
+  if (existingOrders.length > 0) {
+    console.log(`[LIMIT_ENTRY] ⚠️ Já existem ${existingOrders.length} ordens ativas para este sinal. Cancelando...`);
+    
+    // Cancelar todas as ordens existentes
+    for (const order of existingOrders) {
+      try {
+        await api.cancelOrder(accountId, signal.symbol, order.order_id);
+        console.log(`[LIMIT_ENTRY] Ordem ${order.order_id} cancelada com sucesso.`);
+        
+        // Atualizar status no banco
+        await db.query(
+          `UPDATE orders SET status = 'CANCELED', updated_at = NOW() WHERE order_id = ?`,
+          [order.order_id]
+        );
+      } catch (cancelError) {
+        console.error(`[LIMIT_ENTRY] Erro ao cancelar ordem ${order.order_id}:`, cancelError.message);
+      }
+    }
+  }
+  
+  // Criar ID único para controle de idempotência
+  const idempotencyKey = `${signal.id}_${Date.now()}`;
 
     try {
         const numericAccountId = parseInt(accountId) || 1;
@@ -1093,6 +1131,48 @@ async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3000, accountI
     }
 }
 
+async function waitForOrderStatus(symbol, orderId, accountId) {
+  console.log(`[LIMIT_ENTRY] Verificando status da ordem ${orderId} para ${symbol} via WebSocket...`);
+  
+  try {
+    // Tentar via WebSocket API
+    const wsResult = await websocketApi.getOrderStatus(symbol, orderId, accountId);
+    
+    if (wsResult && wsResult.status) {
+      console.log(`[LIMIT_ENTRY] Status da ordem ${orderId} via WebSocket: ${wsResult.status}`);
+      return wsResult;
+    } else {
+      // Se houver resultado mas não tiver status válido, logar e fazer fallback
+      console.log(`[LIMIT_ENTRY] Resultado WebSocket sem status válido para ordem ${orderId}:`, JSON.stringify(wsResult));
+    }
+  } catch (error) {
+    console.log(`[LIMIT_ENTRY] Erro ao verificar status via WebSocket para ordem ${orderId}: ${error.message}`);
+    
+    // Se é erro de API Key, precisamos verificar se há conflito de ambiente (prod vs testnet)
+    if (error.message && error.message.includes('Invalid API-key')) {
+      console.log(`[LIMIT_ENTRY] ⚠️ Possível conflito de ambiente (prod vs testnet) na API Key`);
+      
+      // Usar REST API diretamente (mais confiável)
+      try {
+        const api = require('../api');
+        console.log(`[LIMIT_ENTRY] Usando REST API como fallback para verificar ordem ${orderId}`);
+        const restResult = await api.getOrderStatus(accountId, symbol, orderId);
+        
+        if (restResult) {
+          console.log(`[LIMIT_ENTRY] Status da ordem ${orderId} via REST API: ${restResult.status}`);
+          return restResult;
+        }
+      } catch (restError) {
+        console.log(`[LIMIT_ENTRY] Erro também na REST API: ${restError.message}`);
+        throw restError;
+      }
+    }
+  }
+  
+  throw new Error(`Não foi possível verificar o status da ordem ${orderId}`);
+}
+
 module.exports = {
-    executeLimitMakerEntry
+    executeLimitMakerEntry,
+    waitForOrderStatus
 };
