@@ -1266,6 +1266,475 @@ function formatBracketsFromDb(dbRows) {
   return Object.values(symbolsMap);
 }
 
+async function syncAccountBalance(accountId = 1) {
+  try {
+    const db = await getDatabaseInstance(accountId);
+    if (!db) {
+      throw new Error('Falha ao obter instância do banco de dados');
+    }
+    
+    // Obter saldo atual da exchange
+    const balanceDetails = await getFuturesAccountBalanceDetails(accountId);
+    
+    if (!balanceDetails) {
+      throw new Error('Não foi possível obter detalhes do saldo da conta');
+    }
+    
+    console.log(`[API] Saldo recebido da Exchange (Conta ${accountId}): ${balanceDetails.walletBalance} USDT`);
+    
+    // Verificar se já existe um registro para esta conta
+    const [rows] = await db.query(
+      'SELECT id FROM contas WHERE id = ?', 
+      [accountId]
+    );
+    
+    const currentDateTime = new Date();
+    
+    if (rows.length === 0) {
+      console.error(`[API] Conta ID ${accountId} não encontrada no banco de dados`);
+      return null;
+    }
+    
+    // Atualizar o registro existente
+    const [result] = await db.query(
+      `UPDATE contas 
+       SET saldo = ?, 
+           saldo_nao_realizado = ?, 
+           ultima_atualizacao = ? 
+       WHERE id = ?`,
+      [
+        balanceDetails.walletBalance,
+        balanceDetails.unrealizedProfit,
+        currentDateTime,
+        accountId
+      ]
+    );
+    
+    console.log(`[API] Saldo atualizado para conta ${accountId}: ${balanceDetails.walletBalance} USDT`);
+    
+    // Buscar o saldo após atualização
+    const [updatedAccount] = await db.query(
+      'SELECT saldo, saldo_base_calculo FROM contas WHERE id = ?',
+      [accountId]
+    );
+    
+    if (updatedAccount.length === 0) {
+      throw new Error(`Falha ao buscar conta ${accountId} após atualização`);
+    }
+    
+    return {
+      saldo: parseFloat(updatedAccount[0].saldo),
+      saldo_base_calculo: parseFloat(updatedAccount[0].saldo_base_calculo || updatedAccount[0].saldo)
+    };
+  } catch (error) {
+    console.error(`[API] Erro ao sincronizar saldo da conta ${accountId}:`, error.message);
+    throw error;
+  }
+}
+
+async function getMaxLeverage(accountId = 1, symbol, notionalValue) {
+  try {
+    // Obter brackets para este símbolo
+    const brackets = await getLeverageBracketsFromDb(accountId, symbol);
+    
+    if (!brackets || !brackets[0] || !brackets[0].brackets) {
+      console.error(`[API] Não foi possível encontrar brackets para ${symbol}`);
+      return 20; // Valor padrão seguro
+    }
+    
+    // Localizar o bracket apropriado com base no notionalValue
+    const leverageBrackets = brackets[0].brackets;
+    for (let i = 0; i < leverageBrackets.length; i++) {
+      const bracket = leverageBrackets[i];
+      if (notionalValue >= bracket.notionalFloor && notionalValue <= bracket.notionalCap) {
+        return bracket.initialLeverage;
+      }
+    }
+    
+    // Se não encontrar um bracket específico, retornar o mais conservador
+    const lastBracket = leverageBrackets[leverageBrackets.length - 1];
+    return lastBracket ? lastBracket.initialLeverage : 20;
+  } catch (error) {
+    console.error(`[API] Erro ao obter alavancagem máxima para ${symbol}:`, error.message);
+    return 20; // Valor padrão seguro em caso de erro
+  }
+}
+
+async function getCurrentLeverage(accountId = 1, symbol) {
+  try {
+    const position = await getPositionDetails(accountId, symbol);
+    return position ? position.leverage : null;
+  } catch (error) {
+    console.error(`[API] Erro ao obter alavancagem atual para ${symbol}:`, error.message);
+    throw error;
+  }
+}
+
+async function getPositionMode(accountId = 1) {
+  try {
+    // Obter credenciais da conta específica
+    const credentials = await loadCredentialsFromDatabase(accountId);
+    
+    const timestamp = Date.now();
+    const recvWindow = 60000;
+    
+    const signature = crypto
+      .createHmac("sha256", credentials.apiSecret)
+      .update(`timestamp=${timestamp}&recvWindow=${recvWindow}`)
+      .digest("hex");
+    
+    const url = `${credentials.apiUrl}/v1/positionSide/dual?timestamp=${timestamp}&recvWindow=${recvWindow}&signature=${signature}`;
+    
+    const response = await axios.get(url, {
+      headers: {
+        "X-MBX-APIKEY": credentials.apiKey
+      }
+    });
+    
+    return response.data.dualSidePosition;
+  } catch (error) {
+    console.error(`[API] Erro ao obter modo de posição para conta ${accountId}:`, error.message);
+    throw error;
+  }
+}
+
+async function transferBetweenAccounts(accountId = 1, asset, amount, fromType, toType) {
+  try {
+    // Obter credenciais da conta específica
+    const credentials = await loadCredentialsFromDatabase(accountId);
+    
+    console.log(`[API] Transferindo ${amount} ${asset} de ${fromType} para ${toType} (Conta ${accountId})...`);
+    
+    const data = {
+      asset,
+      amount,
+      type: 1, // 1: transfer from spot to futures
+      fromAccountType: fromType, // 'SPOT', 'USDT_FUTURE', 'COIN_FUTURE'
+      toAccountType: toType // 'SPOT', 'USDT_FUTURE', 'COIN_FUTURE'
+    };
+    
+    const timestamp = Date.now();
+    const recvWindow = 60000;
+    
+    const queryString = new URLSearchParams({
+      ...data,
+      timestamp,
+      recvWindow
+    }).toString();
+    
+    const signature = crypto
+      .createHmac("sha256", credentials.apiSecret)
+      .update(queryString)
+      .digest("hex");
+    
+    const url = `${credentials.apiUrlSpot}/v1/futures/transfer?${queryString}&signature=${signature}`;
+    
+    const response = await axios.post(url, null, {
+      headers: {
+        "X-MBX-APIKEY": credentials.apiKey
+      }
+    });
+    
+    console.log(`[API] Transferência concluída: ${JSON.stringify(response.data)}`);
+    return response.data;
+  } catch (error) {
+    console.error(`[API] Erro na transferência: ${error.message}`);
+    if (error.response) {
+      console.error(`[API] Status: ${error.response.status}`);
+      console.error(`[API] Dados: ${JSON.stringify(error.response.data)}`);
+    }
+    throw error;
+  }
+}
+
+async function getPrice(accountId = 1, symbol) {
+  try {
+    // Obter credenciais da conta específica
+    const credentials = await loadCredentialsFromDatabase(accountId);
+    
+    const url = `${credentials.apiUrl}/v1/ticker/price?symbol=${symbol}`;
+    const response = await axios.get(url);
+    
+    if (response.data && response.data.price) {
+      return parseFloat(response.data.price);
+    } else {
+      throw new Error(`Preço para ${symbol} não disponível`);
+    }
+  } catch (error) {
+    console.error(`[API] Erro ao obter preço para ${symbol}:`, error.message);
+    throw error;
+  }
+}
+
+async function newStopOrTpLimitOrder(accountId = 1, symbol, quantity, side, stopPrice, limitPrice, reduceOnly = true, closePosition = false) {
+  try {
+    // Obter credenciais da conta específica
+    const credentials = await loadCredentialsFromDatabase(accountId);
+    
+    console.log(`[API] Nova ordem STOP_LIMIT: ${symbol}, ${side}, ${quantity}, stopPrice=${stopPrice}, limitPrice=${limitPrice}, reduceOnly=${reduceOnly}, closePosition=${closePosition}`);
+    
+    // Validações
+    if (quantity <= 0 && !closePosition) {
+      throw new Error(`Quantidade inválida: ${quantity}`);
+    }
+    
+    if (!stopPrice || !limitPrice) {
+      throw new Error('stopPrice e limitPrice são obrigatórios para ordens STOP_LIMIT');
+    }
+
+    const data = {
+      symbol,
+      side,
+      type: 'STOP',
+      timeInForce: 'GTC',
+      price: limitPrice,
+      stopPrice,
+      newOrderRespType: 'RESULT'
+    };
+
+    // Verificar se é closePosition ou quantidade normal
+    if (closePosition) {
+      data.closePosition = true;
+    } else {
+      data.quantity = quantity;
+    }
+
+    // Adicionar reduceOnly se necessário
+    if (reduceOnly) {
+      data.reduceOnly = true;
+    }
+
+    const timestamp = Date.now();
+    const recvWindow = 60000;
+
+    const signature = crypto
+      .createHmac("sha256", credentials.apiSecret)
+      .update(`${new URLSearchParams({ ...data, timestamp, recvWindow }).toString()}`)
+      .digest("hex");
+
+    const newData = { ...data, timestamp, recvWindow, signature };
+    const qs = `?${new URLSearchParams(newData).toString()}`;
+
+    const result = await axios({
+      method: "POST",
+      url: `${credentials.apiUrl}/v1/order${qs}`,
+      headers: { "X-MBX-APIKEY": credentials.apiKey },
+    });
+
+    console.log(`[API] Resposta da ordem STOP_LIMIT: ${JSON.stringify(result.data)}`);
+    return result;
+  } catch (error) {
+    console.error(`[API] ERRO ao criar ordem STOP_LIMIT:`, error.message);
+    if (error.response) {
+      console.error(`[API] Status: ${error.response.status}`);
+      console.error(`[API] Dados: ${JSON.stringify(error.response.data)}`);
+    }
+    throw error;
+  }
+}
+
+async function newTakeProfitOrder(accountId = 1, symbol, quantity, side, stopPrice, reduceOnly = true, closePosition = false) {
+  try {
+    // Obter credenciais da conta específica
+    const credentials = await loadCredentialsFromDatabase(accountId);
+    
+    console.log(`[API] Nova ordem TAKE_PROFIT: ${symbol}, ${side}, ${quantity}, stopPrice=${stopPrice}, reduceOnly=${reduceOnly}, closePosition=${closePosition}`);
+    
+    // Validações
+    if (quantity <= 0 && !closePosition) {
+      throw new Error(`Quantidade inválida: ${quantity}`);
+    }
+
+    const data = {
+      symbol,
+      side,
+      type: 'TAKE_PROFIT_MARKET',
+      stopPrice,
+      newOrderRespType: 'RESULT'
+    };
+
+    // Verificar se é closePosition ou quantidade normal
+    if (closePosition) {
+      data.closePosition = true;
+    } else {
+      data.quantity = quantity;
+    }
+
+    // Adicionar reduceOnly se necessário
+    if (reduceOnly) {
+      data.reduceOnly = true;
+    }
+
+    const timestamp = Date.now();
+    const recvWindow = 60000;
+
+    const signature = crypto
+      .createHmac("sha256", credentials.apiSecret)
+      .update(`${new URLSearchParams({ ...data, timestamp, recvWindow }).toString()}`)
+      .digest("hex");
+
+    const newData = { ...data, timestamp, recvWindow, signature };
+    const qs = `?${new URLSearchParams(newData).toString()}`;
+
+    const result = await axios({
+      method: "POST",
+      url: `${credentials.apiUrl}/v1/order${qs}`,
+      headers: { "X-MBX-APIKEY": credentials.apiKey },
+    });
+
+    console.log(`[API] Resposta da ordem TAKE_PROFIT: ${JSON.stringify(result.data)}`);
+    return result;
+  } catch (error) {
+    console.error(`[API] ERRO ao criar ordem TAKE_PROFIT:`, error.message);
+    if (error.response) {
+      console.error(`[API] Status: ${error.response.status}`);
+      console.error(`[API] Dados: ${JSON.stringify(error.response.data)}`);
+    }
+    throw error;
+  }
+}
+
+async function getMultipleOrderStatus(accountId = 1, symbol, orderIds) {
+  try {
+    if (!Array.isArray(orderIds) || orderIds.length === 0) {
+      return [];
+    }
+    
+    // Criar array de promises para as consultas de status
+    const statusPromises = orderIds.map(orderId => 
+      getOrderStatus(accountId, symbol, orderId)
+        .then(status => ({ orderId, status }))
+        .catch(error => ({ orderId, status: null, error: error.message }))
+    );
+    
+    // Executar todas as promises em paralelo
+    return await Promise.all(statusPromises);
+  } catch (error) {
+    console.error(`[API] Erro ao obter status de múltiplas ordens: ${error.message}`);
+    throw error;
+  }
+}
+
+async function closePosition(accountId = 1, symbol, leverageLevel = null) {
+  try {
+    // Obter detalhes da posição
+    const position = await getPositionDetails(accountId, symbol);
+    
+    if (!position || position.positionAmt === 0) {
+      console.log(`[API] Sem posição aberta para ${symbol}`);
+      return { success: false, message: 'Sem posição para fechar' };
+    }
+    
+    // Determinar o lado da ordem para fechar (oposto à posição atual)
+    const closingSide = position.positionAmt > 0 ? 'SELL' : 'BUY';
+    const quantity = Math.abs(position.positionAmt);
+    
+    // Alternar para a alavancagem especificada, se fornecida
+    if (leverageLevel !== null) {
+      await changeInitialLeverage(accountId, symbol, leverageLevel);
+    }
+    
+    // Criar ordem de mercado para fechar a posição
+    const result = await newEntryOrder(accountId, symbol, quantity, closingSide);
+    
+    console.log(`[API] Posição fechada para ${symbol}: ${JSON.stringify(result)}`);
+    return { success: true, result };
+  } catch (error) {
+    console.error(`[API] Erro ao fechar posição para ${symbol}:`, error.message);
+    throw error;
+  }
+}
+
+async function encerrarPosicao(accountId = 1, posicao) {
+  try {
+    const { simbolo, side, quantidade, leverage } = posicao;
+    
+    // Determinar o lado da ordem de encerramento (oposto ao da posição)
+    const closeSide = side === 'BUY' ? 'SELL' : 'BUY';
+    
+    // Usar a função closePosition
+    const result = await closePosition(accountId, simbolo, leverage);
+    
+    // Se o fechamento foi bem-sucedido, atualizar o status da posição no banco
+    if (result.success) {
+      const db = await getDatabaseInstance(accountId);
+      if (db) {
+        try {
+          await db.query(
+            `UPDATE posicoes SET status = 'CLOSED', data_hora_fechamento = ? WHERE simbolo = ? AND status = 'OPEN' AND conta_id = ?`,
+            [new Date(), simbolo, accountId]
+          );
+        } catch (dbError) {
+          console.error(`[API] Erro ao atualizar status da posição no banco:`, dbError.message);
+        }
+      }
+    }
+    
+    return result;
+  } catch (error) {
+    console.error(`[API] Erro ao encerrar posição:`, error.message);
+    throw error;
+  }
+}
+
+// Função load_leverage_brackets atualizada para usar o accountId
+function load_leverage_brackets(accountId = 1, symbol = null) {
+  return getLeverageBracketsFromDb(accountId, symbol);
+}
+
+// Cancelamento de entrada pendente adaptado para multi-conta
+async function cancelPendingEntry(accountId = 1, db, positionId, status, reason) {
+  try {
+    console.log(`[MONITOR] Cancelando entrada pendente ID ${positionId}: ${status} - ${reason} (Conta ${accountId})`);
+    
+    if (!db) {
+      db = await getDatabaseInstance(accountId);
+    }
+    
+    // 1. Obter informações para notificação antes de mover a posição
+    const [webhookInfo] = await db.query(`
+      SELECT w.id as webhook_id, w.chat_id, p.simbolo as symbol 
+      FROM webhook_signals w
+      JOIN posicoes p ON w.position_id = p.id
+      WHERE w.position_id = ? AND p.conta_id = ? LIMIT 1
+    `, [positionId, accountId]);
+    
+    if (webhookInfo.length === 0) {
+      console.error(`[MONITOR] Não foi possível encontrar informações do webhook para posição ${positionId} na conta ${accountId}`);
+      return false;
+    }
+    
+    // 2. Atualizar status no webhook_signals ANTES de mover a posição
+    await db.query(`
+      UPDATE webhook_signals
+      SET status = 'CANCELED',
+          error_message = ?
+      WHERE id = ?
+    `, [reason, webhookInfo[0].webhook_id]);
+    
+    // 3. Mover posição para histórico
+    await movePositionToHistory(db, positionId, 'CANCELED', reason, accountId);
+    
+    // 4. Enviar notificação ao Telegram se chat_id estiver disponível
+    const telegramBot = getTelegramBot(accountId);
+    if (webhookInfo[0].chat_id && telegramBot) {
+      try {
+        await telegramBot.telegram.sendMessage(webhookInfo[0].chat_id,
+          `⚠️ Ordem para ${webhookInfo[0].symbol} CANCELADA ⚠️\n\n` +
+          `Motivo: ${reason}`
+        );
+      } catch (telegramError) {
+        console.error(`[MONITOR] Erro ao enviar notificação Telegram:`, telegramError);
+      }
+    }
+    
+    return true;
+  } catch (error) {
+    console.error(`[MONITOR] Erro ao cancelar entrada pendente: ${error.message}`);
+    return false;
+  }
+}
+
 // Atualizar função load_leverage_brackets para usar o banco de dados
 //function load_leverage_brackets(accountId = 1, symbol = null) {
 //  return getLeverageBracketsFromDb(accountId, symbol);
