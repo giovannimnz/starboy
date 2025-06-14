@@ -5,11 +5,13 @@ const axios = require('axios');
 const schedule = require('node-schedule');
 const fs = require('fs').promises;
 const { Telegraf } = require("telegraf");
-const { getCurrentMarginType, cancelOrder, newStopOrder, cancelAllOpenOrders, getFuturesAccountBalanceDetails, changeInitialLeverage, changeMarginType, getPositionDetails, getOpenOrders, getAllOpenPositions, updateLeverageBracketsInDatabase, getCurrentPrice } = require('../api');
+const { getCurrentMarginType, cancelOrder, newStopOrder, cancelAllOpenOrders, getFuturesAccountBalanceDetails, changeInitialLeverage, changeMarginType, getPositionDetails, getOpenOrders, getAllOpenPositions, updateLeverageBracketsInDatabase } = require('../api');
 const {getDatabaseInstance, updatePositionStatus, insertNewOrder, updateOrderStatus, moveClosedPositionsAndOrders, formatDateForMySQL, getBaseCalculoBalance, updateAccountBalance} = require('../db/conexao');
 const { executeLimitMakerEntry } = require('./limitMakerEntry');
 const websockets = require('../websockets');
 const websocketApi = require('../websocketApi');
+
+const latestPrices = new Map();
 
 // Adicione este conjunto no topo do arquivo para rastrear ordens já canceladas
 const cancelledOrders = new Set();
@@ -222,11 +224,13 @@ async function initializeMonitoring(accountId = 1) {
     });
     
     // Iniciar monitoramento de preços para posições abertas
+    initializePriceMonitoring();
+
     try {
-      await startPriceMonitoring(accountId);
-    } catch (error) {
-      console.error('[MONITOR] Erro ao iniciar monitoramento de preços:', error);
-    }
+    await startPriceMonitoring(accountId);
+  } catch (error) {
+    console.error('[MONITOR] Erro ao iniciar monitoramento de preços:', error);
+  }
 
     await logOpenPositionsAndOrders(accountId);
 
@@ -421,17 +425,27 @@ async function startPriceMonitoring(accountId = 1) {
     // Adicionar símbolos com sinais pendentes
     pendingSignals.forEach(signal => symbols.add(signal.symbol));
 
-    // Iniciar websockets para cada símbolo
-    for (const symbol of symbols) {
-      console.log(`[MONITOR] Iniciando monitoramento de preço para ${symbol}`);
-      await websockets.ensurePriceWebsocketExists(symbol, accountId);
+  // Iniciar websockets para cada símbolo
+  for (const symbol of symbols) {
+    console.log(`[MONITOR] Iniciando monitoramento de preço para ${symbol}`);
+    await websockets.ensurePriceWebsocketExists(symbol, accountId);
+    
+    // Garantir que temos o símbolo no cache de preços
+    if (!latestPrices.has(symbol)) {
+      try {
+        // Inicializar com o preço atual via REST API
+        const price = await getCurrentPrice(symbol);
+        latestPrices.set(symbol, {
+          price,
+          timestamp: Date.now(),
+          bid: price * 0.9999,
+          ask: price * 1.0001
+        });
+      } catch (error) {
+        console.warn(`[MONITOR] Não foi possível inicializar o preço para ${symbol}:`, error);
+      }
     }
-
-    // Verificar sinais expirados durante o período offline
-    if (pendingSignals.length > 0) {
-      console.log(`[MONITOR] Verificando ${pendingSignals.length} sinais pendentes para possível expiração...`);
-      await checkExpiredOrders(accountId);
-    }
+  }
 
     return symbols.size;
   } catch (error) {
@@ -494,13 +508,13 @@ async function checkNewTrades(accountId = 1) {
         );
 
         // Obter preço atual
-        const currentPrice = await getCurrentPrice(signal.symbol);
-        
-        if (!currentPrice) {
-          throw new Error(`Não foi possível obter o preço atual para ${signal.symbol}`);
-        }
+  const currentPrice = await getWebSocketPrice(signal.symbol);
+  
+  if (!currentPrice) {
+    throw new Error(`Não foi possível obter o preço atual para ${signal.symbol}`);
+  }
 
-        console.log(`[MONITOR] Preço atual de ${signal.symbol}: ${currentPrice}, Preço de entrada: ${signal.entry_price}`);
+  console.log(`[MONITOR] Preço atual de ${signal.symbol}: ${currentPrice}, Preço de entrada: ${signal.entry_price}`);
 
         // Processar o sinal com o preço atual
         await processSignal(db, signal, currentPrice, accountId);
@@ -673,12 +687,12 @@ async function forceProcessPendingSignals(accountId = 1) {
         );
 
         // Obter o preço atual
-        let currentPrice;
-        try {
-          currentPrice = await getCurrentPrice(signal.symbol);
-          console.log(`[MONITOR] Preço atual de ${signal.symbol}: ${currentPrice}`);
-        } catch (priceError) {
-          console.error(`[MONITOR] Erro ao obter preço atual para ${signal.symbol}:`, priceError);
+  let currentPrice;
+  try {
+    currentPrice = await getWebSocketPrice(signal.symbol);
+    console.log(`[MONITOR] Preço atual de ${signal.symbol}: ${currentPrice}`);
+  } catch (priceError) {
+    console.error(`[MONITOR] Erro ao obter preço atual para ${signal.symbol}:`, priceError);
           
           // Se não conseguir o preço, marcar como erro e continuar
           await db.query(
@@ -1275,6 +1289,98 @@ async function handleAccountUpdate(message, db) {
   }
 }
 
+// Inicializar handler para atualização de preços via websocket
+function initializePriceMonitoring() {
+  // Garantir que websockets.js está atribuindo nosso callback para atualizações de preço
+  const priceUpdateHandler = async (symbol, tickerData) => {
+    try {
+      // Extrair o preço médio entre bid e ask
+      const bestBid = parseFloat(tickerData.b);
+      const bestAsk = parseFloat(tickerData.a);
+      const currentPrice = (bestBid + bestAsk) / 2;
+
+      // Atualizar o cache de preços
+      latestPrices.set(symbol, {
+        price: currentPrice,
+        timestamp: Date.now(),
+        bid: bestBid,
+        ask: bestAsk
+      });
+
+      // Log menos frequente para evitar spam
+      const now = Date.now();
+      if (!lastPriceLogTime[symbol] || (now - lastPriceLogTime[symbol] > PRICE_LOG_INTERVAL)) {
+        console.log(`[PRICE_WS] ${symbol}: ${currentPrice} (bid: ${bestBid}, ask: ${bestAsk})`);
+        lastPriceLogTime[symbol] = now;
+      }
+    } catch (error) {
+      console.error(`[PRICE_WS] Erro ao processar atualização de preço para ${symbol}:`, error);
+    }
+  };
+
+  // Atualizar os handlers nos websockets
+  const updatedHandlers = {
+    ...handlers,
+    onPriceUpdate: priceUpdateHandler
+  };
+  
+  websockets.setMonitoringCallbacks(updatedHandlers);
+  console.log('[MONITOR] Handler de atualização de preços via WebSocket configurado');
+}
+
+/**
+ * Função melhorada para obter o preço atual usando o cache de websocket
+ * @param {string} symbol - Símbolo do par
+ * @param {number} maxAgeMs - Idade máxima do preço em cache (ms)
+ * @returns {Promise<number>} O preço atual
+ */
+async function getWebSocketPrice(symbol, maxAgeMs = 5000) {
+  // Se não temos o símbolo no cache ou não tem websocket iniciado, iniciamos um
+  if (!latestPrices.has(symbol)) {
+    console.log(`[MONITOR] Iniciando monitoramento de preço via WebSocket para ${symbol}`);
+    await websockets.ensurePriceWebsocketExists(symbol);
+    
+    // Aguardar um tempo para o websocket receber a primeira atualização
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+
+  // Verificar se temos uma atualização recente no cache
+  const priceEntry = latestPrices.get(symbol);
+  const now = Date.now();
+  
+  if (priceEntry && (now - priceEntry.timestamp) < maxAgeMs) {
+    return priceEntry.price;
+  }
+
+  // Se o preço for muito antigo ou não existir, fazer fallback para REST API
+  console.log(`[MONITOR] Preço de ${symbol} não disponível via WebSocket (ou antigo), usando REST API como fallback`);
+  try {
+    const restPrice = await getCurrentPrice(symbol);
+    
+    // Atualizar o cache com o preço da REST API
+    if (restPrice) {
+      latestPrices.set(symbol, {
+        price: restPrice,
+        timestamp: Date.now(),
+        bid: restPrice * 0.9999,  // Estimativa aproximada do bid
+        ask: restPrice * 1.0001   // Estimativa aproximada do ask
+      });
+    }
+    
+    return restPrice;
+  } catch (error) {
+    console.error(`[MONITOR] Erro no fallback REST para ${symbol}:`, error);
+    
+    // Se temos algum preço em cache, mesmo antigo, retorná-lo como último recurso
+    if (priceEntry) {
+      console.log(`[MONITOR] Usando preço em cache antigo para ${symbol}: ${priceEntry.price}`);
+      return priceEntry.price;
+    }
+    
+    throw error;
+  }
+}
+
 // Função para mover posição para tabelas de fechadas
 // Modificação da função movePositionToHistory para cancelar ordens abertas na corretora
 async function movePositionToHistory(db, positionId, status, reason) {
@@ -1459,7 +1565,16 @@ async function movePositionToHistory(db, positionId, status, reason) {
 
 async function onPriceUpdate(symbol, currentPrice, db, accountId = 1) {
   try {
-    // 1. Atualizar preços das posições abertas para este símbolo
+    // Atualizar o cache de preços
+    if (!latestPrices.has(symbol) || latestPrices.get(symbol).price !== currentPrice) {
+      latestPrices.set(symbol, {
+        price: currentPrice,
+        timestamp: Date.now(),
+        bid: null,  // Estes valores serão atualizados por updatePriceCache
+        ask: null   // quando houver uma atualização completa do book
+      });
+    }
+
     await updatePositionPrices(db, symbol, currentPrice);
 
     // Logar preços de vez em quando (não em cada atualização para evitar spam)
@@ -1612,7 +1727,25 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId = 1) {
   }
 }
 
-// ***** INÍCIO DAS NOVAS FUNÇÕES *****
+function updatePriceCache(symbol, bookTicker) {
+  try {
+    const bid = parseFloat(bookTicker.bidPrice || bookTicker.b);
+    const ask = parseFloat(bookTicker.askPrice || bookTicker.a);
+    
+    if (!isNaN(bid) && !isNaN(ask) && bid > 0 && ask > 0) {
+      const currentPrice = (bid + ask) / 2;
+      
+      latestPrices.set(symbol, {
+        price: currentPrice,
+        timestamp: Date.now(),
+        bid: bid,
+        ask: ask
+      });
+    }
+  } catch (error) {
+    console.error(`[PRICE_CACHE] Erro ao atualizar cache para ${symbol}:`, error);
+  }
+}
 
 // Nova função para atualizar preços das posições
 async function updatePositionPrices(db, symbol, currentPrice) {
@@ -2395,5 +2528,7 @@ module.exports = {
   initializeMonitoring,
   checkNewTrades,
   forceProcessPendingSignals,
-  processSignal
+  processSignal,
+  getWebSocketPrice,
+  updatePriceCache
 };
