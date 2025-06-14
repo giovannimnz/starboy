@@ -26,9 +26,71 @@ const lastPriceLogTime = {};
 // Intervalo mínimo entre logs de preço (1 minuto em ms)
 const PRICE_LOG_INTERVAL = 60000;
 
-// Inicializar o bot do Telegram
-const bot = new Telegraf(process.env.BOT_TOKEN);
+// Adicionar mapa para armazenar instâncias de bots por conta
+const telegramBots = new Map();
 
+// Função para inicializar o bot do Telegram para uma conta específica
+async function initializeTelegramBot(accountId = 1) {
+  try {
+    const db = await getDatabaseInstance(accountId);
+    if (!db) {
+      console.error(`[TELEGRAM] Falha ao obter instância do banco de dados para conta ${accountId}`);
+      return null;
+    }
+
+    // Buscar token do bot no banco de dados
+    const [rows] = await db.query(
+      'SELECT telegram_bot_token FROM contas WHERE id = ?',
+      [accountId]
+    );
+
+    if (rows.length === 0 || !rows[0].telegram_bot_token) {
+      console.error(`[TELEGRAM] Token do bot não encontrado para conta ${accountId}`);
+      return null;
+    }
+
+    const botToken = rows[0].telegram_bot_token;
+    
+    // Verificar se já temos um bot para este token
+    const existingBot = Array.from(telegramBots.values())
+      .find(b => b.token === botToken);
+    
+    if (existingBot) {
+      console.log(`[TELEGRAM] Reutilizando instância existente do bot para conta ${accountId}`);
+      telegramBots.set(accountId, existingBot);
+      return existingBot.bot;
+    }
+    
+    // Criar nova instância do bot
+    console.log(`[TELEGRAM] Inicializando bot do Telegram para conta ${accountId} com token: ${botToken.substring(0, 8)}...`);
+    const bot = new Telegraf(botToken);
+    
+    // Configurar handlers básicos
+    bot.catch((err) => {
+      console.error(`[TELEGRAM] Erro no bot da conta ${accountId}:`, err);
+    });
+    
+    // Iniciar o bot
+    await bot.launch();
+    console.log(`[TELEGRAM] Bot do Telegram inicializado com sucesso para conta ${accountId}`);
+    
+    // Armazenar no mapa
+    telegramBots.set(accountId, { bot, token: botToken });
+    
+    return bot;
+  } catch (error) {
+    console.error(`[TELEGRAM] Erro ao inicializar bot do Telegram para conta ${accountId}:`, error);
+    return null;
+  }
+}
+
+// Função para obter o bot do Telegram para uma conta específica
+function getTelegramBot(accountId = 1) {
+  const botInfo = telegramBots.get(accountId);
+  return botInfo ? botInfo.bot : null;
+}
+
+// Inicializar handlers
 let handlers = {};
 let scheduledJobs = {};
 
@@ -61,76 +123,80 @@ const accountId = process.argv.includes('--account')
 console.log(`[MONITOR] Iniciando sistema de monitoramento para conta ID: ${accountId}`);
 
 // Função para inicializar o monitoramento
-async function initializeMonitoring() {
+async function initializeMonitoring(accountId = 1) {
   console.log(`[MONITOR] Inicializando sistema de monitoramento para conta ID: ${accountId}...`);
 
   try {
+    // Inicializar o bot do Telegram para esta conta
+    const bot = await initializeTelegramBot(accountId);
+    
+    if (!bot) {
+      console.warn(`[MONITOR] Bot do Telegram não pôde ser inicializado para conta ${accountId}. Funcionalidades de notificação estarão indisponíveis.`);
+    } else {
+      console.log(`[MONITOR] Bot do Telegram inicializado com sucesso para conta ${accountId}`);
+    }
+    
     // Inicializar os handlers no websocketApi
     await websocketApi.initializeHandlers(accountId);
-
-    // Depois configure os callbacks
-    websockets.setMonitoringCallbacks({
-      handleOrderUpdate,
-      handleAccountUpdate,
-      onPriceUpdate,
-      getDbConnection: getDatabaseInstance,
+    
+    // Primeiro configurar handlers com os callbacks adaptados para accountId
+    handlers = {
+      handleOrderUpdate: async (msg, db) => await handleOrderUpdate(msg, db, accountId),
+      handleAccountUpdate: async (msg, db) => await handleAccountUpdate(msg, db, accountId),
+      onPriceUpdate: async (symbol, price, db) => await onPriceUpdate(symbol, price, db, accountId),
+      getDbConnection: async () => await getDatabaseInstance(accountId),
       onWebSocketApiResponse: async (response) => {
         // console.log('[WS-API] Resposta recebida:', JSON.stringify(response).substring(0, 500));
       }
-    });
-
+    };
+    
+    // Usar os handlers configurados nos websockets
+    websockets.setMonitoringCallbacks(handlers);
+    
   } catch (error) {
-    console.error(`[MONITOR] Erro na configuração inicial: ${error.message}`);
+    console.error(`[MONITOR] Erro na configuração inicial para conta ${accountId}: ${error.message}`);
     throw error;
   }
 
-  // Iniciar WebSocket para dados do usuário
-  await websockets.startUserDataStream(getDatabaseInstance);
+    await websockets.startUserDataStream(getDatabaseInstance(accountId), accountId);
 
-// Iniciar WebSocket API para operações de trading
-try {
-  //console.log('[MONITOR] Iniciando conexão com WebSocket API...');
-  const wsApiConnection = await websockets.startWebSocketApi();
-  //console.log('[MONITOR] WebSocket API iniciado com sucesso');
-  
-  // Aguardar um momento para garantir que a conexão esteja estável
-  await new Promise(resolve => setTimeout(resolve, 2000));
-  
-  // Tentar autenticar WebSocket API
-  //console.log('[MONITOR] Tentando autenticar WebSocket API...');
-  const authenticated = await websockets.authenticateWebSocketApi();
-  
-  if (authenticated) {
-    //console.log('[MONITOR] WebSocket API autenticado com sucesso');
-  } else {
-    console.log('[MONITOR] WebSocket API operando em modo não autenticado. Requisições incluirão assinatura individual.');
+  // Iniciar WebSocket API para operações de trading
+  try {
+    const wsApiConnection = await websockets.startWebSocketApi(accountId);
+    const authenticated = await websockets.authenticateWebSocketApi(accountId);
+    
+    if (authenticated) {
+      console.log('[MONITOR] WebSocket API autenticado com sucesso');
+    } else {
+      console.log('[MONITOR] WebSocket API operando em modo não autenticado. Requisições incluirão assinatura individual.');
+    }
+  } catch (wsApiError) {
+    console.error('[MONITOR] Erro ao iniciar WebSocket API:', wsApiError);
+    console.log('[MONITOR] Sistema continuará usando a API REST como fallback');
   }
-} catch (wsApiError) {
-  console.error('[MONITOR] Erro ao iniciar WebSocket API:', wsApiError);
-  console.log('[MONITOR] Sistema continuará usando a API REST como fallback');
-}
 
   // Sincronizar saldo da conta logo após conexão
   try {
-    //console.log('[MONITOR] Sincronizando saldo inicial...');
-    const result = await syncAccountBalance();
+    const result = await syncAccountBalance(accountId);
     if (result) {
-      //console.log(`\n[MONITOR] Saldo inicial: ${result.saldo.toFixed(2)} USDT | Base Cálculo: ${result.saldo_base_calculo.toFixed(2)} USDT\n`);
+      console.log(`[MONITOR] Saldo inicial conta ${accountId}: ${result.saldo.toFixed(2)} USDT | Base Cálculo: ${result.saldo_base_calculo.toFixed(2)} USDT`);
     }
   } catch (error) {
-    console.error('[MONITOR] Erro ao sincronizar saldo inicial:', error);
+    console.error(`[MONITOR] Erro ao sincronizar saldo inicial para conta ${accountId}:`, error);
   }
 
+  // Agendar jobs específicos para esta conta
+  const accountJobs = {};
+  
   // Agendar verificação periódica de novas operações
-  scheduledJobs.checkNewTrades = schedule.scheduleJob('*/3 * * * * *', async () => {
+  accountJobs.checkNewTrades = schedule.scheduleJob('*/3 * * * * *', async () => {
     try {
-      await checkNewTrades();
+      await checkNewTrades(accountId);
     } catch (error) {
-      console.error('[MONITOR] Erro ao verificar novas operações:', error);
+      console.error(`[MONITOR] Erro ao verificar novas operações para conta ${accountId}:`, error);
     }
   });
 
-  // NOVO JOB: Atualização diária dos dados de alavancagem às 2:00 da manhã
   scheduledJobs.updateLeverageBrackets = schedule.scheduleJob('0 2 * * *', async () => {
     try {
       console.log('[MONITOR] Iniciando atualização diária dos dados de alavancagem...');
@@ -142,32 +208,32 @@ try {
   });
 
   // Adicionar job para verificar ordens expiradas a cada 5 minutos
-  scheduledJobs.checkExpiredOrders = schedule.scheduleJob('*/5 * * * *', async () => {
+  accountJobs.checkExpiredOrders = schedule.scheduleJob('*/5 * * * *', async () => {
     try {
-      await checkExpiredOrders();
+      await checkExpiredOrders(accountId);
     } catch (error) {
-      console.error('[MONITOR] Erro ao verificar ordens expiradas:', error);
+      console.error(`[MONITOR] Erro ao verificar ordens expiradas para conta ${accountId}:`, error);
     }
   });
 
   // Sincronizar saldo a cada hora
-  scheduledJobs.syncAccountBalance = schedule.scheduleJob('0 * * * *', async () => {
+  accountJobs.syncAccountBalance = schedule.scheduleJob('0 * * * *', async () => {
     try {
       //console.log('[MONITOR] Sincronizando saldo (job periódico)...');
-      await syncAccountBalance();
+      await syncAccountBalance(accountId);
     } catch (error) {
-      console.error('[MONITOR] Erro na sincronização periódica de saldo:', error);
+      console.error(`[MONITOR] Erro na sincronização periódica de saldo para conta ${accountId}:`, error);
     }
   });
 
-  scheduledJobs.syncPositionsWithExchange = schedule.scheduleJob('*/30 * * * * *', async () => {
+  accountJobs.syncPositionsWithExchange = schedule.scheduleJob('*/30 * * * * *', async () => {
     try {
       //console.log('[MONITOR] Sincronizando posições com a corretora (job periódico)...'); // Adicionado log para identificar a chamada do job
-      await syncPositionsWithExchange();
+      await syncPositionsWithExchange(accountId);
     } catch (error) {
       // O erro já é logado dentro de syncPositionsWithExchange ou no catch mais específico dele
       // Mas podemos adicionar um log genérico aqui se desejado, ou apenas deixar que a função interna lide com o log.
-      console.error('[MONITOR] Erro geral no job de sincronizar posições:', error);
+      console.error(`[MONITOR] Erro geral no job de sincronizar posições para conta ${accountId}:`, error);
     }
   });
 
@@ -231,14 +297,6 @@ async function getDatabaseInstanceWithAccountId() {
   // Armazenar o accountId no objeto de conexão para uso posterior
   db.accountId = accountId;
   return db;
-}
-
-function configureHandlers() {
-  handlers = {
-    ...handlers,
-    getDbConnection: getDatabaseInstanceWithAccountId
-  };
-  return handlers;
 }
 
 async function logOpenPositionsAndOrders() {
@@ -845,26 +903,24 @@ async function checkPositionExists(db, symbol) {
 }
 
 // Substitua a função handleOrderUpdate existente
-async function handleOrderUpdate(orderMsg, db) {
+async function handleOrderUpdate(orderMsg, db, accountId = 1) {
   try {
-    //console.log(`[ORDER UPDATE] Symbol: ${orderMsg.s}, OrderID: ${orderMsg.i}, Status: ${orderMsg.X}, ExecutionType: ${orderMsg.x}, Price: ${orderMsg.p}, AvgPrice: ${orderMsg.ap}, Qty: ${orderMsg.q}, OrderType: ${orderMsg.o}`);
-
-    // Buscar a ordem no banco de dados
+    if (!db) {
+      db = await getDatabaseInstance(accountId);
+    }
+    
+    // Buscar a ordem no banco de dados, incluindo accountId
     const [orders] = await db.query(
-      'SELECT * FROM ordens WHERE id_externo = ? AND simbolo = ?',
-      [orderMsg.i, orderMsg.s]
+      'SELECT * FROM ordens WHERE id_externo = ? AND simbolo = ? AND conta_id = ?',
+      [orderMsg.i, orderMsg.s, accountId]
     );
 
-    // --- INÍCIO DA MELHORIA/CORREÇÃO ---
+
     // Se a ordem não for encontrada no banco mas está na corretora como FILLED ou PARTIALLY_FILLED,
-    // verificar se temos a posição relacionada e registrar esta ordem.
     if (orders.length === 0 && (orderMsg.X === 'FILLED' || orderMsg.X === 'PARTIALLY_FILLED')) {
       //console.log(`[MONITOR] Detectada ordem executada (Status: ${orderMsg.X}) na corretora que não existe no banco. OrderID: ${orderMsg.i}, Symbol: ${orderMsg.s}`);
       
       // Verificar se temos uma posição aberta para este símbolo
-      // Idealmente, se for uma ordem de fechamento (TP/SL), ela deveria ter uma posição.
-      // Se for uma ordem de entrada "fantasma", não haveria posição aberta antes dela.
-      // A query busca uma posição que JÁ ESTARIA ABERTA se esta ordem fosse um TP/SL dela.
       const [positions] = await db.query(
         'SELECT * FROM posicoes WHERE simbolo = ? AND status = "OPEN" LIMIT 1', // Busca uma posição aberta para o símbolo
         [orderMsg.s]
@@ -2025,7 +2081,7 @@ async function cancelAllActiveStopLosses(db, position) {
           console.log(`${functionPrefix} Ordem SL ${orderIdToCancel} não encontrada na corretora (provavelmente já cancelada/executada). Code: ${errorCode}. Msg: ${errorMsg}. Marcando como CANCELED_EXT no DB.`);
           await db.query(
             'UPDATE ordens SET status = "CANCELED_EXT", observacao = ?, last_update = ? WHERE id_externo = ? AND id_posicao = ?', 
-            [`Não encontrada na corretora durante cancelamento em massa`, formatDateForMySQL(new Date()), orderIdToCancel, positionId]
+            [`Não encontrada na corretora durante cancelamento`, formatDateForMySQL(new Date()), orderIdToCancel, positionId]
           );
           canceledProcessedCount++; // Conta como processada
         } else {
@@ -2042,249 +2098,6 @@ async function cancelAllActiveStopLosses(db, position) {
     const errorMsg = error.response?.data?.msg || error.message || String(error);
     console.error(`${functionPrefix} Erro geral ao buscar ou cancelar ordens SL para ${simbolo}: ${errorMsg}`, error.stack);
     return 0; // Indica que houve falha na operação principal
-  }
-}
-
-// Função para acionar entrada a mercado
-async function triggerMarketEntry(db, entry, currentPrice) {
-  const connection = await db.getConnection();
-  try {
-    await connection.beginTransaction();
-
-    console.log(`[MONITOR] Acionando entrada a mercado para ${entry.simbolo} a ${currentPrice}`);
-
-    // 1. Obter detalhes da posição e do sinal
-    const [positionDetails] = await connection.query(
-        `SELECT * FROM posicoes WHERE id = ?`,
-        [entry.position_id]
-    );
-
-    if (positionDetails.length === 0) {
-      throw new Error(`Posição ID ${entry.position_id} não encontrada`);
-    }
-
-    const position = positionDetails[0];
-
-    // 2. Obter precisão da quantidade
-    const { quantityPrecision } = await getPrecision(entry.simbolo);
-
-    // 3. Calcular tamanho da ordem
-    const availableBalance = await getAvailableBalance();
-
-    const orderSize = calculateOrderSize(
-        availableBalance,
-        parseFloat(entry.capital_pct) / 100,
-        parseFloat(entry.preco_entrada), // Usamos o preço de entrada original para cálculo
-        parseInt(entry.leverage),
-        quantityPrecision
-    );
-
-    // 4. Enviar ordem de mercado para a corretora
-    try {
-      const binanceSide = entry.side;
-      const orderResponse = await newEntryOrder(
-          entry.simbolo,
-          orderSize,
-          binanceSide
-      );
-
-      if (!orderResponse || !orderResponse.orderId) {
-        throw new Error('Resposta inválida da corretora ao criar ordem de mercado');
-      }
-
-      const orderId = orderResponse.orderId;
-      const executedQty = parseFloat(orderResponse.executedQty);
-      const executedPrice = parseFloat(orderResponse.price);
-
-      console.log(`[MONITOR] Ordem de mercado executada: ${entry.simbolo}, ID: ${orderId}, Preço: ${executedPrice}, Qtd: ${executedQty}`);
-
-      // 5. ALTERAÇÃO: AGORA criamos a posição no banco
-      const positionData = {
-        simbolo: entry.simbolo,
-        quantidade: executedQty,
-        preco_medio: executedPrice,
-        status: 'OPEN', // Diretamente como OPEN, não PENDING_ENTRY
-        data_hora_abertura: new Date().toISOString(),
-        side: binanceSide,
-        leverage: parseInt(entry.leverage),
-        data_hora_ultima_atualizacao: new Date().toISOString(),
-        preco_entrada: executedPrice,
-        preco_corrente: executedPrice,
-        orign_sig: `WEBHOOK_${entry.webhook_id}`
-      };
-
-      const positionId = await insertPosition(connection, positionData);
-
-      if (!positionId) {
-        throw new Error('Falha ao inserir posição após execução da ordem');
-      }
-
-      // 6. Registrar ordem de entrada no banco
-      const orderData = {
-        tipo_ordem: 'MARKET',
-        preco: executedPrice,
-        quantidade: executedQty,
-        id_posicao: positionId,
-        status: 'FILLED',
-        data_hora_criacao: formatDateForMySQL(new Date()),
-        id_externo: orderId,
-        side: binanceSide,
-        simbolo: entry.simbolo,
-        tipo_ordem_bot: 'ENTRADA',
-        target: null,
-        reduce_only: false,
-        close_position: false,
-        last_update: formatDateForMySQL(new Date()),
-        orign_sig: `WEBHOOK_${entry.webhook_id}`
-      };
-
-      await insertNewOrder(connection, orderData);
-
-      // 7. Atualizar webhook_signals
-      await connection.query(
-          `UPDATE webhook_signals SET
-                                    status = 'EXECUTADO',
-                                    position_id = ?,
-                                    entry_order_id = ?
-           WHERE id = ?`,
-          [positionId, orderId, entry.webhook_id]
-      );
-
-      // 8. Criar e enviar ordens SL/TP
-      const binanceOppositeSide = binanceSide === 'BUY' ? 'SELL' : 'BUY';
-      const tpPriceVal = parseFloat(entry.tp_price);
-      const slPriceVal = parseFloat(entry.sl_price);
-
-      // Criar ordem SL
-      try {
-        const slResponse = await newStopOrder(
-            entry.simbolo,
-            executedQty,
-            binanceOppositeSide,
-            slPriceVal,
-            null,           // price = null para STOP_MARKET
-            false,           // reduceOnly = true
-            true           // closePosition = false
-        );
-
-        console.log(`[MONITOR] Ordem SL (STOP_MARKET) criada: ${slResponse.data.orderId}`);
-
-        // Registrar ordem SL no banco
-        const slOrderData = {
-          tipo_ordem: 'STOP_MARKET',
-          preco: slPriceVal,
-          quantidade: executedQty,
-          id_posicao: positionId,
-          status: 'OPEN',
-          data_hora_criacao: formatDateForMySQL(new Date()),
-          id_externo: slResponse.data.orderId,
-          side: binanceOppositeSide,
-          simbolo: entry.simbolo,
-          tipo_ordem_bot: 'STOP_LOSS',
-          target: null,
-          reduce_only: false,
-          close_position: true,
-          last_update: formatDateForMySQL(new Date()),
-          orign_sig: `WEBHOOK_${entry.webhook_id}`
-        };
-
-        await insertNewOrder(connection, slOrderData);
-
-        // Atualizar SL ID no webhook
-        await connection.query(
-            `UPDATE webhook_signals SET sl_order_id = ? WHERE id = ?`,
-            [slResponse.data.orderId, entry.webhook_id]
-        );
-      } catch (slError) {
-        console.error(`[MONITOR] Erro ao criar ordem SL: ${slError.message}`);
-      }
-
-      // Criar ordem TP
-      try {
-        const tpResponse = await newStopOrder(
-            entry.simbolo,
-            executedQty,
-            binanceOppositeSide,
-            tpPriceVal,
-            tpPriceVal,      // price igual a stopPrice para TAKE_PROFIT_MARKET
-            false,            // reduceOnly = true
-            true            // closePosition = false
-        );
-
-        console.log(`[MONITOR] Ordem TP (TAKE_PROFIT_MARKET) criada: ${tpResponse.data.orderId}`);
-
-        // Registrar ordem TP no banco
-        const tpOrderData = {
-          tipo_ordem: 'TAKE_PROFIT_MARKET',
-          preco: tpPriceVal,
-          quantidade: executedQty,
-          id_posicao: positionId,
-          status: 'OPEN',
-          data_hora_criacao: formatDateForMySQL(new Date()),
-          id_externo: tpResponse.data.orderId,
-          side: binanceOppositeSide,
-          simbolo: entry.simbolo,
-          tipo_ordem_bot: 'TAKE_PROFIT',
-          target: 5,
-          reduce_only: true,
-          close_position: false,
-          last_update: formatDateForMySQL(new Date()),
-          orign_sig: `WEBHOOK_${entry.webhook_id}`
-        };
-
-        await insertNewOrder(connection, tpOrderData);
-
-        // Atualizar TP ID no webhook
-        await connection.query(
-            `UPDATE webhook_signals SET tp_order_id = ? WHERE id = ?`,
-            [tpResponse.data.orderId, entry.webhook_id]
-        );
-      } catch (tpError) {
-        console.error(`[MONITOR] Erro ao criar ordem TP: ${tpError.message}`);
-      }
-
-      // 9. Enviar notificação ao Telegram
-      if (entry.chat_id) {
-        try {
-          await bot.telegram.sendMessage(entry.chat_id,
-              `✅ Entrada realizada em ${entry.simbolo}\n\n` +
-              `Direção: ${position.side.charAt(0).toUpperCase() + position.side.slice(1).toLowerCase()}\n` +
-              `Alavancagem: ${entry.leverage}x\n` +
-              `Quantidade: ${executedQty}\n\n` +
-              `Entrada: ${executedPrice}\n` +
-              `TP: ${tpPriceVal}\n` +
-              `SL: ${slPriceVal}\n`,
-              
-          );
-        } catch (telegramError) {
-          console.error(`[MONITOR] Erro ao enviar mensagem Telegram:`, telegramError);
-        }
-      }
-
-      await connection.commit();
-      console.log(`[MONITOR] Entrada a mercado executada e registrada com sucesso para ${entry.simbolo}`);
-
-      // Sincronizar saldo após criar ordem
-      try {
-        await syncAccountBalance();
-      } catch (syncError) {
-        console.error('[MONITOR] Erro ao sincronizar saldo após criar ordem:', syncError);
-      }
-
-    } catch (orderError) {
-      console.error(`[MONITOR] Erro ao criar ordem de mercado para ${entry.simbolo}:`, orderError);
-      await connection.query(
-          `UPDATE webhook_signals SET status = 'ERROR', error_message = ? WHERE id = ?`,
-          [`Erro ao criar ordem de mercado: ${orderError.message}`, entry.webhook_id]
-      );
-      await connection.rollback();
-    }
-
-  } catch (error) {
-    console.error(`[MONITOR] Erro ao acionar entrada a mercado:`, error);
-    await connection.rollback();
-  } finally {
-    connection.release();
   }
 }
 
@@ -2523,752 +2336,9 @@ async function checkAndCloseWebsocket(db, symbol) {
   }
 }
 
-function calculateAveragePrice(fills) {
-    if (!fills || fills.length === 0) return 0;
-    let totalQty = 0;
-    let totalCost = 0;
-    fills.forEach(fill => {
-        const qty = parseFloat(fill.qty);
-        const price = parseFloat(fill.price);
-        if (!isNaN(qty) && !isNaN(price) && qty > 0) { // Adicionada verificação qty > 0
-            totalQty += qty;
-            totalCost += qty * price;
-        }
-    });
-    return totalQty > 0 ? totalCost / totalQty : 0;
-}
-
-async function waitForOrderExecution(symbol, orderId, maxWaitMs = 6000) {
-  if (!orderId) {
-    console.log(`[WAIT_ORDER] OrderId inválido: ${orderId}`);
-    return { status: 'UNKNOWN', executedQty: 0 };
-  }
-
-  const startTime = Date.now();
-  let lastStatus = null;
-  
-  try {
-    // Tentar obter status imediatamente
-    try {
-      const initialStatus = await getOrderStatus(symbol, orderId);
-      if (initialStatus.status === 'FILLED' || initialStatus.status === 'PARTIALLY_FILLED') {
-        console.log(`[WAIT_ORDER] Ordem ${orderId} já está ${initialStatus.status}`);
-        return initialStatus;
-      }
-      lastStatus = initialStatus;
-    } catch (initialError) {
-      console.log(`[WAIT_ORDER] Erro inicial ao verificar ordem ${orderId}: ${initialError.message}`);
-    }
-    
-    // Usar algoritmo de espera adaptativa
-    let waitTime = 300; // Começa com 300ms
-    
-    while (Date.now() - startTime < maxWaitMs) {
-      await new Promise(resolve => setTimeout(resolve, waitTime));
-      
-      try {
-        const orderStatus = await getOrderStatus(symbol, orderId);
-        lastStatus = orderStatus;
-        
-        // Se a ordem foi preenchida ou cancelada, retornar imediatamente
-        if (['FILLED', 'CANCELED', 'REJECTED', 'EXPIRED'].includes(orderStatus.status)) {
-          console.log(`[WAIT_ORDER] Ordem ${orderId} com status ${orderStatus.status}`);
-          return orderStatus;
-        }
-        
-        // Aumentar ligeiramente o tempo de espera, max 800ms
-        waitTime = Math.min(waitTime * 1.5, 800);
-      } catch (error) {
-        console.log(`[WAIT_ORDER] Erro ao verificar ordem ${orderId}: ${error.message}`);
-        // Diminuir tempo de espera para tentar mais vezes
-        waitTime = Math.max(waitTime / 2, 200);
-      }
-    }
-    
-    // Timeout atingido
-    console.log(`[WAIT_ORDER] Timeout para ordem ${orderId} (${maxWaitMs}ms)`);
-    return lastStatus || { status: 'TIMEOUT', executedQty: 0 };
-  } catch (error) {
-    console.error(`[WAIT_ORDER] Erro crítico ao aguardar ordem ${orderId}: ${error.message}`);
-    return lastStatus || { status: 'ERROR', executedQty: 0, error: error.message };
-  }
-}
-
-// ... (funções auxiliares como calculateAveragePrice, waitForOrderExecution mock)
-// Assegure-se que as funções auxiliares estão corretas e completas.
-
-// Função auxiliar para calcular preço médio
-function calculateAveragePrice(fills) {
-    if (!fills || fills.length === 0) return 0;
-    let totalQty = 0;
-    let totalCost = 0;
-    fills.forEach(fill => {
-        const qty = parseFloat(fill.qty);
-        const price = parseFloat(fill.price);
-        if (!isNaN(qty) && !isNaN(price) && qty > 0) { // Adicionada verificação qty > 0
-            totalQty += qty;
-            totalCost += qty * price;
-        }
-    });
-    return totalQty > 0 ? totalCost / totalQty : 0;
-}
-
-// Função auxiliar para aguardar execução da ordem (MOCK - SUBSTITUA PELA SUA IMPLEMENTAÇÃO REAL)
-// ESSENCIAL: Sua função real getOrderStatus deve retornar o objeto completo da ordem, não apenas a string do status.
-async function waitForOrderExecution(symbol, orderId, timeoutMs) {
-    // console.log(`[MOCK_WAIT] Aguardando execução da ordem ${orderId} para ${symbol} (Timeout: ${timeoutMs}ms)`);
-    return new Promise(async (resolve) => {
-        if (!orderId) {
-            resolve({ status: 'NO_ORDER_ID', executedQty: 0, price: 0, orderId: null, avgPrice: 0, cummulativeQuoteQty: 0 });
-            return;
-        }
-
-        const checkInterval = Math.min(Math.max(timeoutMs / 4, 500), 2000); // Intervalo entre 0.5s e 2s, no máximo 4 checagens
-        let elapsedTime = 0;
-        let intervalId;
-
-        const checker = async () => {
-            try {
-                // ESTA FUNÇÃO PRECISA RETORNAR O OBJETO COMPLETO DA ORDEM DA BINANCE
-                const orderStatusFull = await getOrderStatus(orderId, symbol); 
-
-                if (orderStatusFull) { 
-                    const status = orderStatusFull.status;
-                    const executedQty = parseFloat(orderStatusFull.executedQty || 0);
-                    const avgPrice = parseFloat(orderStatusFull.avgPrice || 0); // avgPrice é o preço médio de execução
-                    const price = parseFloat(orderStatusFull.price || 0); // Preço da ordem original
-                    const cummulativeQuoteQty = parseFloat(orderStatusFull.cummulativeQuoteQty || 0);
-                    const orderIdFromStatus = orderStatusFull.orderId;
-
-                    if (['FILLED', 'CANCELED', 'REJECTED', 'EXPIRED'].includes(status)) {
-                        clearInterval(intervalId);
-                        resolve({ status, executedQty, price: avgPrice || price, orderId: orderIdFromStatus, avgPrice, cummulativeQuoteQty });
-                        return;
-                    } else if (status === 'PARTIALLY_FILLED') {
-                        // Para parcial, resolve para que o loop principal possa processar o preenchimento
-                        clearInterval(intervalId); // Resolve imediatamente com o estado parcial
-                        resolve({ status, executedQty, price: avgPrice || price, orderId: orderIdFromStatus, avgPrice, cummulativeQuoteQty });
-                        return;
-                    } else if (status === 'NEW' || status === 'PENDING_CANCEL') {
-                        // Continua esperando se NEW
-                    }
-                } else {
-                    // console.warn(`[MOCK_WAIT] Status nulo para ordem ${orderId}.`);
-                }
-            } catch (error) {
-                console.error(`[MOCK_WAIT] Erro buscar status ${orderId}: ${error.message}`);
-            }
-
-            elapsedTime += checkInterval;
-            if (elapsedTime >= timeoutMs) {
-                clearInterval(intervalId);
-                try {
-                    const finalOrderStatus = await getOrderStatus(orderId, symbol); 
-                    if (finalOrderStatus) {
-                         resolve({ 
-                            status: finalOrderStatus.status || 'TIMED_OUT_UNKNOWN_STATUS', 
-                            executedQty: parseFloat(finalOrderStatus.executedQty || 0), 
-                            price: parseFloat(finalOrderStatus.avgPrice || finalOrderStatus.price || 0), 
-                            orderId: finalOrderStatus.orderId,
-                            avgPrice: parseFloat(finalOrderStatus.avgPrice || 0),
-                            cummulativeQuoteQty: parseFloat(finalOrderStatus.cummulativeQuoteQty || 0)
-                        });
-                    } else {
-                         resolve({ status: 'TIMED_OUT_NO_INFO', executedQty: 0, price: 0, orderId: orderId, avgPrice: 0, cummulativeQuoteQty: 0 });
-                    }
-                } catch (e) {
-                     resolve({ status: 'TIMED_OUT_API_ERROR', executedQty: 0, price: 0, orderId: orderId, avgPrice: 0, cummulativeQuoteQty: 0 });
-                }
-            }
-        };
-        intervalId = setInterval(checker, checkInterval);
-        await checker(); 
-    });
-}
-
-// ... (funções auxiliares como calculateAveragePrice, waitForOrderExecution mock)
-// Assegure-se que as funções auxiliares estão corretas e completas.
-
-// Função auxiliar para calcular preço médio
-function calculateAveragePrice(fills) {
-    if (!fills || fills.length === 0) return 0;
-    let totalQty = 0;
-    let totalCost = 0;
-    fills.forEach(fill => {
-        const qty = parseFloat(fill.qty);
-        const price = parseFloat(fill.price);
-        if (!isNaN(qty) && !isNaN(price) && qty > 0) { // Adicionada verificação qty > 0
-            totalQty += qty;
-            totalCost += qty * price;
-        }
-    });
-    return totalQty > 0 ? totalCost / totalQty : 0;
-}
-
-// Função auxiliar para aguardar execução da ordem (MOCK - SUBSTITUA PELA SUA IMPLEMENTAÇÃO REAL)
-// ESSENCIAL: Sua função real getOrderStatus deve retornar o objeto completo da ordem, não apenas a string do status.
-async function waitForOrderExecution(symbol, orderId, timeoutMs) {
-    // console.log(`[MOCK_WAIT] Aguardando execução da ordem ${orderId} para ${symbol} (Timeout: ${timeoutMs}ms)`);
-    return new Promise(async (resolve) => {
-        if (!orderId) {
-            resolve({ status: 'NO_ORDER_ID', executedQty: 0, price: 0, orderId: null, avgPrice: 0, cummulativeQuoteQty: 0 });
-            return;
-        }
-
-        const checkInterval = Math.min(Math.max(timeoutMs / 4, 500), 2000); // Intervalo entre 0.5s e 2s, no máximo 4 checagens
-        let elapsedTime = 0;
-        let intervalId;
-
-        const checker = async () => {
-            try {
-                // ESTA FUNÇÃO PRECISA RETORNAR O OBJETO COMPLETO DA ORDEM DA BINANCE
-                const orderStatusFull = await getOrderStatus(orderId, symbol); 
-
-                if (orderStatusFull) { 
-                    const status = orderStatusFull.status;
-                    const executedQty = parseFloat(orderStatusFull.executedQty || 0);
-                    const avgPrice = parseFloat(orderStatusFull.avgPrice || 0); // avgPrice é o preço médio de execução
-                    const price = parseFloat(orderStatusFull.price || 0); // Preço da ordem original
-                    const cummulativeQuoteQty = parseFloat(orderStatusFull.cummulativeQuoteQty || 0);
-                    const orderIdFromStatus = orderStatusFull.orderId;
-
-                    if (['FILLED', 'CANCELED', 'REJECTED', 'EXPIRED'].includes(status)) {
-                        clearInterval(intervalId);
-                        resolve({ status, executedQty, price: avgPrice || price, orderId: orderIdFromStatus, avgPrice, cummulativeQuoteQty });
-                        return;
-                    } else if (status === 'PARTIALLY_FILLED') {
-                        // Para parcial, resolve para que o loop principal possa processar o preenchimento
-                        clearInterval(intervalId); // Resolve imediatamente com o estado parcial
-                        resolve({ status, executedQty, price: avgPrice || price, orderId: orderIdFromStatus, avgPrice, cummulativeQuoteQty });
-                        return;
-                    } else if (status === 'NEW' || status === 'PENDING_CANCEL') {
-                        // Continua esperando se NEW
-                    }
-                } else {
-                    // console.warn(`[MOCK_WAIT] Status nulo para ordem ${orderId}.`);
-                }
-            } catch (error) {
-                console.error(`[MOCK_WAIT] Erro buscar status ${orderId}: ${error.message}`);
-            }
-
-            elapsedTime += checkInterval;
-            if (elapsedTime >= timeoutMs) {
-                clearInterval(intervalId);
-                try {
-                    const finalOrderStatus = await getOrderStatus(orderId, symbol); 
-                    if (finalOrderStatus) {
-                         resolve({ 
-                            status: finalOrderStatus.status || 'TIMED_OUT_UNKNOWN_STATUS', 
-                            executedQty: parseFloat(finalOrderStatus.executedQty || 0), 
-                            price: parseFloat(finalOrderStatus.avgPrice || finalOrderStatus.price || 0), 
-                            orderId: finalOrderStatus.orderId,
-                            avgPrice: parseFloat(finalOrderStatus.avgPrice || 0),
-                            cummulativeQuoteQty: parseFloat(finalOrderStatus.cummulativeQuoteQty || 0)
-                        });
-                    } else {
-                         resolve({ status: 'TIMED_OUT_NO_INFO', executedQty: 0, price: 0, orderId: orderId, avgPrice: 0, cummulativeQuoteQty: 0 });
-                    }
-                } catch (e) {
-                     resolve({ status: 'TIMED_OUT_API_ERROR', executedQty: 0, price: 0, orderId: orderId, avgPrice: 0, cummulativeQuoteQty: 0 });
-                }
-            }
-        };
-        intervalId = setInterval(checker, checkInterval);
-        await checker(); 
-    });
-}
-
-// ... (funções auxiliares como calculateAveragePrice, waitForOrderExecution mock)
-// Assegure-se que as funções auxiliares estão corretas e completas.
-
-// Função auxiliar para calcular preço médio
-function calculateAveragePrice(fills) {
-    if (!fills || fills.length === 0) return 0;
-    let totalQty = 0;
-    let totalCost = 0;
-    fills.forEach(fill => {
-        const qty = parseFloat(fill.qty);
-        const price = parseFloat(fill.price);
-        if (!isNaN(qty) && !isNaN(price) && qty > 0) { // Adicionada verificação qty > 0
-            totalQty += qty;
-            totalCost += qty * price;
-        }
-    });
-    return totalQty > 0 ? totalCost / totalQty : 0;
-}
-
-// Função auxiliar para aguardar execução da ordem (MOCK - SUBSTITUA PELA SUA IMPLEMENTAÇÃO REAL)
-// ESSENCIAL: Sua função real getOrderStatus deve retornar o objeto completo da ordem, não apenas a string do status.
-async function waitForOrderExecution(symbol, orderId, timeoutMs) {
-    // console.log(`[MOCK_WAIT] Aguardando execução da ordem ${orderId} para ${symbol} (Timeout: ${timeoutMs}ms)`);
-    return new Promise(async (resolve) => {
-        if (!orderId) {
-            resolve({ status: 'NO_ORDER_ID', executedQty: 0, price: 0, orderId: null, avgPrice: 0, cummulativeQuoteQty: 0 });
-            return;
-        }
-
-        const checkInterval = Math.min(Math.max(timeoutMs / 4, 500), 2000); // Intervalo entre 0.5s e 2s, no máximo 4 checagens
-        let elapsedTime = 0;
-        let intervalId;
-
-        const checker = async () => {
-            try {
-                // ESTA FUNÇÃO PRECISA RETORNAR O OBJETO COMPLETO DA ORDEM DA BINANCE
-                const orderStatusFull = await getOrderStatus(orderId, symbol); 
-
-                if (orderStatusFull) { 
-                    const status = orderStatusFull.status;
-                    const executedQty = parseFloat(orderStatusFull.executedQty || 0);
-                    const avgPrice = parseFloat(orderStatusFull.avgPrice || 0); // avgPrice é o preço médio de execução
-                    const price = parseFloat(orderStatusFull.price || 0); // Preço da ordem original
-                    const cummulativeQuoteQty = parseFloat(orderStatusFull.cummulativeQuoteQty || 0);
-                    const orderIdFromStatus = orderStatusFull.orderId;
-
-                    if (['FILLED', 'CANCELED', 'REJECTED', 'EXPIRED'].includes(status)) {
-                        clearInterval(intervalId);
-                        resolve({ status, executedQty, price: avgPrice || price, orderId: orderIdFromStatus, avgPrice, cummulativeQuoteQty });
-                        return;
-                    } else if (status === 'PARTIALLY_FILLED') {
-                        // Para parcial, resolve para que o loop principal possa processar o preenchimento
-                        clearInterval(intervalId); // Resolve imediatamente com o estado parcial
-                        resolve({ status, executedQty, price: avgPrice || price, orderId: orderIdFromStatus, avgPrice, cummulativeQuoteQty });
-                        return;
-                    } else if (status === 'NEW' || status === 'PENDING_CANCEL') {
-                        // Continua esperando se NEW
-                    }
-                } else {
-                    // console.warn(`[MOCK_WAIT] Status nulo para ordem ${orderId}.`);
-                }
-            } catch (error) {
-                console.error(`[MOCK_WAIT] Erro buscar status ${orderId}: ${error.message}`);
-            }
-
-            elapsedTime += checkInterval;
-            if (elapsedTime >= timeoutMs) {
-                clearInterval(intervalId);
-                try {
-                    const finalOrderStatus = await getOrderStatus(orderId, symbol); 
-                    if (finalOrderStatus) {
-                         resolve({ 
-                            status: finalOrderStatus.status || 'TIMED_OUT_UNKNOWN_STATUS', 
-                            executedQty: parseFloat(finalOrderStatus.executedQty || 0), 
-                            price: parseFloat(finalOrderStatus.avgPrice || finalOrderStatus.price || 0), 
-                            orderId: finalOrderStatus.orderId,
-                            avgPrice: parseFloat(finalOrderStatus.avgPrice || 0),
-                            cummulativeQuoteQty: parseFloat(finalOrderStatus.cummulativeQuoteQty || 0)
-                        });
-                    } else {
-                         resolve({ status: 'TIMED_OUT_NO_INFO', executedQty: 0, price: 0, orderId: orderId, avgPrice: 0, cummulativeQuoteQty: 0 });
-                    }
-                } catch (e) {
-                     resolve({ status: 'TIMED_OUT_API_ERROR', executedQty: 0, price: 0, orderId: orderId, avgPrice: 0, cummulativeQuoteQty: 0 });
-                }
-            }
-        };
-        intervalId = setInterval(checker, checkInterval);
-        await checker(); 
-    });
-}
-
-// Função auxiliar para calcular preço médio
-function calculateAveragePrice(fills) {
-    if (!fills || fills.length === 0) return 0;
-    let totalQty = 0;
-    let totalCost = 0;
-    fills.forEach(fill => {
-        const qty = parseFloat(fill.qty);
-        const price = parseFloat(fill.price);
-        if (!isNaN(qty) && !isNaN(price) && qty > 0) { // Adicionada verificação qty > 0
-            totalQty += qty;
-            totalCost += qty * price;
-        }
-    });
-    return totalQty > 0 ? totalCost / totalQty : 0;
-}
-
-// Função auxiliar para aguardar execução da ordem (MOCK - SUBSTITUA PELA SUA IMPLEMENTAÇÃO REAL)
-// ESSENCIAL: Sua função real getOrderStatus deve retornar o objeto completo da ordem, não apenas a string do status.
-async function waitForOrderExecution(symbol, orderId, timeoutMs) {
-    // console.log(`[MOCK_WAIT] Aguardando execução da ordem ${orderId} para ${symbol} (Timeout: ${timeoutMs}ms)`);
-    return new Promise(async (resolve) => {
-        if (!orderId) {
-            resolve({ status: 'NO_ORDER_ID', executedQty: 0, price: 0, orderId: null, avgPrice: 0, cummulativeQuoteQty: 0 });
-            return;
-        }
-
-        const checkInterval = Math.min(Math.max(timeoutMs / 4, 500), 2000); // Intervalo entre 0.5s e 2s, no máximo 4 checagens
-        let elapsedTime = 0;
-        let intervalId;
-
-        const checker = async () => {
-            try {
-                // ESTA FUNÇÃO PRECISA RETORNAR O OBJETO COMPLETO DA ORDEM DA BINANCE
-                const orderStatusFull = await getOrderStatus(orderId, symbol); 
-
-                if (orderStatusFull) { 
-                    const status = orderStatusFull.status;
-                    const executedQty = parseFloat(orderStatusFull.executedQty || 0);
-                    const avgPrice = parseFloat(orderStatusFull.avgPrice || 0); // avgPrice é o preço médio de execução
-                    const price = parseFloat(orderStatusFull.price || 0); // Preço da ordem original
-                    const cummulativeQuoteQty = parseFloat(orderStatusFull.cummulativeQuoteQty || 0);
-                    const orderIdFromStatus = orderStatusFull.orderId;
-
-                    if (['FILLED', 'CANCELED', 'REJECTED', 'EXPIRED'].includes(status)) {
-                        clearInterval(intervalId);
-                        resolve({ status, executedQty, price: avgPrice || price, orderId: orderIdFromStatus, avgPrice, cummulativeQuoteQty });
-                        return;
-                    } else if (status === 'PARTIALLY_FILLED') {
-                        // Para parcial, resolve para que o loop principal possa processar o preenchimento
-                        clearInterval(intervalId); // Resolve imediatamente com o estado parcial
-                        resolve({ status, executedQty, price: avgPrice || price, orderId: orderIdFromStatus, avgPrice, cummulativeQuoteQty });
-                        return;
-                    } else if (status === 'NEW' || status === 'PENDING_CANCEL') {
-                        // Continua esperando se NEW
-                    }
-                } else {
-                    // console.warn(`[MOCK_WAIT] Status nulo para ordem ${orderId}.`);
-                }
-            } catch (error) {
-                console.error(`[MOCK_WAIT] Erro buscar status ${orderId}: ${error.message}`);
-            }
-
-            elapsedTime += checkInterval;
-            if (elapsedTime >= timeoutMs) {
-                clearInterval(intervalId);
-                try {
-                    const finalOrderStatus = await getOrderStatus(orderId, symbol); 
-                    if (finalOrderStatus) {
-                         resolve({ 
-                            status: finalOrderStatus.status || 'TIMED_OUT_UNKNOWN_STATUS', 
-                            executedQty: parseFloat(finalOrderStatus.executedQty || 0), 
-                            price: parseFloat(finalOrderStatus.avgPrice || finalOrderStatus.price || 0), 
-                            orderId: finalOrderStatus.orderId,
-                            avgPrice: parseFloat(finalOrderStatus.avgPrice || 0),
-                            cummulativeQuoteQty: parseFloat(finalOrderStatus.cummulativeQuoteQty || 0)
-                        });
-                    } else {
-                         resolve({ status: 'TIMED_OUT_NO_INFO', executedQty: 0, price: 0, orderId: orderId, avgPrice: 0, cummulativeQuoteQty: 0 });
-                    }
-                } catch (e) {
-                     resolve({ status: 'TIMED_OUT_API_ERROR', executedQty: 0, price: 0, orderId: orderId, avgPrice: 0, cummulativeQuoteQty: 0 });
-                }
-            }
-        };
-        intervalId = setInterval(checker, checkInterval);
-        await checker(); 
-    });
-}
-
-// Função auxiliar para calcular preço médio
-function calculateAveragePrice(fills) {
-    if (!fills || fills.length === 0) return 0;
-    let totalQty = 0;
-    let totalCost = 0;
-    fills.forEach(fill => {
-        const qty = parseFloat(fill.qty);
-        const price = parseFloat(fill.price);
-        if (!isNaN(qty) && !isNaN(price)) {
-            totalQty += qty;
-            totalCost += qty * price;
-        }
-    });
-    return totalQty > 0 ? totalCost / totalQty : 0;
-}
-
-// Função auxiliar para aguardar execução da ordem (MOCK - SUBSTITUA PELA SUA IMPLEMENTAÇÃO REAL)
-async function waitForOrderExecution(symbol, orderId, timeoutMs) {
-    // console.log(`[MOCK_WAIT] Aguardando execução da ordem ${orderId} para ${symbol} (Timeout: ${timeoutMs}ms)`);
-    return new Promise(async (resolve) => {
-        if (!orderId) {
-            // console.warn("[MOCK_WAIT] OrderId nulo fornecido para waitForOrderExecution.");
-            resolve({ status: 'NO_ORDER_ID', executedQty: 0, price: 0, orderId: null, avgPrice: 0, cummulativeQuoteQty: 0 });
-            return;
-        }
-
-        const checkInterval = Math.min(timeoutMs / 3, 1500); 
-        let elapsedTime = 0;
-        let intervalId;
-
-        const checker = async () => {
-            try {
-                const orderStatusFull = await getOrderStatus(orderId, symbol); // Deve retornar o objeto completo da ordem
-
-                if (orderStatusFull) { 
-                    if (['FILLED', 'CANCELED', 'REJECTED', 'EXPIRED'].includes(orderStatusFull.status)) {
-                        clearInterval(intervalId);
-                        resolve({
-                            status: orderStatusFull.status,
-                            executedQty: parseFloat(orderStatusFull.executedQty || 0),
-                            price: parseFloat(orderStatusFull.avgPrice || orderStatusFull.price || 0), 
-                            orderId: orderStatusFull.orderId,
-                            avgPrice: parseFloat(orderStatusFull.avgPrice || 0), 
-                            cummulativeQuoteQty: parseFloat(orderStatusFull.cummulativeQuoteQty || 0)
-                        });
-                        return;
-                    } else if (orderStatusFull.status === 'PARTIALLY_FILLED' || orderStatusFull.status === 'NEW' || orderStatusFull.status === 'PENDING_CANCEL') {
-                        // Para PARTIALLY_FILLED, também resolvemos para que o loop principal possa processar.
-                        // Para NEW, o loop principal continuará monitorando ou editando.
-                         if (orderStatusFull.status === 'PARTIALLY_FILLED' && elapsedTime >= timeoutMs / 2) { // Resolve antes se parcial e já esperou um pouco
-                            clearInterval(intervalId);
-                            resolve({ /* ... dados da ordem ... */ ...orderStatusFull, executedQty: parseFloat(orderStatusFull.executedQty), price: parseFloat(orderStatusFull.avgPrice || orderStatusFull.price) });
-                            return;
-                         }
-                        // console.log(`[MOCK_WAIT] Ordem ${orderId} status: ${orderStatusFull.status}`);
-                    } else {
-                         // console.log(`[MOCK_WAIT] Ordem ${orderId} status inesperado: ${orderStatusFull.status}`);
-                    }
-                } else {
-                    // console.warn(`[MOCK_WAIT] Status nulo para ordem ${orderId}.`);
-                }
-            } catch (error) {
-                console.error(`[MOCK_WAIT] Erro ao buscar status da ordem ${orderId}: ${error.message}`);
-                // Não limpar intervalo aqui, pode ser erro de rede temporário
-            }
-
-            elapsedTime += checkInterval;
-            if (elapsedTime >= timeoutMs) {
-                clearInterval(intervalId);
-                // console.warn(`[MOCK_WAIT] Timeout para ordem ${orderId}. Obtendo status final...`);
-                try {
-                    const finalOrderStatus = await getOrderStatus(orderId, symbol); 
-                    if (finalOrderStatus) {
-                         resolve({ /* ... dados da ordem ... */ ...finalOrderStatus, executedQty: parseFloat(finalOrderStatus.executedQty), price: parseFloat(finalOrderStatus.avgPrice || finalOrderStatus.price) });
-                    } else {
-                         resolve({ status: 'TIMED_OUT_NO_INFO', executedQty: 0, price: 0, orderId: orderId, avgPrice: 0, cummulativeQuoteQty: 0 });
-                    }
-                } catch (e) {
-                     resolve({ status: 'TIMED_OUT_API_ERROR', executedQty: 0, price: 0, orderId: orderId, avgPrice: 0, cummulativeQuoteQty: 0 });
-                }
-            }
-        };
-        intervalId = setInterval(checker, checkInterval);
-        await checker(); // Executa imediatamente uma vez
-    });
-}
-
-// Função auxiliar para calcular preço médio (você já deve ter algo similar)
-function calculateAveragePrice(fills) {
-    if (!fills || fills.length === 0) return 0;
-    let totalQty = 0;
-    let totalCost = 0;
-    fills.forEach(fill => {
-        totalQty += parseFloat(fill.qty);
-        totalCost += parseFloat(fill.qty) * parseFloat(fill.price);
-    });
-    return totalQty > 0 ? totalCost / totalQty : 0;
-}
-
-// Função auxiliar para simular waitForOrderExecution (substitua pela sua implementação real com WebSockets ou polling mais robusto)
-// ESTA É UMA SIMULAÇÃO E PRECISA SER SUBSTITUÍDA PELA SUA LÓGICA REAL DE WEBSOCKET/POLLING
-async function waitForOrderExecution(symbol, orderId, timeoutMs) {
-    // console.log(`[MOCK_WAIT] Aguardando execução da ordem ${orderId} para ${symbol} (Timeout: ${timeoutMs}ms)`);
-    
-    return new Promise(async (resolve) => {
-        const checkInterval = Math.min(timeoutMs / 2, 1000); 
-        let elapsedTime = 0;
-        let intervalId;
-
-        const checker = async () => {
-            elapsedTime += checkInterval;
-            try {
-                const orderStatus = await getOrderStatus(orderId, symbol); 
-
-                if (orderStatus) { 
-                    if (['FILLED', 'PARTIALLY_FILLED', 'CANCELED', 'REJECTED', 'EXPIRED'].includes(orderStatus.status)) {
-                        clearInterval(intervalId);
-                        // console.log(`[MOCK_WAIT] Ordem ${orderId} com status final: ${orderStatus.status}`);
-                        resolve({
-                            status: orderStatus.status,
-                            executedQty: orderStatus.executedQty || 0,
-                            price: orderStatus.avgPrice || orderStatus.price || 0, 
-                            orderId: orderStatus.orderId,
-                            avgPrice: orderStatus.avgPrice || 0, // Adicionado para consistência
-                            cummulativeQuoteQty: orderStatus.cummulativeQuoteQty || 0 // Adicionado
-                        });
-                        return;
-                    } else if (orderStatus.status === 'NEW' || orderStatus.status === 'PENDING_CANCEL') {
-                        // console.log(`[MOCK_WAIT] Ordem ${orderId} ainda com status: ${orderStatus.status}`);
-                    } else {
-                         // console.log(`[MOCK_WAIT] Ordem ${orderId} com status desconhecido/inesperado: ${orderStatus.status}`);
-                    }
-                } else {
-                    // console.warn(`[MOCK_WAIT] Não foi possível obter status da ordem ${orderId}.`);
-                }
-            } catch (error) {
-                console.error(`[MOCK_WAIT] Erro ao buscar status da ordem ${orderId}: ${error.message}`);
-            }
-
-            if (elapsedTime >= timeoutMs) {
-                clearInterval(intervalId);
-                // console.warn(`[MOCK_WAIT] Timeout esperando pela ordem ${orderId}. Tentando obter status final...`);
-                try {
-                    const finalOrderStatus = await getOrderStatus(orderId, symbol); 
-                    if (finalOrderStatus) {
-                         resolve({
-                            status: finalOrderStatus.status || 'TIMED_OUT_UNKNOWN_STATUS',
-                            executedQty: finalOrderStatus.executedQty || 0,
-                            price: finalOrderStatus.avgPrice || finalOrderStatus.price || 0,
-                            orderId: finalOrderStatus.orderId,
-                            avgPrice: finalOrderStatus.avgPrice || 0,
-                            cummulativeQuoteQty: finalOrderStatus.cummulativeQuoteQty || 0
-                        });
-                    } else {
-                         resolve({ status: 'TIMED_OUT_NO_INFO', executedQty: 0, price: 0, orderId: orderId, avgPrice: 0, cummulativeQuoteQty: 0 });
-                    }
-                } catch (e) {
-                     resolve({ status: 'TIMED_OUT_API_ERROR', executedQty: 0, price: 0, orderId: orderId, avgPrice: 0, cummulativeQuoteQty: 0 });
-                }
-            }
-        };
-        intervalId = setInterval(checker, checkInterval);
-        checker(); // Executa imediatamente uma vez
-    });
-}
-
-// Função auxiliar para calcular preço médio (você já deve ter algo similar)
-function calculateAveragePrice(fills) {
-    if (!fills || fills.length === 0) return 0;
-    let totalQty = 0;
-    let totalCost = 0;
-    fills.forEach(fill => {
-        totalQty += parseFloat(fill.qty);
-        totalCost += parseFloat(fill.qty) * parseFloat(fill.price);
-    });
-    return totalQty > 0 ? totalCost / totalQty : 0;
-}
-
-// Função auxiliar para simular waitForOrderExecution (substitua pela sua implementação real com WebSockets ou polling mais robusto)
-// ESTA É UMA SIMULAÇÃO E PRECISA SER SUBSTITUÍDA PELA SUA LÓGICA REAL DE WEBSOCKET/POLLING
-async function waitForOrderExecution(symbol, orderId, timeoutMs) {
-    console.log(`[MOCK_WAIT] Aguardando execução da ordem ${orderId} para ${symbol} (Timeout: ${timeoutMs}ms)`);
-    // Na sua implementação real, você ouviria os WebSockets ou faria polling na API da Binance.
-    // Para este exemplo, vamos apenas simular buscando o status da ordem após um delay.
-    
-    return new Promise(async (resolve) => {
-        const checkInterval = Math.min(timeoutMs / 2, 1000); // Verificar no máximo a cada 1s ou na metade do timeout
-        let elapsedTime = 0;
-
-        const intervalId = setInterval(async () => {
-            elapsedTime += checkInterval;
-            try {
-                const orderStatus = await getOrderStatus(orderId, symbol); // Sua função de api.js //
-
-                if (orderStatus) { // Se getOrderStatus retorna um objeto com a ordem
-                    if (['FILLED', 'PARTIALLY_FILLED', 'CANCELED', 'REJECTED', 'EXPIRED'].includes(orderStatus.status)) {
-                        clearInterval(intervalId);
-                        console.log(`[MOCK_WAIT] Ordem ${orderId} com status final: ${orderStatus.status}`);
-                        resolve({
-                            status: orderStatus.status,
-                            executedQty: orderStatus.executedQty || 0,
-                            price: orderStatus.avgPrice || orderStatus.price || 0, // ou cummulativeQuoteQty / executedQty
-                            orderId: orderStatus.orderId,
-                            // Adicione mais campos relevantes da resposta da ordem
-                        });
-                        return;
-                    } else if (orderStatus.status === 'NEW' || orderStatus.status === 'PENDING_CANCEL') {
-                        console.log(`[MOCK_WAIT] Ordem ${orderId} ainda com status: ${orderStatus.status}`);
-                    } else {
-                         console.log(`[MOCK_WAIT] Ordem ${orderId} com status desconhecido/inesperado: ${orderStatus.status}`);
-                    }
-                } else {
-                    console.warn(`[MOCK_WAIT] Não foi possível obter status da ordem ${orderId}.`);
-                }
-            } catch (error) {
-                console.error(`[MOCK_WAIT] Erro ao buscar status da ordem ${orderId}: ${error.message}`);
-                // Não limpar intervalo em caso de erro de busca, pode ser temporário
-            }
-
-            if (elapsedTime >= timeoutMs) {
-                clearInterval(intervalId);
-                console.warn(`[MOCK_WAIT] Timeout esperando pela ordem ${orderId}. Tentando obter status final...`);
-                try {
-                    const finalOrderStatus = await getOrderStatus(orderId, symbol); //
-                    if (finalOrderStatus) {
-                         resolve({
-                            status: finalOrderStatus.status || 'TIMED_OUT_UNKNOWN_STATUS',
-                            executedQty: finalOrderStatus.executedQty || 0,
-                            price: finalOrderStatus.avgPrice || finalOrderStatus.price || 0,
-                            orderId: finalOrderStatus.orderId,
-                        });
-                    } else {
-                         resolve({ status: 'TIMED_OUT_NO_INFO', executedQty: 0, price: 0, orderId: orderId });
-                    }
-                } catch (e) {
-                     resolve({ status: 'TIMED_OUT_API_ERROR', executedQty: 0, price: 0, orderId: orderId });
-                }
-            }
-        }, checkInterval);
-    });
-}
-
-function calculateAveragePrice(fills) {
-    if (!fills || fills.length === 0) return 0;
-    
-    let totalQuantity = 0;
-    let totalValue = 0;
-    
-    for (const fill of fills) {
-        totalQuantity += fill.qty;
-        totalValue += fill.qty * fill.price;
-    }
-    
-    return totalQuantity > 0 ? totalValue / totalQuantity : 0;
-}
-
-// Função para obter dados do livro de ordens (BookTicker)
-async function getBookTicker(symbol) {
-  try {
-    // Usar um timeout mais curto para evitar bloqueios longos
-    const url = `${process.env.API_URL}/v1/ticker/bookTicker?symbol=${symbol}`;
-    const response = await axios.get(url, { 
-      timeout: 2000, // Timeout de 2 segundos
-      headers: { 'Cache-Control': 'no-cache' } // Evitar cache
-    });
-    
-    if (!response.data || !response.data.bidPrice || !response.data.askPrice) {
-      throw new Error(`Dados do bookTicker inválidos para ${symbol}`);
-    }
-    
-    return {
-      bidPrice: response.data.bidPrice,
-      askPrice: response.data.askPrice,
-      bidQty: response.data.bidQty,
-      askQty: response.data.askQty,
-      timestamp: Date.now()
-    };
-  } catch (error) {
-    console.error(`[BOOK] Erro ao obter book ticker para ${symbol}: ${error.message}`);
-    
-    // Implementar fallback para situações de erro
-    // Tentar obter o preço de outra fonte se disponível
-    try {
-      console.log(`[BOOK] Tentando fallback para ${symbol}...`);
-      const fallbackUrl = `${process.env.API_URL}/v1/ticker/price?symbol=${symbol}`;
-      const fallbackResponse = await axios.get(fallbackUrl, { timeout: 2000 });
-      
-      if (fallbackResponse.data && fallbackResponse.data.price) {
-        const price = parseFloat(fallbackResponse.data.price);
-        // Criar um book ticker aproximado com o preço atual
-        return {
-          bidPrice: (price * 0.9999).toString(), // 0.01% abaixo do preço
-          askPrice: (price * 1.0001).toString(), // 0.01% acima do preço
-          bidQty: "0",
-          askQty: "0",
-          timestamp: Date.now(),
-          isApproximation: true
-        };
-      }
-    } catch (fallbackError) {
-      console.error(`[BOOK] Fallback também falhou para ${symbol}: ${fallbackError.message}`);
-    }
-    
-    throw error; // Re-lançar o erro original se o fallback também falhar
-  }
-}
-
 const cancelingSignals = new Set();
 
-async function cancelSignal(db, signalId, statusParam, reason) {
+async function cancelSignal(db, signalId, statusParam, reason, accountId = 1) {
   // Verificar se este sinal já está sendo cancelado
   const lockKey = `cancel_${signalId}`;
   if (cancelingSignals.has(lockKey)) {
@@ -3344,7 +2414,6 @@ async function cancelSignal(db, signalId, statusParam, reason) {
         );
         console.log(`[MONITOR] Notificação de cancelamento enviada para Sinal ID ${signalId} (reply to: ${signalData.registry_message_id || 'N/A'}).`);
       } catch (telegramError) {
-        // Atualizado o log de erro para ser mais consistente com o seu exemplo
         console.error(`[MONITOR] Erro ao enviar notificação Telegram para cancelamento do sinal ID ${signalId}: ${telegramError.message}`, telegramError);
       }
     } else {
@@ -3400,38 +2469,6 @@ async function cancelSignal(db, signalId, statusParam, reason) {
   }
 }
 
-// Adicione temporariamente este código para limpar entradas pendentes antigas
-async function cleanUpExistingEntries() {
-  try {
-    const db = await getDatabaseInstance();
-    if (!db) {
-        console.error("[CLEANUP] Instância do banco de dados não obtida.");
-        return;
-    }
-    
-    // Cancelar todos os sinais em AGUARDANDO_ACIONAMENTO que têm position_id
-    const [pendingSignalsRows] = await db.query(`
-      SELECT id, symbol, position_id 
-      FROM webhook_signals 
-      WHERE status = 'AGUARDANDO_ACIONAMENTO' 
-        AND position_id IS NOT NULL
-    `);
-    
-    const pendingSignals = pendingSignalsRows; // O resultado já é um array de objetos
-
-    console.log(`[CLEANUP] Encontrados ${pendingSignals.length} sinais pendentes com posições`);
-    
-    for (const signal of pendingSignals) {
-      await cancelSignal(db, signal.id, 'CLEANUP', 
-        `Limpeza de sistema: nova versão não usa posições pendentes`);
-    }
-    
-    console.log(`[CLEANUP] Limpeza concluída`);
-  } catch (error) {
-    console.error(`[CLEANUP] Erro durante limpeza:`, error);
-  }
-}
-
 /**
  * Formata um valor decimal removendo zeros desnecessários à direita
  * @param {number} value - O valor a ser formatado
@@ -3447,6 +2484,3 @@ function formatDecimal(value, maxPrecision = 8) {
   // Depois remove zeros desnecessários e pontos decimais isolados
   return parseFloat(formatted).toString();
 }
-
-// Execute a limpeza (se necessário, chame esta função no início do seu script)
-// cleanUpExistingEntries();
