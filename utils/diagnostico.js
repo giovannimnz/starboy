@@ -3,6 +3,13 @@ require('dotenv').config({ path: path.join(__dirname, '../.env') });
 
 const fs = require('fs').promises;
 const { getDatabaseInstance } = require('../db/conexao');
+const readline = require('readline');
+
+// Declarar variáveis globalmente para uso em todas as funções
+let websockets;
+let websocketApi;
+let axios;
+let latestPrices = new Map(); // Esta variável faltava e é usada em getWebSocketPrice
 
 // Função para verificar integridade das exportações antes de importar os módulos
 async function verificarExportacoes(filePath) {
@@ -56,6 +63,21 @@ async function verificarExportacoes(filePath) {
   }
 }
 
+// Carregar os módulos necessários
+async function carregarModulos() {
+  try {
+    // Importar os módulos só depois da verificação de integridade
+    websockets = require('../websockets');
+    websocketApi = require('../websocketApi');
+    axios = require('axios');
+    
+    return true;
+  } catch (error) {
+    console.error('Erro ao carregar módulos:', error);
+    return false;
+  }
+}
+
 // Função principal de diagnóstico
 async function diagnosticarECorrigirSinaisPendentes() {
   console.log('=== VERIFICANDO INTEGRIDADE DOS MÓDULOS ===');
@@ -84,11 +106,12 @@ async function diagnosticarECorrigirSinaisPendentes() {
   console.log('=== DIAGNÓSTICO DE SINAIS PENDENTES ===');
   
   try {
-    // Importamos os módulos apenas após a verificação de integridade
-    const websockets = require('../websockets');
-    const websocketApi = require('../websocketApi');
+    // Carregar os módulos necessários ANTES de usá-los
+    if (!await carregarModulos()) {
+      throw new Error('Falha ao carregar módulos necessários');
+    }
+    
     const { executeLimitMakerEntry } = require('../posicoes/limitMakerEntry');
-    const axios = require('axios');
     
     // Obter conexão com o banco
     const db = await getDatabaseInstance();
@@ -112,16 +135,16 @@ async function diagnosticarECorrigirSinaisPendentes() {
     pendingSignals.forEach(signal => {
       console.log(`[DIAGNÓSTICO] Sinal ID: ${signal.id}, Symbol: ${signal.symbol}, Status: ${signal.status}`);
       console.log(`  - Side: ${signal.side}, Entry price: ${signal.entry_price}`);
-      console.log(`  - Created at: ${signal.created_at}, Account ID: ${signal.conta_id}`);
+      console.log(`  - Created at: ${new Date(signal.created_at).toLocaleString()}, Account ID: ${signal.conta_id || 1}`);
     });
     
     // Perguntar se deseja processar os sinais
-    const readline = require('readline').createInterface({
+    const rl = readline.createInterface({
       input: process.stdin,
       output: process.stdout
     });
     
-    readline.question('\nDeseja processar estes sinais pendentes? (s/n): ', async (answer) => {
+    rl.question('\nDeseja processar estes sinais pendentes? (s/n): ', async (answer) => {
       if (answer.toLowerCase() === 's') {
         console.log('\n[CORREÇÃO] Processando sinais pendentes...');
         
@@ -179,7 +202,7 @@ async function diagnosticarECorrigirSinaisPendentes() {
         console.log('Operação cancelada pelo usuário.');
       }
       
-      readline.close();
+      rl.close();
       
       // Verificar status após processamento
       const [updatedSignals] = await db.query(`
@@ -257,7 +280,7 @@ async function getCurrentPrice(symbol) {
 }
 
 /**
- * Função melhorada para obter o preço atual usando o cache de websocket
+ * Função para obter o preço atual usando o cache de websocket
  * @param {string} symbol - Símbolo do par
  * @param {number} maxAgeMs - Idade máxima do preço em cache (ms)
  * @returns {Promise<number>} O preço atual
