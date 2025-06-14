@@ -657,21 +657,658 @@ async function getAllOpenPositions(accountId) {
   }
 }
 
-// Adicione mais funções da API Binance conforme necessário
 
+async function obterSaldoPosicao(accountId = 1) {
+  try {
+    // Obter credenciais da conta específica
+    const credentials = await loadCredentialsFromDatabase(accountId);
+    
+    console.log(`[API] Obtendo saldo da posição (Conta ${accountId})...`);
+
+    const timestamp = Date.now();
+    const recvWindow = 60000;
+    
+    const signature = crypto
+      .createHmac("sha256", credentials.apiSecret)
+      .update(`timestamp=${timestamp}&recvWindow=${recvWindow}`)
+      .digest("hex");
+
+    const result = await axios({
+      method: "GET",
+      url: `${credentials.apiUrl}/v2/balance?timestamp=${timestamp}&recvWindow=${recvWindow}&signature=${signature}`,
+      headers: { "X-MBX-APIKEY": credentials.apiKey },
+    });
+
+    return result.data;
+  } catch (error) {
+    console.error('[API] Erro ao obter saldo da posição:', error.message);
+    throw error;
+  }
+}
+
+async function getFuturesAccountBalanceDetails(accountId = 1) {
+  try {
+    // Obter credenciais da conta específica
+    const credentials = await loadCredentialsFromDatabase(accountId);
+    
+    const timestamp = Date.now();
+    const recvWindow = 60000;
+
+    const signature = crypto
+      .createHmac("sha256", credentials.apiSecret)
+      .update(`timestamp=${timestamp}&recvWindow=${recvWindow}`)
+      .digest("hex");
+
+    const result = await axios({
+      method: "GET",
+      url: `${credentials.apiUrl}/v2/balance?timestamp=${timestamp}&recvWindow=${recvWindow}&signature=${signature}`,
+      headers: { "X-MBX-APIKEY": credentials.apiKey },
+    });
+
+    // Localizar a entrada para USDT
+    const usdtBalance = result.data.find(balance => balance.asset === 'USDT');
+    if (usdtBalance) {
+      return {
+        walletBalance: parseFloat(usdtBalance.balance),
+        availableBalance: parseFloat(usdtBalance.availableBalance),
+        marginBalance: parseFloat(usdtBalance.balance),
+        unrealizedProfit: parseFloat(usdtBalance.crossUnPnl || 0)
+      };
+    } else {
+      throw new Error('Não foi possível encontrar saldo USDT');
+    }
+  } catch (error) {
+    console.error('[API] Erro ao obter detalhes do saldo da conta:', error.message);
+    throw error;
+  }
+}
+
+async function getPrecision(symbol, accountId = 1) {
+  try {
+    // Obter credenciais da conta específica
+    const credentials = await loadCredentialsFromDatabase(accountId);
+
+    const response = await axios.get(`${credentials.apiUrl}/v1/exchangeInfo`);
+    const symbolInfo = response.data.symbols.find(s => s.symbol === symbol);
+
+    if (!symbolInfo) {
+      throw new Error(`Símbolo ${symbol} não encontrado`);
+    }
+
+    // Nos contratos futuros, a precisão da quantidade é baseada no quantityPrecision
+    const quantityPrecision = symbolInfo.quantityPrecision || 4;
+    return {
+      quantityPrecision,
+      pricePrecision: symbolInfo.pricePrecision || 4
+    };
+  } catch (error) {
+    console.error(`[API] Erro ao obter precisão para ${symbol}:`, error.message);
+    throw error;
+  }
+}
+
+async function getTickSize(symbol, accountId = 1) {
+  try {
+    // Obter credenciais da conta específica
+    const credentials = await loadCredentialsFromDatabase(accountId);
+
+    const response = await axios.get(`${credentials.apiUrl}/v1/exchangeInfo`);
+    const symbolInfo = response.data.symbols.find(s => s.symbol === symbol);
+
+    if (!symbolInfo) {
+      throw new Error(`Símbolo ${symbol} não encontrado`);
+    }
+
+    // Encontrar a regra de filtro para o tick size
+    const priceFilter = symbolInfo.filters.find(filter => filter.filterType === 'PRICE_FILTER');
+    if (!priceFilter) {
+      throw new Error(`Filtro de preço não encontrado para ${symbol}`);
+    }
+
+    // Retornar o tick size
+    return parseFloat(priceFilter.tickSize);
+  } catch (error) {
+    console.error(`[API] Erro ao obter tick size para ${symbol}:`, error.message);
+    throw error;
+  }
+}
+
+function roundPriceToTickSize(price, tickSize) {
+  if (!tickSize) {
+    return price;
+  }
+  
+  // Converter o tick size para um múltiplo de 10
+  const precision = tickSize.toString().includes('.') 
+    ? tickSize.toString().split('.')[1].length 
+    : 0;
+  
+  // Arredondar para o tick size mais próximo
+  const roundedPrice = Math.round(price / tickSize) * tickSize;
+  
+  // Formatar para a precisão correta
+  return parseFloat(roundedPrice.toFixed(precision));
+}
+
+async function changeInitialLeverage(accountId, symbol, leverage) {
+  try {
+    // Obter credenciais da conta específica
+    const credentials = await loadCredentialsFromDatabase(accountId);
+    
+    console.log(`[API] Alterando alavancagem para ${symbol}: ${leverage} (Conta ${accountId})`);
+
+    const data = {
+      symbol,
+      leverage
+    };
+
+    const timestamp = Date.now();
+    const recvWindow = 60000;
+
+    const signature = crypto
+      .createHmac("sha256", credentials.apiSecret)
+      .update(`${new URLSearchParams({ ...data, timestamp, recvWindow }).toString()}`)
+      .digest("hex");
+
+    const newData = { ...data, timestamp, recvWindow, signature };
+    const qs = `?${new URLSearchParams(newData).toString()}`;
+
+    const result = await axios({
+      method: "POST",
+      url: `${credentials.apiUrl}/v1/leverage${qs}`,
+      headers: { "X-MBX-APIKEY": credentials.apiKey },
+    });
+
+    console.log(`[API] Alavancagem alterada para ${result.data.leverage}`);
+    return result.data;
+  } catch (error) {
+    console.error('[API] Erro ao alterar alavancagem:', error.message);
+    if (error.response) {
+      console.error('[API] Status:', error.response.status);
+      console.error('[API] Dados:', JSON.stringify(error.response.data));
+    }
+    throw error;
+  }
+}
+
+async function changeMarginType(accountId, symbol, marginType) {
+  try {
+    // Obter credenciais da conta específica
+    const credentials = await loadCredentialsFromDatabase(accountId);
+    
+    console.log(`[API] Alterando tipo de margem para ${symbol}: ${marginType} (Conta ${accountId})`);
+
+    const data = {
+      symbol,
+      marginType
+    };
+
+    const timestamp = Date.now();
+    const recvWindow = 60000;
+
+    const signature = crypto
+      .createHmac("sha256", credentials.apiSecret)
+      .update(`${new URLSearchParams({ ...data, timestamp, recvWindow }).toString()}`)
+      .digest("hex");
+
+    const newData = { ...data, timestamp, recvWindow, signature };
+    const qs = `?${new URLSearchParams(newData).toString()}`;
+
+    const result = await axios({
+      method: "POST",
+      url: `${credentials.apiUrl}/v1/marginType${qs}`,
+      headers: { "X-MBX-APIKEY": credentials.apiKey },
+    });
+
+    console.log(`[API] Tipo de margem alterado para ${marginType}`);
+    return result.data;
+  } catch (error) {
+    // Se o erro for que a posição já está nesse modo de margem, não é realmente um erro
+    if (error.response && 
+        error.response.data && 
+        (error.response.data.code === -4046 || error.response.data.msg.includes('already'))) {
+      console.log(`[API] Posição ${symbol} já está no tipo de margem ${marginType}`);
+      return { code: 0, msg: `Already ${marginType}` };
+    }
+    
+    console.error(`[API] Erro ao alterar tipo de margem para ${symbol}:`, error.message);
+    if (error.response) {
+      console.error('[API] Status:', error.response.status);
+      console.error('[API] Dados:', JSON.stringify(error.response.data));
+    }
+    throw error;
+  }
+}
+
+async function getCurrentMarginType(accountId, symbol) {
+  try {
+    // Obter credenciais da conta específica
+    const credentials = await loadCredentialsFromDatabase(accountId);
+    
+    console.log(`[API] Obtendo tipo de margem atual para ${symbol} (Conta ${accountId})...`);
+
+    const timestamp = Date.now();
+    const recvWindow = 60000;
+
+    const signature = crypto
+      .createHmac("sha256", credentials.apiSecret)
+      .update(`symbol=${symbol}&timestamp=${timestamp}&recvWindow=${recvWindow}`)
+      .digest("hex");
+
+    const qs = `?symbol=${symbol}&timestamp=${timestamp}&recvWindow=${recvWindow}&signature=${signature}`;
+
+    const result = await axios({
+      method: "GET",
+      url: `${credentials.apiUrl}/v1/positionRisk${qs}`,
+      headers: { "X-MBX-APIKEY": credentials.apiKey },
+    });
+
+    // A API devolve todas as posições, encontrar a correspondente ao símbolo
+    const position = result.data.find(p => p.symbol === symbol);
+    
+    if (!position) {
+      throw new Error(`Dados da posição não encontrados para ${symbol}`);
+    }
+
+    // A propriedade marginType é 'isolated' ou 'cross'
+    const marginType = position.marginType;
+    console.log(`[API] Tipo de margem atual para ${symbol}: ${marginType}`);
+    
+    return marginType;
+  } catch (error) {
+    console.error('[API] Erro ao obter tipo de margem atual:', error.message);
+    throw error;
+  }
+}
+
+async function cancelPendingEntry(accountId, symbol) {
+  try {
+    // Obter credenciais da conta específica
+    const credentials = await loadCredentialsFromDatabase(accountId);
+    
+    console.log(`[API] Cancelando ordens pendentes para ${symbol} (Conta ${accountId})...`);
+
+    // Listar ordens abertas para este símbolo
+    const openOrders = await getOpenOrders(accountId, symbol);
+    
+    if (!openOrders || openOrders.length === 0) {
+      console.log(`[API] Nenhuma ordem aberta encontrada para ${symbol}`);
+      return [];
+    }
+    
+    console.log(`[API] Encontradas ${openOrders.length} ordens abertas para ${symbol}`);
+    
+    // Filtrar apenas ordens de entrada (não stop-loss, take-profit)
+    const entryOrders = openOrders.filter(order => 
+      order.type === 'LIMIT' || 
+      order.type === 'LIMIT_MAKER' || 
+      order.type === 'MARKET' || 
+      (order.type === 'STOP' && !order.reduceOnly) || 
+      (order.type === 'STOP_MARKET' && !order.reduceOnly)
+    );
+    
+    if (entryOrders.length === 0) {
+      console.log(`[API] Nenhuma ordem de entrada pendente encontrada para ${symbol}`);
+      return [];
+    }
+    
+    console.log(`[API] Encontradas ${entryOrders.length} ordens de entrada para cancelar em ${symbol}`);
+    
+    // Cancelar cada ordem de entrada
+    const cancelPromises = entryOrders.map(order => 
+      cancelOrder(accountId, symbol, order.orderId)
+        .then(result => ({
+          success: true,
+          orderId: order.orderId,
+          result
+        }))
+        .catch(error => ({
+          success: false,
+          orderId: order.orderId,
+          error: error.message
+        }))
+    );
+    
+    const results = await Promise.all(cancelPromises);
+    
+    // Contar sucessos e falhas
+    const successCount = results.filter(r => r.success).length;
+    const failCount = results.filter(r => !r.success).length;
+    
+    console.log(`[API] Cancelamento concluído: ${successCount} sucesso, ${failCount} falha`);
+    
+    return results;
+  } catch (error) {
+    console.error(`[API] Erro ao cancelar ordens pendentes para ${symbol}:`, error.message);
+    throw error;
+  }
+}
+
+async function getPositionDetails(accountId, symbol) {
+  try {
+    // Obter credenciais da conta específica
+    const credentials = await loadCredentialsFromDatabase(accountId);
+    
+    const timestamp = Date.now();
+    const recvWindow = 60000;
+    
+    const signature = crypto
+      .createHmac("sha256", credentials.apiSecret)
+      .update(`symbol=${symbol}&timestamp=${timestamp}&recvWindow=${recvWindow}`)
+      .digest("hex");
+    
+    const url = `${credentials.apiUrl}/v2/positionRisk?symbol=${symbol}&timestamp=${timestamp}&recvWindow=${recvWindow}&signature=${signature}`;
+    
+    const response = await axios.get(url, {
+      headers: {
+        "X-MBX-APIKEY": credentials.apiKey
+      }
+    });
+    
+    if (response.data && Array.isArray(response.data)) {
+      // Verificar se há posição para este símbolo
+      const positionInfo = response.data.find(p => 
+        p.symbol === symbol && parseFloat(p.positionAmt) !== 0
+      );
+      
+      if (positionInfo) {
+        return {
+          symbol: positionInfo.symbol,
+          positionAmt: parseFloat(positionInfo.positionAmt),
+          entryPrice: parseFloat(positionInfo.entryPrice),
+          leverage: parseInt(positionInfo.leverage, 10),
+          markPrice: parseFloat(positionInfo.markPrice),
+          unRealizedProfit: parseFloat(positionInfo.unRealizedProfit),
+          liquidationPrice: parseFloat(positionInfo.liquidationPrice),
+          marginType: positionInfo.marginType,
+          side: parseFloat(positionInfo.positionAmt) > 0 ? 'BUY' : 'SELL'
+        };
+      }
+    }
+    
+    // Se não encontrou posição ou posição com quantidade zero
+    return null;
+  } catch (error) {
+    console.error(`[API] Erro ao obter detalhes da posição para ${symbol}:`, error.message);
+    throw error;
+  }
+}
+
+async function getRecentOrders(accountId, symbol, limit = 10) {
+  try {
+    // Obter credenciais da conta específica
+    const credentials = await loadCredentialsFromDatabase(accountId);
+    
+    const timestamp = Date.now();
+    const recvWindow = 60000;
+    
+    const queryParams = {
+      symbol,
+      limit,
+      timestamp,
+      recvWindow
+    };
+    
+    const signature = crypto
+      .createHmac("sha256", credentials.apiSecret)
+      .update(new URLSearchParams(queryParams).toString())
+      .digest("hex");
+    
+    queryParams.signature = signature;
+    
+    const url = `${credentials.apiUrl}/v1/allOrders?${new URLSearchParams(queryParams).toString()}`;
+    
+    const response = await axios.get(url, {
+      headers: {
+        "X-MBX-APIKEY": credentials.apiKey
+      }
+    });
+    
+    return response.data;
+  } catch (error) {
+    console.error(`[API] Erro ao obter ordens recentes para ${symbol}:`, error.message);
+    throw error;
+  }
+}
+
+async function getAllLeverageBrackets(accountId) {
+  try {
+    // Obter credenciais da conta específica
+    const credentials = await loadCredentialsFromDatabase(accountId);
+    
+    const timestamp = Date.now();
+    const recvWindow = 60000;
+    
+    const signature = crypto
+      .createHmac("sha256", credentials.apiSecret)
+      .update(`timestamp=${timestamp}&recvWindow=${recvWindow}`)
+      .digest("hex");
+    
+    const url = `${credentials.apiUrl}/v1/leverageBracket?timestamp=${timestamp}&recvWindow=${recvWindow}&signature=${signature}`;
+    
+    const response = await axios.get(url, {
+      headers: {
+        "X-MBX-APIKEY": credentials.apiKey
+      }
+    });
+    
+    return response.data;
+  } catch (error) {
+    console.error('[API] Erro ao obter informações de alavancagem:', error.message);
+    throw error;
+  }
+}
+
+async function updateLeverageBracketsInDatabase(accountId) {
+  try {
+    const db = await getDatabaseInstance(accountId);
+    if (!db) {
+      throw new Error('Falha ao obter instância do banco de dados');
+    }
+
+    // Obter todas as informações de alavancagem da Binance
+    const leverageBrackets = await getAllLeverageBrackets(accountId);
+    
+    console.log(`[API] Atualizando informações de alavancagem para ${leverageBrackets.length} símbolos...`);
+
+    // Começar uma transação para garantir consistência
+    const connection = await db.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      // Para cada símbolo
+      for (const bracketInfo of leverageBrackets) {
+        const symbol = bracketInfo.symbol;
+
+        // Para cada nível de alavancagem
+        for (let i = 0; i < bracketInfo.brackets.length; i++) {
+          const bracket = bracketInfo.brackets[i];
+          
+          // Verificar se já existe este nível para este símbolo
+          const [existing] = await connection.query(
+            `SELECT id FROM leverage_brackets 
+             WHERE symbol = ? AND bracket_id = ? AND conta_id = ?`,
+            [symbol, i, accountId]
+          );
+          
+          if (existing.length > 0) {
+            // Atualizar se já existir
+            await connection.query(
+              `UPDATE leverage_brackets 
+               SET initial_leverage = ?, notional_cap = ?, notional_floor = ?, maint_margin_ratio = ?, cum = ? 
+               WHERE symbol = ? AND bracket_id = ? AND conta_id = ?`,
+              [
+                bracket.initialLeverage,
+                bracket.notionalCap,
+                bracket.notionalFloor,
+                bracket.maintMarginRatio,
+                bracket.cum || 0,
+                symbol,
+                i,
+                accountId
+              ]
+            );
+          } else {
+            // Inserir novo se não existir
+            await connection.query(
+              `INSERT INTO leverage_brackets 
+               (symbol, bracket_id, initial_leverage, notional_cap, notional_floor, maint_margin_ratio, cum, conta_id) 
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                symbol,
+                i,
+                bracket.initialLeverage,
+                bracket.notionalCap,
+                bracket.notionalFloor,
+                bracket.maintMarginRatio,
+                bracket.cum || 0,
+                accountId
+              ]
+            );
+          }
+        }
+      }
+
+      // Completar a transação
+      await connection.commit();
+      console.log(`[API] Alavancagens atualizadas com sucesso no banco de dados`);
+      
+    } catch (error) {
+      await connection.rollback();
+      console.error('[API] Erro durante atualização de alavancagens:', error);
+      throw error;
+    } finally {
+      connection.release();
+    }
+
+    return { success: true, count: leverageBrackets.length };
+  } catch (error) {
+    console.error('[API] Erro ao atualizar alavancagens no banco:', error.message);
+    throw error;
+  }
+}
+
+/**
+ * Obtém informações de alavancagem do banco para um símbolo específico
+ * @param {number} accountId - ID da conta
+ * @param {string} symbol - Símbolo para consultar (ex: BTCUSDT)
+ * @returns {Promise<Array>} - Array de brackets para o símbolo
+ */
+async function getLeverageBracketsFromDb(accountId = 1, symbol) {
+  try {
+    const db = await getDatabaseInstance(accountId);
+    if (!db) {
+      throw new Error('Não foi possível conectar ao banco de dados');
+    }
+
+    // Verificar se o símbolo existe no banco
+    const [rows] = await db.query(`
+      SELECT * FROM leverage_brackets 
+      WHERE symbol = ? AND conta_id = ?
+      ORDER BY bracket_id ASC
+    `, [symbol, accountId]);
+
+    // Se não encontrar dados para o símbolo, tentar atualizar o banco
+    if (rows.length === 0) {
+      console.log(`[API] Não foram encontrados dados de alavancagem para ${symbol} na conta ${accountId}, atualizando banco...`);
+      await updateLeverageBracketsInDatabase(accountId);
+
+      // Consultar novamente após atualização
+      const [updatedRows] = await db.query(`
+        SELECT * FROM leverage_brackets 
+        WHERE symbol = ? AND conta_id = ?
+        ORDER BY bracket_id ASC
+      `, [symbol, accountId]);
+
+      // Mapear para o formato esperado pelo sistema
+      return formatBracketsFromDb(updatedRows);
+    }
+
+    // Mapear para o formato esperado pelo sistema
+    return formatBracketsFromDb(rows);
+  } catch (error) {
+    console.error(`[API] Erro ao obter dados de alavancagem para ${symbol} (Conta ${accountId}):`, error.message);
+    throw error;
+  }
+}
+
+
+/**
+ * Formata dados do banco para o formato esperado pelo sistema
+ * @param {Array} dbRows - Linhas do banco de dados
+ * @returns {Array} - Dados formatados
+ */
+function formatBracketsFromDb(dbRows) {
+  if (!dbRows || dbRows.length === 0) return [];
+
+  // Agrupar por símbolo
+  const symbolsMap = {};
+
+  for (const row of dbRows) {
+    if (!symbolsMap[row.symbol]) {
+      symbolsMap[row.symbol] = {
+        symbol: row.symbol,
+        brackets: []
+      };
+    }
+
+    symbolsMap[row.symbol].brackets.push({
+      bracket: row.bracket_id,
+      initialLeverage: row.initial_leverage,
+      notionalCap: parseFloat(row.notional_cap),
+      notionalFloor: parseFloat(row.notional_floor),
+      maintMarginRatio: parseFloat(row.maint_margin_ratio),
+      cum: parseFloat(row.cum || 0)
+    });
+  }
+
+  // Converter o mapa em array
+  return Object.values(symbolsMap);
+}
+
+// Atualizar função load_leverage_brackets para usar o banco de dados
+//function load_leverage_brackets(accountId = 1, symbol = null) {
+//  return getLeverageBracketsFromDb(accountId, symbol);
+//}
+
+// Modificar o module.exports para incluir as novas funções
 module.exports = {
-  loadCredentialsFromDatabase,
+  getFuturesAccountBalanceDetails,
+  getMaxLeverage,
+  getCurrentLeverage,
+  getCurrentMarginType,
+  changeInitialLeverage,
+  changeMarginType,
+  newOrder,
   newEntryOrder,
   newLimitMakerOrder,
   editOrder,
-  newOrder,
-  setPositionMode,
   newReduceOnlyOrder,
   newStopOrder,
-  cancelOrder,
-  cancelAllOpenOrders,
+  newStopOrTpLimitOrder,
+  newTakeProfitOrder,
+  getTickSize,
+  roundPriceToTickSize,
+  getPrecision,
   getOpenOrders,
+  getRecentOrders,
   getOrderStatus,
+  getMultipleOrderStatus,
+  getPositionDetails,
   getAllOpenPositions,
-  // Exporte outras funções conforme necessário
+  obterSaldoPosicao,
+  cancelOrder,
+  transferBetweenAccounts,
+  cancelAllOpenOrders,
+  encerrarPosicao,
+  getAllLeverageBrackets,
+  setPositionMode,
+  getPositionMode,
+  closePosition, // Adicione a nova função aqui
+  getPrice, // Adicione a função getPrice
+  updateLeverageBracketsInDatabase, // Adicione a função updateLeverageBracketsInDatabase
+  getLeverageBracketsFromDb, // Adicione a função getLeverageBracketsFromDb
+  load_leverage_brackets, // Adicione a função load_leverage_brackets
+  cancelPendingEntry,
+  loadCredentialsFromDatabase
 };
