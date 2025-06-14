@@ -29,7 +29,7 @@ const PRICE_LOG_INTERVAL = 60000;
 // Inicializar o bot do Telegram
 const bot = new Telegraf(process.env.BOT_TOKEN);
 
-// Adicionar variável para armazenar os jobs
+let handlers = {};
 let scheduledJobs = {};
 
 function determineOrderType(orderMsg) {
@@ -233,9 +233,13 @@ async function getDatabaseInstanceWithAccountId() {
   return db;
 }
 
-Object.assign(handlers, {
-  getDbConnection: getDatabaseInstanceWithAccountId,
-});
+function configureHandlers() {
+  handlers = {
+    ...handlers,
+    getDbConnection: getDatabaseInstanceWithAccountId
+  };
+  return handlers;
+}
 
 async function logOpenPositionsAndOrders() {
   try {

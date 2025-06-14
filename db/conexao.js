@@ -5,6 +5,8 @@ const fs = require('fs').promises;
 // Pool de conexões MySQL
 let dbPool = null;
 
+const dbPools = new Map();
+
 // Inicializar a pool de conexões MySQL
 async function initPool() {
   if (!dbPool) {
@@ -24,11 +26,35 @@ async function initPool() {
 }
 
 // Função para obter conexão com o banco de dados
-async function getDatabaseInstance() {
+async function getDatabaseInstance(accountId = 1) {
   try {
-    return await initPool();
+    // Se já temos uma pool para esta conta, retorná-la
+    if (dbPools.has(accountId)) {
+      return dbPools.get(accountId);
+    }
+
+    // Criar nova pool para esta conta
+    const pool = await mysql.createPool({
+      host: process.env.DB_HOST,
+      port: process.env.DB_PORT,
+      user: process.env.DB_USER,
+      password: process.env.DB_PASSWORD,
+      database: process.env.DB_NAME,
+      waitForConnections: true,
+      connectionLimit: 10,
+      queueLimit: 0
+    });
+    
+    // Estender o objeto pool com o accountId
+    pool.accountId = accountId;
+    
+    // Adicionar ao cache
+    dbPools.set(accountId, pool);
+    
+    // Retornar a nova pool
+    return pool;
   } catch (err) {
-    console.error(`Erro ao conectar ao banco de dados MySQL:`, err.message);
+    console.error(`Erro ao conectar ao banco de dados MySQL para conta ${accountId}:`, err.message);
     return null;
   }
 }
@@ -163,16 +189,16 @@ async function getPositionIdBySymbol(db, symbol) {
   }
 }
 
-// Verificar se existe uma posição aberta para um símbolo
-async function checkPositionExists(db, symbol) {
+// Exemplo de modificação para checkPositionExists
+async function checkPositionExists(db, symbol, accountId = 1) {
   try {
     const [rows] = await db.query(
-        "SELECT id FROM posicoes WHERE simbolo = ? AND data_hora_fechamento IS NULL",
-        [symbol]
+      "SELECT id FROM posicoes WHERE simbolo = ? AND (status = 'OPEN' OR status = 'PENDING') AND conta_id = ?",
+      [symbol, accountId]
     );
     return rows.length > 0;
   } catch (error) {
-    console.error(`Erro ao verificar existência de posição: ${error.message}`);
+    console.error(`[MONITOR] Erro ao verificar existência de posição: ${error.message}`);
     throw error;
   }
 }
@@ -187,83 +213,51 @@ async function insertPosition(connection, positionData, webhookSignalId = null) 
       throw new Error(`Status inválido: ${positionData.status}`);
     }
 
-    const exists = await checkPositionExists(connection, positionData.simbolo);
+    const accountId = positionData.conta_id || connection.accountId || 1;
+    
+    // Modificar a verificação de posição para incluir conta_id
+    const exists = await checkPositionExists(connection, positionData.simbolo, accountId);
+    
     if (exists) {
-      console.log(`Posição já existe para o símbolo: ${positionData.simbolo}`);
+      console.log(`Posição já existe para o símbolo: ${positionData.simbolo} na conta ${accountId}`);
       return null;
     } else {
-      // Verificar se a coluna orign_sig existe na tabela
-      const [columns] = await connection.query(
-          `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
-         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'posicoes' AND COLUMN_NAME = 'orign_sig'`,
-          [process.env.DB_NAME]
-      );
+      // Incluir conta_id na inserção
+      const query = `INSERT INTO posicoes (
+        simbolo, quantidade, preco_medio, status, data_hora_abertura, 
+        side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente, orign_sig, conta_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
-      const hasOrignSigColumn = columns.length > 0;
-
-      // Formatar datas
-      const formattedOpenTime = formatDateForMySQL(positionData.data_hora_abertura);
-      const formattedUpdateTime = formatDateForMySQL(positionData.data_hora_ultima_atualizacao);
-
-      let query, params;
-
-      if (hasOrignSigColumn) {
-        // Se a coluna existir, incluí-la na consulta
-        query = `INSERT INTO posicoes (
-          simbolo, quantidade, preco_medio, status, data_hora_abertura, 
-          side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente, orign_sig
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-
-        params = [
-          positionData.simbolo,
-          positionData.quantidade,
-          positionData.preco_medio,
-          'OPEN', // O status é sempre OPEN para posições novas
-          formattedOpenTime,
-          positionData.side,
-          positionData.leverage,
-          formattedUpdateTime,
-          positionData.preco_entrada,
-          positionData.preco_corrente,
-          positionData.orign_sig || null
-        ];
-      } else {
-        // Se a coluna não existir, omití-la da consulta
-        query = `INSERT INTO posicoes (
-          simbolo, quantidade, preco_medio, status, data_hora_abertura, 
-          side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
-
-        params = [
-          positionData.simbolo,
-          positionData.quantidade,
-          positionData.preco_medio,
-          'OPEN', // O status é sempre OPEN para posições novas
-          formattedOpenTime,
-          positionData.side,
-          positionData.leverage,
-          formattedUpdateTime,
-          positionData.preco_entrada,
-          positionData.preco_corrente
-        ];
-      }
+      const params = [
+        positionData.simbolo,
+        positionData.quantidade,
+        positionData.preco_medio,
+        'OPEN',
+        formatDateForMySQL(positionData.data_hora_abertura),
+        positionData.side,
+        positionData.leverage,
+        formatDateForMySQL(positionData.data_hora_ultima_atualizacao),
+        positionData.preco_entrada,
+        positionData.preco_corrente,
+        positionData.orign_sig || null,
+        accountId
+      ];
 
       const [result] = await connection.query(query, params);
       const positionId = result.insertId;
       
-      console.log(`Posição inserida com sucesso com ID: ${positionId}`);
+      console.log(`Posição inserida com sucesso com ID: ${positionId} para conta ${accountId}`);
       
-      // NOVO: Atualizar position_id no webhook_signals se tiver um webhook_signal_id
+      // Atualizar também o webhook_signal se necessário, incluindo conta_id na condição
       if (webhookSignalId) {
         try {
           console.log(`Atualizando webhook_signals com position_id=${positionId} para signal_id=${webhookSignalId}`);
           await connection.query(
-            `UPDATE webhook_signals SET position_id = ? WHERE id = ?`,
-            [positionId, webhookSignalId]
+            `UPDATE webhook_signals SET position_id = ? WHERE id = ? AND conta_id = ?`,
+            [positionId, webhookSignalId, accountId]
           );
         } catch (updateError) {
           console.error(`Erro ao atualizar position_id no webhook_signals: ${updateError.message}`);
-          // Não interromper o fluxo por falha nessa atualização
         }
       } else {
         // Tentar encontrar um sinal correspondente por símbolo, mesmo sem o ID explícito

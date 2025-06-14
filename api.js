@@ -16,31 +16,61 @@ let apiSecret = null;
 let apiUrl = null;
 let apiUrlSpot = null;
 
-// Função para carregar credenciais do banco de dados
-async function loadCredentialsFromDatabase() {
-  try {
-    const credentials = await getApiCredentials();
-    
-    // Definir as variáveis com os valores do banco de dados
-    apiKey = credentials.restApiKey;
-    apiSecret = credentials.restSecretKey;
-    
-    // Definir as URLs com base nos valores retornados
-    apiUrl = credentials.urls.futuresRestApiUrl;
-    apiUrlSpot = credentials.urls.spotRestApiUrl;
+const accountCredentials = new Map();
 
-    console.log(`[API] Credenciais carregadas do banco de dados (Corretora: ${credentials.corretora}, Ambiente: ${credentials.ambiente})`);
-    console.log(`[API] URLs configuradas - API Futures: ${apiUrl}, API Spot: ${apiUrlSpot}`);
-    return true;
+// Função para carregar credenciais do banco de dados
+async function loadCredentialsFromDatabase(accountId = 1, forceRefresh = false) {
+  try {
+    // Se temos credenciais em cache e não forçamos atualização, usar o cache
+    if (accountCredentials.has(accountId) && !forceRefresh) {
+      const cachedCreds = accountCredentials.get(accountId);
+      return cachedCreds;
+    }
+    
+    const db = await getDatabaseInstance();
+    
+    if (!db) {
+      throw new Error('Não foi possível obter conexão com o banco de dados');
+    }
+    
+    // Buscar credenciais desta conta específica
+    const [rows] = await db.query(
+      `SELECT api_key, api_secret, ws_api_key, ws_api_secret, api_url, ws_url, ws_api_url 
+       FROM contas WHERE id = ? AND ativa = 1`,
+      [accountId]
+    );
+    
+    if (rows.length === 0) {
+      throw new Error(`Conta ID ${accountId} não encontrada ou não está ativa`);
+    }
+    
+    const credentials = {
+      apiKey: rows[0].api_key,
+      apiSecret: rows[0].api_secret,
+      wsApiKey: rows[0].ws_api_key,
+      wsApiSecret: rows[0].ws_api_secret,
+      apiUrl: rows[0].api_url,
+      wsUrl: rows[0].ws_url,
+      wsApiUrl: rows[0].ws_api_url,
+      accountId
+    };
+    
+    // Armazenar no cache
+    accountCredentials.set(accountId, credentials);
+    
+    return credentials;
   } catch (error) {
-    console.error('[API] Erro ao carregar credenciais do banco de dados:', error.message);
-    return false;
+    console.error(`[API] Erro ao carregar credenciais para conta ${accountId}:`, error.message);
+    throw error;
   }
 }
 
-async function newEntryOrder(symbol, quantity, side) {
+async function newEntryOrder(accountId, symbol, quantity, side) {
   try {
-    console.log(`[API] Enviando ordem: ${symbol}, ${quantity}, ${side}`);
+    // Obter credenciais da conta específica
+    const credentials = await loadCredentialsFromDatabase(accountId);
+    
+    console.log(`[API] Enviando ordem: ${symbol}, ${quantity}, ${side} (Conta ${accountId})`);
     
     // Validar quantidade
     if (quantity <= 0 || isNaN(quantity)) {
@@ -52,16 +82,16 @@ async function newEntryOrder(symbol, quantity, side) {
       side,
       type: "MARKET",
       quantity,
-      newOrderRespType: "RESULT" // Isso garante que o preço de execução seja retornado
+      newOrderRespType: "RESULT"
     };
 
     const timestamp = Date.now();
     const recvWindow = 60000;
 
     const signature = crypto
-        .createHmac("sha256", apiSecret)
-        .update(`${new URLSearchParams({ ...data, timestamp, recvWindow }).toString()}`)
-        .digest("hex");
+      .createHmac("sha256", credentials.apiSecret)
+      .update(`${new URLSearchParams({ ...data, timestamp, recvWindow }).toString()}`)
+      .digest("hex");
 
     const newData = { ...data, timestamp, recvWindow, signature };
     const qs = `?${new URLSearchParams(newData).toString()}`;
@@ -69,25 +99,23 @@ async function newEntryOrder(symbol, quantity, side) {
     console.log(`[API] Enviando ordem de entrada a mercado: ${symbol}, ${quantity}, ${side}`);
     const result = await axios({
       method: "POST",
-      url: `${apiUrl}/v1/order${qs}`,
-      headers: { "X-MBX-APIKEY": apiKey },
+      url: `${credentials.apiUrl}/v1/order${qs}`,
+      headers: { "X-MBX-APIKEY": credentials.apiKey },
     });
 
-    // Log da resposta completa
     console.log(`[API] Resposta da ordem: ${JSON.stringify(result.data)}`);
 
-    // Processar a resposta para extrair preço e quantidade executada
     const avgPrice = result.data.avgPrice
-        ? parseFloat(result.data.avgPrice)
-        : result.data.fills && result.data.fills.length > 0
-            ? parseFloat(result.data.fills[0].price)
-            : null;
+      ? parseFloat(result.data.avgPrice)
+      : result.data.fills && result.data.fills.length > 0
+        ? parseFloat(result.data.fills[0].price)
+        : null;
 
     return {
       orderId: result.data.orderId,
       executedQty: result.data.executedQty,
       cummulativeQuoteQty: result.data.cummulativeQuoteQty,
-      price: avgPrice // Garantir que o preço seja retornado
+      price: avgPrice
     };
   } catch (error) {
     console.error(`[API] ERRO DETALHADO ao criar ordem de entrada a mercado:`);
@@ -100,8 +128,11 @@ async function newEntryOrder(symbol, quantity, side) {
   }
 }
 
-async function newLimitMakerOrder(symbol, quantity, side, price) {
+async function newLimitMakerOrder(accountId, symbol, quantity, side, price) {
   try {
+    // Obter credenciais da conta específica
+    const credentials = await loadCredentialsFromDatabase(accountId);
+
     // Validações de quantidade e preço podem ser adicionadas aqui
     // Arredondar o preço para o tickSize correto usando sua função roundPriceToTickSize
     const { pricePrecision } = await getPrecision(symbol); // Assumindo que getPrecision retorna pricePrecision
