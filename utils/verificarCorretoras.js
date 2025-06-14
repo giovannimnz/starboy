@@ -3,6 +3,7 @@ require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
 const { getDatabaseInstance, getCorretoraPorId } = require('../db/conexao');
 const axios = require('axios');
+const WebSocket = require('ws');
 
 // Função para testar a URL da API REST
 async function testarApiUrl(url, descricao) {
@@ -22,6 +23,72 @@ async function testarApiUrl(url, descricao) {
   }
 }
 
+// Função para testar a WebSocket API
+function testarWebSocketApi(url, descricao) {
+  return new Promise((resolve) => {
+    console.log(`Testando ${descricao}: ${url}`);
+    
+    // Configurar timeout para caso a conexão demorar demais
+    const timeout = setTimeout(() => {
+      console.log(`❌ ${descricao} timeout após 10 segundos`);
+      if (ws && ws.readyState !== WebSocket.CLOSED) {
+        ws.close();
+      }
+      resolve(false);
+    }, 10000);
+    
+    // Tentar conectar
+    let ws;
+    try {
+      ws = new WebSocket(url);
+      
+      ws.on('open', () => {
+        console.log(`✅ ${descricao} funcionando! Conexão WebSocket estabelecida com sucesso.`);
+        clearTimeout(timeout);
+        
+        // Enviar ping simples
+        if (url.includes('ws-api') || url.includes('ws-fapi')) {
+          // WebSocket API (FAPI) - usar formato de requisição adequado
+          const pingRequest = {
+            id: '1',
+            method: 'ping'
+          };
+          ws.send(JSON.stringify(pingRequest));
+          
+          // Esperar um pouco antes de fechar
+          setTimeout(() => {
+            ws.close();
+            resolve(true);
+          }, 1000);
+        } else {
+          // WebSocket de market data (simples)
+          // Fechar após conexão com sucesso
+          ws.close();
+          resolve(true);
+        }
+      });
+      
+      ws.on('message', (data) => {
+        console.log(`✅ ${descricao} resposta recebida: ${data}`);
+      });
+      
+      ws.on('error', (error) => {
+        console.error(`❌ ${descricao} erro de conexão: ${error.message}`);
+        clearTimeout(timeout);
+        resolve(false);
+      });
+      
+      ws.on('close', () => {
+        console.log(`WebSocket fechado para ${descricao}`);
+      });
+    } catch (error) {
+      console.error(`❌ Erro ao iniciar teste para ${descricao}: ${error.message}`);
+      clearTimeout(timeout);
+      resolve(false);
+    }
+  });
+}
+
 // Função principal
 async function verificarCorretoras() {
   try {
@@ -33,7 +100,7 @@ async function verificarCorretoras() {
     
     // Obter todas as corretoras ativas
     const [corretoras] = await db.query(
-      "SELECT id, corretora, ambiente, spot_rest_api_url, futures_rest_api_url FROM corretoras WHERE ativa = 1"
+      "SELECT id, corretora, ambiente, spot_rest_api_url, futures_rest_api_url, futures_ws_market_url, futures_ws_api_url FROM corretoras WHERE ativa = 1"
     );
     
     if (corretoras.length === 0) {
@@ -47,8 +114,14 @@ async function verificarCorretoras() {
     for (const corretora of corretoras) {
       console.log(`\n=== Corretora: ${corretora.corretora} (ID: ${corretora.id}, Ambiente: ${corretora.ambiente}) ===`);
       
-      // Testar URLs
+      // Testar URLs REST
       await testarApiUrl(corretora.futures_rest_api_url, "API REST Futures");
+      
+      // Testar URL WebSocket Market (Stream)
+      await testarWebSocketApi(corretora.futures_ws_market_url, "WebSocket Market Stream");
+      
+      // Testar URL WebSocket API
+      await testarWebSocketApi(corretora.futures_ws_api_url + '/v1', "WebSocket API (FAPI)");
       
       // Verificar se as URLs estão sendo utilizadas corretamente
       console.log("\nVerificando se alguma conta usa esta corretora...");

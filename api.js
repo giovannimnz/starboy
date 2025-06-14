@@ -1860,7 +1860,6 @@ module.exports = {
   getPrice, // Adicione a função getPrice
   updateLeverageBracketsInDatabase, // Adicione a função updateLeverageBracketsInDatabase
   getLeverageBracketsFromDb, // Adicione a função getLeverageBracketsFromDb
-  load_leverage_brackets, // Adicione a função load_leverage_brackets
   cancelPendingEntry,
   loadCredentialsFromDatabase
 };
