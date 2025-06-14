@@ -1071,6 +1071,39 @@ async function getRecentOrders(accountId, symbol, limit = 10) {
   }
 }
 
+/**
+ * Verifica se os dados de alavancagem foram atualizados recentemente
+ * @param {Object} db - Conexão com o banco de dados
+ * @param {string} corretora - Nome da corretora
+ * @param {number} hoursThreshold - Número de horas para considerar recente
+ * @returns {Promise<boolean>} - true se os dados foram atualizados recentemente
+ */
+async function wereLeverageDataUpdatedRecently(db, corretora = 'binance', hoursThreshold = 12) {
+  try {
+    const [rows] = await db.query(
+      `SELECT MAX(updated_at) as last_update 
+       FROM alavancagem 
+       WHERE corretora = ?`,
+      [corretora]
+    );
+
+    if (!rows.length || !rows[0].last_update) {
+      console.log(`[API] Nenhum dado de alavancagem encontrado para a corretora ${corretora}`);
+      return false;
+    }
+
+    const lastUpdateTime = new Date(rows[0].last_update).getTime();
+    const currentTime = Date.now();
+    const hoursSinceLastUpdate = (currentTime - lastUpdateTime) / (1000 * 60 * 60);
+
+    console.log(`[API] Última atualização de alavancagem para ${corretora} foi há ${hoursSinceLastUpdate.toFixed(1)} horas`);
+    return hoursSinceLastUpdate < hoursThreshold;
+  } catch (error) {
+    console.error(`[API] Erro ao verificar última atualização de alavancagem: ${error.message}`);
+    return false; // Em caso de erro, permitir atualização
+  }
+}
+
 async function getAllLeverageBrackets(accountId) {
   try {
     // Obter credenciais da conta específica
@@ -1099,23 +1132,47 @@ async function getAllLeverageBrackets(accountId) {
   }
 }
 
-async function updateLeverageBracketsInDatabase(accountId) {
+/**
+ * Atualiza os brackets de alavancagem no banco de dados
+ * @param {number} accountId - ID da conta que está solicitando a atualização
+ * @returns {Promise<Object>} - Resultado da operação
+ */
+async function updateLeverageBracketsInDatabase(accountId = 1) {
   try {
     const db = await getDatabaseInstance(accountId);
     if (!db) {
       throw new Error('Falha ao obter instância do banco de dados');
     }
+    
+    // Obter credenciais da conta para identificar a corretora
+    const credentials = await loadCredentialsFromDatabase(accountId);
+    const corretora = 'binance'; // No futuro, extrair da conta
+    
+    // Verificar se houve atualização recente
+    const recentlyUpdated = await wereLeverageDataUpdatedRecently(db, corretora);
+    if (recentlyUpdated) {
+      console.log(`[API] Brackets de alavancagem foram atualizados recentemente. Pulando atualização.`);
+      return { 
+        success: true, 
+        updated: false, 
+        message: 'Dados atualizados recentemente, nenhuma atualização necessária' 
+      };
+    }
 
     // Obter todas as informações de alavancagem da Binance
+    console.log(`[API] Atualizando informações de alavancagem da corretora ${corretora}...`);
     const leverageBrackets = await getAllLeverageBrackets(accountId);
     
-    console.log(`[API] Atualizando informações de alavancagem para ${leverageBrackets.length} símbolos...`);
+    console.log(`[API] Processando informações de alavancagem para ${leverageBrackets.length} símbolos...`);
 
     // Começar uma transação para garantir consistência
     const connection = await db.getConnection();
     await connection.beginTransaction();
 
     try {
+      // Timestamp para esta atualização
+      const updateTime = new Date();
+      
       // Para cada símbolo
       for (const bracketInfo of leverageBrackets) {
         const symbol = bracketInfo.symbol;
@@ -1124,54 +1181,36 @@ async function updateLeverageBracketsInDatabase(accountId) {
         for (let i = 0; i < bracketInfo.brackets.length; i++) {
           const bracket = bracketInfo.brackets[i];
           
-          // Verificar se já existe este nível para este símbolo
-          const [existing] = await connection.query(
-            `SELECT id FROM leverage 
-             WHERE symbol = ? AND bracket_id = ? AND conta_id = ?`,
-            [symbol, i, accountId]
+          // Usar query de UPSERT (INSERT ON DUPLICATE KEY UPDATE)
+          await connection.query(
+            `INSERT INTO alavancagem 
+             (symbol, corretora, bracket, initial_leverage, notional_cap, notional_floor, maint_margin_ratio, cum, updated_at) 
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) 
+             ON DUPLICATE KEY UPDATE 
+             initial_leverage = VALUES(initial_leverage),
+             notional_cap = VALUES(notional_cap),
+             notional_floor = VALUES(notional_floor),
+             maint_margin_ratio = VALUES(maint_margin_ratio),
+             cum = VALUES(cum),
+             updated_at = VALUES(updated_at)`,
+            [
+              symbol,
+              corretora,
+              i, // bracket
+              bracket.initialLeverage,
+              bracket.notionalCap,
+              bracket.notionalFloor,
+              bracket.maintMarginRatio,
+              bracket.cum || 0,
+              updateTime
+            ]
           );
-          
-          if (existing.length > 0) {
-            // Atualizar se já existir
-            await connection.query(
-              `UPDATE leverage 
-               SET initial_leverage = ?, notional_cap = ?, notional_floor = ?, maint_margin_ratio = ?, cum = ? 
-               WHERE symbol = ? AND bracket_id = ? AND conta_id = ?`,
-              [
-                bracket.initialLeverage,
-                bracket.notionalCap,
-                bracket.notionalFloor,
-                bracket.maintMarginRatio,
-                bracket.cum || 0,
-                symbol,
-                i,
-                accountId
-              ]
-            );
-          } else {
-            // Inserir novo se não existir
-            await connection.query(
-              `INSERT INTO leverage
-               (symbol, bracket_id, initial_leverage, notional_cap, notional_floor, maint_margin_ratio, cum, conta_id) 
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-              [
-                symbol,
-                i,
-                bracket.initialLeverage,
-                bracket.notionalCap,
-                bracket.notionalFloor,
-                bracket.maintMarginRatio,
-                bracket.cum || 0,
-                accountId
-              ]
-            );
-          }
         }
       }
 
       // Completar a transação
       await connection.commit();
-      console.log(`[API] Alavancagens atualizadas com sucesso no banco de dados`);
+      console.log(`[API] Alavancagens atualizadas com sucesso para a corretora ${corretora}`);
       
     } catch (error) {
       await connection.rollback();
@@ -1181,7 +1220,7 @@ async function updateLeverageBracketsInDatabase(accountId) {
       connection.release();
     }
 
-    return { success: true, count: leverageBrackets.length };
+    return { success: true, updated: true, count: leverageBrackets.length };
   } catch (error) {
     console.error('[API] Erro ao atualizar alavancagens no banco:', error.message);
     throw error;
@@ -1200,34 +1239,46 @@ async function getLeverageBracketsFromDb(accountId = 1, symbol) {
     if (!db) {
       throw new Error('Não foi possível conectar ao banco de dados');
     }
+    
+    // Obter credenciais da conta para identificar a corretora
+    const credentials = await loadCredentialsFromDatabase(accountId);
+    const corretora = 'binance'; // No futuro, extrair da conta
 
     // Verificar se o símbolo existe no banco
     const [rows] = await db.query(`
-      SELECT * FROM leverage 
-      WHERE symbol = ? AND conta_id = ?
-      ORDER BY bracket_id ASC
-    `, [symbol, accountId]);
+      SELECT * FROM alavancagem 
+      WHERE symbol = ? AND corretora = ?
+      ORDER BY bracket ASC
+    `, [symbol, corretora]);
 
-    // Se não encontrar dados para o símbolo, tentar atualizar o banco
+    // Se não encontrar dados para o símbolo, verificar se precisamos atualizar o banco
     if (rows.length === 0) {
-      console.log(`[API] Não foram encontrados dados de alavancagem para ${symbol} na conta ${accountId}, atualizando banco...`);
-      await updateLeverageBracketsInDatabase(accountId);
-
-      // Consultar novamente após atualização
-      const [updatedRows] = await db.query(`
-        SELECT * FROM leverage 
-        WHERE symbol = ? AND conta_id = ?
-        ORDER BY bracket_id ASC
-      `, [symbol, accountId]);
-
-      // Mapear para o formato esperado pelo sistema
-      return formatBracketsFromDb(updatedRows);
+      console.log(`[API] Não foram encontrados dados de alavancagem para ${symbol} (Corretora: ${corretora}), atualizando banco...`);
+      
+      // Verificar se já houve atualização recente antes de tentar atualizar novamente
+      const recentlyUpdated = await wereLeverageDataUpdatedRecently(db, corretora);
+      
+      if (!recentlyUpdated) {
+        await updateLeverageBracketsInDatabase(accountId);
+        
+        // Consultar novamente após atualização
+        const [updatedRows] = await db.query(`
+          SELECT * FROM alavancagem 
+          WHERE symbol = ? AND corretora = ?
+          ORDER BY bracket ASC
+        `, [symbol, corretora]);
+        
+        return formatBracketsFromDb(updatedRows);
+      } else {
+        console.log(`[API] Dados de alavancagem foram atualizados recentemente, mas símbolo ${symbol} não está disponível`);
+        return [];
+      }
     }
 
     // Mapear para o formato esperado pelo sistema
     return formatBracketsFromDb(rows);
   } catch (error) {
-    console.error(`[API] Erro ao obter dados de alavancagem para ${symbol} (Conta ${accountId}):`, error.message);
+    console.error(`[API] Erro ao obter dados de alavancagem para ${symbol}:`, error.message);
     throw error;
   }
 }
@@ -1253,7 +1304,7 @@ function formatBracketsFromDb(dbRows) {
     }
 
     symbolsMap[row.symbol].brackets.push({
-      bracket: row.bracket_id,
+      bracket: row.bracket,
       initialLeverage: row.initial_leverage,
       notionalCap: parseFloat(row.notional_cap),
       notionalFloor: parseFloat(row.notional_floor),
@@ -1332,6 +1383,13 @@ async function syncAccountBalance(accountId = 1) {
   }
 }
 
+/**
+ * Calcula a alavancagem máxima permitida com base no valor nocional
+ * @param {number} accountId - ID da conta
+ * @param {string} symbol - Símbolo do par de negociação
+ * @param {number} notionalValue - Valor nocional da posição
+ * @returns {Promise<number>} - Alavancagem máxima permitida
+ */
 async function getMaxLeverage(accountId = 1, symbol, notionalValue) {
   try {
     // Obter brackets para este símbolo
@@ -1735,12 +1793,6 @@ async function cancelPendingEntry(accountId = 1, db, positionId, status, reason)
   }
 }
 
-// Atualizar função load_leverage_brackets para usar o banco de dados
-//function load_leverage_brackets(accountId = 1, symbol = null) {
-//  return getLeverageBracketsFromDb(accountId, symbol);
-//}
-
-// Modificar o module.exports para incluir as novas funções
 module.exports = {
   getFuturesAccountBalanceDetails,
   getMaxLeverage,
