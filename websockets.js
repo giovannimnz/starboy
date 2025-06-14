@@ -103,7 +103,7 @@ async function loadCredentialsFromDatabase(options = {}) {
     // Atualizar estado da conexão para esta conta específica
     const accountState = getAccountConnectionState(accountId, true);
     
-    accountState.apiKey = accountData.ws_api_key;
+    accountState.apiKey = accountData.api_key;
     accountState.apiSecret = accountData.api_secret;
     accountState.privateKey = accountData.ws_api_secret;
     accountState.apiUrl = accountData.futures_rest_api_url;
