@@ -17,6 +17,9 @@ import logging
 
 logging.getLogger('telethon').setLevel(logging.WARNING)
 
+# Chaveamento para ativar/desativar verificação DIVAP
+ENABLE_DIVAP_VERIFICATION = False  # True = verificação ativada, False = todos os sinais passam sem verificar
+
 # Parâmetros para cálculo de capital alocado baseado em risco
 PREJUIZO_MAXIMO_PERCENTUAL_DO_CAPITAL_TOTAL = 4.90  # 4.90% do capital total
 TAXA_ENTRADA_LIMIT = 0.02  # 0.02% do valor nocional da posição
@@ -1002,6 +1005,14 @@ async def handle_new_message(event):
             if trade_info:
                 #print(f"[INFO] Sinal de trade detectado em msg ID {incoming_message_id}: {trade_info['symbol']} {trade_info['side']}")
                 
+                if ENABLE_DIVAP_VERIFICATION:
+                    # Verificar se é realmente um padrão DIVAP válido
+                    is_valid_divap, error_message = await verify_divap_pattern(trade_info)
+                else:
+                    # Se verificação está desabilitada, considerar todos os sinais como válidos
+                    is_valid_divap, error_message = True, None
+                    print(f"[INFO] Verificação DIVAP desativada. Sinal {trade_info['symbol']} aceito sem verificação.")                
+
                 # NOVO: Verificar se é realmente um padrão DIVAP válido
                 is_valid_divap, error_message = await verify_divap_pattern(trade_info)
                 
