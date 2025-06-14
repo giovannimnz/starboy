@@ -1,6 +1,7 @@
 const mysql = require('mysql2/promise');
 const path = require('path');
 const fs = require('fs').promises;
+require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 
 // Pool de conexões MySQL
 let dbPool = null;
@@ -17,7 +18,7 @@ async function initPool() {
       password: process.env.DB_PASSWORD,
       database: process.env.DB_NAME,
       waitForConnections: true,
-      connectionLimit: 10,
+      connectionLimit: 100,
       queueLimit: 0
     });
     //console.log(`Conexão com banco de dados MySQL estabelecida em: ${process.env.DB_HOST}:${process.env.DB_PORT}`);
