@@ -471,6 +471,8 @@ async function getCurrentPrice(symbol) {
 // Função para verificar novas operações e criar ordens
 async function checkNewTrades(accountId = 1) {
   try {
+    console.log('[MONITOR] checkNewTrades iniciado para conta', accountId);
+    console.log('[MONITOR] Hora atual:', new Date().toISOString());
     console.log(`[MONITOR] Verificando novos sinais para conta ${accountId}...`);
     
     const db = await getDatabaseInstance(accountId);
@@ -485,6 +487,16 @@ async function checkNewTrades(accountId = 1) {
       WHERE status = 'PENDING' AND conta_id = ?
       ORDER BY created_at ASC
     `, [accountId]);
+
+    if (pendingSignals.length > 0) {
+  console.log('====== DETALHES DOS SINAIS PENDENTES ======');
+  pendingSignals.forEach(signal => {
+    console.log(`  - ID: ${signal.id}, Symbol: ${signal.symbol}, Side: ${signal.side}, Entry: ${signal.entry_price}`);
+    console.log(`    Created at: ${signal.created_at}, Status: ${signal.status}`);
+    console.log('-------------------------------------------');
+  });
+  console.log('============================================');
+}
 
     console.log(`[MONITOR] Encontrados ${pendingSignals.length} sinais pendentes para processar (Conta ${accountId})`);
 
