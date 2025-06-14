@@ -1182,6 +1182,72 @@ async function ensureWebSocketApiExists(accountId = 1) {
 }
 
 // Adicionar à lista de exportações
+
+/**
+ * Verifica se a conexão WebSocket API está ativa
+ * @param {number} accountId - ID da conta
+ * @returns {boolean} - true se conectado
+ */
+function isWebSocketApiConnected(accountId = 1) {
+  const accountState = getAccountConnectionState(accountId);
+  if (!accountState) return false;
+  
+  return accountState.wsApiConnection && 
+         accountState.wsApiConnection.readyState === WebSocket.OPEN;
+}
+
+
+/**
+ * Verifica se a conexão WebSocket API está autenticada
+ * @param {number} accountId - ID da conta
+ * @returns {boolean} - true se autenticado
+ */
+function isWebSocketApiAuthenticated(accountId = 1) {
+  const accountState = getAccountConnectionState(accountId);
+  if (!accountState) return false;
+  
+  return accountState.wsApiAuthenticated === true;
+}
+
+
+/**
+ * Reinicia as conexões WebSocket para uma conta específica
+ * @param {number} accountId - ID da conta
+ */
+function reset(accountId = 1) {
+  // Limpar WebSocket API
+  cleanupWebSocketApi(accountId);
+  
+  // Limpar WebSockets de preço
+  const priceWebsockets = getPriceWebsockets(accountId);
+  if (priceWebsockets) {
+    for (const [symbol, ws] of priceWebsockets.entries()) {
+      if (ws && ws.readyState !== WebSocket.CLOSED) {
+        ws.close();
+      }
+    }
+    priceWebsockets.clear();
+  }
+  
+  // Limpar userDataWebSocket
+  const accountState = getAccountConnectionState(accountId);
+  if (accountState) {
+    if (accountState.userDataWebSocket && accountState.userDataWebSocket.readyState !== WebSocket.CLOSED) {
+      accountState.userDataWebSocket.close();
+    }
+    
+    accountState.userDataWebSocket = null;
+    
+    // Limpar keepalive do listenKey
+    if (accountState.listenKeyKeepAliveInterval) {
+      clearInterval(accountState.listenKeyKeepAliveInterval);
+      accountState.listenKeyKeepAliveInterval = null;
+    }
+  }
+  
+  console.log(`[WEBSOCKETS] Todas as conexões WebSocket foram reiniciadas para conta ${accountId}`);
+}
+
 module.exports = {
   startUserDataStream,
   setupBookDepthWebsocket,

@@ -109,7 +109,7 @@ for (const order of existingOrders) {
         leverage = parseInt(signal.leverage); 
         
         totalEntrySize = calculateOrderSize(
-            availableBalance, capitalPercentage, currentPriceTrigger, leverage, quantityPrecision
+            availableBalance, capitalPercentage, currentPrice, leverage, quantityPrecision
         );
         
         if (totalEntrySize <= 0 || isNaN(totalEntrySize)) {
