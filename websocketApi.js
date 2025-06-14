@@ -805,13 +805,7 @@ async function getOrderStatusViaWebSocket(symbol, orderId) {
         
         // Repassar o erro com informações adicionais
         if (error.status === 400 && error.error?.code === -2013) {
-            return { 
-                status: 'UNKNOWN', 
-                reason: 'Order does not exist',
-                errorCode: -2013,
-                symbol,
-                orderId
-            };
+            throw { status: 400, error: { code: -2013, msg: 'Ordem não encontrada' }, originalError: error };
         }
         
         throw error;
