@@ -5,7 +5,7 @@ const axios = require('axios');
 const schedule = require('node-schedule');
 const fs = require('fs').promises;
 const { Telegraf } = require("telegraf");
-const { getCurrentMarginType, cancelOrder, newStopOrder, cancelAllOpenOrders, getFuturesAccountBalanceDetails, changeInitialLeverage, changeMarginType, getPositionDetails, getOpenOrders, getAllOpenPositions, updateLeverageBracketsInDatabase } = require('../api');
+const { getCurrentMarginType, cancelOrder, newStopOrder, cancelAllOpenOrders, getFuturesAccountBalanceDetails, changeInitialLeverage, changeMarginType, getPositionDetails, getOpenOrders, getAllOpenPositions, updateLeverageBracketsInDatabase, getCurrentPrice } = require('../api');
 const {getDatabaseInstance, updatePositionStatus, insertNewOrder, updateOrderStatus, moveClosedPositionsAndOrders, formatDateForMySQL, getBaseCalculoBalance, updateAccountBalance} = require('../db/conexao');
 const { executeLimitMakerEntry } = require('./limitMakerEntry');
 const websockets = require('../websockets');
@@ -13,18 +13,22 @@ const websocketApi = require('../websocketApi');
 
 // Adicione este conjunto no topo do arquivo para rastrear ordens já canceladas
 const cancelledOrders = new Set();
+
+// Conjunto para controlar sinais em processamento
 const processingSignals = new Set();
+
+// Mapa para armazenar últimas atualizações de log de preço
+const lastPriceLogTime = {};
+
+// Intervalo para log de preços (ms)
+const PRICE_LOG_INTERVAL = 60000; // 1 minuto
+
+// Contador para verificar quando fechar websockets sem atividade
 const websocketEmptyCheckCounter = {};
-const lastLoggedWebsocketStates = {};
 const lastTrailingCheck = {}; // Para controlar quando foi a última verificação por posição
 const positionsWithoutSL = new Set(); // Conjunto para armazenar IDs de posições sem SL
 const MIN_CHECK_INTERVAL = 10000; // 10 segundos entre verificações para a mesma posição
 const TWO_MINUTES_RECHECK_NO_SL = 2 * 60 * 1000; // 2 minutos para rechecar posições marcadas como sem SL
-
-// Objeto para controlar o tempo da última atualização de preço logada por símbolo
-const lastPriceLogTime = {};
-// Intervalo mínimo entre logs de preço (1 minuto em ms)
-const PRICE_LOG_INTERVAL = 60000;
 
 // Adicionar mapa para armazenar instâncias de bots por conta
 const telegramBots = new Map();
@@ -197,26 +201,25 @@ async function initializeMonitoring(accountId = 1) {
       websockets.ensurePriceWebsocketExists(signal.symbol, accountId);
     });
 
-    // Executar verificação inicial de novas operações
+    // Executar verificação inicial de novas operações imediatamente
+    console.log(`[MONITOR] Executando verificação imediata de sinais pendentes...`);
     setTimeout(() => {
-      checkNewTrades(accountId).catch(err => {
-        console.error(`[MONITOR] Erro na verificação inicial de novas operações:`, err);
+      forceProcessPendingSignals(accountId).catch(err => {
+        console.error(`[MONITOR] Erro ao forçar processamento de sinais pendentes:`, err);
       });
     }, 5000);
 
     // Agendar jobs específicos para esta conta
     const accountJobs = {};
     
-    // Agendar verificação periódica de novas operações a cada 3 segundos
-    accountJobs.checkNewTrades = schedule.scheduleJob('*/3 * * * * *', async () => {
+    // Agendar verificação periódica de novas operações a cada 15 segundos
+    accountJobs.checkNewTrades = schedule.scheduleJob('*/15 * * * * *', async () => {
       try {
         await checkNewTrades(accountId);
       } catch (error) {
         console.error(`[MONITOR] Erro ao verificar novas operações para conta ${accountId}:`, error);
       }
     });
-
-    // Restante dos jobs (manter como está)
     
     // Iniciar monitoramento de preços para posições abertas
     try {
@@ -454,6 +457,8 @@ async function getCurrentPrice(symbol) {
 // Função para verificar novas operações e criar ordens
 async function checkNewTrades(accountId = 1) {
   try {
+    console.log(`[MONITOR] Verificando novos sinais para conta ${accountId}...`);
+    
     const db = await getDatabaseInstance(accountId);
     if (!db) {
       console.error(`[MONITOR] Falha ao obter instância do banco de dados para conta ${accountId}`);
@@ -469,119 +474,92 @@ async function checkNewTrades(accountId = 1) {
 
     console.log(`[MONITOR] Encontrados ${pendingSignals.length} sinais pendentes para processar (Conta ${accountId})`);
 
-    if (pendingSignals.length > 0) {
-      // Mostrar informações detalhadas para ajudar no diagnóstico
-      for (const signal of pendingSignals) {
-        console.log(`[MONITOR] Sinal pendente: ID=${signal.id}, Symbol=${signal.symbol}, Side=${signal.side}, Entry=${signal.entry_price}`);
+    for (const signal of pendingSignals) {
+      console.log(`[MONITOR] Processando sinal pendente: ID=${signal.id}, Symbol=${signal.symbol}, Side=${signal.side}, Entry=${signal.entry_price}`);
+      
+      // Verificar se o sinal já está sendo processado
+      if (processingSignals.has(signal.id)) {
+        console.log(`[MONITOR] Sinal ID ${signal.id} já está em processamento, pulando...`);
+        continue;
+      }
+
+      // Marcar como em processamento
+      processingSignals.add(signal.id);
+
+      try {
+        // Atualizar status para PROCESSANDO antes de processar para evitar duplicação
+        await db.query(
+          'UPDATE webhook_signals SET status = "PROCESSANDO" WHERE id = ?',
+          [signal.id]
+        );
+
+        // Obter preço atual
+        const currentPrice = await getCurrentPrice(signal.symbol);
         
-        // Verificar se o sinal já está sendo processado
-        if (processingSignals.has(signal.id)) {
-          console.log(`[MONITOR] Sinal ID ${signal.id} já está em processamento, pulando...`);
-          continue;
+        if (!currentPrice) {
+          throw new Error(`Não foi possível obter o preço atual para ${signal.symbol}`);
         }
 
-        // Marcar como em processamento
-        processingSignals.add(signal.id);
+        console.log(`[MONITOR] Preço atual de ${signal.symbol}: ${currentPrice}, Preço de entrada: ${signal.entry_price}`);
 
+        // Processar o sinal com o preço atual
+        await processSignal(db, signal, currentPrice, accountId);
+      } catch (procError) {
+        console.error(`[MONITOR] Erro ao processar sinal ID ${signal.id}:`, procError);
+        
+        // Se houver erro, tentar atualizar o status
         try {
-          // Atualizar status para PROCESSANDO antes de processar para evitar duplicação
           await db.query(
-            'UPDATE webhook_signals SET status = "PROCESSANDO" WHERE id = ?',
-            [signal.id]
+            'UPDATE webhook_signals SET status = "ERROR", error_message = ? WHERE id = ?',
+            [procError.message.substring(0, 250), signal.id]
           );
-
-          // Obter preço atual
-          const currentPrice = await getCurrentPrice(signal.symbol);
-          
-          if (!currentPrice) {
-            console.error(`[MONITOR] Não foi possível obter o preço atual para ${signal.symbol}`);
-            await db.query(
-              'UPDATE webhook_signals SET status = "ERROR", error_message = ? WHERE id = ?',
-              ['Não foi possível obter preço atual', signal.id]
-            );
-            processingSignals.delete(signal.id);
-            continue;
-          }
-
-          // Se for uma entrada imediata, processar o sinal
-          if (!signal.entry_condition || signal.entry_condition === 'IMEDIATA') {
-            console.log(`[MONITOR] Processando entrada imediata para sinal ID ${signal.id}`);
-            await processSignal(db, signal, accountId);
-          } 
-          // Se for aguardar preço gatilho, mudar status para AGUARDANDO_ACIONAMENTO
-          else {
-            console.log(`[MONITOR] Configurando sinal ID ${signal.id} para aguardar acionamento`);
-            await db.query(
-              'UPDATE webhook_signals SET status = "AGUARDANDO_ACIONAMENTO" WHERE id = ?',
-              [signal.id]
-            );
-            
-            // Iniciar WebSocket para monitorar o preço
-            websockets.ensurePriceWebsocketExists(signal.symbol, accountId);
-          }
-        } catch (procError) {
-          console.error(`[MONITOR] Erro ao processar sinal ID ${signal.id}:`, procError);
-          
-          // Se houver erro, tentar atualizar o status
-          try {
-            await db.query(
-              'UPDATE webhook_signals SET status = "ERROR", error_message = ? WHERE id = ?',
-              [procError.message.substring(0, 250), signal.id]
-            );
-          } catch (updateError) {
-            console.error(`[MONITOR] Erro adicional ao atualizar status do sinal ID ${signal.id}:`, updateError);
-          }
-        } finally {
-          // Remover da lista de processamento
-          processingSignals.delete(signal.id);
+        } catch (updateError) {
+          console.error(`[MONITOR] Erro adicional ao atualizar status do sinal ID ${signal.id}:`, updateError);
         }
+      } finally {
+        // Remover da lista de processamento
+        processingSignals.delete(signal.id);
       }
     }
-
-    // Resto da função para verificar sinais CANCELED...
   } catch (error) {
     console.error(`[MONITOR] Erro ao verificar novas operações (conta ${accountId}):`, error);
   }
 }
 
-// Função para processar um sinal recebido via webhook
-async function processSignal(db, signal, accountId = 1) {
+// Função para processar um sinal
+async function processSignal(db, signal, currentPrice, accountId = 1) {
+  console.log(`[MONITOR] Processando sinal ID ${signal.id} para ${signal.symbol}: ${signal.side} a ${signal.entry_price}`);
+  
   const connection = await db.getConnection();
 
   try {
     await connection.beginTransaction();
 
     const {
-      id, symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price, chat_id, timeframe,
-      message_id: originalMessageId,
-      tp1_price, tp2_price, tp3_price, tp4_price, tp5_price
+      id, symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price, chat_id, timeframe
     } = signal;
 
-    console.log(`[MONITOR] Processando sinal ID ${id} para ${symbol}: ${side} a ${entry_price} (Conta ${accountId})`);
-
     // Verificar se já existe uma posição aberta para este símbolo
-    const positionExists = await checkPositionExists(db, symbol, accountId);
-    if (positionExists) {
-      console.log(`[MONITOR] Já existe uma posição aberta para ${symbol}. Ignorando sinal ID ${id}.`);
+    const [existingPositions] = await connection.query(
+      `SELECT id FROM posicoes 
+       WHERE simbolo = ? AND status = 'OPEN' AND conta_id = ?`,
+      [symbol, accountId]
+    );
+
+    if (existingPositions.length > 0) {
       await connection.query(
-        `UPDATE webhook_signals SET status = 'ERROR', error_message = 'Posição já existe para o símbolo' WHERE id = ?`,
-        [id]
+        `UPDATE webhook_signals SET status = 'ERROR', error_message = ? WHERE id = ?`,
+        ['Já existe uma posição aberta para este símbolo', id]
       );
       await connection.commit();
-      return;
+      console.log(`[MONITOR] Sinal ID ${id} ignorado: já existe posição aberta para ${symbol}`);
+      return false;
     }
 
     // Verificar se o símbolo é válido e se o preço de entrada é válido
     if (!symbol || !entry_price || parseFloat(entry_price) <= 0) {
       throw new Error(`Símbolo ou preço de entrada inválidos: ${symbol}, ${entry_price}`);
     }
-
-    // Obter o preço atual do símbolo
-    const currentPrice = await getCurrentPrice(symbol);
-    if (!currentPrice) {
-      throw new Error(`Não foi possível obter o preço atual para ${symbol}`);
-    }
-    console.log(`[MONITOR] Preço atual de ${symbol}: ${currentPrice}`);
 
     // Configurar alavancagem e tipo de margem
     try {
@@ -608,7 +586,13 @@ async function processSignal(db, signal, accountId = 1) {
     
     await connection.commit();
     
+    // Verificar se temos a função executeLimitMakerEntry
+    if (typeof executeLimitMakerEntry !== 'function') {
+      throw new Error('Função executeLimitMakerEntry não está definida. Verifique os imports do módulo.');
+    }
+    
     // Usar o executeLimitMakerEntry para criar a ordem
+    console.log(`[MONITOR] Chamando executeLimitMakerEntry para sinal ID ${id}`);
     const entryResult = await executeLimitMakerEntry(db, signal, currentPrice, accountId);
     
     if (entryResult && entryResult.success) {
@@ -618,7 +602,8 @@ async function processSignal(db, signal, accountId = 1) {
       throw new Error(`Falha ao executar entrada: ${entryResult?.error || 'Motivo desconhecido'}`);
     }
   } catch (error) {
-    console.error(`[MONITOR] Erro ao processar sinal ID ${signal.id || 'N/A'} para ${signal.symbol || 'N/A'}:`, error);
+    console.error(`[MONITOR] Erro ao processar sinal ID ${signal.id} para ${signal.symbol}:`, error);
+    
     if (connection) {
       try {
         await connection.rollback();
@@ -631,7 +616,7 @@ async function processSignal(db, signal, accountId = 1) {
     try {
       await db.query(
         `UPDATE webhook_signals SET status = 'ERROR', error_message = ? WHERE id = ?`,
-        [String(error.message).substring(0, 250), signal.id]
+        [error.message.substring(0, 250), signal.id]
       );
     } catch (updateError) {
       console.error(`[MONITOR] Erro ao atualizar status do sinal para ERROR: ${updateError.message}`);
@@ -642,6 +627,90 @@ async function processSignal(db, signal, accountId = 1) {
     if (connection) {
       connection.release();
     }
+  }
+}
+
+async function forceProcessPendingSignals(accountId = 1) {
+  console.log(`[MONITOR] Forçando processamento de sinais pendentes para conta ${accountId}...`);
+  try {
+    const db = await getDatabaseInstance(accountId);
+    if (!db) {
+      console.error(`[MONITOR] Não foi possível obter conexão com o banco de dados para conta ${accountId}`);
+      return;
+    }
+
+    // Selecionar sinais pendentes
+    const [pendingSignals] = await db.query(`
+      SELECT * FROM webhook_signals
+      WHERE status = 'PENDING' AND conta_id = ?
+      ORDER BY created_at ASC
+    `, [accountId]);
+
+    console.log(`[MONITOR] Encontrados ${pendingSignals.length} sinais pendentes para processamento forçado`);
+
+    if (pendingSignals.length === 0) {
+      return;
+    }
+
+    // Processar cada sinal pendente
+    for (const signal of pendingSignals) {
+      console.log(`[MONITOR] Processando forçadamente sinal ID ${signal.id}: ${signal.symbol} ${signal.side} @ ${signal.entry_price}`);
+      
+      // Verificar se já está sendo processado
+      if (processingSignals.has(signal.id)) {
+        console.log(`[MONITOR] Sinal ID ${signal.id} já está em processamento, pulando...`);
+        continue;
+      }
+
+      // Marcar como em processamento
+      processingSignals.add(signal.id);
+
+      try {
+        // Atualizar status para PROCESSANDO
+        await db.query(
+          'UPDATE webhook_signals SET status = "PROCESSANDO" WHERE id = ?',
+          [signal.id]
+        );
+
+        // Obter o preço atual
+        let currentPrice;
+        try {
+          currentPrice = await getCurrentPrice(signal.symbol);
+          console.log(`[MONITOR] Preço atual de ${signal.symbol}: ${currentPrice}`);
+        } catch (priceError) {
+          console.error(`[MONITOR] Erro ao obter preço atual para ${signal.symbol}:`, priceError);
+          
+          // Se não conseguir o preço, marcar como erro e continuar
+          await db.query(
+            'UPDATE webhook_signals SET status = "ERROR", error_message = ? WHERE id = ?',
+            [`Não foi possível obter preço atual: ${priceError.message}`.substring(0, 250), signal.id]
+          );
+          
+          processingSignals.delete(signal.id);
+          continue;
+        }
+
+        // Processar o sinal com o preço atual
+        await processSignal(db, signal, currentPrice, accountId);
+      } catch (error) {
+        console.error(`[MONITOR] Erro ao processar sinal ID ${signal.id}:`, error);
+        
+        // Atualizar status para ERROR
+        try {
+          await db.query(
+            'UPDATE webhook_signals SET status = "ERROR", error_message = ? WHERE id = ?',
+            [error.message.substring(0, 250), signal.id]
+          );
+        } catch (updateError) {
+          console.error(`[MONITOR] Erro ao atualizar status do sinal para ERROR:`, updateError);
+        }
+      } finally {
+        // Remover da lista de processamento
+        processingSignals.delete(signal.id);
+      }
+    }
+  } catch (error) {
+    console.error(`[MONITOR] Erro ao forçar processamento de sinais pendentes:`, error);
   }
 }
 
@@ -1433,7 +1502,9 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId = 1) {
     const pendingOrdersCount = (pendingOrdersResult && pendingOrdersResult[0] && pendingOrdersResult[0].count) || 0;
 
     // 4. Verificar se precisamos manter o WebSocket ativo
-    if (pendingSignals.length === 0 && openPositionsCount === 0 && pendingOrdersCount === 0) {
+    if (pendingSignals.length === 0 && 
+        openPositionsCount === 0 && 
+        pendingOrdersCount === 0) {
       // Incrementar contador vazio para este símbolo
       websocketEmptyCheckCounter[symbol] = (websocketEmptyCheckCounter[symbol] || 0) + 1;
       
@@ -1508,7 +1579,7 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId = 1) {
             if (entryResult && entryResult.success) {
               console.log(`[MONITOR] Entrada executada com sucesso para sinal ID ${signal.id}. Posição ID: ${entryResult.positionId}`);
             } else {
-              console.error(`[MONITOR] Falha ao executar entrada para sinal ID ${signal.id}: ${entryResult?.error || 'Erro desconhecido'}`);
+              console.error(`[MONITOR] Falha ao executar entrada para sinal ID ${signal.id}: ${entryResult?.error || 'Erro desconheido'}`);
               
               await db.query(
                 'UPDATE webhook_signals SET status = "ERROR", error_message = ? WHERE id = ?',
@@ -1654,96 +1725,95 @@ async function checkOrderTriggers(db, position, currentPrice) {
     }
 
     // 5. REPOSITIONAMENTO PARA BREAKEVEN (APÓS TP1)
-if (priceHitTP1) {
-  console.log(`${functionPrefix} Preço (${currentPrice}) atingiu TP1 (${tp1Price}) para Posição ID ${positionId} (${side}). Nível Trailing: ${currentTrailingLevel}. Iniciando SL para Breakeven.`);
-  
-  // NOVO: Verificar novamente para evitar reposicionamento duplicado
-  const [checkAgain] = await db.query(
-    `SELECT trailing_stop_level FROM posicoes WHERE id = ? AND trailing_stop_level = 'ORIGINAL'`,
-    [positionId]
-  );
-  
-  if (checkAgain.length === 0) {
-    console.log(`${functionPrefix} Nível de trailing já foi atualizado para esta posição. Ignorando reposicionamento.`);
-    return;
-  }
-  
-  // Atualizar para BREAKEVEN primeiro, antes mesmo de cancelar ordens
-  await db.query(
-    `UPDATE posicoes SET trailing_stop_level = 'BREAKEVEN', data_hora_ultima_atualizacao = ? WHERE id = ?`,
-    [formatDateForMySQL(new Date()), positionId]
-  );
-  
-  console.log(`${functionPrefix} Cancelando ordens SL existentes ANTES de mover para breakeven...`);
-  await cancelAllActiveStopLosses(db, position);
-  
-  await new Promise(resolve => setTimeout(resolve, 2500)); // Pausa para processamento da corretora
+    if (priceHitTP1) {
+      console.log(`${functionPrefix} Preço (${currentPrice}) atingiu TP1 (${tp1Price}) para Posição ID ${positionId} (${side}). Nível Trailing: ${currentTrailingLevel}. Iniciando SL para Breakeven.`);
 
-  try {
-    // MODIFICADO: Buscar o entry_price do sinal original em webhook_signals
-    const [signalEntryPriceResult] = await db.query(
-      `SELECT entry_price FROM webhook_signals WHERE position_id = ? ORDER BY created_at DESC LIMIT 1`,
-      [positionId]
-    );
-    
-    // Usar o entry_price do sinal se disponível, caso contrário usar o entryPrice da posição
-    const newSLBreakevenPrice = signalEntryPriceResult.length > 0 && signalEntryPriceResult[0].entry_price ? 
-                               parseFloat(signalEntryPriceResult[0].entry_price) : 
-                               entryPrice;
-    
-    console.log(`${functionPrefix} Usando preço de entrada do sinal original: ${newSLBreakevenPrice} (preço da posição: ${entryPrice})`);
-    
-    const quantity = parseFloat(position.quantidade);
-    const oppositeSide = side === 'BUY' || side === 'COMPRA' ? 'SELL' : 'BUY';
-    
-    console.log(`${functionPrefix} Criando nova ordem SL (breakeven) para ${position.simbolo} @ ${newSLBreakevenPrice}`);
-    const slResponse = await newStopOrder(
-      position.simbolo, quantity, oppositeSide, newSLBreakevenPrice, null, true, true
-    );
-    
-    if (slResponse && slResponse.data && slResponse.data.orderId) {
-      const newOrderId = String(slResponse.data.orderId);
-      console.log(`${functionPrefix} Nova SL (breakeven) criada: ID ${newOrderId} @ ${newSLBreakevenPrice}`);
-      await insertNewOrder(db, {
-        tipo_ordem: 'STOP_MARKET', 
-        preco: newSLBreakevenPrice, // Usando o preço do sinal original
-        quantidade: quantity,
-        id_posicao: positionId, 
-        status: 'NEW', 
-        data_hora_criacao: formatDateForMySQL(new Date()),
-        id_externo: newOrderId, 
-        side: oppositeSide, 
-        simbolo: position.simbolo,
-        tipo_ordem_bot: 'STOP_LOSS', 
-        target: null, 
-        reduce_only: true, 
-        close_position: true,
-        last_update: formatDateForMySQL(new Date()), 
-        orign_sig: position.orign_sig,
-        observacao: 'Trailing Stop - Breakeven (preço do sinal original)'
-      });
+      // NOVO: Verificar novamente para evitar reposicionamento duplicado
+      const [checkAgain] = await db.query(
+        `SELECT trailing_stop_level FROM posicoes WHERE id = ? AND trailing_stop_level = 'ORIGINAL'`,
+        [positionId]
+      );
       
-      console.log(`${functionPrefix} SL Breakeven (${newOrderId}) criado e posição atualizada para BREAKEVEN.`);
-      
-      // Notificação Telegram (se necessário)
-      try {
-        const [webhookInfo] = await db.query(`SELECT chat_id FROM webhook_signals WHERE position_id = ? ORDER BY created_at DESC LIMIT 1`, [positionId]);
-        if (webhookInfo.length > 0 && webhookInfo[0].chat_id && typeof bot !== 'undefined' && bot && bot.telegram) {
-          await bot.telegram.sendMessage(webhookInfo[0].chat_id, `✅ Trailing Stop Ativado para ${position.simbolo}\n\nAlvo 1 atingido\nSL movido para breakeven: (${newSLBreakevenPrice})`);
-        }
-      } catch (notifyError) { 
-        console.error(`${functionPrefix} Erro ao notificar SL breakeven: ${notifyError.message}`); 
+      if (checkAgain.length === 0) {
+        console.log(`${functionPrefix} Nível de trailing já foi atualizado para esta posição. Ignorando reposicionamento.`);
+        return;
       }
-    } else {
-      console.error(`${functionPrefix} Falha ao criar nova SL (breakeven) para ${position.simbolo}. Resposta:`, slResponse);
-    }
-  } catch (error) {
-    const errorMsg = error.response?.data?.msg || error.message || String(error);
-    console.error(`${functionPrefix} Erro crítico ao criar nova SL (breakeven) para ${position.simbolo}: ${errorMsg}`, error.stack);
-  }
-}
+      
+      // Atualizar para BREAKEVEN primeiro, antes mesmo de cancelar ordens
+      await db.query(
+        `UPDATE posicoes SET trailing_stop_level = 'BREAKEVEN', data_hora_ultima_atualizacao = ? WHERE id = ?`,
+        [formatDateForMySQL(new Date()), positionId]
+      );
+      
+      console.log(`${functionPrefix} Cancelando ordens SL existentes ANTES de mover para breakeven...`);
+      await cancelAllActiveStopLosses(db, position);
+      
+      await new Promise(resolve => setTimeout(resolve, 2500)); // Pausa para processamento da corretora
+
+      try {
+        // MODIFICADO: Buscar o entry_price do sinal original em webhook_signals
+        const [signalEntryPriceResult] = await db.query(
+          `SELECT entry_price FROM webhook_signals WHERE position_id = ? ORDER BY created_at DESC LIMIT 1`,
+          [positionId]
+        );
+        
+        // Usar o entry_price do sinal se disponível, caso contrário usar o entryPrice da posição
+        const newSLBreakevenPrice = signalEntryPriceResult.length > 0 && signalEntryPriceResult[0].entry_price ? 
+                                   parseFloat(signalEntryPriceResult[0].entry_price) : 
+                                   entryPrice;
+        
+        console.log(`${functionPrefix} Usando preço de entrada do sinal original: ${newSLBreakevenPrice} (preço da posição: ${entryPrice})`);
+        
+        const quantity = parseFloat(position.quantidade);
+        const oppositeSide = side === 'BUY' || side === 'COMPRA' ? 'SELL' : 'BUY';
+        
+        console.log(`${functionPrefix} Criando nova ordem SL (breakeven) para ${position.simbolo} @ ${newSLBreakevenPrice}`);
+        const slResponse = await newStopOrder(
+          position.simbolo, quantity, oppositeSide, newSLBreakevenPrice, null, true, true
+        );
+        
+        if (slResponse && slResponse.data && slResponse.data.orderId) {
+          const newOrderId = String(slResponse.data.orderId);
+          console.log(`${functionPrefix} Nova SL (breakeven) criada: ID ${newOrderId} @ ${newSLBreakevenPrice}`);
+          await insertNewOrder(db, {
+            tipo_ordem: 'STOP_MARKET', 
+            preco: newSLBreakevenPrice, // Usando o preço do sinal original
+            quantidade: quantity,
+            id_posicao: positionId, 
+            status: 'NEW', 
+            data_hora_criacao: formatDateForMySQL(new Date()),
+            id_externo: newOrderId, 
+            side: oppositeSide, 
+            simbolo: position.simbolo,
+            tipo_ordem_bot: 'STOP_LOSS', 
+            target: null, 
+            reduce_only: true, 
+            close_position: true,
+            last_update: formatDateForMySQL(new Date()), 
+            orign_sig: position.orign_sig,
+            observacao: 'Trailing Stop - Breakeven (preço do sinal original)'
+          });
+          
+          console.log(`${functionPrefix} SL Breakeven (${newOrderId}) criado e posição atualizada para BREAKEVEN.`);
+          
+          // Notificação Telegram (se necessário)
+          try {
+            const [webhookInfo] = await db.query(`SELECT chat_id FROM webhook_signals WHERE position_id = ? ORDER BY created_at DESC LIMIT 1`, [positionId]);
+            if (webhookInfo.length > 0 && webhookInfo[0].chat_id && typeof bot !== 'undefined' && bot && bot.telegram) {
+              await bot.telegram.sendMessage(webhookInfo[0].chat_id, `✅ Trailing Stop Ativado para ${position.simbolo}\n\nAlvo 1 atingido\nSL movido para breakeven: (${newSLBreakevenPrice})`);
+            }
+          } catch (notifyError) { 
+            console.error(`${functionPrefix} Erro ao notificar SL breakeven: ${notifyError.message}`); 
+          }
+        } else {
+          console.error(`${functionPrefix} Falha ao criar nova SL (breakeven) para ${position.simbolo}. Resposta:`, slResponse);
+        }
+      } catch (error) {
+        const errorMsg = error.response?.data?.msg || error.message || String(error);
+        console.error(`${functionPrefix} Erro crítico ao criar nova SL (breakeven) para ${position.simbolo}: ${errorMsg}`, error.stack);
+      }
     // 6. REPOSICIONAMENTO PARA TP1 (APÓS TP3)
-    else if (priceHitTP3) {
+    } else if (priceHitTP3) {
       console.log(`${functionPrefix} Preço (${currentPrice}) atingiu TP3 (${tp3Price}) para Posição ID ${positionId} (${side}). Nível Trailing: ${currentTrailingLevel}. Iniciando SL para TP1 (${tp1Price}).`);
       
       // NOVO: Verificar novamente para evitar reposicionamento duplicado
@@ -2320,3 +2390,10 @@ function formatDecimal(value, maxPrecision = 8) {
   // Depois remove zeros desnecessários e pontos decimais isolados
   return parseFloat(formatted).toString();
 }
+
+module.exports = {
+  initializeMonitoring,
+  checkNewTrades,
+  forceProcessPendingSignals,
+  processSignal
+};
