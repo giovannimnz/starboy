@@ -749,14 +749,17 @@ async function getPrecision(symbol, accountId = 1) {
 
 async function getTickSize(symbol, accountId = 1) {
   try {
+    // Garantir que accountId seja sempre um número
+    const numericAccountId = parseInt(accountId) || 1;
+    
     // Obter credenciais da conta específica
-    const credentials = await loadCredentialsFromDatabase(accountId);
+    const credentials = await loadCredentialsFromDatabase(numericAccountId);
 
     const response = await axios.get(`${credentials.apiUrl}/v1/exchangeInfo`);
     const symbolInfo = response.data.symbols.find(s => s.symbol === symbol);
 
     if (!symbolInfo) {
-      throw new Error(`Símbolo ${symbol} não encontrado`);
+      throw new Error(`Símbolo ${symbol} não encontrado na resposta da API`);
     }
 
     // Encontrar a regra de filtro para o tick size
@@ -766,28 +769,46 @@ async function getTickSize(symbol, accountId = 1) {
     }
 
     // Retornar o tick size
-    return parseFloat(priceFilter.tickSize);
+    return {
+      tickSize: parseFloat(priceFilter.tickSize),
+      minPrice: parseFloat(priceFilter.minPrice),
+      maxPrice: parseFloat(priceFilter.maxPrice)
+    };
   } catch (error) {
     console.error(`[API] Erro ao obter tick size para ${symbol}:`, error.message);
     throw error;
   }
 }
 
-function roundPriceToTickSize(price, tickSize) {
-  if (!tickSize) {
+async function roundPriceToTickSize(symbol, price, accountId = 1) {
+  try {
+    // Garantir que accountId seja um número
+    const numericAccountId = parseInt(accountId) || 1;
+    
+    // Obter o tickSize para o símbolo
+    const tickInfo = await getTickSize(symbol, numericAccountId);
+    const tickSize = tickInfo.tickSize;
+    
+    if (!tickSize || tickSize <= 0) {
+      console.warn(`[API] TickSize inválido para ${symbol}: ${tickSize}. Retornando preço original.`);
+      return price;
+    }
+    
+    // Converter o tick size para um número de casas decimais
+    const precision = tickSize.toString().includes('.') 
+      ? tickSize.toString().split('.')[1].length 
+      : 0;
+    
+    // Arredondar para o tick size mais próximo
+    const roundedPrice = Math.round(price / tickSize) * tickSize;
+    
+    // Formatar para a precisão correta
+    return parseFloat(roundedPrice.toFixed(precision));
+  } catch (error) {
+    console.error(`[API] Erro ao arredondar preço para ${symbol}:`, error.message);
+    // Em caso de erro, retornar o preço original
     return price;
   }
-  
-  // Converter o tick size para um múltiplo de 10
-  const precision = tickSize.toString().includes('.') 
-    ? tickSize.toString().split('.')[1].length 
-    : 0;
-  
-  // Arredondar para o tick size mais próximo
-  const roundedPrice = Math.round(price / tickSize) * tickSize;
-  
-  // Formatar para a precisão correta
-  return parseFloat(roundedPrice.toFixed(precision));
 }
 
 async function changeInitialLeverage(accountId, symbol, leverage) {

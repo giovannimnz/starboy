@@ -41,7 +41,8 @@ async function executeLimitMakerEntry(db, signal, currentPriceTrigger, accountId
     let wsUpdateErrorCount = 0;
 
     try {
-        const existingPositionsOnExchange = await getAllOpenPositions(accountId, signal.symbol);
+        const numericAccountId = parseInt(accountId) || 1;
+        const existingPositionsOnExchange = await getAllOpenPositions(numericAccountId, signal.symbol);
         const positionAlreadyExists = existingPositionsOnExchange.some(p =>
             p.simbolo === signal.symbol && Math.abs(p.quantidade) > 0
         );
@@ -59,11 +60,11 @@ async function executeLimitMakerEntry(db, signal, currentPriceTrigger, accountId
         
         console.log(`[LIMIT_ENTRY] Iniciando LIMIT MAKER para Sinal ID ${signal.id} (${signal.symbol})`);
         
-        precisionInfo = await getPrecision(signal.symbol);
+        precisionInfo = await getPrecision(signal.symbol, numericAccountId);
         quantityPrecision = precisionInfo.quantityPrecision;
         pricePrecision = precisionInfo.pricePrecision;
-        
-        const availableBalance = await getAvailableBalance(accountId);
+
+        const availableBalance = await getAvailableBalance(numericAccountId);
         const capitalPercentage = parseFloat(signal.capital_pct) / 100;
         leverage = parseInt(signal.leverage); 
         
@@ -138,7 +139,7 @@ await waitForWsData();
 
             // Sincronizar preenchimentos antes de obter o book
 try {
-    const recentOrders = await getRecentOrders(signal.symbol, 15);
+    const recentOrders = await getRecentOrders(numericAccountId, signal.symbol, 15);
     
     // CORREÇÃO: Verificar apenas ordens recentes que pertencem a ESTE SINAL
     // Usar o tempo de início da execução atual como filtro
@@ -237,7 +238,7 @@ if (binanceSide === 'BUY') {
 }
 
 // Garantir que o preço esteja no tick correto
-currentLocalMakerPrice = await roundPriceToTickSize(signal.symbol, currentLocalMakerPrice);
+currentLocalMakerPrice = await roundPriceToTickSize(signal.symbol, currentLocalMakerPrice, numericAccountId);
 
 // Adicionar log para depuração
 console.log(`[LIMIT_ENTRY] Preço MAKER ${binanceSide}: ${currentLocalMakerPrice.toFixed(pricePrecision)} | Book: Bid=${bestBid.toFixed(pricePrecision)}, Ask=${bestAsk.toFixed(pricePrecision)}, Spread=${(bestAsk-bestBid).toFixed(pricePrecision)}`);
@@ -422,7 +423,7 @@ console.log(`[LIMIT_ENTRY] Preço MAKER ${binanceSide}: ${currentLocalMakerPrice
                 try {
                     console.log(`[LIMIT_ENTRY] Enviando NOVA LIMIT ${signal.symbol}: ${binanceSide} ${newOrderQty.toFixed(quantityPrecision)} @ ${currentLocalMakerPrice.toFixed(pricePrecision)}`);
                     const orderResponse = await newLimitMakerOrder(
-                        signal.symbol, newOrderQty, binanceSide, currentLocalMakerPrice
+                        numericAccountId, signal.symbol, newOrderQty, binanceSide, currentLocalMakerPrice
                     );
                     if (orderResponse.status === 'REJECTED_POST_ONLY' || (orderResponse.info && orderResponse.info.msg === 'Filter failure: PRICE_FILTER')) {
                         console.log(`[LIMIT_ENTRY] Nova LIMIT MAKER rejeitada (Post-Only ou Price Filter). Aguardando próxima iteração.`);
@@ -1005,7 +1006,7 @@ async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3000) {
     
     try {
         // Verificar imediatamente o status da ordem (sem espera inicial)
-        const orderStatus = await getOrderStatus(orderId, symbol);
+        const orderStatus = await getOrderStatus(numericAccountId, signal.symbol, orderId);
         
         // Se a ordem foi executada (total ou parcialmente), retornar imediatamente
         if (orderStatus.status === 'FILLED' || orderStatus.status === 'PARTIALLY_FILLED') {
@@ -1019,7 +1020,7 @@ async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3000) {
     while (Date.now() - startTime < maxWaitMs) {
         try {
             // Verificar status da ordem
-            const orderStatus = await getOrderStatus(orderId, symbol);
+            const orderStatus = await getOrderStatus(numericAccountId, signal.symbol, orderId);
             
             // Se a ordem foi executada (total ou parcialmente), retornar imediatamente
             if (orderStatus.status === 'FILLED' || orderStatus.status === 'PARTIALLY_FILLED') {
