@@ -1126,7 +1126,7 @@ async function updateLeverageBracketsInDatabase(accountId) {
           
           // Verificar se já existe este nível para este símbolo
           const [existing] = await connection.query(
-            `SELECT id FROM leverage_brackets 
+            `SELECT id FROM leverage 
              WHERE symbol = ? AND bracket_id = ? AND conta_id = ?`,
             [symbol, i, accountId]
           );
@@ -1134,7 +1134,7 @@ async function updateLeverageBracketsInDatabase(accountId) {
           if (existing.length > 0) {
             // Atualizar se já existir
             await connection.query(
-              `UPDATE leverage_brackets 
+              `UPDATE leverage 
                SET initial_leverage = ?, notional_cap = ?, notional_floor = ?, maint_margin_ratio = ?, cum = ? 
                WHERE symbol = ? AND bracket_id = ? AND conta_id = ?`,
               [
@@ -1151,7 +1151,7 @@ async function updateLeverageBracketsInDatabase(accountId) {
           } else {
             // Inserir novo se não existir
             await connection.query(
-              `INSERT INTO leverage_brackets 
+              `INSERT INTO leverage
                (symbol, bracket_id, initial_leverage, notional_cap, notional_floor, maint_margin_ratio, cum, conta_id) 
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
               [
@@ -1203,7 +1203,7 @@ async function getLeverageBracketsFromDb(accountId = 1, symbol) {
 
     // Verificar se o símbolo existe no banco
     const [rows] = await db.query(`
-      SELECT * FROM leverage_brackets 
+      SELECT * FROM leverage 
       WHERE symbol = ? AND conta_id = ?
       ORDER BY bracket_id ASC
     `, [symbol, accountId]);
@@ -1215,7 +1215,7 @@ async function getLeverageBracketsFromDb(accountId = 1, symbol) {
 
       // Consultar novamente após atualização
       const [updatedRows] = await db.query(`
-        SELECT * FROM leverage_brackets 
+        SELECT * FROM leverage 
         WHERE symbol = ? AND conta_id = ?
         ORDER BY bracket_id ASC
       `, [symbol, accountId]);
