@@ -48,7 +48,6 @@ async function verificarCorretoras() {
       console.log(`\n=== Corretora: ${corretora.corretora} (ID: ${corretora.id}, Ambiente: ${corretora.ambiente}) ===`);
       
       // Testar URLs
-      await testarApiUrl(corretora.spot_rest_api_url, "API REST Spot");
       await testarApiUrl(corretora.futures_rest_api_url, "API REST Futures");
       
       // Verificar se as URLs estão sendo utilizadas corretamente
