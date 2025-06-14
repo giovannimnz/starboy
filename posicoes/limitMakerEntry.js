@@ -53,7 +53,7 @@ async function executeLimitMakerEntry(db, signal, currentPrice, accountId = 1) {
 
       // Verificar se já existe ordem ativa para este sinal
   const [existingOrders] = await db.query(
-    `SELECT order_id FROM orders WHERE webhook_id = ? AND status IN ('NEW', 'PARTIALLY_FILLED')`,
+    `SELECT order_id FROM ordens WHERE webhook_id = ? AND status IN ('NEW', 'PARTIALLY_FILLED')`,
     [signal.id]
   );
   
