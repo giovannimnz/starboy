@@ -74,18 +74,64 @@ async function placeOrderViaWebSocket(orderParams) {
  * @param {number|string} quantity - Quantidade para a ordem
  * @param {string} side - Lado da ordem ('BUY' ou 'SELL')
  * @param {number|string} price - Preço da ordem
+ * @param {number} [accountId=1] - ID da conta
  * @returns {Promise<Object>} Resposta da API
  */
-async function placeLimitMakerOrderViaWebSocket(symbol, quantity, side, price) {
-    return await placeOrderViaWebSocket({
-        symbol,
-        side,
-        type: 'LIMIT',
-        quantity,
-        price,
-        timeInForce: 'GTX', // GTX garante que seja uma ordem LIMIT_MAKER (Post Only)
-        newOrderRespType: 'RESULT'
-    });
+async function placeLimitMakerOrderViaWebSocket(symbol, quantity, side, price, accountId = 1) {
+    // Verificar se WebSocket API está conectado
+    if (!websockets.isWebSocketApiConnected(accountId)) {
+        await websockets.startWebSocketApi(accountId);
+        
+        // Verificar novamente após tentativa de conexão
+        if (!websockets.isWebSocketApiConnected(accountId)) {
+            throw new Error(`[WS-API] WebSocket API não está conectado para conta ${accountId}. Impossível enviar ordem.`);
+        }
+    }
+    
+    try {
+        // Validações dos parâmetros
+        if (!symbol) throw new Error('Símbolo é obrigatório');
+        if (!side || (side !== 'BUY' && side !== 'SELL')) throw new Error('Side deve ser BUY ou SELL');
+        if (!quantity || isNaN(parseFloat(quantity)) || parseFloat(quantity) <= 0) throw new Error(`Quantidade inválida: ${quantity}`);
+        if (!price || isNaN(parseFloat(price)) || parseFloat(price) <= 0) throw new Error(`Preço inválido: ${price}`);
+        
+        // Converter para string se for número
+        const quantityStr = typeof quantity === 'number' ? quantity.toString() : quantity;
+        const priceStr = typeof price === 'number' ? price.toString() : price;
+        
+        console.log(`[WS-API] Enviando ordem LIMIT MAKER via WebSocket: ${symbol} ${side} ${quantityStr} @ ${priceStr}`);
+        
+        // Criar parâmetros da ordem
+        const orderParams = {
+            symbol,
+            side,
+            type: 'LIMIT',
+            quantity: quantityStr,
+            price: priceStr,
+            timeInForce: 'GTX', // GTX garante que seja uma ordem "post-only"
+            newOrderRespType: 'RESULT'
+        };
+        
+        // Criar requisição assinada para ordem
+        const request = websockets.createSignedRequest('order.place', orderParams, accountId);
+        
+        // Enviar requisição e aguardar resposta
+        const response = await websockets.sendWebSocketApiRequest(request, 30000, accountId);
+        
+        // Verificar se a resposta contém um status de sucesso
+        if (response.status === 200 && response.result) {
+            console.log(`[WS-API] Ordem LIMIT MAKER criada com sucesso via WebSocket API. ID: ${response.result.orderId}`);
+            return response.result;
+        } else {
+            throw new Error(`Resposta inválida da WebSocket API: ${JSON.stringify(response)}`);
+        }
+    } catch (error) {
+        // Capturar e formatar erro para diagnóstico mais fácil
+        const errorMessage = error.error?.msg || error.message || 'Erro desconhecido';
+        console.error(`[WS-API] Erro ao enviar ordem LIMIT MAKER via WebSocket API: ${errorMessage}`);
+        
+        throw error;
+    }
 }
 
 /**
