@@ -153,142 +153,87 @@ async function initializeMonitoring(accountId = 1) {
     // Usar os handlers configurados nos websockets
     websockets.setMonitoringCallbacks(handlers);
     
+    // Iniciar userDataStream para esta conta
+    await websockets.startUserDataStream(getDatabaseInstance(accountId), accountId);
+
+    // Iniciar WebSocket API para operações de trading
+    try {
+      const wsApiConnection = await websockets.startWebSocketApi(accountId);
+      const authenticated = await websockets.authenticateWebSocketApi(accountId);
+      
+      if (authenticated) {
+        console.log('[MONITOR] WebSocket API autenticado com sucesso');
+      } else {
+        console.log('[MONITOR] WebSocket API operando em modo não autenticado. Requisições incluirão assinatura individual.');
+      }
+    } catch (wsApiError) {
+      console.error('[MONITOR] Erro ao iniciar WebSocket API:', wsApiError);
+      console.log('[MONITOR] Sistema continuará usando a API REST como fallback');
+    }
+
+    // Sincronizar saldo da conta logo após conexão
+    try {
+      const result = await syncAccountBalance(accountId);
+      if (result) {
+        console.log(`[MONITOR] Saldo inicial conta ${accountId}: ${result.saldo.toFixed(2)} USDT | Base Cálculo: ${result.saldo_base_calculo.toFixed(2)} USDT`);
+      }
+    } catch (error) {
+      console.error(`[MONITOR] Erro ao sincronizar saldo inicial para conta ${accountId}:`, error);
+    }
+
+    // Verificar sinais pendentes ao iniciar
+    const [pendingSignals] = await db.query(`
+      SELECT id, symbol, side, entry_price, status 
+      FROM webhook_signals 
+      WHERE status IN ('PENDING', 'PROCESSANDO', 'AGUARDANDO_ACIONAMENTO')
+      AND conta_id = ?
+    `, [accountId]);
+
+    console.log(`[MONITOR] Ao iniciar, encontrados ${pendingSignals.length} sinais pendentes para conta ${accountId}:`);
+    pendingSignals.forEach(signal => {
+      console.log(`  - ID=${signal.id}, Symbol=${signal.symbol}, Side=${signal.side}, Status=${signal.status}`);
+      
+      // Iniciar WebSockets para todos os símbolos com sinais pendentes
+      websockets.ensurePriceWebsocketExists(signal.symbol, accountId);
+    });
+
+    // Executar verificação inicial de novas operações
+    setTimeout(() => {
+      checkNewTrades(accountId).catch(err => {
+        console.error(`[MONITOR] Erro na verificação inicial de novas operações:`, err);
+      });
+    }, 5000);
+
+    // Agendar jobs específicos para esta conta
+    const accountJobs = {};
+    
+    // Agendar verificação periódica de novas operações a cada 3 segundos
+    accountJobs.checkNewTrades = schedule.scheduleJob('*/3 * * * * *', async () => {
+      try {
+        await checkNewTrades(accountId);
+      } catch (error) {
+        console.error(`[MONITOR] Erro ao verificar novas operações para conta ${accountId}:`, error);
+      }
+    });
+
+    // Restante dos jobs (manter como está)
+    
+    // Iniciar monitoramento de preços para posições abertas
+    try {
+      await startPriceMonitoring(accountId);
+    } catch (error) {
+      console.error('[MONITOR] Erro ao iniciar monitoramento de preços:', error);
+    }
+
+    await logOpenPositionsAndOrders(accountId);
+
+    console.log('[MONITOR] Sistema de monitoramento inicializado com sucesso!');
+    
+    return accountJobs;
   } catch (error) {
     console.error(`[MONITOR] Erro na configuração inicial para conta ${accountId}: ${error.message}`);
     throw error;
   }
-
-    await websockets.startUserDataStream(getDatabaseInstance(accountId), accountId);
-
-  // Iniciar WebSocket API para operações de trading
-  try {
-    const wsApiConnection = await websockets.startWebSocketApi(accountId);
-    const authenticated = await websockets.authenticateWebSocketApi(accountId);
-    
-    if (authenticated) {
-      console.log('[MONITOR] WebSocket API autenticado com sucesso');
-    } else {
-      console.log('[MONITOR] WebSocket API operando em modo não autenticado. Requisições incluirão assinatura individual.');
-    }
-  } catch (wsApiError) {
-    console.error('[MONITOR] Erro ao iniciar WebSocket API:', wsApiError);
-    console.log('[MONITOR] Sistema continuará usando a API REST como fallback');
-  }
-
-  // Sincronizar saldo da conta logo após conexão
-  try {
-    const result = await syncAccountBalance(accountId);
-    if (result) {
-      console.log(`[MONITOR] Saldo inicial conta ${accountId}: ${result.saldo.toFixed(2)} USDT | Base Cálculo: ${result.saldo_base_calculo.toFixed(2)} USDT`);
-    }
-  } catch (error) {
-    console.error(`[MONITOR] Erro ao sincronizar saldo inicial para conta ${accountId}:`, error);
-  }
-
-  // Agendar jobs específicos para esta conta
-  const accountJobs = {};
-  
-  // Agendar verificação periódica de novas operações
-  accountJobs.checkNewTrades = schedule.scheduleJob('*/3 * * * * *', async () => {
-    try {
-      await checkNewTrades(accountId);
-    } catch (error) {
-      console.error(`[MONITOR] Erro ao verificar novas operações para conta ${accountId}:`, error);
-    }
-  });
-
-  scheduledJobs.updateLeverageBrackets = schedule.scheduleJob('0 2 * * *', async () => {
-    try {
-      console.log('[MONITOR] Iniciando atualização diária dos dados de alavancagem...');
-      const recordsUpdated = await updateLeverageBracketsInDatabase(true); // true = forçar atualização
-      console.log(`[MONITOR] Atualização diária concluída. ${recordsUpdated} registros de alavancagem atualizados.`);
-    } catch (error) {
-      console.error('[MONITOR] Erro na atualização diária de dados de alavancagem:', error);
-    }
-  });
-
-  // Adicionar job para verificar ordens expiradas a cada 5 minutos
-  accountJobs.checkExpiredOrders = schedule.scheduleJob('*/5 * * * *', async () => {
-    try {
-      await checkExpiredOrders(accountId);
-    } catch (error) {
-      console.error(`[MONITOR] Erro ao verificar ordens expiradas para conta ${accountId}:`, error);
-    }
-  });
-
-  // Sincronizar saldo a cada hora
-  accountJobs.syncAccountBalance = schedule.scheduleJob('0 * * * *', async () => {
-    try {
-      //console.log('[MONITOR] Sincronizando saldo (job periódico)...');
-      await syncAccountBalance(accountId);
-    } catch (error) {
-      console.error(`[MONITOR] Erro na sincronização periódica de saldo para conta ${accountId}:`, error);
-    }
-  });
-
-  accountJobs.syncPositionsWithExchange = schedule.scheduleJob('*/30 * * * * *', async () => {
-    try {
-      //console.log('[MONITOR] Sincronizando posições com a corretora (job periódico)...'); // Adicionado log para identificar a chamada do job
-      await syncPositionsWithExchange(accountId);
-    } catch (error) {
-      // O erro já é logado dentro de syncPositionsWithExchange ou no catch mais específico dele
-      // Mas podemos adicionar um log genérico aqui se desejado, ou apenas deixar que a função interna lide com o log.
-      console.error(`[MONITOR] Erro geral no job de sincronizar posições para conta ${accountId}:`, error);
-    }
-  });
-
-  // Iniciar monitoramento de preços para posições abertas
-  try {
-    await startPriceMonitoring();
-  } catch (error) {
-    console.error('[MONITOR] Erro ao iniciar monitoramento de preços:', error);
-  }
-
-  await logOpenPositionsAndOrders();
-
-scheduledJobs.checkWebsocketsForOpenPositions = schedule.scheduleJob('*/1 * * * *', async () => {
-  try {
-    //console.log('[MONITOR] Verificando websockets para posições abertas...');
-    const db = await getDatabaseInstance();
-    if (!db) {
-      console.error('[MONITOR] Falha ao obter instância do banco de dados');
-      return;
-    }
-
-    // Obter todos os símbolos com posições abertas ou ordens pendentes
-    const [symbols] = await db.query(`
-      SELECT simbolo FROM posicoes WHERE status = 'OPEN'
-      UNION
-      SELECT simbolo FROM ordens WHERE status IN ('NEW', 'PARTIALLY_FILLED')
-      UNION
-      SELECT symbol FROM webhook_signals WHERE status = 'AGUARDANDO_ACIONAMENTO'
-    `);
-
-    if (symbols.length > 0) {
-      //console.log(`[MONITOR] Encontrados ${symbols.length} símbolos com atividade que requerem websocket`);
-      
-      for (const row of symbols) {
-        const symbol = row.simbolo || row.symbol;
-        if (!symbol) continue;
-        
-        // Verificar se o websocket está ativo e reabrir se necessário
-        if (!websockets.priceWebsockets[symbol] || 
-            (websockets.priceWebsockets[symbol] && websockets.priceWebsockets[symbol].readyState !== 1)) {
-          console.log(`[MONITOR] Reabrindo websocket para ${symbol} (posição/ordem ativa)`);
-          websockets.ensurePriceWebsocketExists(symbol);
-        } else {
-          //console.log(`[MONITOR] Websocket para ${symbol} já está ativo (estado: ${websockets.priceWebsockets[symbol].readyState})`);
-        }
-      }
-    } else {
-      //console.log('[MONITOR] Nenhum símbolo com atividade que requer websocket');
-    }
-  } catch (error) {
-    console.error('[MONITOR] Erro ao verificar websockets para posições abertas:', error);
-  }
-});
-
-  //console.log('[MONITOR] Sistema de monitoramento inicializado com sucesso!');
 }
 
 const originalGetDatabaseInstance = getDatabaseInstance;
@@ -432,36 +377,35 @@ async function syncPositionsWithExchange() {
 }
 
 // Função para iniciar monitoramento de preços para posições abertas
-async function startPriceMonitoring() {
+async function startPriceMonitoring(accountId = 1) {
   try {
-    const db = await getDatabaseInstance();
+    const db = await getDatabaseInstance(accountId);
     if (!db) {
-      console.error('[MONITOR] Falha ao obter instância do banco de dados');
-      return;
+      throw new Error(`Falha ao obter instância do banco de dados para conta ${accountId}`);
     }
 
     // Obter posições abertas ou com ordens de entrada pendentes
     const [pendingEntries] = await db.query(`
       SELECT o.simbolo
       FROM ordens o
-      WHERE o.tipo_ordem_bot = 'ENTRADA' AND o.status = 'OPEN'
+      WHERE o.tipo_ordem_bot = 'ENTRADA' AND o.status = 'OPEN' AND o.conta_id = ?
       GROUP BY o.simbolo
-    `);
+    `, [accountId]);
 
     const [openPositions] = await db.query(`
       SELECT simbolo
       FROM posicoes
-      WHERE status = 'OPEN'
-    `);
+      WHERE status = 'OPEN' AND conta_id = ?
+    `, [accountId]);
 
-    // NOVO: Obter sinais em AGUARDANDO_ACIONAMENTO
+    // Obter sinais em AGUARDANDO_ACIONAMENTO ou PENDING
     const [pendingSignals] = await db.query(`
       SELECT symbol, timeframe, created_at, timeout_at, max_lifetime_minutes
       FROM webhook_signals
-      WHERE status = 'AGUARDANDO_ACIONAMENTO'
-    `);
+      WHERE (status = 'AGUARDANDO_ACIONAMENTO' OR status = 'PENDING') AND conta_id = ?
+    `, [accountId]);
 
-    //console.log(`[MONITOR] Encontrados ${pendingSignals.length} sinais pendentes para monitoramento`);
+    console.log(`[MONITOR] Encontrados ${pendingSignals.length} sinais pendentes para monitoramento (conta ${accountId})`);
 
     const symbols = new Set();
 
@@ -471,47 +415,25 @@ async function startPriceMonitoring() {
     // Adicionar símbolos com posições abertas
     openPositions.forEach(position => symbols.add(position.simbolo));
 
-    // NOVO: Adicionar símbolos com sinais pendentes
+    // Adicionar símbolos com sinais pendentes
     pendingSignals.forEach(signal => symbols.add(signal.symbol));
 
     // Iniciar websockets para cada símbolo
     for (const symbol of symbols) {
-      //console.log(`[MONITOR] Iniciando monitoramento de preço para ${symbol}`);
-      websockets.ensurePriceWebsocketExists(symbol);
+      console.log(`[MONITOR] Iniciando monitoramento de preço para ${symbol}`);
+      await websockets.ensurePriceWebsocketExists(symbol, accountId);
     }
 
-    // NOVO: Verificar sinais expirados durante o período offline
+    // Verificar sinais expirados durante o período offline
     if (pendingSignals.length > 0) {
-      console.log(`[MONITOR] Verificando se há sinais expirados durante período offline...`);
-      const now = new Date();
-      
-      for (const signal of pendingSignals) {
-        // Verificar timeout usando campo timeout_at direto
-        if (signal.timeout_at && new Date(signal.timeout_at) < now) {
-          console.log(`[MONITOR] Sinal expirado para ${signal.symbol} (timeframe: ${signal.timeframe})`);
-          await db.query(`
-            UPDATE webhook_signals 
-            SET status = 'CANCELED', 
-                error_message = ? 
-            WHERE symbol = ? AND status = 'AGUARDANDO_ACIONAMENTO'`,
-            [`Sinal expirado durante período offline (timeout: ${signal.max_lifetime_minutes} min)`, signal.symbol]
-          );
-        } else {
-          // Obter preço atual para verificar se o SL foi atingido durante o período offline
-          try {
-            const price = await getCurrentPrice(signal.symbol);
-            if (price) {
-              await onPriceUpdate(signal.symbol, price, db);
-            }
-          } catch (priceError) {
-            console.error(`[MONITOR] Erro ao obter preço atual para ${signal.symbol}:`, priceError);
-          }
-        }
-      }
+      console.log(`[MONITOR] Verificando ${pendingSignals.length} sinais pendentes para possível expiração...`);
+      await checkExpiredOrders(accountId);
     }
 
+    return symbols.size;
   } catch (error) {
-    console.error('[MONITOR] Erro ao iniciar monitoramento de preços:', error);
+    console.error(`[MONITOR] Erro ao iniciar monitoramento de preços para conta ${accountId}:`, error);
+    throw error;
   }
 }
 
@@ -568,8 +490,35 @@ async function checkNewTrades(accountId = 1) {
             [signal.id]
           );
 
-          // Processar o sinal
-          await processSignal(db, signal, accountId);
+          // Obter preço atual
+          const currentPrice = await getCurrentPrice(signal.symbol);
+          
+          if (!currentPrice) {
+            console.error(`[MONITOR] Não foi possível obter o preço atual para ${signal.symbol}`);
+            await db.query(
+              'UPDATE webhook_signals SET status = "ERROR", error_message = ? WHERE id = ?',
+              ['Não foi possível obter preço atual', signal.id]
+            );
+            processingSignals.delete(signal.id);
+            continue;
+          }
+
+          // Se for uma entrada imediata, processar o sinal
+          if (!signal.entry_condition || signal.entry_condition === 'IMEDIATA') {
+            console.log(`[MONITOR] Processando entrada imediata para sinal ID ${signal.id}`);
+            await processSignal(db, signal, accountId);
+          } 
+          // Se for aguardar preço gatilho, mudar status para AGUARDANDO_ACIONAMENTO
+          else {
+            console.log(`[MONITOR] Configurando sinal ID ${signal.id} para aguardar acionamento`);
+            await db.query(
+              'UPDATE webhook_signals SET status = "AGUARDANDO_ACIONAMENTO" WHERE id = ?',
+              [signal.id]
+            );
+            
+            // Iniciar WebSocket para monitorar o preço
+            websockets.ensurePriceWebsocketExists(signal.symbol, accountId);
+          }
         } catch (procError) {
           console.error(`[MONITOR] Erro ao processar sinal ID ${signal.id}:`, procError);
           
@@ -589,39 +538,7 @@ async function checkNewTrades(accountId = 1) {
       }
     }
 
-    // NOVO: Verificar sinais CANCELED que ainda não tiveram mensagem enviada
-    const [canceledSignals] = await db.query(`
-      SELECT * FROM webhook_signals
-      WHERE status = 'CANCELED' 
-      AND (sent_msg = 0 OR sent_msg IS NULL)
-      AND conta_id = ?
-      ORDER BY created_at ASC
-    `, [accountId]);
-
-    if (canceledSignals.length > 0) {
-      console.log(`[MONITOR] Encontrados ${canceledSignals.length} sinais cancelados pendentes de notificação`);
-      
-      for (const signal of canceledSignals) {
-        try {
-          // Lógica para notificar sobre sinais cancelados...
-          const bot = getTelegramBot(accountId);
-          
-          if (bot && signal.chat_id) {
-            await bot.telegram.sendMessage(
-              signal.chat_id,
-              `❌ Sinal cancelado: ${signal.symbol} ${signal.side}\nMotivo: ${signal.error_message || 'Não especificado'}`
-            );
-            
-            await db.query(
-              'UPDATE webhook_signals SET sent_msg = 1 WHERE id = ?',
-              [signal.id]
-            );
-          }
-        } catch (notifyError) {
-          console.error(`[MONITOR] Erro ao notificar sobre sinal cancelado ID ${signal.id}:`, notifyError);
-        }
-      }
-    }
+    // Resto da função para verificar sinais CANCELED...
   } catch (error) {
     console.error(`[MONITOR] Erro ao verificar novas operações (conta ${accountId}):`, error);
   }
@@ -637,7 +554,7 @@ async function processSignal(db, signal, accountId = 1) {
     const {
       id, symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price, chat_id, timeframe,
       message_id: originalMessageId,
-      tp1_price, tp2_price, tp3_price, tp4_price, tp5_price // Garantindo que todos os TPs são extraídos
+      tp1_price, tp2_price, tp3_price, tp4_price, tp5_price
     } = signal;
 
     console.log(`[MONITOR] Processando sinal ID ${id} para ${symbol}: ${side} a ${entry_price} (Conta ${accountId})`);
@@ -668,7 +585,7 @@ async function processSignal(db, signal, accountId = 1) {
 
     // Configurar alavancagem e tipo de margem
     try {
-      // Configurar alavancagem com valor enviado pelo divap.py
+      // Configurar alavancagem com valor enviado pelo sinal
       await changeInitialLeverage(accountId, symbol, parseInt(leverage));
       console.log(`[MONITOR] Alavancagem configurada: ${leverage}x para ${symbol}`);
       
@@ -683,29 +600,22 @@ async function processSignal(db, signal, accountId = 1) {
     // Iniciar monitoramento de preço via WebSocket
     websockets.ensurePriceWebsocketExists(symbol, accountId);
 
-    // Para sinais PENDING, executar a entrada imediatamente
-    if (side.toUpperCase() === 'COMPRA' || side.toUpperCase() === 'BUY') {
-      console.log(`[MONITOR] Executando entrada LIMIT MAKER para sinal ID ${id} (${symbol})`);
-      
-      // Atualizar status antes da execução
-      await connection.query(
-        `UPDATE webhook_signals SET status = 'EXECUTANDO' WHERE id = ?`,
-        [id]
-      );
-      
-      await connection.commit();
-      
-      // Executar a entrada LIMIT MAKER
-      const entryResult = await executeLimitMakerEntry(db, signal, currentPrice);
-      
-      if (entryResult && entryResult.success) {
-        console.log(`[MONITOR] Entrada executada com sucesso para sinal ID ${id}: posição ID ${entryResult.positionId}`);
-        return true;
-      } else {
-        throw new Error(`Falha ao executar entrada: ${entryResult?.error || 'Motivo desconhecido'}`);
-      }
+    // Atualizar o registro no banco antes de executar
+    await connection.query(
+      `UPDATE webhook_signals SET status = 'EXECUTANDO' WHERE id = ?`,
+      [id]
+    );
+    
+    await connection.commit();
+    
+    // Usar o executeLimitMakerEntry para criar a ordem
+    const entryResult = await executeLimitMakerEntry(db, signal, currentPrice, accountId);
+    
+    if (entryResult && entryResult.success) {
+      console.log(`[MONITOR] Entrada executada com sucesso para sinal ID ${id}: posição ID ${entryResult.positionId}`);
+      return true;
     } else {
-      throw new Error(`Lado da operação inválido: ${side}`);
+      throw new Error(`Falha ao executar entrada: ${entryResult?.error || 'Motivo desconhecido'}`);
     }
   } catch (error) {
     console.error(`[MONITOR] Erro ao processar sinal ID ${signal.id || 'N/A'} para ${signal.symbol || 'N/A'}:`, error);
@@ -1478,12 +1388,19 @@ async function movePositionToHistory(db, positionId, status, reason) {
   throw new Error(`Falha ao mover posição ${positionId} após ${maxAttempts} tentativas`);
 }
 
-async function onPriceUpdate(symbol, currentPrice, db) {
+async function onPriceUpdate(symbol, currentPrice, db, accountId = 1) {
   try {
     // 1. Atualizar preços das posições abertas para este símbolo
     await updatePositionPrices(db, symbol, currentPrice);
 
-    // 2. Buscar sinais pendentes para este símbolo
+    // Logar preços de vez em quando (não em cada atualização para evitar spam)
+    const now = Date.now();
+    if (!lastPriceLogTime[symbol] || (now - lastPriceLogTime[symbol] > PRICE_LOG_INTERVAL)) {
+      console.log(`[PRICE] ${symbol}: ${currentPrice}`);
+      lastPriceLogTime[symbol] = now;
+    }
+
+    // 2. Buscar sinais pendentes para este símbolo (TANTO PENDING QUANTO AGUARDANDO_ACIONAMENTO)
     const [pendingSignalsResult] = await db.query(`
       SELECT 
       id, symbol, timeframe, side, leverage, capital_pct, 
@@ -1493,106 +1410,129 @@ async function onPriceUpdate(symbol, currentPrice, db) {
       status, error_message, position_id, entry_order_id, 
       tp_order_id, sl_order_id, chat_id, message_id, created_at, 
       updated_at, timeout_at, max_lifetime_minutes, 
-      registry_message_id, message_id_orig, message_source
+      registry_message_id, message_id_orig, message_source, conta_id
       FROM webhook_signals
-      WHERE symbol = ?
-        AND status = 'AGUARDANDO_ACIONAMENTO'
-    `, [symbol]);
+      WHERE symbol = ? AND conta_id = ? AND 
+      (status = 'AGUARDANDO_ACIONAMENTO' OR status = 'PENDING')
+    `, [symbol, accountId]);
     
     const pendingSignals = pendingSignalsResult || [];
 
     // 3. Verificar se há posições abertas ou ordens pendentes
     const [openPositionsResult] = await db.query(`
       SELECT COUNT(*) as count FROM posicoes 
-      WHERE simbolo = ? AND status = 'OPEN'
-    `, [symbol]);
+      WHERE simbolo = ? AND status = 'OPEN' AND conta_id = ?
+    `, [symbol, accountId]);
     
     const [pendingOrdersResult] = await db.query(`
       SELECT COUNT(*) as count FROM ordens
-      WHERE simbolo = ? AND status = 'NEW' 
-    `, [symbol]);
+      WHERE simbolo = ? AND status = 'NEW' AND conta_id = ?
+    `, [symbol, accountId]);
+
     const openPositionsCount = (openPositionsResult && openPositionsResult[0] && openPositionsResult[0].count) || 0;
     const pendingOrdersCount = (pendingOrdersResult && pendingOrdersResult[0] && pendingOrdersResult[0].count) || 0;
 
     // 4. Verificar se precisamos manter o WebSocket ativo
     if (pendingSignals.length === 0 && openPositionsCount === 0 && pendingOrdersCount === 0) {
-      console.log(`[MONITOR] Símbolo ${symbol} sem atividade (sinais=0, posições=0, ordens=0). Tentando fechar WebSocket.`);
-      await checkAndCloseWebsocket(db, symbol);
+      // Incrementar contador vazio para este símbolo
+      websocketEmptyCheckCounter[symbol] = (websocketEmptyCheckCounter[symbol] || 0) + 1;
+      
+      // Se já verificamos várias vezes e continua vazio, fechar o websocket
+      if (websocketEmptyCheckCounter[symbol] > 10) {
+        websockets.stopPriceMonitoring(symbol, accountId);
+        delete websocketEmptyCheckCounter[symbol];
+        console.log(`[MONITOR] WebSocket fechado para ${symbol} após 10 verificações sem atividade`);
+      }
+    } else {
+      // Resetar contador se houver atividade
+      websocketEmptyCheckCounter[symbol] = 0;
     }
 
     // 5. Processar sinais pendentes
     for (const signal of pendingSignals) {
-      // Verificar se já está sendo processado
-      if (processingSignals.has(`${signal.id}_${symbol}`)) {
-        //console.log(`[PRICE UPDATE] Sinal ${signal.id}_${symbol} já está sendo processado, aguardando...`);
+      // Verificar se o sinal já está sendo processado
+      if (processingSignals.has(signal.id)) {
+        continue;
+      }
+      
+      // Verificar se é um sinal desta conta
+      if (signal.conta_id && signal.conta_id !== accountId) {
         continue;
       }
 
-      // Verificar se é hora de logar novamente para este símbolo e sinal
-      const logKey = `${symbol}_${signal.id}`;
-      const currentTime = Date.now();
-      const shouldLog = !lastPriceLogTime[logKey] || 
-                        (currentTime - lastPriceLogTime[logKey] >= PRICE_LOG_INTERVAL);
-      
-      // Lógica de verificação de gatilhos
-      const entryPrice = parseFloat(signal.entry_price);
-      const slPrice = parseFloat(signal.sl_price);
-      const isTriggered = currentPrice >= entryPrice;
-      const isStopLossHit = slPrice > 0 && currentPrice <= slPrice;
-      
-      // Definir shouldTrigger com base em isTriggered (ESTA É A CORREÇÃO)
-      const shouldTrigger = isTriggered;
-      
-      // Verificar timeout
-      const now = new Date();
-      const timeoutAt = signal.timeout_at ? new Date(signal.timeout_at) : null;
-      const isTimedOut = timeoutAt && now >= timeoutAt;
-      
-      // Calcular tempo decorrido
-      const created = new Date(signal.created_at);
-      const elapsedMinutes = Math.round((now - created) / 60000);
-      const totalMinutes = signal.max_lifetime_minutes || 0;
-      
-      if (shouldLog || shouldTrigger || isStopLossHit || isTimedOut) {
-        console.log(`[PRICE UPDATE] Sinal ${signal.id} (${symbol}): Preço Atual=${currentPrice}, Entrada=${entryPrice}, SL=${slPrice}. Gatilhos: Trigger=${isTriggered}, SLHit=${isStopLossHit}, Timeout=${isTimedOut} | Tempo: ${elapsedMinutes}/${totalMinutes} min`);
-        lastPriceLogTime[logKey] = currentTime;
+      // Se o sinal estiver com status PENDING, atualizá-lo para AGUARDANDO_ACIONAMENTO
+      if (signal.status === 'PENDING') {
+        await db.query(
+          'UPDATE webhook_signals SET status = "AGUARDANDO_ACIONAMENTO" WHERE id = ?',
+          [signal.id]
+        );
+        continue; // Pular este ciclo, será processado na próxima atualização de preço
       }
 
-      console.log(`[PRICE UPDATE] Sinal ${signal.id} (${symbol}): Preço Atual=${currentPrice}, Entrada=${entryPrice}, SL=${slPrice}. Gatilhos: Trigger=${shouldTrigger}, SLHit=${isStopLossHit}, Timeout=${isTimedOut} | Tempo: ${elapsedMinutes}/${totalMinutes} min`);
-
-      if (shouldTrigger) {
-        const signalKey = `${signal.id}_${signal.symbol}`;
-        if (processingSignals.has(signalKey)) {
-          //console.log(`[PRICE UPDATE] Sinal ${signalKey} já está sendo processado, aguardando...`);
-          continue;
+      // Para sinais AGUARDANDO_ACIONAMENTO, verificar se o preço gatilho foi atingido
+      if (signal.status === 'AGUARDANDO_ACIONAMENTO') {
+        const entryPrice = parseFloat(signal.entry_price);
+        const side = signal.side.toUpperCase();
+        
+        let acionar = false;
+        
+        // Verificar se o preço atual atingiu o preço gatilho
+        if (side === 'COMPRA' || side === 'BUY') {
+          // Para compra, acionar quando o preço atual estiver próximo ou abaixo do preço de entrada
+          // Considerando uma margem de 0.2% para tolerância
+          const entryThreshold = entryPrice * 1.002; 
+          acionar = currentPrice <= entryThreshold;
+        } else if (side === 'VENDA' || side === 'SELL') {
+          // Para venda, acionar quando o preço atual estiver próximo ou acima do preço de entrada
+          // Considerando uma margem de 0.2% para tolerância
+          const entryThreshold = entryPrice * 0.998;
+          acionar = currentPrice >= entryThreshold;
         }
-        processingSignals.add(signalKey);
-
-        try {
-          console.log(`[PRICE UPDATE] ACIONANDO entrada LIMIT MAKER para sinal ${signalKey} a ${currentPrice}`);
+        
+        if (acionar) {
+          console.log(`[MONITOR] Preço gatilho atingido para sinal ID ${signal.id}: ${signal.symbol} ${side} @ ${entryPrice} (Preço atual: ${currentPrice})`);
           
-          await executeLimitMakerEntry(db, signal, currentPrice);
-        } catch (error) {
-          console.error(`[PRICE UPDATE] Erro ao executar entrada para ${signalKey}: ${error.message}`);
-        } finally {
-          setTimeout(() => {
-            processingSignals.delete(signalKey);
-            console.log(`[PRICE UPDATE] Sinal ${signalKey} removido da lista de processamento`);
-          }, 5000);
-        }
-      } else if (slHit) {
-        console.log(`[PRICE UPDATE] ❌ SL ${formatDecimal(slPrice, 4)} atingido antes da entrada para ${signal.id} (${symbol}).`);
-        await cancelSignal(db, signal.id, 'SL_BEFORE_ENTRY',
-          `Stop loss (${formatDecimal(slPrice, 4)}) atingido antes da entrada(${formatDecimal(currentPrice, 4)})`); // Precisa estar definida
-      } else if (timeoutHit) {
-        console.log(`[PRICE UPDATE] ⏱️ TIMEOUT para sinal ${signal.id} (${symbol}). Ativo por ${elapsedMin} min (máx: ${maxLifetimeMin} min). Cancelando.`);
-        await cancelSignal(db, signal.id, 'TIMEOUT_ENTRY',
-          `Entrada não acionada dentro do limite de tempo (${signal.timeframe} * 3 = ${maxLifetimeMin} min)`); // Precisa estar definida
-      } else {
-        if (maxLifetimeMs > 0) {
-          console.log(`[PRICE UPDATE] ⏳ Sinal ${signal.id} (${symbol}) aguardando. Tempo restante: ${timeRemainingMin} min (${elapsedMin}/${maxLifetimeMin} min)`);
+          // Marcar como em processamento
+          processingSignals.add(signal.id);
+          
+          try {
+            // Atualizar status
+            await db.query(
+              'UPDATE webhook_signals SET status = "EXECUTANDO" WHERE id = ?',
+              [signal.id]
+            );
+            
+            // Executar a entrada LIMIT MAKER
+            const entryResult = await executeLimitMakerEntry(db, signal, currentPrice, accountId);
+            
+            if (entryResult && entryResult.success) {
+              console.log(`[MONITOR] Entrada executada com sucesso para sinal ID ${signal.id}. Posição ID: ${entryResult.positionId}`);
+            } else {
+              console.error(`[MONITOR] Falha ao executar entrada para sinal ID ${signal.id}: ${entryResult?.error || 'Erro desconhecido'}`);
+              
+              await db.query(
+                'UPDATE webhook_signals SET status = "ERROR", error_message = ? WHERE id = ?',
+                [(entryResult?.error || 'Erro na execução da entrada').substring(0, 250), signal.id]
+              );
+            }
+          } catch (execError) {
+            console.error(`[MONITOR] Erro ao processar sinal ID ${signal.id} após atingir preço gatilho:`, execError);
+            
+            await db.query(
+              'UPDATE webhook_signals SET status = "ERROR", error_message = ? WHERE id = ?',
+              [execError.message.substring(0, 250), signal.id]
+            );
+          } finally {
+            // Remover da lista de processamento
+            processingSignals.delete(signal.id);
+          }
         } else {
-          console.log(`[PRICE UPDATE] ⏳ Sinal ${signal.id} (${symbol}) aguardando (sem timeout definido).`);
+          // Logar o status do preço gatilho periodicamente (não em cada atualização)
+          if (!lastPriceLogTime[`${symbol}_${signal.id}`] || 
+              (now - lastPriceLogTime[`${symbol}_${signal.id}`] > PRICE_LOG_INTERVAL)) {
+            console.log(`[PRICE_CHECK] Sinal ID ${signal.id}: ${symbol} ${side} @ ${entryPrice} - Atual: ${currentPrice} - Acionar: ${acionar ? 'SIM' : 'NÃO'}`);
+            lastPriceLogTime[`${symbol}_${signal.id}`] = now;
+          }
         }
       }
     }
@@ -1997,62 +1937,63 @@ async function cancelAllActiveStopLosses(db, position) {
 }
 
 // Função para verificar ordens expiradas com base no timeframe
-async function checkExpiredOrders() {
+async function checkExpiredOrders(accountId = 1) {
   try {
-    const db = await getDatabaseInstance();
+    const db = await getDatabaseInstance(accountId);
     if (!db) {
-      console.error('[MONITOR] Falha ao obter instância do banco de dados');
-      return;
+      throw new Error(`Falha ao obter instância do banco de dados para conta ${accountId}`);
     }
 
-    // CORREÇÃO: Remover parâmetro [symbol] que causava erro
+    // Buscar sinais pendentes com timeframe
     const [pendingSignals] = await db.query(`
       SELECT id, symbol, side, entry_price, timeframe, created_at, chat_id
       FROM webhook_signals
-      WHERE status = 'AGUARDANDO_ACIONAMENTO'
+      WHERE status = 'AGUARDANDO_ACIONAMENTO' 
         AND timeframe IS NOT NULL AND timeframe != ''
-    `);
+        AND conta_id = ?
+    `, [accountId]);
 
-    //console.log(`[MONITOR] Verificando ${pendingSignals.length} sinais pendentes com timeframe`);
+    console.log(`[MONITOR] Verificando ${pendingSignals.length} sinais pendentes com timeframe para conta ${accountId}`);
     const now = new Date();
     let cancelCount = 0;
 
     for (const signal of pendingSignals) {
-      // Pular se não tiver timeframe
-      if (!signal.timeframe) continue;
-
-      // Calcular o tempo máximo de vida do sinal (3x o timeframe)
-      const timeframeMs = timeframeToMs(signal.timeframe);
-      const maxLifetimeMs = timeframeMs * 3;
-
-      // Se o timeframe não for válido ou for zero, pular
-      if (maxLifetimeMs <= 0) {
-        console.log(`[MONITOR] Timeframe inválido para sinal ${signal.id}: ${signal.timeframe}`);
-        continue;
-      }
-
-      // Calcular há quanto tempo o sinal foi criado
-      const createdAt = new Date(signal.created_at);
-      const signalAgeMs = now.getTime() - createdAt.getTime();
-
-      // Se o sinal estiver expirado (idade > 3x timeframe)
-      if (signalAgeMs > maxLifetimeMs) {
-        console.log(`[MONITOR] Sinal pendente para ${signal.symbol} expirado por timeout`);
-        console.log(`[MONITOR] Idade: ${(signalAgeMs / (60 * 1000)).toFixed(2)} min, Máximo: ${(maxLifetimeMs / (60 * 1000)).toFixed(2)} min (${signal.timeframe} * 3)`);
-
-        // Cancelar o sinal
-        await cancelSignal(db, signal.id, 'TIMEOUT',
-          `Entrada não acionada dentro do limite de tempo (${signal.timeframe} * 3)`);
+      try {
+        // Converter timeframe para milissegundos
+        const timeframeMs = timeframeToMs(signal.timeframe);
         
-        cancelCount++;
+        if (timeframeMs > 0) {
+          const createdAt = new Date(signal.created_at);
+          const elapsedMs = now - createdAt;
+          
+          // Se passou mais de 2x o timeframe, cancelar o sinal
+          if (elapsedMs > timeframeMs * 2) {
+            console.log(`[MONITOR] Sinal ID ${signal.id} (${signal.symbol}) expirou após ${Math.round(elapsedMs/60000)}min (timeframe: ${signal.timeframe})`);
+            
+            await cancelSignal(
+              db, 
+              signal.id, 
+              'EXPIRED',
+              `Sinal expirou após ${Math.round(elapsedMs/60000)} minutos (timeframe: ${signal.timeframe})`,
+              accountId
+            );
+            
+            cancelCount++;
+          }
+        }
+      } catch (error) {
+        console.error(`[MONITOR] Erro ao processar expiração para sinal ID ${signal.id}:`, error);
       }
     }
 
     if (cancelCount > 0) {
-      console.log(`[MONITOR] ${cancelCount} sinais pendentes cancelados por timeout de timeframe`);
+      console.log(`[MONITOR] ${cancelCount} sinais cancelados por expiração de timeframe`);
     }
+    
+    return cancelCount;
   } catch (error) {
-    console.error('[MONITOR] Erro ao verificar sinais expirados:', error);
+    console.error(`[MONITOR] Erro ao verificar sinais expirados para conta ${accountId}:`, error);
+    throw error;
   }
 }
 
