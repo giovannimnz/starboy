@@ -5,7 +5,9 @@ const axios = require('axios');
 const fs = require('fs').promises;
 const { newEntryOrder, getRecentOrders, editOrder, roundPriceToTickSize, newLimitMakerOrder, newReduceOnlyOrder, cancelOrder, newStopOrder, getOpenOrders, getOrderStatus, getAllOpenPositions, getPrecision, getTickSize } = require('../api');
 const { getDatabaseInstance, insertPosition, insertNewOrder, formatDateForMySQL } = require('../db/conexao');
+const websocketApi = require('../websocketApi');
 const websockets = require('../websockets');
+
 
 async function executeLimitMakerEntry(db, signal, currentPriceTrigger, accountId = 1) {
     // Obter a conexão do banco de dados para a conta específica
@@ -245,23 +247,29 @@ console.log(`[LIMIT_ENTRY] Preço MAKER ${binanceSide}: ${currentLocalMakerPrice
 
             let orderPlacedOrEditedThisIteration = false;
 
-            // ... (Toda a lógica de gerenciamento de activeOrderId, getOrderStatus, edição, cancelamento, nova ordem é MANTIDA) ...
-            // A diferença é que 'currentLocalMakerPrice' é usado para novas ordens ou edições.
-            // Exemplo de onde currentLocalMakerPrice seria usado:
-            // na hora de editar: await editOrder(..., currentLocalMakerPrice.toFixed(pricePrecision));
-            // na hora de criar nova: await newLimitMakerOrder(..., currentLocalMakerPrice);
-
              if (activeOrderId) {
                 let currentOrderDataFromExchange;
                 try {
-                    currentOrderDataFromExchange = await getOrderStatus(activeOrderId, signal.symbol);
+                    currentOrderDataFromExchange = await websocketApi.getOrderStatusViaWebSocket(
+                        signal.symbol, 
+                        activeOrderId
+                    );
                 } catch (e) {
-                    if (e.response && e.response.data && (e.response.data.code === -2013 || e.response.data.code === -2011) ) { 
-                        console.log(`[LIMIT_ENTRY] Ordem ativa ${activeOrderId} não existe mais na corretora. Resetando.`);
+                    if (e.status === 400 && e.error?.code === -2013) {
+                        console.log(`[LIMIT_ENTRY] Ordem ${activeOrderId} não encontrada na WebSocket API. Possivelmente cancelada ou expirada.`);
                         activeOrderId = null;
+                        continue;
                     } else {
-                        console.error(`[LIMIT_ENTRY] Erro ao buscar status da ordem ${activeOrderId}: ${e.message}`);
-                        await new Promise(resolve => setTimeout(resolve, 200)); continue;
+                        console.error(`[LIMIT_ENTRY] Erro ao verificar status da ordem ${activeOrderId} via WebSocket:`, e);
+                        
+                        // Fallback para API REST
+                        try {
+                            currentOrderDataFromExchange = await getOrderStatus(numericAccountId, signal.symbol, activeOrderId);
+                        } catch (restError) {
+                            console.error(`[LIMIT_ENTRY] Erro também no fallback REST para verificação de status:`, restError);
+                            await new Promise(resolve => setTimeout(resolve, 1000));
+                            continue;
+                        }
                     }
                 }
 
@@ -421,23 +429,44 @@ console.log(`[LIMIT_ENTRY] Preço MAKER ${binanceSide}: ${currentLocalMakerPrice
                     break; 
                 }
                 try {
-                    console.log(`[LIMIT_ENTRY] Enviando NOVA LIMIT ${signal.symbol}: ${binanceSide} ${newOrderQty.toFixed(quantityPrecision)} @ ${currentLocalMakerPrice.toFixed(pricePrecision)}`);
-                    const orderResponse = await newLimitMakerOrder(
-                        numericAccountId, signal.symbol, newOrderQty, binanceSide, currentLocalMakerPrice
+                    console.log(`[LIMIT_ENTRY] Enviando NOVA LIMIT ${signal.symbol} via WebSocket: ${binanceSide} ${newOrderQty.toFixed(quantityPrecision)} @ ${currentLocalMakerPrice.toFixed(pricePrecision)}`);
+                    
+                    const orderResponse = await websocketApi.placeLimitMakerOrderViaWebSocket(
+                        signal.symbol, 
+                        newOrderQty.toFixed(quantityPrecision), 
+                        binanceSide, 
+                        currentLocalMakerPrice.toFixed(pricePrecision)
                     );
-                    if (orderResponse.status === 'REJECTED_POST_ONLY' || (orderResponse.info && orderResponse.info.msg === 'Filter failure: PRICE_FILTER')) {
-                        console.log(`[LIMIT_ENTRY] Nova LIMIT MAKER rejeitada (Post-Only ou Price Filter). Aguardando próxima iteração.`);
-                        await new Promise(resolve => setTimeout(resolve, 300)); 
-                        continue; 
+                    
+                    if (!orderResponse || !orderResponse.orderId) {
+                        throw new Error('Resposta da WebSocket API não contém orderId');
                     }
-                    if (!orderResponse.orderId) throw new Error(`Resposta da nova ordem LIMIT inválida: ${JSON.stringify(orderResponse)}`);
+                    
                     activeOrderId = String(orderResponse.orderId);
                     orderPlacedOrEditedThisIteration = true;
-                    console.log(`[LIMIT_ENTRY] Nova LIMIT criada: ID ${activeOrderId}`);
+                    console.log(`[LIMIT_ENTRY] Nova LIMIT criada via WebSocket: ID ${activeOrderId}`);
                 } catch (newOrderError) {
-                    console.error(`[LIMIT_ENTRY] Erro ao criar NOVA LIMIT:`, newOrderError.response?.data || newOrderError.message);
-                    await new Promise(resolve => setTimeout(resolve, 1000)); 
-                    continue;
+                    console.error(`[LIMIT_ENTRY] Erro ao criar NOVA LIMIT via WebSocket:`, newOrderError);
+                    
+                    // Fallback para API REST em caso de falha
+                    try {
+                        console.log(`[LIMIT_ENTRY] Tentando fallback para API REST após falha na WebSocket API`);
+                        const restOrderResponse = await newLimitMakerOrder(
+                            numericAccountId, signal.symbol, newOrderQty, binanceSide, currentLocalMakerPrice
+                        );
+                        
+                        if (restOrderResponse.orderId) {
+                            activeOrderId = String(restOrderResponse.orderId);
+                            orderPlacedOrEditedThisIteration = true;
+                            console.log(`[LIMIT_ENTRY] Nova LIMIT criada via REST API (fallback): ID ${activeOrderId}`);
+                        } else {
+                            throw new Error('Resposta da REST API não contém orderId');
+                        }
+                    } catch (fallbackError) {
+                        console.error(`[LIMIT_ENTRY] Erro também no fallback REST:`, fallbackError.response?.data || fallbackError.message);
+                        await new Promise(resolve => setTimeout(resolve, 1000)); 
+                        continue;
+                    }
                 }
             }
             
@@ -512,7 +541,7 @@ console.log(`[LIMIT_ENTRY] Preço MAKER ${binanceSide}: ${currentLocalMakerPrice
                     marketOrderResponseForDb = await newEntryOrder(
                         signal.symbol, remainingToFillMarket, binanceSide
                     );
-                    if (marketOrderResponseForDb && marketOrderResponseForDb.orderId && marketOrderResponseForDb.status === 'FILLED') {
+                    if (marketOrderResponseForDb && marketOrderResponse.orderId && marketOrderResponseForDb.status === 'FILLED') {
                         const marketFilledQty = parseFloat(marketOrderResponseForDb.executedQty);
                         // Para MARKET, avgPrice é o preço de execução
                         const marketFilledPrice = parseFloat(marketOrderResponseForDb.avgPrice || marketOrderResponseForDb.price); 

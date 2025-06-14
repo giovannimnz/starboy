@@ -2,6 +2,7 @@ const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const { getDatabaseInstance } = require('./db/conexao');
+const websocketApi = require('./websocketApi');
 const { executeLimitMakerEntry } = require('./posicoes/limitMakerEntry');
 const axios = require('axios');
 
@@ -124,16 +125,57 @@ async function diagnosticarECorrigirSinaisPendentes() {
   }
 }
 
-// Função para obter preço atual
+// Substituir getCurrentPrice por uma função que tenta usar WebSocket primeiro
 async function getCurrentPrice(symbol) {
   try {
+    console.log(`[DIAGNÓSTICO] Tentando obter preço de ${symbol} via WebSocket API...`);
+    
+    // Garantir que a WebSocket API está inicializada
+    await websocketApi.initializeHandlers(1); // accountId = 1
+    
+    // Iniciar o WebSocket de preço se necessário
+    await websockets.ensurePriceWebsocketExists(symbol, 1);
+    
+    // Aguardar um momento para o WebSocket receber dados
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    // Tentar obter o preço do cache de WebSocket
+    // (assumindo que você implementou a função getWebSocketPrice)
+    const price = await getWebSocketPrice(symbol);
+    
+    if (price && !isNaN(price) && price > 0) {
+      console.log(`[DIAGNÓSTICO] Preço obtido via WebSocket: ${price}`);
+      return price;
+    }
+    
+    // Fallback para API REST
+    throw new Error('Preço não disponível via WebSocket, usando fallback REST API');
+  } catch (error) {
+    console.log(`[DIAGNÓSTICO] Usando fallback REST API para obter preço: ${error.message}`);
+    
+    // Fallback para REST API
     const response = await axios.get(`https://fapi.binance.com/fapi/v1/ticker/price?symbol=${symbol}`);
     if (response.data && response.data.price) {
-      return parseFloat(response.data.price);
+      const price = parseFloat(response.data.price);
+      console.log(`[DIAGNÓSTICO] Preço obtido via REST API: ${price}`);
+      return price;
     }
-    throw new Error('Preço não disponível na resposta');
+    throw new Error('Preço não disponível na resposta da REST API');
+  }
+}
+
+// Função para obter preço do websocket (se implementada)
+async function getWebSocketPrice(symbol, maxAgeMs = 5000) {
+  try {
+    // Verificar se o módulo monitoramento está disponível
+    const monitoramento = require('./posicoes/monitoramento');
+    if (monitoramento && typeof monitoramento.getWebSocketPrice === 'function') {
+      return await monitoramento.getWebSocketPrice(symbol, maxAgeMs);
+    }
+    
+    throw new Error('Função getWebSocketPrice não disponível');
   } catch (error) {
-    console.error(`[API] Erro ao obter preço atual para ${symbol}:`, error.message);
+    console.error(`[DIAGNÓSTICO] Erro ao usar getWebSocketPrice: ${error.message}`);
     throw error;
   }
 }

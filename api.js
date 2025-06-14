@@ -162,7 +162,7 @@ async function newLimitMakerOrder(accountId, symbol, quantity, side, price) {
     const data = {
       symbol,
       side,
-      type: "LIMIT_MAKER",
+      type: "LIMIT",
       quantity,
       price,
       newOrderRespType: "RESULT",
