@@ -1,10 +1,10 @@
 const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '.env') });
+require('dotenv').config({ path: path.join(__dirname, '../.env') });
 
-const { getDatabaseInstance } = require('./db/conexao');
-const websockets = require('./websockets'); // Adicione esta linha
-const websocketApi = require('./websocketApi');
-const { executeLimitMakerEntry } = require('./posicoes/limitMakerEntry');
+const { getDatabaseInstance } = require('../db/conexao');
+const websockets = require('../websockets'); // Adicione esta linha
+const websocketApi = require('../websocketApi');
+const { executeLimitMakerEntry } = require('../posicoes/limitMakerEntry');
 const axios = require('axios');
 
 // Função de diagnóstico e correção
@@ -155,8 +155,17 @@ async function getCurrentPrice(symbol) {
     // Fallback para API REST
     console.log('[DIAGNÓSTICO] Usando fallback REST API para obter preço');
     
-    // Fallback para REST API
-    const response = await axios.get(`https://fapi.binance.com/fapi/v1/ticker/price?symbol=${symbol}`);
+    // Obter URL da API da corretora
+    const api = require('../api');
+    const credentials = await api.loadCredentialsFromDatabase(1);
+    
+    // Construir URL completa garantindo que é válida
+    const completeUrl = `${credentials.apiUrl}/v1/ticker/price?symbol=${symbol}`;
+    console.log(`[DIAGNÓSTICO] URL de consulta de preço: ${completeUrl}`);
+    
+    // Fazer requisição HTTP
+    const response = await axios.get(completeUrl);
+    
     if (response.data && response.data.price) {
       const price = parseFloat(response.data.price);
       console.log(`[DIAGNÓSTICO] Preço obtido via REST API: ${price}`);
@@ -169,18 +178,67 @@ async function getCurrentPrice(symbol) {
   }
 }
 
-// Função para obter preço do websocket (se implementada)
+/**
+ * Função melhorada para obter o preço atual usando o cache de websocket
+ * @param {string} symbol - Símbolo do par
+ * @param {number} maxAgeMs - Idade máxima do preço em cache (ms)
+ * @returns {Promise<number>} O preço atual
+ */
 async function getWebSocketPrice(symbol, maxAgeMs = 5000) {
+  // Se não temos o símbolo no cache ou não tem websocket iniciado, iniciamos um
+  if (!latestPrices.has(symbol)) {
+    console.log(`[MONITOR] Iniciando monitoramento de preço via WebSocket para ${symbol}`);
+    await websockets.ensurePriceWebsocketExists(symbol);
+    
+    // Aguardar um tempo para o websocket receber a primeira atualização
+    await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+
+  // Verificar se temos uma atualização recente no cache
+  const priceEntry = latestPrices.get(symbol);
+  const now = Date.now();
+  
+  if (priceEntry && (now - priceEntry.timestamp) < maxAgeMs) {
+    return priceEntry.price;
+  }
+
+  // Se o preço for muito antigo ou não existir, fazer fallback para REST API
+  console.log(`[MONITOR] Preço de ${symbol} não disponível via WebSocket (ou antigo), usando REST API como fallback`);
   try {
-    // Verificar se o módulo monitoramento está disponível
-    const monitoramento = require('./posicoes/monitoramento');
-    if (monitoramento && typeof monitoramento.getWebSocketPrice === 'function') {
-      return await monitoramento.getWebSocketPrice(symbol, maxAgeMs);
+    // Obter URL da API da corretora
+    const api = require('../api');
+    const credentials = await api.loadCredentialsFromDatabase(1);
+    
+    // Construir URL completa garantindo que é válida
+    const completeUrl = `${credentials.apiUrl}/v1/ticker/price?symbol=${symbol}`;
+    const response = await axios.get(completeUrl);
+    
+    if (!response.data || !response.data.price) {
+      throw new Error(`Resposta inválida da API para ${symbol}`);
     }
     
-    throw new Error('Função getWebSocketPrice não disponível');
+    const restPrice = parseFloat(response.data.price);
+    
+    // Atualizar o cache com o preço da REST API
+    if (restPrice) {
+      latestPrices.set(symbol, {
+        price: restPrice,
+        timestamp: Date.now(),
+        bid: restPrice * 0.9999,
+        ask: restPrice * 1.0001
+      });
+    }
+    
+    return restPrice;
   } catch (error) {
-    console.error(`[DIAGNÓSTICO] Erro ao usar getWebSocketPrice: ${error.message}`);
+    console.error(`[MONITOR] Erro no fallback REST para ${symbol}:`, error);
+    
+    // Se temos algum preço em cache, mesmo antigo, retorná-lo como último recurso
+    if (priceEntry) {
+      console.log(`[MONITOR] Usando preço em cache antigo para ${symbol}: ${priceEntry.price}`);
+      return priceEntry.price;
+    }
+    
     throw error;
   }
 }

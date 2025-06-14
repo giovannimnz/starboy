@@ -36,19 +36,17 @@ async function loadCredentialsFromDatabase(accountId = 1, forceRefresh = false) 
     const db = await getDatabaseInstance();
     
     if (!db) {
-      throw new Error('Não foi possível obter conexão com o banco de dados');
+      throw new Error(`Não foi possível obter conexão com o banco de dados para conta ${accountId}`);
     }
     
-    // Buscar credenciais desta conta específica
+    // Buscar credenciais desta conta específica junto com o id_corretora
     const [rows] = await db.query(`
       SELECT 
         api_key, 
         api_secret, 
         ws_api_key, 
         ws_api_secret, 
-        api_url, 
-        ws_url, 
-        ws_api_url 
+        id_corretora
       FROM contas WHERE id = ? AND ativa = 1`,
       [accountId]
     );
@@ -57,22 +55,32 @@ async function loadCredentialsFromDatabase(accountId = 1, forceRefresh = false) 
       throw new Error(`Conta ID ${accountId} não encontrada ou não está ativa`);
     }
 
+    // Buscar informações da corretora vinculada
+    const corretoraId = rows[0].id_corretora || 1; // Default para 1 se não estiver definido
+    
+    // Usar a nova função para obter URLs da corretora
+    const { getCorretoraPorId } = require('./db/conexao');
+    const corretora = await getCorretoraPorId(db, corretoraId);
+
     const credentials = {
       apiKey: rows[0].api_key,
       apiSecret: rows[0].api_secret,
       wsApiKey: rows[0].ws_api_key,
       wsApiSecret: rows[0].ws_api_secret,
-      apiUrl: rows[0].api_url || process.env.API_URL || 'https://fapi.binance.com/fapi',
-      wsUrl: rows[0].ws_url || process.env.WS_URL || 'wss://fstream.binance.com/ws',
-      wsApiUrl: rows[0].ws_api_url || process.env.WS_API_URL || 'wss://ws-fapi.binance.com/ws-fapi',
-      apiUrlSpot: (rows[0].api_url || process.env.API_URL || 'https://fapi.binance.com/fapi').replace('/fapi', '/sapi')
+      apiUrl: corretora.futures_rest_api_url,
+      wsUrl: corretora.futures_ws_market_url,
+      wsApiUrl: corretora.futures_ws_api_url,
+      apiUrlSpot: corretora.spot_rest_api_url,
+      corretora: corretora.corretora,
+      ambiente: corretora.ambiente,
+      corretoraId: corretora.id
     };
     
     // Armazenar no cache
     accountCredentials.set(accountId, credentials);
     lastCacheTime = currentTime;
     
-    console.log(`[API] Credenciais carregadas do banco de dados para conta ${accountId}`);
+    console.log(`[API] Credenciais carregadas do banco de dados para conta ${accountId} (corretora: ${corretora.corretora}, ambiente: ${corretora.ambiente})`);
     return credentials;
   } catch (error) {
     console.error(`[API] Erro ao carregar credenciais para conta ${accountId}:`, error.message);
@@ -491,11 +499,15 @@ async function newStopOrder(accountId, symbol, quantity, side, stopPrice, price 
 }
 
 async function getOrderStatus(accountId, symbol, orderId) {
+  // Garantir que accountId seja um número
+  const numericId = ensureNumericAccountId(accountId);
+  
   try {
-    const orderDetails = await getOrderDetails(accountId, symbol, orderId);
+    const orderDetails = await getOrderDetails(numericId, symbol, orderId);
     return orderDetails.status;
   } catch (error) {
     if (error.response && error.response.status === 404) {
+      console.log(`[API] Ordem não encontrada: ${orderId}`);
       return null;
     }
     console.error(`[API] Erro ao obter status da ordem: ${error.message}`);
@@ -1772,64 +1784,46 @@ async function encerrarPosicao(accountId = 1, posicao) {
   }
 }
 
-// Função load_leverage_brackets atualizada para usar o accountId
-function load_leverage_brackets(accountId = 1, symbol = null) {
-  return getLeverageBracketsFromDb(accountId, symbol);
+// Adicionar esta função auxiliar para garantir que o accountId seja sempre um número
+function ensureNumericAccountId(accountId) {
+  if (typeof accountId === 'number') return accountId;
+  
+  // Se for uma string, tenta converter para número
+  if (typeof accountId === 'string') {
+    // Se parece com um símbolo, retorna o ID padrão
+    if (accountId.includes('USDT')) {
+      console.warn(`[API] Atenção: Symbol '${accountId}' passado como accountId. Usando conta padrão 1.`);
+      return 1;
+    }
+    
+    // Tenta converter string para número
+    const numericId = parseInt(accountId, 10);
+    if (!isNaN(numericId) && numericId > 0) return numericId;
+  }
+  
+  // Valor padrão seguro
+  return 1;
 }
 
-// Cancelamento de entrada pendente adaptado para multi-conta
-async function cancelPendingEntry(accountId = 1, db, positionId, status, reason) {
+// Modificar as funções que usam o accountId para chamar esta função
+async function getOrderStatus(accountId, symbol, orderId) {
+  // Garantir que accountId seja um número
+  const numericId = ensureNumericAccountId(accountId);
+  
   try {
-    console.log(`[MONITOR] Cancelando entrada pendente ID ${positionId}: ${status} - ${reason} (Conta ${accountId})`);
-    
-    if (!db) {
-      db = await getDatabaseInstance(accountId);
-    }
-    
-    // 1. Obter informações para notificação antes de mover a posição
-    const [webhookInfo] = await db.query(`
-      SELECT w.id as webhook_id, w.chat_id, p.simbolo as symbol 
-      FROM webhook_signals w
-      JOIN posicoes p ON w.position_id = p.id
-      WHERE w.position_id = ? AND p.conta_id = ? LIMIT 1
-    `, [positionId, accountId]);
-    
-    if (webhookInfo.length === 0) {
-      console.error(`[MONITOR] Não foi possível encontrar informações do webhook para posição ${positionId} na conta ${accountId}`);
-      return false;
-    }
-    
-    // 2. Atualizar status no webhook_signals ANTES de mover a posição
-    await db.query(`
-      UPDATE webhook_signals
-      SET status = 'CANCELED',
-          error_message = ?
-      WHERE id = ?
-    `, [reason, webhookInfo[0].webhook_id]);
-    
-    // 3. Mover posição para histórico
-    await movePositionToHistory(db, positionId, 'CANCELED', reason, accountId);
-    
-    // 4. Enviar notificação ao Telegram se chat_id estiver disponível
-    const telegramBot = getTelegramBot(accountId);
-    if (webhookInfo[0].chat_id && telegramBot) {
-      try {
-        await telegramBot.telegram.sendMessage(webhookInfo[0].chat_id,
-          `⚠️ Ordem para ${webhookInfo[0].symbol} CANCELADA ⚠️\n\n` +
-          `Motivo: ${reason}`
-        );
-      } catch (telegramError) {
-        console.error(`[MONITOR] Erro ao enviar notificação Telegram:`, telegramError);
-      }
-    }
-    
-    return true;
+    const orderDetails = await getOrderDetails(numericId, symbol, orderId);
+    return orderDetails.status;
   } catch (error) {
-    console.error(`[MONITOR] Erro ao cancelar entrada pendente: ${error.message}`);
-    return false;
+    if (error.response && error.response.status === 404) {
+      console.log(`[API] Ordem não encontrada: ${orderId}`);
+      return null;
+    }
+    console.error(`[API] Erro ao obter status da ordem: ${error.message}`);
+    throw error;
   }
 }
 
+// Aplique o mesmo padrão em todas as outras funções que usam accountId
 module.exports = {
   getFuturesAccountBalanceDetails,
   getMaxLeverage,

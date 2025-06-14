@@ -90,16 +90,14 @@ async function loadCredentialsFromDatabase(options = {}) {
       throw new Error(`Não foi possível obter conexão com o banco de dados para conta ${accountId}`);
     }
     
-    // Buscar credenciais desta conta específica
+    // Buscar credenciais desta conta específica junto com o id_corretora
     const [rows] = await db.query(`
       SELECT 
         api_key, 
         api_secret, 
         ws_api_key, 
         ws_api_secret, 
-        api_url, 
-        ws_url, 
-        ws_api_url 
+        id_corretora
       FROM contas WHERE id = ? AND ativa = 1`,
       [accountId]
     );
@@ -107,6 +105,13 @@ async function loadCredentialsFromDatabase(options = {}) {
     if (rows.length === 0) {
       throw new Error(`Conta ID ${accountId} não encontrada ou não está ativa`);
     }
+
+    // Buscar informações da corretora vinculada
+    const corretoraId = rows[0].id_corretora || 1; // Default para 1 se não estiver definido
+    
+    // Usar a função para obter URLs da corretora
+    const { getCorretoraPorId } = require('./db/conexao');
+    const corretora = await getCorretoraPorId(db, corretoraId);
     
     // Atualizar estado da conexão para esta conta específica
     const accountState = getAccountConnectionState(accountId, true);
@@ -114,9 +119,9 @@ async function loadCredentialsFromDatabase(options = {}) {
     accountState.apiKey = rows[0].api_key;
     accountState.apiSecret = rows[0].api_secret;
     accountState.privateKey = rows[0].ws_api_secret;
-    accountState.apiUrl = rows[0].api_url || process.env.API_URL || 'https://fapi.binance.com/fapi';
-    accountState.wsApiUrl = rows[0].ws_api_url || process.env.WS_API_URL || 'wss://ws-fapi.binance.com/ws-fapi';
-    accountState.wssMarketUrl = rows[0].ws_url || process.env.WS_URL || 'wss://fstream.binance.com/ws';
+    accountState.apiUrl = corretora.futures_rest_api_url;
+    accountState.wsApiUrl = corretora.futures_ws_api_url;
+    accountState.wssMarketUrl = corretora.futures_ws_market_url;
     
     // Criar objeto de credenciais para o cache
     const credentials = {
@@ -126,6 +131,9 @@ async function loadCredentialsFromDatabase(options = {}) {
       apiUrl: accountState.apiUrl,
       wsApiUrl: accountState.wsApiUrl,
       wssMarketUrl: accountState.wssMarketUrl,
+      corretora: corretora.corretora,
+      ambiente: corretora.ambiente,
+      corretoraId: corretora.id,
       accountId
     };
     
@@ -133,7 +141,7 @@ async function loadCredentialsFromDatabase(options = {}) {
     accountCredentialsCache.set(accountId, credentials);
     lastCacheTime = currentTime;
     
-    console.log(`[WEBSOCKETS] Credenciais inicializadas com sucesso para conta ${accountId}`);
+    console.log(`[WEBSOCKETS] Credenciais inicializadas com sucesso para conta ${accountId} (corretora: ${corretora.corretora}, ambiente: ${corretora.ambiente})`);
     return credentials;
   } catch (error) {
     console.error(`[CONFIG] Erro ao carregar credenciais do banco de dados para conta ${options.accountId || 1}:`, error.message);
@@ -854,9 +862,27 @@ async function handlePriceUpdate(symbol, tickerData, accountId = 1) {
     const accountState = getAccountConnectionState(accountId, true);
     let db = accountState.dbInstance;
     
-    if (!db && accountState.handlers.getDbConnection) {
-      db = await accountState.handlers.getDbConnection();
-      accountState.dbInstance = db;
+    // Se não tiver DB no estado, tentar obter do handler ou diretamente
+    if (!db) {
+      if (accountState.handlers && accountState.handlers.getDbConnection) {
+        try {
+          db = await accountState.handlers.getDbConnection();
+          accountState.dbInstance = db;
+        } catch (dbHandlerError) {
+          console.error(`[WEBSOCKET] Erro ao obter DB via handler para ${symbol}: ${dbHandlerError.message}`);
+        }
+      }
+      
+      // Se ainda não tiver DB, tentar obter diretamente
+      if (!db) {
+        try {
+          const { getDatabaseInstance } = require('./db/conexao');
+          db = await getDatabaseInstance(accountId);
+          accountState.dbInstance = db;
+        } catch (directDbError) {
+          console.error(`[WEBSOCKET] Erro ao obter DB diretamente para ${symbol}: ${directDbError.message}`);
+        }
+      }
     }
 
     if (!db) {
@@ -868,7 +894,7 @@ async function handlePriceUpdate(symbol, tickerData, accountId = 1) {
     const bestAsk = parseFloat(tickerData.a);
     const currentPrice = (bestBid + bestAsk) / 2;
 
-    if (accountState.handlers.onPriceUpdate) {
+    if (accountState.handlers && accountState.handlers.onPriceUpdate) {
       await accountState.handlers.onPriceUpdate(symbol, currentPrice, db, accountId);
     }
   } catch (error) {
@@ -1060,7 +1086,7 @@ async function startUserDataStream(db, accountId = 1) {
       throw new Error(`Não foi possível obter listenKey para conta ${accountId}`);
     }
   } catch (error) {
-    console.error(`[WEBSOCKET] Erro ao iniciar stream de dados do usuário para conta ${accountId}:`, error.message);
+    console.error(`[WEBSOCKETS] Erro ao iniciar stream de dados do usuário para conta ${accountId}:`, error.message);
     throw error;
   }
 }
