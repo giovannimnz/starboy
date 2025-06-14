@@ -1,7 +1,9 @@
 const path = require('path');
+require('dotenv').config({ path: path.resolve(__dirname, './.env') });
 const { initializeDatabase, getDatabaseInstance } = require('./db/conexao');
 const readline = require('readline');
 const { spawn } = require('child_process');
+
 
 // Mapear contas ativas para seus processos
 const activeInstances = new Map();
