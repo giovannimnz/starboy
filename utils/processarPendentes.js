@@ -1,7 +1,7 @@
 const path = require('path');
-require('dotenv').config({ path: path.resolve(__dirname, './.env') });
-const { forceProcessPendingSignals } = require('./posicoes/monitoramento');
-const { getDatabaseInstance } = require('./db/conexao');
+require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
+const { forceProcessPendingSignals } = require('../posicoes/monitoramento');
+const { getDatabaseInstance } = require('../db/conexao');
 
 async function main() {
   try {
