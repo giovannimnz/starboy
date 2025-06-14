@@ -1,7 +1,7 @@
 const axios = require("axios");
 const crypto = require("crypto");
 require('dotenv').config();
-const { getDatabaseInstance } = require('./db/conexao');
+const { getDatabaseInstance, getApiCredentials } = require('./db/conexao');
 
 let websockets;
 try {
@@ -10,10 +10,33 @@ try {
   console.warn('[API] Módulo websockets não disponível diretamente (evitando referência circular)');
 }
 
-const apiKey = process.env.API_KEY;
-const apiSecret = process.env.API_SECRET;
-const apiUrl = process.env.API_URL;
-const apiUrlSpot = process.env.API_URL_SPOT;
+// Variáveis para armazenar credenciais
+let apiKey = null;
+let apiSecret = null;
+let apiUrl = null;
+let apiUrlSpot = null;
+
+// Função para carregar credenciais do banco de dados
+async function loadCredentialsFromDatabase() {
+  try {
+    const credentials = await getApiCredentials();
+    
+    // Definir as variáveis com os valores do banco de dados
+    apiKey = credentials.restApiKey;
+    apiSecret = credentials.restSecretKey;
+    
+    // Definir as URLs com base nos valores retornados
+    apiUrl = credentials.urls.futuresRestApiUrl;
+    apiUrlSpot = credentials.urls.spotRestApiUrl;
+
+    console.log(`[API] Credenciais carregadas do banco de dados (Corretora: ${credentials.corretora}, Ambiente: ${credentials.ambiente})`);
+    console.log(`[API] URLs configuradas - API Futures: ${apiUrl}, API Spot: ${apiUrlSpot}`);
+    return true;
+  } catch (error) {
+    console.error('[API] Erro ao carregar credenciais do banco de dados:', error.message);
+    return false;
+  }
+}
 
 async function newEntryOrder(symbol, quantity, side) {
   try {
@@ -896,7 +919,20 @@ async function cancelOrder(orderId, symbol) {
   }
 }
 
+// Inicialização - carregar credenciais imediatamente
+(async function initialize() {
+  try {
+    await loadCredentialsFromDatabase();
+  } catch (error) {
+    console.error('[API] Erro na inicialização de credenciais do api.js:', error.message);
+  }
+})();
+
 async function getFuturesAccountBalanceDetails() {
+  if (!apiKey || !apiSecret) {
+    await loadCredentialsFromDatabase();
+  }
+  
   const data = {
     timestamp: Date.now(),
     recvWindow: 60000
@@ -1531,6 +1567,7 @@ module.exports = {
   updateLeverageBracketsInDatabase, // Adicione a função updateLeverageBracketsInDatabase
   getLeverageBracketsFromDb, // Adicione a função getLeverageBracketsFromDb
   load_leverage_brackets, // Adicione a função load_leverage_brackets
-  cancelPendingEntry
+  cancelPendingEntry,
+  loadCredentialsFromDatabase
 };
 

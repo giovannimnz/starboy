@@ -907,6 +907,120 @@ async function getBaseCalculoBalance(db, accountId = 1) {
   }
 }
 
+/**
+ * Obtém as credenciais da API da Binance do banco de dados
+ * @param {Object} options - Opções de consulta (opcional)
+ * @param {boolean} options.forceRefresh - Se true, força uma nova consulta ao banco de dados
+ * @param {number} options.accountId - ID da conta a ser consultada (padrão: 1)
+ * @returns {Promise<Object>} - Objeto com as credenciais
+ */
+async function getApiCredentials(options = {}) {
+  const { forceRefresh = false, accountId = 1 } = options;
+  const currentTime = Date.now();
+  
+  // Usar cache se disponível e não expirado, a menos que forceRefresh seja true
+  if (cachedCredentials && !forceRefresh && (currentTime - lastCacheTime < CACHE_TTL)) {
+    return cachedCredentials;
+  }
+  
+  try {
+    const db = await getDatabaseInstance();
+    
+    if (!db) {
+      throw new Error('Não foi possível obter conexão com o banco de dados');
+    }
+    
+    // Consulta modificada para fazer um JOIN com a tabela de corretoras
+    const [rows] = await db.query(`
+      SELECT 
+        c.rest_apikey,
+        c.rest_secretkey,
+        c.ws_apikey,
+        c.ws_secretkey,
+        c.ambiente,
+        c.corretora,
+        cor.id as corretora_id,
+        cor.spot_rest_api_url,
+        cor.futures_rest_api_url,
+        cor.futures_ws_market_url,
+        cor.futures_ws_api_url
+      FROM conta c
+      LEFT JOIN corretoras cor ON c.id_corretora = cor.id AND cor.ativa = 1 AND cor.corretora = c.corretora AND cor.ambiente = c.ambiente  
+      WHERE c.id = ? AND c.ativa = 1
+    `, [accountId]);
+    
+    if (rows.length === 0) {
+      throw new Error(`Conta com ID ${accountId} não encontrada ou não está ativa`);
+    }
+
+    // Se não encontrou uma corretora vinculada, tentar encontrar por nome e ambiente
+    if (!rows[0].corretora_id) {
+      const [corretoras] = await db.query(`
+        SELECT *
+        FROM corretoras 
+        WHERE corretora = ? AND ambiente = ? AND ativa = 1
+        LIMIT 1
+      `, [rows[0].corretora, rows[0].ambiente]);
+
+      if (corretoras.length > 0) {
+        // Vincular a conta à corretora encontrada
+        await db.query(
+          'UPDATE conta SET id_corretora = ? WHERE id = ?',
+          [corretoras[0].id, accountId]
+        );
+        
+        // Adicionar URLs ao resultado
+        rows[0].corretora_id = corretoras[0].id;
+        rows[0].spot_rest_api_url = corretoras[0].spot_rest_api_url;
+        rows[0].futures_rest_api_url = corretoras[0].futures_rest_api_url;
+        rows[0].futures_ws_market_url = corretoras[0].futures_ws_market_url;
+        rows[0].futures_ws_api_url = corretoras[0].futures_ws_api_url;
+        
+        console.log(`[DB] Conta ID ${accountId} vinculada automaticamente à corretora ID ${corretoras[0].id}`);
+      }
+    }
+    
+    // Construir o objeto de credenciais
+    const credentials = {
+      restApiKey: rows[0].rest_apikey,
+      restSecretKey: rows[0].rest_secretkey,
+      wsApiKey: rows[0].ws_apikey,
+      wsSecretKey: rows[0].ws_secretkey,
+      ambiente: rows[0].ambiente,
+      corretora: rows[0].corretora,
+      isProd: rows[0].ambiente === 'prd',
+      
+      // Adicionar URLs da corretora
+      urls: {
+        spotRestApiUrl: rows[0].spot_rest_api_url,
+        futuresRestApiUrl: rows[0].futures_rest_api_url,
+        futuresWsMarketUrl: rows[0].futures_ws_market_url,
+        futuresWsApiUrl: rows[0].futures_ws_api_url
+      },
+      
+      // ID da corretora vinculada
+      corretoraId: rows[0].corretora_id
+    };
+    
+    // Atualizar cache
+    cachedCredentials = credentials;
+    lastCacheTime = currentTime;
+    
+    console.log(`[DB] Credenciais da API carregadas do banco de dados (ambiente: ${credentials.ambiente}, corretora: ${credentials.corretora})`);
+    return credentials;
+  } catch (error) {
+    console.error(`[DB] Erro ao obter credenciais da API: ${error.message}`);
+    throw error;
+  }
+}
+
+// Limpar cache de credenciais (útil para testes ou quando a conta é atualizada)
+function clearCredentialsCache() {
+  cachedCredentials = null;
+  lastCacheTime = 0;
+}
+
+
 // Exportar as funções
 module.exports = {
   getDatabaseInstance,
@@ -915,6 +1029,8 @@ module.exports = {
   getAllOrdersBySymbol,
   getPositionIdBySymbol,
   disconnectDatabase,
+  getApiCredentials,
+  clearCredentialsCache,
   getAllPositionsFromDb,
   insertPosition,
   insertOrder,

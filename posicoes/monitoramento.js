@@ -9,6 +9,7 @@ const { newEntryOrder, getRecentOrders, editOrder, roundPriceToTickSize, newLimi
 const {getDatabaseInstance, getPositionIdBySymbol, updatePositionInDb, updatePositionStatus, insertNewOrder, disconnectDatabase, getAllPositionsFromDb, getOpenOrdersFromDb, getOrdersFromDb, updateOrderStatus, getPositionsFromDb, insertPosition, moveClosedPositionsAndOrders, formatDateForMySQL, getBaseCalculoBalance, updateAccountBalance} = require('../db/conexao');
 const { executeLimitMakerEntry } = require('./limitMakerEntry');
 const websockets = require('../websockets');
+const websocketApi = require('../websocketApi');
 
 // Adicione este conjunto no topo do arquivo para rastrear ordens já canceladas
 const cancelledOrders = new Set();
@@ -53,31 +54,61 @@ function determineOrderType(orderMsg) {
   }
 })();
 
+const accountId = process.argv.includes('--account') 
+  ? parseInt(process.argv[process.argv.indexOf('--account') + 1]) || 1 
+  : 1;
+
+console.log(`[MONITOR] Iniciando sistema de monitoramento para conta ID: ${accountId}`);
+
 // Função para inicializar o monitoramento
 async function initializeMonitoring() {
-  //console.log('[MONITOR] Inicializando sistema de monitoramento...');
+  console.log(`[MONITOR] Inicializando sistema de monitoramento para conta ID: ${accountId}...`);
 
-  // Sincronizar saldo da conta - ADICIONADO
   try {
-    //console.log('[MONITOR] Sincronizando saldo da conta com a corretora...');
-    const result = await syncAccountBalance();
-    if (result) {
-      console.log(`\n[MONITOR] Saldo: ${result.saldo.toFixed(2)} USDT | Saldo Base Calculo: ${result.saldo_base_calculo.toFixed(2)} USDT\n`);
-    }
-  } catch (error) {
-    console.error('[MONITOR] Erro ao sincronizar saldo da conta:', error);
-  }
+    // Inicializar os handlers no websocketApi
+    await websocketApi.initializeHandlers(accountId);
 
-  // Configurar callbacks para WebSockets
-  websockets.setMonitoringCallbacks({
-    handleOrderUpdate,
-    handleAccountUpdate,
-    onPriceUpdate,
-    getDbConnection: getDatabaseInstance
-  });
+    // Depois configure os callbacks
+    websockets.setMonitoringCallbacks({
+      handleOrderUpdate,
+      handleAccountUpdate,
+      onPriceUpdate,
+      getDbConnection: getDatabaseInstance,
+      onWebSocketApiResponse: async (response) => {
+        // console.log('[WS-API] Resposta recebida:', JSON.stringify(response).substring(0, 500));
+      }
+    });
+
+  } catch (error) {
+    console.error(`[MONITOR] Erro na configuração inicial: ${error.message}`);
+    throw error;
+  }
 
   // Iniciar WebSocket para dados do usuário
   await websockets.startUserDataStream(getDatabaseInstance);
+
+// Iniciar WebSocket API para operações de trading
+try {
+  //console.log('[MONITOR] Iniciando conexão com WebSocket API...');
+  const wsApiConnection = await websockets.startWebSocketApi();
+  //console.log('[MONITOR] WebSocket API iniciado com sucesso');
+  
+  // Aguardar um momento para garantir que a conexão esteja estável
+  await new Promise(resolve => setTimeout(resolve, 2000));
+  
+  // Tentar autenticar WebSocket API
+  //console.log('[MONITOR] Tentando autenticar WebSocket API...');
+  const authenticated = await websockets.authenticateWebSocketApi();
+  
+  if (authenticated) {
+    //console.log('[MONITOR] WebSocket API autenticado com sucesso');
+  } else {
+    console.log('[MONITOR] WebSocket API operando em modo não autenticado. Requisições incluirão assinatura individual.');
+  }
+} catch (wsApiError) {
+  console.error('[MONITOR] Erro ao iniciar WebSocket API:', wsApiError);
+  console.log('[MONITOR] Sistema continuará usando a API REST como fallback');
+}
 
   // Sincronizar saldo da conta logo após conexão
   try {
@@ -193,6 +224,18 @@ scheduledJobs.checkWebsocketsForOpenPositions = schedule.scheduleJob('*/1 * * * 
 
   //console.log('[MONITOR] Sistema de monitoramento inicializado com sucesso!');
 }
+
+const originalGetDatabaseInstance = getDatabaseInstance;
+async function getDatabaseInstanceWithAccountId() {
+  const db = await originalGetDatabaseInstance();
+  // Armazenar o accountId no objeto de conexão para uso posterior
+  db.accountId = accountId;
+  return db;
+}
+
+Object.assign(handlers, {
+  getDbConnection: getDatabaseInstanceWithAccountId,
+});
 
 async function logOpenPositionsAndOrders() {
   try {
@@ -2303,56 +2346,77 @@ async function checkExpiredOrders() {
 
 /**
  * Sincroniza o saldo da conta com a corretora e atualiza o banco de dados
+ * Agora usa a WebSocket API para melhor desempenho
  * Segue a regra: saldo_base_calculo só é atualizado quando o saldo aumenta
  * @returns {Promise<Object>} Objeto contendo saldo e saldo_base_calculo atualizados
  */
 async function syncAccountBalance() {
   try {
-    const db = await getDatabaseInstance();
-    if (!db) {
-      console.error('[MONITOR] Falha ao obter instância do banco de dados');
+    // Importar o módulo websocketApi se ainda não estiver disponível
+    const websocketApi = require('../websocketApi');
+    
+    // Usar o novo método WebSocket API para obter informações de saldo
+    const result = await websocketApi.syncAccountBalanceViaWebSocket();
+    
+    // Se houver resultados, registrar mudanças significativas
+    if (result && result.success) {
+      // Se o saldo base de cálculo foi alterado, exibir mensagem adicional
+      if (result.saldo_base_calculo > result.previousBaseCalculo) {
+        console.log(`[MONITOR] Base de cálculo aumentada: ${result.previousBaseCalculo.toFixed(2)} → ${result.saldo_base_calculo.toFixed(2)} USDT`);
+      }
+      
+      return {
+        saldo: result.saldo,
+        saldo_base_calculo: result.saldo_base_calculo
+      };
+    } else {
+      console.error('[MONITOR] Falha ao sincronizar saldo via WebSocket API:', result?.error || 'Resposta inválida');
       return null;
     }
-
-    // Obter saldo real da corretora
-    //console.log('[MONITOR] Obtendo saldo atualizado da corretora...');
-    const balanceDetails = await getFuturesAccountBalanceDetails();
-    const usdtBalance = balanceDetails.find(item => item.asset === 'USDT');
-
-    if (!usdtBalance) {
-      throw new Error('Saldo USDT não encontrado na corretora');
-    }
-
-    // CORREÇÃO: Usar o campo balance (saldo total) em vez de availableBalance
-    const realSaldo = parseFloat(usdtBalance.balance);
-
-    //console.log(`[MONITOR] Saldo total na corretora: ${realSaldo.toFixed(2)} USDT`);
-    //console.log(`[MONITOR] Saldo disponível: ${parseFloat(usdtBalance.availableBalance).toFixed(2)} USDT`);
-
-    // Obter saldo atual e base de cálculo do banco
-    const [currentBalance] = await db.query('SELECT saldo, saldo_base_calculo FROM conta WHERE id = 1');
-
-    const currentSaldo = currentBalance.length > 0 ? parseFloat(currentBalance[0].saldo || 0) : 0;
-    const currentBaseCalculo = currentBalance.length > 0 ? parseFloat(currentBalance[0].saldo_base_calculo || 0) : 0;
-
-    //console.log(`[MONITOR] Saldo atual: ${currentSaldo.toFixed(2)} USDT | Base Cálculo: ${currentBaseCalculo.toFixed(2)} USDT`);
-
-    // Atualizar saldo no banco de dados com o saldo total
-    const result = await updateAccountBalance(db, realSaldo);
-
-    if (result) {
-      //console.log(`[MONITOR] Saldo atualizado para: ${result.saldo.toFixed(2)} USDT | Base Cálculo: ${result.saldo_base_calculo.toFixed(2)} USDT`);
-
-      // Se o saldo base de cálculo foi alterado, exibir mensagem adicional
-      if (result.saldo_base_calculo > currentBaseCalculo) {
-        console.log(`[MONITOR] Base de cálculo aumentada: ${currentBaseCalculo.toFixed(2)} → ${result.saldo_base_calculo.toFixed(2)} USDT`);
-      }
-    }
-
-    return result;
   } catch (error) {
     console.error(`[MONITOR] Erro ao sincronizar saldo da conta: ${error.message}`);
-    return null;
+    
+    // Se houver erro na WebSocket API, tentar fallback para método antigo
+    console.log('[MONITOR] Tentando fallback para API REST...');
+    try {
+      const db = await getDatabaseInstance();
+      if (!db) {
+        console.error('[MONITOR] Falha ao obter instância do banco de dados');
+        return null;
+      }
+
+      // Obter saldo real da corretora
+      const balanceDetails = await getFuturesAccountBalanceDetails();
+      const usdtBalance = balanceDetails.find(item => item.asset === 'USDT');
+
+      if (!usdtBalance) {
+        throw new Error('Saldo USDT não encontrado na corretora');
+      }
+
+      // Usar o campo balance (saldo total) em vez de availableBalance
+      const realSaldo = parseFloat(usdtBalance.balance);
+
+      // Obter saldo atual e base de cálculo do banco
+      const [currentBalance] = await db.query('SELECT saldo, saldo_base_calculo FROM conta WHERE id = 1');
+
+      const currentSaldo = currentBalance.length > 0 ? parseFloat(currentBalance[0].saldo || 0) : 0;
+      const currentBaseCalculo = currentBalance.length > 0 ? parseFloat(currentBalance[0].saldo_base_calculo || 0) : 0;
+
+      // Atualizar saldo no banco de dados com o saldo total
+      const result = await updateAccountBalance(db, realSaldo);
+
+      if (result) {
+        // Se o saldo base de cálculo foi alterado, exibir mensagem adicional
+        if (result.saldo_base_calculo > currentBaseCalculo) {
+          console.log(`[MONITOR] Base de cálculo aumentada: ${currentBaseCalculo.toFixed(2)} → ${result.saldo_base_calculo.toFixed(2)} USDT`);
+        }
+      }
+
+      return result;
+    } catch (fallbackError) {
+      console.error(`[MONITOR] Erro no método fallback: ${fallbackError.message}`);
+      return null;
+    }
   }
 }
 
@@ -3197,84 +3261,6 @@ async function getBookTicker(symbol) {
     throw error; // Re-lançar o erro original se o fallback também falhar
   }
 }
-// Função otimizada para aguardar a execução de uma ordem
-async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3000) {
-    const startTime = Date.now();
-    
-    // Verificar imediatamente o status da ordem (sem espera inicial)
-    try {
-        const orderStatus = await getOrderStatus(symbol, orderId);
-        
-        // Se a ordem foi executada (total ou parcialmente), retornar imediatamente
-        if (orderStatus.status === 'FILLED' || orderStatus.status === 'PARTIALLY_FILLED') {
-            return orderStatus;
-        }
-    } catch (initialError) {
-        // Ignorar erro inicial, continuará o loop abaixo
-    }
-    
-    // Loop de espera com intervalos mais curtos
-    while (Date.now() - startTime < maxWaitMs) {
-        try {
-            // Verificar status da ordem
-            const orderStatus = await getOrderStatus(symbol, orderId);
-            
-            // Se a ordem foi executada (total ou parcialmente), retornar imediatamente
-            if (orderStatus.status === 'FILLED' || orderStatus.status === 'PARTIALLY_FILLED') {
-                return orderStatus;
-            }
-            
-            // Aguardar um período muito curto antes de verificar novamente
-            await new Promise(resolve => setTimeout(resolve, 100)); // Reduzido para 100ms
-            
-        } catch (error) {
-            // Se a ordem não for encontrada, verificar se foi executada
-            if (error.response && error.response.status === 404) {
-                try {
-                    const recentOrders = await getRecentOrders(symbol, 5); // Buscar apenas as 5 mais recentes
-                    const matchingOrder = recentOrders.find(order => String(order.orderId) === String(orderId));
-                    if (matchingOrder) {
-                        return matchingOrder;
-                    }
-                } catch (detailsError) {
-                    // Ignorar erro
-                }
-            }
-            
-            // Aguardar antes de tentar novamente
-            await new Promise(resolve => setTimeout(resolve, 100)); // Reduzido para 100ms
-        }
-    }
-    
-    // Timeout atingido, retornar o status atual
-    try {
-        return await getOrderStatus(symbol, orderId);
-    } catch (error) {
-        return { status: 'UNKNOWN' };
-    }
-}
-
-// Função para obter detalhes de uma ordem executada
-async function getFilledOrderDetails(symbol, orderId) {
-    try {
-        const timestamp = Date.now();
-        const queryString = `symbol=${symbol}&orderId=${orderId}&timestamp=${timestamp}`;
-        const signature = crypto
-            .createHmac('sha256', process.env.API_SECRET)
-            .update(queryString)
-            .digest('hex');
-        
-        const response = await axios.get(
-            `${process.env.API_URL}/v1/order?${queryString}&signature=${signature}`,
-            { headers: { 'X-MBX-APIKEY': process.env.API_KEY } }
-        );
-        
-        return response.data;
-    } catch (error) {
-        console.error(`[LIMIT_ENTRY] Erro ao obter detalhes da ordem ${orderId}:`, error);
-        return null;
-    }
-}
 
 const cancelingSignals = new Set();
 
@@ -3413,7 +3399,7 @@ async function cancelSignal(db, signalId, statusParam, reason) {
 // Adicione temporariamente este código para limpar entradas pendentes antigas
 async function cleanUpExistingEntries() {
   try {
-    const db = await getDatabaseInstance(); // Supondo que getDatabaseInstance() retorna a conexão/pool
+    const db = await getDatabaseInstance();
     if (!db) {
         console.error("[CLEANUP] Instância do banco de dados não obtida.");
         return;
