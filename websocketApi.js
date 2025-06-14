@@ -11,23 +11,38 @@ async function initializeHandlers(accountId = 1) {
     // Verificar se já inicializamos
     if (handlers && handlers.initialized) {
       console.log(`[WS-API] Handlers já estão inicializados para conta ${accountId}`);
-      return;
+      return handlers;
     }
     
     console.log(`[WS-API] Inicializando handlers para WebSocket API (conta ${accountId})...`);
     
     // Carregar credenciais
     await websockets.loadCredentialsFromDatabase({ accountId });
-    const credentials = await websockets.getCredentials(accountId);
+    
+    // Obter credenciais diretamente do cache do websockets em vez de chamar getCredentials
+    // que não existe
+    const accountState = websockets.getAccountConnectionState(accountId);
+    
+    if (!accountState) {
+      throw new Error(`Estado da conexão não encontrado para conta ${accountId}`);
+    }
+    
+    const credentials = {
+      apiUrl: accountState.apiUrl,
+      wsApiUrl: accountState.wsApiUrl,
+      apiKey: accountState.apiKey
+    };
     
     // Verificar se a URL da WebSocket API corresponde ao ambiente
     // da REST API (produção ou testnet)
-    if (credentials.apiUrl.includes('testnet') !== credentials.wsApiUrl.includes('testnet')) {
+    if (credentials.apiUrl && credentials.wsApiUrl && 
+        credentials.apiUrl.includes('testnet') !== credentials.wsApiUrl.includes('testnet')) {
       console.error(`[WS-API] ⚠️ ERRO CRÍTICO: Conflito de ambientes entre REST API e WebSocket API!`);
       console.error(`[WS-API] REST API: ${credentials.apiUrl}`);
       console.error(`[WS-API] WebSocket API: ${credentials.wsApiUrl}`);
       
       // Obter DB para corrigir
+      const { getDatabaseInstance } = require('./db/conexao');
       const db = await getDatabaseInstance();
       
       // Corrigir automaticamente
@@ -57,7 +72,8 @@ async function initializeHandlers(accountId = 1) {
     await websockets.ensureWebSocketApiExists(accountId);
     
     handlers = await websockets.getHandlers();
-    return handlers !== null;
+    handlers.initialized = true;
+    return handlers;
   } catch (error) {
     console.error(`[WS-API] Erro ao inicializar handlers: ${error.message}`);
     throw error;

@@ -1126,50 +1126,62 @@ function getHandlers(accountId = 1) {
 }
 
 /**
- * Reinicia o estado para uma conta específica
+ * Retorna as credenciais carregadas para uma conta
  * @param {number} accountId - ID da conta
+ * @returns {Object} Credenciais carregadas ou null
  */
-function reset(accountId = 1) {
-  const accountState = getAccountConnectionState(accountId);
-  if (accountState) {
-    accountState.dbInstance = null;
+function getCredentials(accountId = 1) {
+  // Verificar se há em cache
+  if (accountCredentialsCache.has(accountId)) {
+    return accountCredentialsCache.get(accountId);
   }
+  
+  // Se não existe no cache, tentar obter do estado da conexão
+  const accountState = getAccountConnectionState(accountId);
+  if (!accountState) {
+    return null;
+  }
+  
+  return {
+    apiKey: accountState.apiKey,
+    apiSecret: accountState.apiSecret,
+    privateKey: accountState.privateKey,
+    apiUrl: accountState.apiUrl,
+    wsApiUrl: accountState.wsApiUrl,
+    wssMarketUrl: accountState.wssMarketUrl
+  };
 }
 
 /**
- * Verifica se a API WebSocket está autenticada
+ * Garante que existe uma conexão WebSocket API ativa
  * @param {number} accountId - ID da conta
- * @returns {boolean} true se autenticada
+ * @returns {Promise<WebSocket>} - Conexão estabelecida
  */
-function isWebSocketApiAuthenticated(accountId = 1) {
-  const accountState = getAccountConnectionState(accountId);
-  return accountState ? accountState.wsApiAuthenticated : false;
-}
-
-/**
- * Verifica se a API WebSocket está conectada
- * @param {number} accountId - ID da conta
- * @returns {boolean} true se conectada
- */
-function isWebSocketApiConnected(accountId = 1) {
-  const accountState = getAccountConnectionState(accountId);
-  return accountState && 
-         accountState.wsApiConnection && 
-         accountState.wsApiConnection.readyState === WebSocket.OPEN;
-}
-
-// Inicialização imediata - garantir que as credenciais sejam carregadas
-(async function initialize() {
+async function ensureWebSocketApiExists(accountId = 1) {
+  const accountState = getAccountConnectionState(accountId, true);
+  
+  // Se já existe uma conexão WebSocket API ativa, retorná-la
+  if (accountState.wsApiConnection && 
+      accountState.wsApiConnection.readyState === WebSocket.OPEN) {
+    return accountState.wsApiConnection;
+  }
+  
+  // Se não existe ou não está aberta, iniciar uma nova conexão
+  console.log(`[WS-API] Iniciando WebSocket API para conta ${accountId}...`);
+  const wsConnection = await startWebSocketApi(accountId);
+  
+  // Tentar autenticar após conexão estabelecida
   try {
-    console.log('[WEBSOCKETS] Iniciando carregamento de credenciais');
-    await loadCredentialsFromDatabase({ accountId: 1 });
-    console.log('[WEBSOCKETS] Credenciais inicializadas com sucesso');
-  } catch (error) {
-    console.error('[WEBSOCKETS] Erro na inicialização de credenciais:', error.message);
+    const authenticated = await authenticateWebSocketApi(accountId);
+    console.log(`[WS-API] Autenticação da WebSocket API ${authenticated ? 'bem-sucedida' : 'falhou'} para conta ${accountId}`);
+  } catch (authError) {
+    console.error(`[WS-API] Erro na autenticação da WebSocket API para conta ${accountId}:`, authError.message);
   }
-})();
+  
+  return wsConnection;
+}
 
-// Exportar funções
+// Adicionar à lista de exportações
 module.exports = {
   startUserDataStream,
   setupBookDepthWebsocket,
@@ -1187,4 +1199,7 @@ module.exports = {
   loadCredentialsFromDatabase,
   setMonitoringCallbacks,
   getHandlers,
+  getAccountConnectionState,
+  getCredentials,  // Adicionar esta função
+  ensureWebSocketApiExists,  // Adicionar esta função
 };
