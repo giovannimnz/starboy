@@ -58,87 +58,89 @@ function getPriceWebsockets(accountId = 1, create = false) {
   return priceWebsocketsByAccount.get(accountId) || new Map();
 }
 
-async function loadCredentialsFromDatabase(options = {}) {
+/**
+ * Carrega credenciais do banco de dados para uma conta
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Credenciais carregadas
+ */
+async function loadCredentialsFromDatabase(accountId) {
   try {
-    const accountId = options.accountId || 1;
-    const forceRefresh = options.forceRefresh || false;
-    const currentTime = Date.now();
-    
-    //console.log('[WEBSOCKETS] Iniciando carregamento de credenciais para conta ID:', accountId);
-    
-    // Usar cache se disponível e não expirado
-    if (accountCredentialsCache.has(accountId) && !forceRefresh && 
-        (currentTime - lastCacheTime < CACHE_TTL)) {
+    // Verificar se já está em cache
+    if (accountCredentialsCache.has(accountId)) {
       console.log(`[WEBSOCKETS] Usando credenciais em cache para conta ${accountId}`);
-      return accountCredentialsCache.get(accountId);
-    }
-    
-    const db = await getDatabaseInstance(accountId);
-    
-    if (!db) {
-      throw new Error(`Não foi possível obter conexão com o banco de dados para conta ${accountId}`);
-    }
-    
-    // Query corrigida para usar os nomes corretos das colunas
-    const [rows] = await db.query(`
-      SELECT 
-        c.id,
-        c.api_key, 
-        c.api_secret, 
-        c.ws_api_key, 
-        c.ws_api_secret,
-        c.id_corretora,
-        cor.spot_rest_api_url,
-        cor.futures_rest_api_url,
-        cor.futures_ws_market_url,
-        cor.futures_ws_api_url,
-        cor.corretora,
-        cor.ambiente
-      FROM contas c
-      JOIN corretoras cor ON c.id_corretora = cor.id
-      WHERE c.id = ? AND c.ativa = 1 AND cor.ativa = 1`,
-      [accountId]
-    );
-    
-    if (rows.length === 0) {
-      throw new Error(`Conta ID ${accountId} não encontrada ou não está ativa`);
+      const cachedCreds = accountCredentialsCache.get(accountId);
+      
+      // CORREÇÃO: Garantir que o estado da conta existe
+      if (!accountConnections.has(accountId)) {
+        console.log(`[WEBSOCKETS] Inicializando estado da conta ${accountId} a partir do cache...`);
+        accountConnections.set(accountId, {
+          ...cachedCreds,
+          isAuthenticated: false,
+          wsApi: null,
+          requestCallbacks: new Map(),
+          messageQueue: []
+        });
+      }
+      
+      return cachedCreds;
     }
 
-    const accountData = rows[0];
+    console.log(`[WEBSOCKETS] Carregando credenciais do banco para conta ${accountId}...`);
     
-    // Atualizar estado da conexão para esta conta específica
-    const accountState = getAccountConnectionState(accountId, true);
-    
-    accountState.apiKey = accountData.api_key;
-    accountState.apiSecret = accountData.api_secret;
-    accountState.privateKey = accountData.ws_api_secret;
-    accountState.apiUrl = accountData.futures_rest_api_url;
-    accountState.wsApiUrl = accountData.futures_ws_api_url;
-    accountState.wssMarketUrl = accountData.futures_ws_market_url;
-    accountState.ambiente = accountData.ambiente;
-    
-    // Criar objeto de credenciais para o cache
+    const db = await getDatabaseInstance(accountId);
+    if (!db) {
+      throw new Error(`Não foi possível conectar ao banco para conta ${accountId}`);
+    }
+
+    const [rows] = await db.query(`
+      SELECT api_key, secret_key, ws_api_key, ws_api_secret, private_key, corretora, ambiente
+      FROM contas 
+      WHERE id = ?
+    `, [accountId]);
+
+    if (rows.length === 0) {
+      throw new Error(`Conta ${accountId} não encontrada no banco de dados`);
+    }
+
+    const account = rows[0];
     const credentials = {
-      apiKey: accountState.apiKey,
-      apiSecret: accountState.apiSecret,
-      privateKey: accountState.privateKey,
-      apiUrl: accountState.apiUrl,
-      wsApiUrl: accountState.wsApiUrl,
-      wssMarketUrl: accountState.wssMarketUrl,
-      corretora: accountData.corretora,
-      ambiente: accountData.ambiente,
-      corretoraId: accountData.id_corretora,
-      accountId
+      apiKey: account.api_key,
+      secretKey: account.secret_key,
+      wsApiKey: account.ws_api_key,
+      wsApiSecret: account.ws_api_secret,
+      privateKey: account.private_key,
+      broker: account.corretora,
+      environment: account.ambiente
     };
-    
-    // Armazenar no cache
+
+    // Cache das credenciais
     accountCredentialsCache.set(accountId, credentials);
-    lastCacheTime = currentTime;
+
+    // CORREÇÃO PRINCIPAL: Inicializar estado da conta
+    if (!accountConnections.has(accountId)) {
+      console.log(`[WEBSOCKETS] Inicializando estado da conexão para conta ${accountId}...`);
+      accountConnections.set(accountId, {
+        ...credentials,
+        isAuthenticated: false,
+        wsApi: null,
+        requestCallbacks: new Map(),
+        messageQueue: []
+      });
+    } else {
+      // Atualizar credenciais no estado existente
+      const existingState = accountConnections.get(accountId);
+      accountConnections.set(accountId, {
+        ...existingState,
+        ...credentials
+      });
+    }
+
+    console.log(`[WEBSOCKETS] Credenciais inicializadas com sucesso para conta ${accountId} (corretora: ${account.corretora}, ambiente: ${account.ambiente})`);
     
-    console.log(`[WEBSOCKETS] Credenciais inicializadas com sucesso para conta ${accountId} (corretora: ${accountData.corretora}, ambiente: ${accountData.ambiente})`);
     return credentials;
+
   } catch (error) {
-    console.error(`[CONFIG] Erro ao carregar credenciais do banco de dados para conta ${options.accountId || 1}:`, error.message);
+    console.error(`[WEBSOCKETS] Erro ao carregar credenciais para conta ${accountId}:`, error.message);
     throw error;
   }
 }
@@ -484,129 +486,96 @@ async function closeListenKey(listenKey, accountId = 1) {
 }
 
 /**
- * Inicia a conexão com a WebSocket API da Binance
+ * Inicia conexão WebSocket API para uma conta
  * @param {number} accountId - ID da conta
- * @returns {Promise<Object>} - Conexão WebSocket
+ * @returns {Promise<boolean>} - true se conectado com sucesso
  */
-async function startWebSocketApi(accountId = 1) {
-  // Garantir que as credenciais estão carregadas
-  await loadCredentialsFromDatabase({ accountId });
-  
-  // Obter ou criar estado para esta conta
-  const accountState = getAccountConnectionState(accountId, true);
-  
-  if (!accountState.apiKey) {
-    throw new Error(`API Key não disponível para conta ${accountId}. Impossível iniciar WebSocket API`);
-  }
-  
-  if (accountState.wsApiConnection && accountState.wsApiConnection.readyState === WebSocket.OPEN) {
-    return accountState.wsApiConnection;
-  }
-
+async function startWebSocketApi(accountId) {
   try {
-    //console.log(`[WS-API] Iniciando conexão com API WebSocket para conta ${accountId}...`);
-
-    // Determinar a URL correta
-    // Determinar a URL correta baseada no ambiente da conta
-    let wsApiEndpoint;
-    if (accountState.ambiente === 'prd') {
-      wsApiEndpoint = accountState.wsApiUrl || 'wss://ws-fapi.binance.com/ws-fapi/v1';
-    } else {
-      wsApiEndpoint = 'wss://testnet.binancefuture.com/ws-fapi/v1';
+    console.log(`[WS-API] Iniciando WebSocket API para conta ${accountId}...`);
+    
+    // CORREÇÃO: Garantir que as credenciais estão carregadas
+    let accountState = getAccountConnectionState(accountId);
+    
+    if (!accountState) {
+      console.log(`[WS-API] Estado não encontrado, carregando credenciais para conta ${accountId}...`);
+      await loadCredentialsFromDatabase(accountId);
+      accountState = getAccountConnectionState(accountId);
     }
     
-    console.log(`[WS-API] Conectando ao endpoint: ${wsApiEndpoint} para conta ${accountId}`);
-    
-    // Returna uma promessa que se resolve quando a conexão estiver pronta
-    return new Promise((resolve, reject) => {
-      // Criar a conexão WebSocket
-      const ws = new WebSocket(wsApiEndpoint);
-      
-      // Configurar um timeout para a conexão
+    if (!accountState) {
+      console.error(`[WS-API] Impossível obter estado da conta ${accountId}`);
+      return false;
+    }
+
+    if (!accountState.wsApiKey) {
+      console.error(`[WS-API] wsApiKey não encontrada para conta ${accountId}`);
+      console.log(`[WS-API] ⚠️ WebSocket API não está configurada, continuando apenas com REST API`);
+      return false;
+    }
+
+    // Determinar endpoint baseado no ambiente
+    const isTestnet = accountState.environment === 'test' || accountState.environment === 'testnet';
+    const endpoint = isTestnet ? 
+      'wss://testnet.binancefuture.com/ws-fapi/v1' : 
+      'wss://ws-fapi.binance.com/ws-fapi/v1';
+
+    console.log(`[WS-API] Conectando ao endpoint: ${endpoint} para conta ${accountId}`);
+
+    // Criar conexão WebSocket
+    const ws = new WebSocket(endpoint);
+    accountState.wsApi = ws;
+
+    return new Promise((resolve) => {
       const connectionTimeout = setTimeout(() => {
-        reject(new Error(`[WS-API] Timeout ao estabelecer conexão WebSocket API para conta ${accountId}`));
-        if (ws.readyState !== WebSocket.CLOSED && ws.readyState !== WebSocket.CLOSING) {
-          ws.terminate();
-        }
-      }, 15000); // 15 segundos de timeout
-      
-      // Configurar manipuladores de eventos
-      ws.on('open', () => {
-        console.log(`[WS-API] Conexão WebSocket API estabelecida com sucesso para conta ${accountId}`);
+        console.error(`[WS-API] Timeout na conexão para conta ${accountId}`);
+        ws.close();
+        resolve(false);
+      }, 10000);
+
+      ws.on('open', async () => {
         clearTimeout(connectionTimeout);
-        accountState.wsApiConnection = ws;
+        console.log(`[WS-API] Conexão WebSocket API estabelecida com sucesso para conta ${accountId}`);
         
-        // Iniciar heartbeat para esta conta
-        startHeartbeat(accountId);
+        // Tentar autenticar
+        const authSuccess = await authenticateWebSocketApi(ws, accountId);
         
-        // Agora que a conexão está estabelecida, resolvemos a promessa
-        resolve(ws);
+        if (authSuccess) {
+          console.log(`[WS-API] ✅ WebSocket API totalmente funcional para conta ${accountId}`);
+        } else {
+          console.log(`[WS-API] ⚠️ WebSocket API conectada mas não autenticada para conta ${accountId}`);
+        }
+        
+        resolve(authSuccess);
       });
-      
+
+      ws.on('error', (error) => {
+        clearTimeout(connectionTimeout);
+        console.error(`[WS-API] Erro na conexão para conta ${accountId}:`, error.message);
+        resolve(false);
+      });
+
       ws.on('message', (data) => {
         try {
-          const response = JSON.parse(data);
-          
-          // Verificar se é um ping e responder com pong
-          if (response.id === 'ping') {
-            sendPong(response.result?.pong || 'pong', accountId);
-            return;
-          }
-          
-          // Se temos um callback registrado para este ID de requisição
-          if (response.id && accountState.requestCallbacks.has(response.id)) {
-            const { resolve, reject, timer } = accountState.requestCallbacks.get(response.id);
-            
-            // Limpar o timeout
-            if (timer) clearTimeout(timer);
-            
-            // Resolver ou rejeitar a promessa com base no status
-            if (response.status === 200) {
-              resolve(response);
-            } else {
-              reject(response);
-            }
-            
-            // Remover o callback da lista
-            accountState.requestCallbacks.delete(response.id);
-          }
-          
-          // Notificar outros manipuladores sobre a resposta
-          if (accountState.handlers.onWebSocketApiResponse) {
-            accountState.handlers.onWebSocketApiResponse(response);
-          }
-          
-        } catch (error) {
-          console.error(`[WS-API] Erro ao processar resposta para conta ${accountId}:`, error);
+          const message = JSON.parse(data.toString());
+          handleWebSocketApiMessage(message, accountId);
+        } catch (parseError) {
+          console.error(`[WS-API] Erro ao processar mensagem para conta ${accountId}:`, parseError.message);
         }
       });
-      
-      ws.on('pong', () => {
-        accountState.lastPongTime = Date.now();
-      });
-      
-      ws.on('ping', () => {
-        ws.pong();
-        accountState.lastPongTime = Date.now();
-      });
-      
-      ws.on('error', (error) => {
-        console.error(`[WS-API] Erro na conexão WebSocket API para conta ${accountId}:`, error);
-        clearTimeout(connectionTimeout);
-        cleanupWebSocketApi(accountId);
-        reject(error);
-      });
-      
+
       ws.on('close', () => {
-        console.log(`[WS-API] Conexão WebSocket API fechada para conta ${accountId} - tentando reconectar...`);
-        clearTimeout(connectionTimeout);
-        cleanupWebSocketApi(accountId);
+        console.log(`[WS-API] Conexão WebSocket API fechada para conta ${accountId}`);
+        if (accountState) {
+          accountState.wsApi = null;
+          accountState.isAuthenticated = false;
+        }
       });
     });
+
   } catch (error) {
-    console.error(`[WS-API] Erro ao iniciar WebSocket API para conta ${accountId}:`, error);
-    cleanupWebSocketApi(accountId);
-    throw error;
+    console.error(`[WS-API] Erro ao iniciar WebSocket API para conta ${accountId}:`, error.message);
+    return false;
   }
 }
 
@@ -1360,9 +1329,9 @@ function getCredentials(accountId = 1) {
 }
 
 /**
- * Garante que existe uma conexão WebSocket API ativa
+ * Garante que existe uma conexão WebSocket API para a conta
  * @param {number} accountId - ID da conta
- * @returns {Promise<WebSocket>} - Conexão estabelecida
+ * @returns {Promise<boolean>} - true se WebSocket API está disponível
  */
 async function ensureWebSocketApiExists(accountId) {
   try {
@@ -1372,10 +1341,34 @@ async function ensureWebSocketApiExists(accountId) {
       return false;
     }
 
-    const accountState = getAccountConnectionState(accountId);
+    console.log(`[WEBSOCKETS] Verificando WebSocket API para conta ${accountId}...`);
+
+    // CORREÇÃO PRINCIPAL: Garantir que o estado da conta existe
+    let accountState = getAccountConnectionState(accountId);
     
     if (!accountState) {
-      console.error(`[WEBSOCKETS] Estado da conta não encontrado para ID: ${accountId}`);
+      console.log(`[WEBSOCKETS] Estado da conta ${accountId} não existe, inicializando...`);
+      
+      // Tentar carregar credenciais primeiro
+      try {
+        await loadCredentialsFromDatabase(accountId);
+        accountState = getAccountConnectionState(accountId);
+        
+        if (!accountState) {
+          console.error(`[WEBSOCKETS] Falha ao inicializar estado da conta ${accountId} mesmo após carregar credenciais`);
+          return false;
+        }
+        
+        console.log(`[WEBSOCKETS] ✅ Estado da conta ${accountId} inicializado com sucesso`);
+      } catch (credError) {
+        console.error(`[WEBSOCKETS] Erro ao carregar credenciais para conta ${accountId}:`, credError.message);
+        return false;
+      }
+    }
+
+    // Verificar se as credenciais necessárias estão disponíveis
+    if (!accountState.wsApiKey) {
+      console.error(`[WEBSOCKETS] wsApiKey não encontrada para conta ${accountId}`);
       return false;
     }
 
