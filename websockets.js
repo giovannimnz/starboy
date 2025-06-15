@@ -93,7 +93,7 @@ async function loadCredentialsFromDatabase(accountId) {
     }
 
     const [rows] = await db.query(`
-      SELECT api_key, secret_key, ws_api_key, ws_api_secret, private_key, corretora, ambiente
+      SELECT api_key, api_secret, ws_api_key, ws_api_secret, private_key, corretora, ambiente
       FROM contas 
       WHERE id = ?
     `, [accountId]);
@@ -105,7 +105,7 @@ async function loadCredentialsFromDatabase(accountId) {
     const account = rows[0];
     const credentials = {
       apiKey: account.api_key,
-      secretKey: account.secret_key,
+      secretKey: account.api_secret,
       wsApiKey: account.ws_api_key,
       wsApiSecret: account.ws_api_secret,
       privateKey: account.private_key,
