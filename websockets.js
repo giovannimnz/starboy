@@ -56,7 +56,7 @@ async function loadCredentialsFromDatabase(options = {}) {
     const forceRefresh = options.forceRefresh || false;
     const currentTime = Date.now();
     
-    console.log('[WEBSOCKETS] Iniciando carregamento de credenciais para conta ID:', accountId);
+    //console.log('[WEBSOCKETS] Iniciando carregamento de credenciais para conta ID:', accountId);
     
     // Usar cache se disponível e não expirado
     if (accountCredentialsCache.has(accountId) && !forceRefresh && 
@@ -317,8 +317,8 @@ async function startWebSocketApi(accountId = 1) {
   }
 
   try {
-    console.log(`[WS-API] Iniciando conexão com API WebSocket para conta ${accountId}...`);
-    
+    //console.log(`[WS-API] Iniciando conexão com API WebSocket para conta ${accountId}...`);
+
     // Determinar a URL correta
     // Determinar a URL correta baseada no ambiente da conta
     let wsApiEndpoint;
@@ -1187,7 +1187,7 @@ async function ensureWebSocketApiExists(accountId = 1) {
   }
   
   // Se não existe ou não está aberta, iniciar uma nova conexão
-  console.log(`[WS-API] Iniciando WebSocket API para conta ${accountId}...`);
+  //console.log(`[WS-API] Iniciando WebSocket API para conta ${accountId}...`);
   const wsConnection = await startWebSocketApi(accountId);
   
   // Tentar autenticar após conexão estabelecida

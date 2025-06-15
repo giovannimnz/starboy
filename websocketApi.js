@@ -13,7 +13,7 @@ async function initializeHandlers(accountId = 1) {
       return handlers;
     }
     
-    console.log(`[WS-API] Inicializando handlers para WebSocket API (conta ${accountId})...`);
+    //console.log(`[WS-API] Inicializando handlers para WebSocket API (conta ${accountId})...`);
     
     // Carregar credenciais
     await websockets.loadCredentialsFromDatabase({ accountId, forceRefresh: true });

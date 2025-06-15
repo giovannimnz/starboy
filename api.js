@@ -31,7 +31,7 @@ async function loadCredentialsFromDatabase(options = {}) {
     // Usar cache se disponível e não forçar atualização
     if (!forceRefresh && accountCredentials.has(accountId) && 
         (Date.now() - lastCacheTime < CACHE_TTL)) {
-      console.log(`[API] Usando credenciais em cache para conta ${accountId}`);
+      //console.log(`[API] Usando credenciais em cache para conta ${accountId}`);
       return accountCredentials.get(accountId);
     }
     
@@ -85,7 +85,7 @@ async function loadCredentialsFromDatabase(options = {}) {
     accountCredentials.set(accountId, credentials);
     lastCacheTime = Date.now();
     
-    console.log(`[API] Credenciais carregadas com sucesso para conta ${accountId} (corretora: ${account.corretora}, ambiente: ${account.ambiente})`);
+    //console.log(`[API] Credenciais carregadas com sucesso para conta ${accountId} (corretora: ${account.corretora}, ambiente: ${account.ambiente})`);
     return credentials;
   } catch (error) {
     console.error(`[API] Erro ao carregar credenciais para conta ${options.accountId || 1}:`, error.message);
@@ -877,8 +877,8 @@ async function updateLeverageBracketsInDatabase(exchange = 'binance', accountId 
     
     if (lastUpdateTime && new Date(lastUpdateTime) > sixHoursAgo) {
       const timeDiff = Math.round((now - new Date(lastUpdateTime)) / (1000 * 60 * 60 * 10)) / 100;
-      console.log(`[API] Última atualização de alavancagem para ${exchange} foi há ${timeDiff} horas`);
-      console.log(`[API] Brackets de alavancagem foram atualizados recentemente. Pulando atualização.`);
+      //console.log(`[API] Última atualização de alavancagem para ${exchange} foi há ${timeDiff} horas`);
+      //console.log(`[API] Brackets de alavancagem foram atualizados recentemente. Pulando atualização.`);
       return;
     }
     
