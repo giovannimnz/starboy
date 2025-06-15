@@ -204,7 +204,7 @@ async function createListenKey(accountId = 1) {
       throw new Error(`Credenciais não carregadas corretamente para conta ${accountId}`);
     }
     
-    const endpoint = '/v1/listenKey';
+    const endpoint = '/listenKey';
     const fullUrl = `${accountState2.apiUrl}${endpoint}`;
 
     console.log(`[WEBSOCKET] Obtendo listenKey via: ${fullUrl} para conta ${accountId}`);
@@ -242,7 +242,7 @@ async function keepAliveListenKey(listenKey, accountId = 1) {
     
     const updatedAccountState = getAccountConnectionState(accountId);
     
-    const endpoint = '/v1/listenKey';
+    const endpoint = '/listenKey';
     return axios.put(`${updatedAccountState.apiUrl}${endpoint}?listenKey=${listenKey}`, null, {
       headers: {
         'X-MBX-APIKEY': updatedAccountState.apiKey
@@ -293,7 +293,7 @@ async function closeListenKey(listenKey, accountId = 1) {
     
     const updatedAccountState = getAccountConnectionState(accountId);
     
-    const endpoint = '/v1/listenKey';
+    const endpoint = '/listenKey';
     return axios.delete(`${updatedAccountState.apiUrl}${endpoint}?listenKey=${listenKey}`, {
       headers: {
         'X-MBX-APIKEY': updatedAccountState.apiKey
@@ -1020,7 +1020,7 @@ async function startUserDataStream(db, accountId = 1) {
     
     // Iniciar o WebSocket para dados do usuário
     if (listenKey) {
-      console.log(`[WEBSOCKET] Obtendo listenKey via: ${accountState.apiUrl}/v1/listenKey para conta ${accountId}`);
+      console.log(`[WEBSOCKET] Obtendo listenKey via: ${accountState.apiUrl}/listenKey para conta ${accountId}`);
       
       // Configuração do WebSocket
       const wsUrl = `${accountState.wssMarketUrl}/${listenKey}`;
