@@ -1,4 +1,14 @@
-const axios = require("axios");
+const fs = require('fs').promises;
+const path = require('path');
+
+async function corrigirApiCompleto() {
+  try {
+    console.log('=== CORRIGINDO ARQUIVO API.JS COMPLETO ===');
+    
+    const apiPath = path.join(__dirname, '..', 'api.js');
+    
+    // Criar o conteúdo completo do arquivo api.js corrigido
+    const conteudoCompleto = `const axios = require("axios");
 const crypto = require("crypto");
 require('dotenv').config();
 const { getDatabaseInstance } = require('./db/conexao');
@@ -26,19 +36,19 @@ async function loadCredentialsFromDatabase(options = {}) {
   try {
     const { accountId = 1, forceRefresh = false } = options;
     
-    console.log(`[API] Carregando credenciais para conta ID: ${accountId}`);
+    console.log(\`[API] Carregando credenciais para conta ID: \${accountId}\`);
     
     // Usar cache se disponível e não forçar atualização
     if (!forceRefresh && accountCredentials.has(accountId) && 
         (Date.now() - lastCacheTime < CACHE_TTL)) {
-      console.log(`[API] Usando credenciais em cache para conta ${accountId}`);
+      console.log(\`[API] Usando credenciais em cache para conta \${accountId}\`);
       return accountCredentials.get(accountId);
     }
     
     const db = await getDatabaseInstance(accountId);
     
     // Buscar conta e JOIN com a tabela corretoras para obter as URLs corretas
-    const [rows] = await db.query(`
+    const [rows] = await db.query(\`
       SELECT 
         c.id,
         c.api_key, 
@@ -54,12 +64,12 @@ async function loadCredentialsFromDatabase(options = {}) {
         cor.ambiente
       FROM contas c
       JOIN corretoras cor ON c.id_corretora = cor.id
-      WHERE c.id = ? AND c.ativa = 1 AND cor.ativa = 1`,
+      WHERE c.id = ? AND c.ativa = 1 AND cor.ativa = 1\`,
       [accountId]
     );
     
     if (!rows || rows.length === 0) {
-      throw new Error(`Conta ID ${accountId} não encontrada ou não está ativa`);
+      throw new Error(\`Conta ID \${accountId} não encontrada ou não está ativa\`);
     }
     
     const account = rows[0];
@@ -83,10 +93,10 @@ async function loadCredentialsFromDatabase(options = {}) {
     accountCredentials.set(accountId, credentials);
     lastCacheTime = Date.now();
     
-    console.log(`[API] Credenciais carregadas com sucesso para conta ${accountId} (corretora: ${account.corretora}, ambiente: ${account.ambiente})`);
+    console.log(\`[API] Credenciais carregadas com sucesso para conta \${accountId} (corretora: \${account.corretora}, ambiente: \${account.ambiente})\`);
     return credentials;
   } catch (error) {
-    console.error(`[API] Erro ao carregar credenciais para conta ${options.accountId || 1}:`, error.message);
+    console.error(\`[API] Erro ao carregar credenciais para conta \${options.accountId || 1}:\`, error.message);
     throw error;
   }
 }
@@ -137,7 +147,7 @@ async function makeAuthenticatedRequest(endpoint, params = {}, method = 'GET', a
     // Fazer requisição
     const config = {
       method,
-      url: `${credentials.apiUrl}${endpoint}`,
+      url: \`\${credentials.apiUrl}\${endpoint}\`,
       headers,
       timeout: 10000
     };
@@ -151,7 +161,7 @@ async function makeAuthenticatedRequest(endpoint, params = {}, method = 'GET', a
     const response = await axios(config);
     return response.data;
   } catch (error) {
-    console.error(`[API] Erro na requisição autenticada (${endpoint}):`, error.message);
+    console.error(\`[API] Erro na requisição autenticada (\${endpoint}):\`, error.message);
     throw error;
   }
 }
@@ -166,7 +176,7 @@ async function getFuturesAccountBalanceDetails(accountId = 1) {
     const response = await makeAuthenticatedRequest('/v2/account', {}, 'GET', accountId);
     return response;
   } catch (error) {
-    console.error(`[API] Erro ao obter detalhes do saldo para conta ${accountId}:`, error.message);
+    console.error(\`[API] Erro ao obter detalhes do saldo para conta \${accountId}:\`, error.message);
     throw error;
   }
 }
@@ -182,7 +192,7 @@ async function getMaxLeverage(symbol, accountId = 1) {
     const response = await makeAuthenticatedRequest('/v1/leverageBracket', { symbol }, 'GET', accountId);
     return response[0]?.brackets[0]?.initialLeverage || 20;
   } catch (error) {
-    console.error(`[API] Erro ao obter alavancagem máxima para ${symbol}:`, error.message);
+    console.error(\`[API] Erro ao obter alavancagem máxima para \${symbol}:\`, error.message);
     return 20; // Default
   }
 }
@@ -198,7 +208,7 @@ async function getCurrentLeverage(symbol, accountId = 1) {
     const response = await makeAuthenticatedRequest('/v2/positionRisk', { symbol }, 'GET', accountId);
     return parseInt(response[0]?.leverage || 20);
   } catch (error) {
-    console.error(`[API] Erro ao obter alavancagem atual para ${symbol}:`, error.message);
+    console.error(\`[API] Erro ao obter alavancagem atual para \${symbol}:\`, error.message);
     return 20; // Default
   }
 }
@@ -214,7 +224,7 @@ async function getCurrentMarginType(symbol, accountId = 1) {
     const response = await makeAuthenticatedRequest('/v2/positionRisk', { symbol }, 'GET', accountId);
     return response[0]?.marginType || 'cross';
   } catch (error) {
-    console.error(`[API] Erro ao obter tipo de margem para ${symbol}:`, error.message);
+    console.error(\`[API] Erro ao obter tipo de margem para \${symbol}:\`, error.message);
     return 'cross'; // Default
   }
 }
@@ -229,10 +239,10 @@ async function getCurrentMarginType(symbol, accountId = 1) {
 async function changeInitialLeverage(symbol, leverage, accountId = 1) {
   try {
     const response = await makeAuthenticatedRequest('/v1/leverage', { symbol, leverage }, 'POST', accountId);
-    console.log(`[API] Alavancagem alterada para ${leverage}x em ${symbol} (conta ${accountId})`);
+    console.log(\`[API] Alavancagem alterada para \${leverage}x em \${symbol} (conta \${accountId})\`);
     return response;
   } catch (error) {
-    console.error(`[API] Erro ao alterar alavancagem para ${symbol}:`, error.message);
+    console.error(\`[API] Erro ao alterar alavancagem para \${symbol}:\`, error.message);
     throw error;
   }
 }
@@ -247,10 +257,10 @@ async function changeInitialLeverage(symbol, leverage, accountId = 1) {
 async function changeMarginType(symbol, marginType, accountId = 1) {
   try {
     const response = await makeAuthenticatedRequest('/v1/marginType', { symbol, marginType }, 'POST', accountId);
-    console.log(`[API] Tipo de margem alterado para ${marginType} em ${symbol} (conta ${accountId})`);
+    console.log(\`[API] Tipo de margem alterado para \${marginType} em \${symbol} (conta \${accountId})\`);
     return response;
   } catch (error) {
-    console.error(`[API] Erro ao alterar tipo de margem para ${symbol}:`, error.message);
+    console.error(\`[API] Erro ao alterar tipo de margem para \${symbol}:\`, error.message);
     throw error;
   }
 }
@@ -264,10 +274,10 @@ async function changeMarginType(symbol, marginType, accountId = 1) {
 async function newOrder(orderParams, accountId = 1) {
   try {
     const response = await makeAuthenticatedRequest('/v1/order', orderParams, 'POST', accountId);
-    console.log(`[API] Nova ordem criada: ${response.orderId} para ${orderParams.symbol}`);
+    console.log(\`[API] Nova ordem criada: \${response.orderId} para \${orderParams.symbol}\`);
     return response;
   } catch (error) {
-    console.error(`[API] Erro ao criar nova ordem:`, error.message);
+    console.error(\`[API] Erro ao criar nova ordem:\`, error.message);
     throw error;
   }
 }
@@ -336,10 +346,10 @@ async function editOrder(accountId, symbol, orderId, quantity, price) {
     };
     
     const response = await makeAuthenticatedRequest('/v1/order', params, 'PUT', accountId);
-    console.log(`[API] Ordem ${orderId} editada com sucesso`);
+    console.log(\`[API] Ordem \${orderId} editada com sucesso\`);
     return response;
   } catch (error) {
-    console.error(`[API] Erro ao editar ordem ${orderId}:`, error.message);
+    console.error(\`[API] Erro ao editar ordem \${orderId}:\`, error.message);
     throw error;
   }
 }
@@ -446,11 +456,11 @@ async function newTakeProfitOrder(accountId, symbol, side, quantity, stopPrice) 
 async function getTickSize(symbol, accountId = 1) {
   try {
     const credentials = await loadCredentialsFromDatabase({ accountId });
-    const response = await axios.get(`${credentials.apiUrl}/v1/exchangeInfo`);
+    const response = await axios.get(\`\${credentials.apiUrl}/v1/exchangeInfo\`);
     
     const symbolInfo = response.data.symbols.find(s => s.symbol === symbol);
     if (!symbolInfo) {
-      throw new Error(`Símbolo ${symbol} não encontrado`);
+      throw new Error(\`Símbolo \${symbol} não encontrado\`);
     }
     
     const priceFilter = symbolInfo.filters.find(f => f.filterType === 'PRICE_FILTER');
@@ -460,7 +470,7 @@ async function getTickSize(symbol, accountId = 1) {
       maxPrice: priceFilter.maxPrice
     };
   } catch (error) {
-    console.error(`[API] Erro ao obter tick size para ${symbol}:`, error.message);
+    console.error(\`[API] Erro ao obter tick size para \${symbol}:\`, error.message);
     throw error;
   }
 }
@@ -479,7 +489,7 @@ async function roundPriceToTickSize(symbol, price, accountId = 1) {
     
     return Math.round(price / tickSize) * tickSize;
   } catch (error) {
-    console.error(`[API] Erro ao arredondar preço para ${symbol}:`, error.message);
+    console.error(\`[API] Erro ao arredondar preço para \${symbol}:\`, error.message);
     return price; // Retorna preço original em caso de erro
   }
 }
@@ -493,11 +503,11 @@ async function roundPriceToTickSize(symbol, price, accountId = 1) {
 async function getPrecision(symbol, accountId = 1) {
   try {
     const credentials = await loadCredentialsFromDatabase({ accountId });
-    const response = await axios.get(`${credentials.apiUrl}/v1/exchangeInfo`);
+    const response = await axios.get(\`\${credentials.apiUrl}/v1/exchangeInfo\`);
     
     const symbolInfo = response.data.symbols.find(s => s.symbol === symbol);
     if (!symbolInfo) {
-      throw new Error(`Símbolo ${symbol} não encontrado`);
+      throw new Error(\`Símbolo \${symbol} não encontrado\`);
     }
     
     return {
@@ -507,7 +517,7 @@ async function getPrecision(symbol, accountId = 1) {
       quotePrecision: symbolInfo.quotePrecision
     };
   } catch (error) {
-    console.error(`[API] Erro ao obter precisão para ${symbol}:`, error.message);
+    console.error(\`[API] Erro ao obter precisão para \${symbol}:\`, error.message);
     throw error;
   }
 }
@@ -524,7 +534,7 @@ async function getOpenOrders(symbol, accountId = 1) {
     const response = await makeAuthenticatedRequest('/v1/openOrders', params, 'GET', accountId);
     return response;
   } catch (error) {
-    console.error(`[API] Erro ao obter ordens abertas:`, error.message);
+    console.error(\`[API] Erro ao obter ordens abertas:\`, error.message);
     throw error;
   }
 }
@@ -542,7 +552,7 @@ async function getRecentOrders(accountId, symbol, limit = 500) {
     const response = await makeAuthenticatedRequest('/v1/allOrders', params, 'GET', accountId);
     return response;
   } catch (error) {
-    console.error(`[API] Erro ao obter ordens recentes:`, error.message);
+    console.error(\`[API] Erro ao obter ordens recentes:\`, error.message);
     throw error;
   }
 }
@@ -560,7 +570,7 @@ async function getOrderStatus(accountId, symbol, orderId) {
     const response = await makeAuthenticatedRequest('/v1/order', params, 'GET', accountId);
     return response;
   } catch (error) {
-    console.error(`[API] Erro ao obter status da ordem ${orderId}:`, error.message);
+    console.error(\`[API] Erro ao obter status da ordem \${orderId}:\`, error.message);
     throw error;
   }
 }
@@ -577,7 +587,7 @@ async function getMultipleOrderStatus(accountId, symbol, orderIds) {
     const promises = orderIds.map(orderId => getOrderStatus(accountId, symbol, orderId));
     return await Promise.all(promises);
   } catch (error) {
-    console.error(`[API] Erro ao obter status de múltiplas ordens:`, error.message);
+    console.error(\`[API] Erro ao obter status de múltiplas ordens:\`, error.message);
     throw error;
   }
 }
@@ -599,7 +609,7 @@ async function getPositionDetails(symbol, accountId = 1) {
     
     return response;
   } catch (error) {
-    console.error(`[API] Erro ao obter detalhes da posição:`, error.message);
+    console.error(\`[API] Erro ao obter detalhes da posição:\`, error.message);
     throw error;
   }
 }
@@ -631,7 +641,7 @@ async function getAllOpenPositions(accountId = 1, symbol = null) {
     
     return openPositions;
   } catch (error) {
-    console.error(`[API] Erro ao obter posições abertas:`, error.message);
+    console.error(\`[API] Erro ao obter posições abertas:\`, error.message);
     throw error;
   }
 }
@@ -649,7 +659,7 @@ async function obterSaldoPosicao(accountId = 1) {
     const usdtAsset = response.assets.find(asset => asset.asset === 'USDT');
     return usdtAsset ? parseFloat(usdtAsset.walletBalance) : 0;
   } catch (error) {
-    console.error(`[API] Erro ao obter saldo da posição:`, error.message);
+    console.error(\`[API] Erro ao obter saldo da posição:\`, error.message);
     throw error;
   }
 }
@@ -665,10 +675,10 @@ async function cancelOrder(accountId, symbol, orderId) {
   try {
     const params = { symbol, orderId };
     const response = await makeAuthenticatedRequest('/v1/order', params, 'DELETE', accountId);
-    console.log(`[API] Ordem ${orderId} cancelada com sucesso`);
+    console.log(\`[API] Ordem \${orderId} cancelada com sucesso\`);
     return response;
   } catch (error) {
-    console.error(`[API] Erro ao cancelar ordem ${orderId}:`, error.message);
+    console.error(\`[API] Erro ao cancelar ordem \${orderId}:\`, error.message);
     throw error;
   }
 }
@@ -685,10 +695,10 @@ async function transferBetweenAccounts(asset, amount, type, accountId = 1) {
   try {
     const params = { asset, amount: amount.toString(), type };
     const response = await makeAuthenticatedRequest('/v1/futures/transfer', params, 'POST', accountId);
-    console.log(`[API] Transferência de ${amount} ${asset} realizada`);
+    console.log(\`[API] Transferência de \${amount} \${asset} realizada\`);
     return response;
   } catch (error) {
-    console.error(`[API] Erro na transferência:`, error.message);
+    console.error(\`[API] Erro na transferência:\`, error.message);
     throw error;
   }
 }
@@ -703,10 +713,10 @@ async function cancelAllOpenOrders(accountId, symbol) {
   try {
     const params = { symbol };
     const response = await makeAuthenticatedRequest('/v1/allOpenOrders', params, 'DELETE', accountId);
-    console.log(`[API] Todas as ordens para ${symbol} foram canceladas`);
+    console.log(\`[API] Todas as ordens para \${symbol} foram canceladas\`);
     return response;
   } catch (error) {
-    console.error(`[API] Erro ao cancelar todas as ordens:`, error.message);
+    console.error(\`[API] Erro ao cancelar todas as ordens:\`, error.message);
     throw error;
   }
 }
@@ -723,7 +733,7 @@ async function encerrarPosicao(symbol, accountId = 1) {
     const position = await getPositionDetails(symbol, accountId);
     
     if (!position || parseFloat(position.positionAmt) === 0) {
-      throw new Error(`Nenhuma posição aberta encontrada para ${symbol}`);
+      throw new Error(\`Nenhuma posição aberta encontrada para \${symbol}\`);
     }
     
     const quantity = Math.abs(parseFloat(position.positionAmt));
@@ -739,10 +749,10 @@ async function encerrarPosicao(symbol, accountId = 1) {
     };
     
     const response = await newOrder(orderParams, accountId);
-    console.log(`[API] Posição ${symbol} encerrada com ordem ${response.orderId}`);
+    console.log(\`[API] Posição \${symbol} encerrada com ordem \${response.orderId}\`);
     return response;
   } catch (error) {
-    console.error(`[API] Erro ao encerrar posição ${symbol}:`, error.message);
+    console.error(\`[API] Erro ao encerrar posição \${symbol}:\`, error.message);
     throw error;
   }
 }
@@ -759,7 +769,7 @@ async function getAllLeverageBrackets(symbol, accountId = 1) {
     const response = await makeAuthenticatedRequest('/v1/leverageBracket', params, 'GET', accountId);
     return response;
   } catch (error) {
-    console.error(`[API] Erro ao obter brackets de alavancagem:`, error.message);
+    console.error(\`[API] Erro ao obter brackets de alavancagem:\`, error.message);
     throw error;
   }
 }
@@ -774,10 +784,10 @@ async function setPositionMode(dualSidePosition, accountId = 1) {
   try {
     const params = { dualSidePosition: dualSidePosition.toString() };
     const response = await makeAuthenticatedRequest('/v1/positionSide/dual', params, 'POST', accountId);
-    console.log(`[API] Modo de posição alterado para ${dualSidePosition ? 'hedge' : 'one-way'}`);
+    console.log(\`[API] Modo de posição alterado para \${dualSidePosition ? 'hedge' : 'one-way'}\`);
     return response;
   } catch (error) {
-    console.error(`[API] Erro ao alterar modo de posição:`, error.message);
+    console.error(\`[API] Erro ao alterar modo de posição:\`, error.message);
     throw error;
   }
 }
@@ -792,7 +802,7 @@ async function getPositionMode(accountId = 1) {
     const response = await makeAuthenticatedRequest('/v1/positionSide/dual', {}, 'GET', accountId);
     return response;
   } catch (error) {
-    console.error(`[API] Erro ao obter modo de posição:`, error.message);
+    console.error(\`[API] Erro ao obter modo de posição:\`, error.message);
     throw error;
   }
 }
@@ -814,10 +824,10 @@ async function closePosition(symbol, side, accountId = 1) {
     };
     
     const response = await newOrder(orderParams, accountId);
-    console.log(`[API] Posição ${symbol} fechada com closePosition=true`);
+    console.log(\`[API] Posição \${symbol} fechada com closePosition=true\`);
     return response;
   } catch (error) {
-    console.error(`[API] Erro ao fechar posição ${symbol}:`, error.message);
+    console.error(\`[API] Erro ao fechar posição \${symbol}:\`, error.message);
     throw error;
   }
 }
@@ -831,10 +841,10 @@ async function closePosition(symbol, side, accountId = 1) {
 async function getPrice(symbol, accountId = 1) {
   try {
     const credentials = await loadCredentialsFromDatabase({ accountId });
-    const response = await axios.get(`${credentials.apiUrl}/v1/ticker/price?symbol=${symbol}`);
+    const response = await axios.get(\`\${credentials.apiUrl}/v1/ticker/price?symbol=\${symbol}\`);
     return parseFloat(response.data.price);
   } catch (error) {
-    console.error(`[API] Erro ao obter preço de ${symbol}:`, error.message);
+    console.error(\`[API] Erro ao obter preço de \${symbol}:\`, error.message);
     throw error;
   }
 }
@@ -847,7 +857,7 @@ async function getPrice(symbol, accountId = 1) {
  */
 async function updateLeverageBracketsInDatabase(exchange = 'binance', accountId = 1) {
   try {
-    console.log(`[API] Atualizando brackets de alavancagem para ${exchange}...`);
+    console.log(\`[API] Atualizando brackets de alavancagem para \${exchange}...\`);
     
     const db = await getDatabaseInstance(accountId);
     
@@ -863,8 +873,8 @@ async function updateLeverageBracketsInDatabase(exchange = 'binance', accountId 
     
     if (lastUpdateTime && new Date(lastUpdateTime) > sixHoursAgo) {
       const timeDiff = Math.round((now - new Date(lastUpdateTime)) / (1000 * 60 * 60 * 10)) / 100;
-      console.log(`[API] Última atualização de alavancagem para ${exchange} foi há ${timeDiff} horas`);
-      console.log(`[API] Brackets de alavancagem foram atualizados recentemente. Pulando atualização.`);
+      console.log(\`[API] Última atualização de alavancagem para \${exchange} foi há \${timeDiff} horas\`);
+      console.log(\`[API] Brackets de alavancagem foram atualizados recentemente. Pulando atualização.\`);
       return;
     }
     
@@ -878,9 +888,9 @@ async function updateLeverageBracketsInDatabase(exchange = 'binance', accountId 
     for (const bracket of brackets) {
       for (const levelBracket of bracket.brackets) {
         await db.query(
-          `INSERT INTO alavancagem_brackets 
+          \`INSERT INTO alavancagem_brackets 
            (exchange, symbol, notional_floor, notional_cap, maint_margin_ratio, cum, initial_leverage, data_atualizacao)
-           VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, NOW())\`,
           [
             exchange,
             bracket.symbol,
@@ -894,9 +904,9 @@ async function updateLeverageBracketsInDatabase(exchange = 'binance', accountId 
       }
     }
     
-    console.log(`[API] Brackets de alavancagem atualizados com sucesso para ${exchange}`);
+    console.log(\`[API] Brackets de alavancagem atualizados com sucesso para \${exchange}\`);
   } catch (error) {
-    console.error(`[API] Erro ao atualizar brackets de alavancagem:`, error.message);
+    console.error(\`[API] Erro ao atualizar brackets de alavancagem:\`, error.message);
     // Não re-throw o erro para não quebrar a inicialização
   }
 }
@@ -913,15 +923,15 @@ async function getLeverageBracketsFromDb(symbol, exchange = 'binance', accountId
     const db = await getDatabaseInstance(accountId);
     
     const [brackets] = await db.query(
-      `SELECT * FROM alavancagem_brackets 
+      \`SELECT * FROM alavancagem_brackets 
        WHERE symbol = ? AND exchange = ? 
-       ORDER BY notional_floor ASC`,
+       ORDER BY notional_floor ASC\`,
       [symbol, exchange]
     );
     
     return brackets;
   } catch (error) {
-    console.error(`[API] Erro ao obter brackets do banco para ${symbol}:`, error.message);
+    console.error(\`[API] Erro ao obter brackets do banco para \${symbol}:\`, error.message);
     return [];
   }
 }
@@ -950,10 +960,10 @@ async function cancelPendingEntry(symbol, accountId = 1) {
       await cancelOrder(accountId, symbol, order.orderId);
     }
     
-    console.log(`[API] ${entryOrders.length} ordens de entrada canceladas para ${symbol}`);
+    console.log(\`[API] \${entryOrders.length} ordens de entrada canceladas para \${symbol}\`);
     return true;
   } catch (error) {
-    console.error(`[API] Erro ao cancelar entrada pendente para ${symbol}:`, error.message);
+    console.error(\`[API] Erro ao cancelar entrada pendente para \${symbol}:\`, error.message);
     return false;
   }
 }
@@ -968,16 +978,16 @@ async function verifyAndFixEnvironmentConsistency(accountId = 1) {
     const db = await getDatabaseInstance(accountId);
     
     // Obter informações da conta e corretora
-    const [accountInfo] = await db.query(`
+    const [accountInfo] = await db.query(\`
       SELECT c.id, c.id_corretora, cor.corretora, cor.ambiente, 
              cor.futures_rest_api_url, cor.futures_ws_api_url, cor.futures_ws_market_url
       FROM contas c
       JOIN corretoras cor ON c.id_corretora = cor.id
       WHERE c.id = ? AND c.ativa = 1
-    `, [accountId]);
+    \`, [accountId]);
     
     if (!accountInfo || accountInfo.length === 0) {
-      throw new Error(`Conta ID ${accountId} não encontrada`);
+      throw new Error(\`Conta ID \${accountId} não encontrada\`);
     }
     
     const account = accountInfo[0];
@@ -991,36 +1001,36 @@ async function verifyAndFixEnvironmentConsistency(accountId = 1) {
     let correctionsMade = false;
     
     if (isEnvProduction && hasTestnetUrls) {
-      console.log(`[API] ⚠️ CORREÇÃO CRÍTICA: Corretora ${account.corretora} (ID: ${account.id_corretora}) 
-                  está em ambiente PRODUÇÃO mas usando URLs de TESTNET`);
+      console.log(\`[API] ⚠️ CORREÇÃO CRÍTICA: Corretora \${account.corretora} (ID: \${account.id_corretora}) 
+                  está em ambiente PRODUÇÃO mas usando URLs de TESTNET\`);
       
       // Corrigir URLs para ambiente de produção
-      await db.query(`
+      await db.query(\`
         UPDATE corretoras 
         SET futures_rest_api_url = 'https://fapi.binance.com/fapi',
             futures_ws_market_url = 'wss://fstream.binance.com',
             futures_ws_api_url = 'wss://ws-fapi.binance.com/ws-fapi/v1'
-        WHERE id = ?`,
+        WHERE id = ?\`,
         [account.id_corretora]
       );
       
-      console.log(`[API] ✅ URLs corrigidas para ambiente de PRODUÇÃO`);
+      console.log(\`[API] ✅ URLs corrigidas para ambiente de PRODUÇÃO\`);
       correctionsMade = true;
     } else if (!isEnvProduction && !hasTestnetUrls) {
-      console.log(`[API] ⚠️ CORREÇÃO CRÍTICA: Corretora ${account.corretora} (ID: ${account.id_corretora}) 
-                  está em ambiente TESTNET mas usando URLs de PRODUÇÃO`);
+      console.log(\`[API] ⚠️ CORREÇÃO CRÍTICA: Corretora \${account.corretora} (ID: \${account.id_corretora}) 
+                  está em ambiente TESTNET mas usando URLs de PRODUÇÃO\`);
       
       // Corrigir URLs para ambiente testnet
-      await db.query(`
+      await db.query(\`
         UPDATE corretoras 
         SET futures_rest_api_url = 'https://testnet.binancefuture.com/fapi',
             futures_ws_market_url = 'wss://stream.binancefuture.com',
             futures_ws_api_url = 'wss://testnet.binancefuture.com/ws-fapi/v1'
-        WHERE id = ?`,
+        WHERE id = ?\`,
         [account.id_corretora]
       );
       
-      console.log(`[API] ✅ URLs corrigidas para ambiente de TESTNET`);
+      console.log(\`[API] ✅ URLs corrigidas para ambiente de TESTNET\`);
       correctionsMade = true;
     }
     
@@ -1036,7 +1046,7 @@ async function verifyAndFixEnvironmentConsistency(accountId = 1) {
     
     return correctionsMade;
   } catch (error) {
-    console.error(`[API] Erro ao verificar consistência de ambiente: ${error.message}`);
+    console.error(\`[API] Erro ao verificar consistência de ambiente: \${error.message}\`);
     return false;
   }
 }
@@ -1080,4 +1090,15 @@ module.exports = {
   cancelPendingEntry,
   loadCredentialsFromDatabase,
   verifyAndFixEnvironmentConsistency
-};
+};`;
+
+    // Escrever o arquivo corrigido
+    await fs.writeFile(apiPath, conteudoCompleto, 'utf8');
+    console.log('✅ Arquivo api.js corrigido e recriado com todas as funções necessárias!');
+    
+  } catch (error) {
+    console.error('❌ Erro ao corrigir api.js:', error);
+  }
+}
+
+corrigirApiCompleto();
