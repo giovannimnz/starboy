@@ -133,58 +133,48 @@ async function initializeMonitoring(accountId = 1) {
   console.log(`[MONITOR] Inicializando sistema de monitoramento para conta ID: ${accountId}...`);
 
   try {
+    // Obter conexão com o banco de dados
+    const db = await getDatabaseInstance(accountId);
+    if (!db) {
+      throw new Error(`Falha ao obter conexão com o banco de dados para conta ${accountId}`);
+    }
+
     // Inicializar o bot do Telegram para esta conta
     const bot = await initializeTelegramBot(accountId);
     
     if (!bot) {
-      console.warn(`[MONITOR] Bot do Telegram não pôde ser inicializado para conta ${accountId}. Funcionalidades de notificação estarão indisponíveis.`);
+      console.log(`[MONITOR] Bot do Telegram não inicializado para conta ${accountId}`);
     } else {
       console.log(`[MONITOR] Bot do Telegram inicializado com sucesso para conta ${accountId}`);
     }
     
     // Inicializar os handlers no websocketApi
-    await websocketApi.initializeHandlers(accountId);
+    try {
+      await websocketApi.initializeHandlers(accountId);
+      console.log(`[MONITOR] WebSocket API handlers inicializados para conta ${accountId}`);
+    } catch (wsError) {
+      console.error(`[MONITOR] Erro ao inicializar WebSocket API handlers:`, wsError);
+      // Continuar mesmo com erro, já que podemos usar API REST como fallback
+    }
     
     // Primeiro configurar handlers com os callbacks adaptados para accountId
     handlers = {
       handleOrderUpdate: async (msg, db) => await handleOrderUpdate(msg, db, accountId),
       handleAccountUpdate: async (msg, db) => await handleAccountUpdate(msg, db, accountId),
       onPriceUpdate: async (symbol, price, db) => await onPriceUpdate(symbol, price, db, accountId),
-      getDbConnection: async () => await getDatabaseInstance(accountId),
-      onWebSocketApiResponse: async (response) => {
-        // console.log('[WS-API] Resposta recebida:', JSON.stringify(response).substring(0, 500));
-      }
+      getDbConnection: async () => await getDatabaseInstance(accountId)
     };
     
     // Usar os handlers configurados nos websockets
     websockets.setMonitoringCallbacks(handlers);
     
     // Iniciar userDataStream para esta conta
-    await websockets.startUserDataStream(getDatabaseInstance(accountId), accountId);
-
-    // Iniciar WebSocket API para operações de trading
     try {
-      const wsApiConnection = await websockets.startWebSocketApi(accountId);
-      const authenticated = await websockets.authenticateWebSocketApi(accountId);
-      
-      if (authenticated) {
-        console.log('[MONITOR] WebSocket API autenticado com sucesso');
-      } else {
-        console.log('[MONITOR] WebSocket API operando em modo não autenticado. Requisições incluirão assinatura individual.');
-      }
-    } catch (wsApiError) {
-      console.error('[MONITOR] Erro ao iniciar WebSocket API:', wsApiError);
-      console.log('[MONITOR] Sistema continuará usando a API REST como fallback');
-    }
-
-    // Sincronizar saldo da conta logo após conexão
-    try {
-      const result = await syncAccountBalance(accountId);
-      if (result) {
-        console.log(`[MONITOR] Saldo inicial conta ${accountId}: ${result.saldo.toFixed(2)} USDT | Base Cálculo: ${result.saldo_base_calculo.toFixed(2)} USDT`);
-      }
-    } catch (error) {
-      console.error(`[MONITOR] Erro ao sincronizar saldo inicial para conta ${accountId}:`, error);
+      await websockets.startUserDataStream(db, accountId);
+      console.log(`[MONITOR] UserDataStream iniciado para conta ${accountId}`);
+    } catch (userDataError) {
+      console.error(`[MONITOR] Erro ao iniciar UserDataStream:`, userDataError);
+      // Continuar mesmo com erro
     }
 
     // Verificar sinais pendentes ao iniciar
@@ -192,22 +182,19 @@ async function initializeMonitoring(accountId = 1) {
       SELECT id, symbol, side, entry_price, status 
       FROM webhook_signals 
       WHERE status IN ('PENDING', 'PROCESSANDO', 'AGUARDANDO_ACIONAMENTO')
-      AND conta_id = ?
+      AND (conta_id = ? OR conta_id IS NULL)
     `, [accountId]);
 
     console.log(`[MONITOR] Ao iniciar, encontrados ${pendingSignals.length} sinais pendentes para conta ${accountId}:`);
     pendingSignals.forEach(signal => {
-      console.log(`  - ID=${signal.id}, Symbol=${signal.symbol}, Side=${signal.side}, Status=${signal.status}`);
-      
-      // Iniciar WebSockets para todos os símbolos com sinais pendentes
-      websockets.ensurePriceWebsocketExists(signal.symbol, accountId);
+      console.log(`  - ID: ${signal.id}, Symbol: ${signal.symbol}, Side: ${signal.side}, Entry: ${signal.entry_price}`);
     });
 
     // Executar verificação inicial de novas operações imediatamente
     console.log(`[MONITOR] Executando verificação imediata de sinais pendentes...`);
     setTimeout(() => {
-      forceProcessPendingSignals(accountId).catch(err => {
-        console.error(`[MONITOR] Erro ao forçar processamento de sinais pendentes:`, err);
+      checkNewTrades(accountId).catch(error => {
+        console.error(`[MONITOR] Erro na verificação imediata de sinais:`, error);
       });
     }, 5000);
 
@@ -215,22 +202,24 @@ async function initializeMonitoring(accountId = 1) {
     const accountJobs = {};
     
     // Agendar verificação periódica de novas operações a cada 15 segundos
+    console.log(`[MONITOR] Agendando verificação periódica de sinais a cada 15 segundos`);
     accountJobs.checkNewTrades = schedule.scheduleJob('*/15 * * * * *', async () => {
       try {
         await checkNewTrades(accountId);
       } catch (error) {
-        console.error(`[MONITOR] Erro ao verificar novas operações para conta ${accountId}:`, error);
+        console.error(`[MONITOR] Erro no job de verificação de sinais:`, error);
       }
     });
     
     // Iniciar monitoramento de preços para posições abertas
-    initializePriceMonitoring();
-
-    try {
     await startPriceMonitoring(accountId);
-  } catch (error) {
-    console.error('[MONITOR] Erro ao iniciar monitoramento de preços:', error);
-  }
+
+    // Sincronizar posições com a corretora
+    try {
+      await syncPositionsWithExchange(accountId);
+    } catch (syncError) {
+      console.error(`[MONITOR] Erro ao sincronizar posições:`, syncError);
+    }
 
     await logOpenPositionsAndOrders(accountId);
 
@@ -455,21 +444,34 @@ async function startPriceMonitoring(accountId = 1) {
 }
 
 // Função auxiliar para obter preço atual via API
+/**
+ * Função para obter preço atual via REST API com credenciais da conta específica
+ * @param {string} symbol - Símbolo do par
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<number|null>} - Preço atual ou null se falhar
+ */
 async function getCurrentPrice(symbol, accountId = 1) {
   try {
-    // Obter as credenciais específicas para esta conta
-    const credentials = await require('../api').loadCredentialsFromDatabase(accountId);
+    // Obter credenciais da conta específica para usar a URL correta
+    const api = require('../api');
+    const credentials = await api.loadCredentialsFromDatabase(accountId);
+    
     if (!credentials || !credentials.apiUrl) {
-      throw new Error(`Credenciais ou URL da API não disponível para conta ${accountId}`);
+      throw new Error(`Credenciais não disponíveis para conta ${accountId}`);
     }
     
+    // Construir URL completa com a URL da API correta
     const url = `${credentials.apiUrl}/v1/ticker/price?symbol=${symbol}`;
     console.log(`[MONITOR] Obtendo preço atual via REST API: ${url}`);
     
     const response = await axios.get(url);
     if (response.data && response.data.price) {
-      return parseFloat(response.data.price);
+      const price = parseFloat(response.data.price);
+      console.log(`[MONITOR] Preço atual de ${symbol} obtido via REST API: ${price}`);
+      return price;
     }
+    
+    console.error(`[MONITOR] Resposta da API sem preço:`, response.data);
     return null;
   } catch (error) {
     console.error(`[MONITOR] Erro ao obter preço atual para ${symbol}:`, error);
@@ -480,9 +482,8 @@ async function getCurrentPrice(symbol, accountId = 1) {
 // Função para verificar novas operações e criar ordens
 async function checkNewTrades(accountId = 1) {
   try {
-    console.log('[MONITOR] checkNewTrades iniciado para conta', accountId);
-    console.log('[MONITOR] Hora atual:', new Date().toISOString());
-    console.log(`[MONITOR] Verificando novos sinais para conta ${accountId}...`);
+    const startTime = Date.now();
+    console.log(`[MONITOR] Verificando sinais pendentes para conta ${accountId} às ${new Date().toLocaleString()}`);
     
     const db = await getDatabaseInstance(accountId);
     if (!db) {
@@ -493,75 +494,83 @@ async function checkNewTrades(accountId = 1) {
     // Verificar sinais PENDING na tabela webhook_signals
     const [pendingSignals] = await db.query(`
       SELECT * FROM webhook_signals
-      WHERE status = 'PENDING' AND conta_id = ?
+      WHERE status = 'PENDING' AND (conta_id = ? OR conta_id IS NULL)
       ORDER BY created_at ASC
     `, [accountId]);
 
-    if (pendingSignals.length > 0) {
-  console.log('====== DETALHES DOS SINAIS PENDENTES ======');
-  pendingSignals.forEach(signal => {
-    console.log(`  - ID: ${signal.id}, Symbol: ${signal.symbol}, Side: ${signal.side}, Entry: ${signal.entry_price}`);
-    console.log(`    Created at: ${signal.created_at}, Status: ${signal.status}`);
-    console.log('-------------------------------------------');
-  });
-  console.log('============================================');
-}
+    if (pendingSignals.length === 0) {
+      console.log(`[MONITOR] Nenhum sinal pendente encontrado para conta ${accountId}`);
+      return;
+    }
 
     console.log(`[MONITOR] Encontrados ${pendingSignals.length} sinais pendentes para processar (Conta ${accountId})`);
 
+    // Processar cada sinal pendente
     for (const signal of pendingSignals) {
-      console.log(`[MONITOR] Processando sinal pendente: ID=${signal.id}, Symbol=${signal.symbol}, Side=${signal.side}, Entry=${signal.entry_price}`);
-      
-      // Verificar se o sinal já está sendo processado
-      if (processingSignals.has(signal.id)) {
-        console.log(`[MONITOR] Sinal ID ${signal.id} já está em processamento, pulando...`);
-        continue;
-      }
-
-      // Marcar como em processamento
-      processingSignals.add(signal.id);
-
       try {
-        // Atualizar status para PROCESSANDO antes de processar para evitar duplicação
+        console.log(`[MONITOR] Iniciando processamento do sinal ID ${signal.id} para ${signal.symbol}: ${signal.side} @ ${signal.entry_price}`);
+        
+        // Verificar se já está em processamento (prevenir duplicação)
+        if (processingSignals.has(signal.id)) {
+          console.log(`[MONITOR] Sinal ID ${signal.id} já está sendo processado, ignorando.`);
+          continue;
+        }
+        
+        // Marcar como em processamento
+        processingSignals.add(signal.id);
+        
+        // Atualizar status para PROCESSANDO no banco
         await db.query(
-          'UPDATE webhook_signals SET status = "PROCESSANDO" WHERE id = ?',
+          `UPDATE webhook_signals SET status = 'PROCESSANDO', updated_at = NOW() WHERE id = ?`,
           [signal.id]
         );
-
-        // Obter preço atual
-  const currentPrice = await getWebSocketPrice(signal.symbol);
-  
-  if (!currentPrice) {
-    throw new Error(`Não foi possível obter o preço atual para ${signal.symbol}`);
-  }
-
-  console.log(`[MONITOR] Preço atual de ${signal.symbol}: ${currentPrice}, Preço de entrada: ${signal.entry_price}`);
-
-        // Processar o sinal com o preço atual
-        await processSignal(db, signal, currentPrice, accountId);
-      } catch (procError) {
-        console.error(`[MONITOR] Erro ao processar sinal ID ${signal.id}:`, procError);
         
-        // Se houver erro, tentar atualizar o status
+        // Obter preço atual para o símbolo
+        const currentPrice = await getWebSocketPrice(signal.symbol, accountId);
+        console.log(`[MONITOR] Preço atual de ${signal.symbol}: ${currentPrice}`);
+        
+        if (!currentPrice) {
+          console.error(`[MONITOR] Não foi possível obter preço atual para ${signal.symbol}`);
+          await db.query(
+            `UPDATE webhook_signals SET status = 'ERROR', error_message = 'Não foi possível obter preço atual' WHERE id = ?`,
+            [signal.id]
+          );
+          processingSignals.delete(signal.id);
+          continue;
+        }
+        
+        // Processar o sinal
+        await processSignal(db, signal, currentPrice, accountId);
+        
+        // Remover do conjunto de processamento
+        processingSignals.delete(signal.id);
+      } catch (signalError) {
+        console.error(`[MONITOR] Erro ao processar sinal ID ${signal.id}:`, signalError);
+        
+        // Atualizar status para ERROR
         try {
           await db.query(
-            'UPDATE webhook_signals SET status = "ERROR", error_message = ? WHERE id = ?',
-            [procError.message.substring(0, 250), signal.id]
+            `UPDATE webhook_signals SET status = 'ERROR', error_message = ? WHERE id = ?`,
+            [signalError.message.substring(0, 250), signal.id]
           );
         } catch (updateError) {
-          console.error(`[MONITOR] Erro adicional ao atualizar status do sinal ID ${signal.id}:`, updateError);
+          console.error(`[MONITOR] Erro adicional ao atualizar status:`, updateError);
         }
-      } finally {
-        // Remover da lista de processamento
+        
+        // Remover do conjunto de processamento
         processingSignals.delete(signal.id);
       }
     }
+    
+    const endTime = Date.now();
+    console.log(`[MONITOR] Verificação de sinais pendentes concluída em ${(endTime - startTime)/1000} segundos`);
   } catch (error) {
-    console.error(`[MONITOR] Erro ao verificar novas operações (conta ${accountId}):`, error);
+    console.error(`[MONITOR] Erro ao verificar sinais pendentes:`, error);
   }
 }
 
 // Função para processar um sinal
+// Atualizar a função processSignal para ter melhor tratamento de erros
 async function processSignal(db, signal, currentPrice, accountId = 1) {
   console.log(`[MONITOR] Processando sinal ID ${signal.id} para ${signal.symbol}: ${signal.side} a ${signal.entry_price}`);
   
@@ -582,32 +591,40 @@ async function processSignal(db, signal, currentPrice, accountId = 1) {
     );
 
     if (existingPositions.length > 0) {
+      console.log(`[MONITOR] Já existe uma posição aberta para ${symbol}`);
       await connection.query(
-        `UPDATE webhook_signals SET status = 'ERROR', error_message = ? WHERE id = ?`,
-        ['Já existe uma posição aberta para este símbolo', id]
+        `UPDATE webhook_signals SET status = 'ERROR', error_message = 'Já existe uma posição aberta para este símbolo' WHERE id = ?`,
+        [id]
       );
       await connection.commit();
-      console.log(`[MONITOR] Sinal ID ${id} ignorado: já existe posição aberta para ${symbol}`);
-      return false;
+      return;
     }
 
     // Verificar se o símbolo é válido e se o preço de entrada é válido
     if (!symbol || !entry_price || parseFloat(entry_price) <= 0) {
-      throw new Error(`Símbolo ou preço de entrada inválidos: ${symbol}, ${entry_price}`);
+      console.error(`[MONITOR] Símbolo ou preço de entrada inválido: ${symbol}, ${entry_price}`);
+      await connection.query(
+        `UPDATE webhook_signals SET status = 'ERROR', error_message = 'Símbolo ou preço de entrada inválido' WHERE id = ?`,
+        [id]
+      );
+      await connection.commit();
+      return;
     }
 
     // Configurar alavancagem e tipo de margem
     try {
-      // Configurar alavancagem com valor enviado pelo sinal
-      await changeInitialLeverage(accountId, symbol, parseInt(leverage));
-      console.log(`[MONITOR] Alavancagem configurada: ${leverage}x para ${symbol}`);
+      const leverageLevel = parseInt(leverage) || 75;
       
-      // Alterar o tipo de margem para CROSSED
-      await changeMarginType(accountId, symbol, 'CROSSED');
+      console.log(`[API] Alterando alavancagem para ${symbol}: ${leverageLevel} (Conta ${accountId})`);
+      await api.changeInitialLeverage(accountId, symbol, leverageLevel);
+      console.log(`[MONITOR] Alavancagem configurada: ${leverageLevel}x para ${symbol}`);
+      
+      console.log(`[API] Alterando tipo de margem para ${symbol}: CROSSED (Conta ${accountId})`);
+      await api.changeMarginType(accountId, symbol, 'CROSSED');
       console.log(`[MONITOR] Tipo de margem configurado para CROSSED em ${symbol}`);
     } catch (error) {
-      console.log(`[MONITOR] Erro ao configurar alavancagem/margem (não crítico): ${error.message}`);
-      // Continuar mesmo com erro, pois isso não é crítico para a operação
+      console.warn(`[MONITOR] Aviso ao configurar alavancagem/margem: ${error.message}`);
+      // Continuar mesmo com erro, pois pode ser apenas que já estava configurado
     }
 
     // Iniciar monitoramento de preço via WebSocket
@@ -623,7 +640,7 @@ async function processSignal(db, signal, currentPrice, accountId = 1) {
     
     // Verificar se temos a função executeLimitMakerEntry
     if (typeof executeLimitMakerEntry !== 'function') {
-      throw new Error('Função executeLimitMakerEntry não está definida. Verifique os imports do módulo.');
+      throw new Error('Função executeLimitMakerEntry não está disponível');
     }
     
     // Usar o executeLimitMakerEntry para criar a ordem
@@ -631,10 +648,36 @@ async function processSignal(db, signal, currentPrice, accountId = 1) {
     const entryResult = await executeLimitMakerEntry(db, signal, currentPrice, accountId);
     
     if (entryResult && entryResult.success) {
-      console.log(`[MONITOR] Entrada executada com sucesso para sinal ID ${id}: posição ID ${entryResult.positionId}`);
-      return true;
+      console.log(`[MONITOR] Entrada executada com sucesso para sinal ID ${id}`);
+      console.log(`[MONITOR] Detalhes: Position ID: ${entryResult.positionId}, Preço médio: ${entryResult.averagePrice}, Quantidade: ${entryResult.filledQuantity}`);
+      
+      // Enviar notificação via Telegram
+      const bot = getTelegramBot(accountId);
+      if (bot && chat_id) {
+        try {
+          await bot.telegram.sendMessage(chat_id, 
+            `✅ Entrada executada: ${symbol} ${side}\n` +
+            `💰 Preço médio: ${entryResult.averagePrice}\n` +
+            `📊 Quantidade: ${entryResult.filledQuantity}\n` +
+            `🆔 Position ID: ${entryResult.positionId}`
+          );
+        } catch (telegramError) {
+          console.error(`[TELEGRAM] Erro ao enviar notificação:`, telegramError);
+        }
+      }
+      
+      return entryResult;
     } else {
-      throw new Error(`Falha ao executar entrada: ${entryResult?.error || 'Motivo desconhecido'}`);
+      const errorMsg = entryResult?.error || 'Erro desconhecido na execução da entrada';
+      console.error(`[MONITOR] Falha na execução da entrada: ${errorMsg}`);
+      
+      // Atualizar status para ERROR
+      await db.query(
+        `UPDATE webhook_signals SET status = 'ERROR', error_message = ? WHERE id = ?`,
+        [errorMsg.substring(0, 250), id]
+      );
+      
+      throw new Error(`Falha ao executar entrada: ${errorMsg}`);
     }
   } catch (error) {
     console.error(`[MONITOR] Erro ao processar sinal ID ${signal.id} para ${signal.symbol}:`, error);
@@ -643,7 +686,7 @@ async function processSignal(db, signal, currentPrice, accountId = 1) {
       try {
         await connection.rollback();
       } catch (rollbackError) {
-        console.error(`[MONITOR] Erro ao fazer rollback: ${rollbackError.message}`);
+        console.error(`[MONITOR] Erro adicional ao fazer rollback:`, rollbackError);
       }
     }
     
@@ -654,7 +697,7 @@ async function processSignal(db, signal, currentPrice, accountId = 1) {
         [error.message.substring(0, 250), signal.id]
       );
     } catch (updateError) {
-      console.error(`[MONITOR] Erro ao atualizar status do sinal para ERROR: ${updateError.message}`);
+      console.error(`[MONITOR] Erro adicional ao atualizar status:`, updateError);
     }
     
     throw error;
@@ -665,67 +708,63 @@ async function processSignal(db, signal, currentPrice, accountId = 1) {
   }
 }
 
+// Atualizar a função forceProcessPendingSignals para ser mais robusta
 async function forceProcessPendingSignals(accountId = 1) {
   console.log(`[MONITOR] Forçando processamento de sinais pendentes para conta ${accountId}...`);
   try {
     const db = await getDatabaseInstance(accountId);
     if (!db) {
-      console.error(`[MONITOR] Não foi possível obter conexão com o banco de dados para conta ${accountId}`);
-      return;
+      throw new Error(`Falha ao obter instância do banco de dados para conta ${accountId}`);
     }
 
     // Selecionar sinais pendentes
     const [pendingSignals] = await db.query(`
       SELECT * FROM webhook_signals
-      WHERE status = 'PENDING' AND conta_id = ?
+      WHERE status = 'PENDING' AND (conta_id = ? OR conta_id IS NULL)
       ORDER BY created_at ASC
     `, [accountId]);
 
     console.log(`[MONITOR] Encontrados ${pendingSignals.length} sinais pendentes para processamento forçado`);
 
     if (pendingSignals.length === 0) {
+      console.log(`[MONITOR] Não há sinais pendentes para processar para conta ${accountId}`);
       return;
     }
 
     // Processar cada sinal pendente
     for (const signal of pendingSignals) {
-      console.log(`[MONITOR] Processando forçadamente sinal ID ${signal.id}: ${signal.symbol} ${signal.side} @ ${signal.entry_price}`);
-      
-      // Verificar se já está sendo processado
-      if (processingSignals.has(signal.id)) {
-        console.log(`[MONITOR] Sinal ID ${signal.id} já está em processamento, pulando...`);
-        continue;
-      }
-
-      // Marcar como em processamento
-      processingSignals.add(signal.id);
-
       try {
-        // Atualizar status para PROCESSANDO
-        await db.query(
-          'UPDATE webhook_signals SET status = "PROCESSANDO" WHERE id = ?',
-          [signal.id]
-        );
-
-        // Obter o preço atual
-  let currentPrice;
-  try {
-    currentPrice = await getWebSocketPrice(signal.symbol);
-    console.log(`[MONITOR] Preço atual de ${signal.symbol}: ${currentPrice}`);
-  } catch (priceError) {
-    console.error(`[MONITOR] Erro ao obter preço atual para ${signal.symbol}:`, priceError);
+        console.log(`[MONITOR] Processando forçadamente sinal ID ${signal.id}: ${signal.symbol} ${signal.side} @ ${signal.entry_price}`);
+        
+        // Obter preço atual
+        const currentPrice = await getWebSocketPrice(signal.symbol, accountId);
+        console.log(`[MONITOR] Preço atual de ${signal.symbol}: ${currentPrice || 'null'}`);
+        
+        if (!currentPrice) {
+          console.error(`[MONITOR] Preço atual de ${signal.symbol}: null`);
+          // Tentar obter via API REST como último recurso
+          try {
+            const api = require('../api');
+            const restPrice = await api.getPrice(accountId, signal.symbol);
+            console.log(`[MONITOR] Preço obtido via REST API: ${restPrice}`);
+            
+            if (restPrice) {
+              await processSignal(db, signal, restPrice, accountId);
+              continue;
+            }
+          } catch (restError) {
+            console.error(`[MONITOR] Também falhou ao obter preço via REST:`, restError);
+          }
           
-          // Se não conseguir o preço, marcar como erro e continuar
+          // Se tudo falhar, registrar erro
           await db.query(
-            'UPDATE webhook_signals SET status = "ERROR", error_message = ? WHERE id = ?',
-            [`Não foi possível obter preço atual: ${priceError.message}`.substring(0, 250), signal.id]
+            `UPDATE webhook_signals SET status = 'ERROR', error_message = 'Não foi possível obter preço atual' WHERE id = ?`,
+            [signal.id]
           );
-          
-          processingSignals.delete(signal.id);
           continue;
         }
-
-        // Processar o sinal com o preço atual
+        
+        // Processar o sinal
         await processSignal(db, signal, currentPrice, accountId);
       } catch (error) {
         console.error(`[MONITOR] Erro ao processar sinal ID ${signal.id}:`, error);
@@ -733,19 +772,17 @@ async function forceProcessPendingSignals(accountId = 1) {
         // Atualizar status para ERROR
         try {
           await db.query(
-            'UPDATE webhook_signals SET status = "ERROR", error_message = ? WHERE id = ?',
+            `UPDATE webhook_signals SET status = 'ERROR', error_message = ? WHERE id = ?`,
             [error.message.substring(0, 250), signal.id]
           );
         } catch (updateError) {
-          console.error(`[MONITOR] Erro ao atualizar status do sinal para ERROR:`, updateError);
+          console.error(`[MONITOR] Erro ao atualizar status do sinal:`, updateError);
         }
-      } finally {
-        // Remover da lista de processamento
-        processingSignals.delete(signal.id);
       }
     }
   } catch (error) {
     console.error(`[MONITOR] Erro ao forçar processamento de sinais pendentes:`, error);
+    throw error;
   }
 }
 
@@ -1355,50 +1392,59 @@ function initializePriceMonitoring() {
  * @param {number} maxAgeMs - Idade máxima do preço em cache (ms)
  * @returns {Promise<number>} O preço atual
  */
-async function getWebSocketPrice(symbol, maxAgeMs = 5000) {
-  // Se não temos o símbolo no cache ou não tem websocket iniciado, iniciamos um
-  if (!latestPrices.has(symbol)) {
-    console.log(`[MONITOR] Iniciando monitoramento de preço via WebSocket para ${symbol}`);
-    await websockets.ensurePriceWebsocketExists(symbol);
-    
-    // Aguardar um tempo para o websocket receber a primeira atualização
-    await new Promise(resolve => setTimeout(resolve, 1000));
-  }
-
-  // Verificar se temos uma atualização recente no cache
-  const priceEntry = latestPrices.get(symbol);
-  const now = Date.now();
-  
-  if (priceEntry && (now - priceEntry.timestamp) < maxAgeMs) {
-    return priceEntry.price;
-  }
-
-  // Se o preço for muito antigo ou não existir, fazer fallback para REST API
-  console.log(`[MONITOR] Preço de ${symbol} não disponível via WebSocket (ou antigo), usando REST API como fallback`);
+// Atualizar a função getWebSocketPrice para ser mais confiável
+async function getWebSocketPrice(symbol, accountId = 1, maxAgeMs = 5000) {
   try {
-    const restPrice = await getCurrentPrice(symbol);
+    // Se não temos o símbolo no cache ou não tem websocket iniciado, iniciamos um
+    if (!latestPrices.has(symbol)) {
+      console.log(`[MONITOR] Iniciando monitoramento de preço via WebSocket para ${symbol}`);
+      try {
+        await websockets.ensurePriceWebsocketExists(symbol, accountId);
+        
+        // Aguardar um tempo para o websocket receber a primeira atualização
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      } catch (wsError) {
+        console.error(`[MONITOR] Erro ao iniciar WebSocket para ${symbol}:`, wsError.message);
+        // Continuar para verificar se já temos dados ou usar fallback
+      }
+    }
+
+    // Verificar se temos uma atualização recente no cache
+    const priceEntry = latestPrices.get(symbol);
+    const now = Date.now();
+    
+    if (priceEntry && (now - priceEntry.timestamp) < maxAgeMs) {
+      return priceEntry.price;
+    }
+
+    // Se o preço for muito antigo ou não existir, tentar obter diretamente
+    console.log(`[MONITOR] Preço de ${symbol} não disponível via WebSocket (ou antigo)`);
+    
+    // Tentar obter o preço atual via API REST
+    const restPrice = await getCurrentPrice(symbol, accountId);
     
     // Atualizar o cache com o preço da REST API
     if (restPrice) {
       latestPrices.set(symbol, {
         price: restPrice,
         timestamp: Date.now(),
-        bid: restPrice * 0.9999,  // Estimativa aproximada do bid
-        ask: restPrice * 1.0001   // Estimativa aproximada do ask
+        bid: restPrice * 0.9999,
+        ask: restPrice * 1.0001
       });
+      
+      return restPrice;
     }
     
-    return restPrice;
-  } catch (error) {
-    console.error(`[MONITOR] Erro no fallback REST para ${symbol}:`, error);
-    
-    // Se temos algum preço em cache, mesmo antigo, retorná-lo como último recurso
+    // Se ainda temos algum preço em cache, mesmo antigo, retorná-lo como último recurso
     if (priceEntry) {
       console.log(`[MONITOR] Usando preço em cache antigo para ${symbol}: ${priceEntry.price}`);
       return priceEntry.price;
     }
     
-    throw error;
+    return null;
+  } catch (error) {
+    console.error(`[MONITOR] Erro ao obter preço para ${symbol}:`, error);
+    return null;
   }
 }
 
