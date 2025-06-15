@@ -26,7 +26,7 @@ async function loadCredentialsFromDatabase(options = {}) {
   try {
     const { accountId = 1, forceRefresh = false } = options;
     
-    // CORREÇÃO: Validar accountId
+    // Validar accountId
     if (!accountId || typeof accountId !== 'number') {
       throw new Error(`ID da conta inválido: ${accountId} (tipo: ${typeof accountId})`);
     }
@@ -36,12 +36,16 @@ async function loadCredentialsFromDatabase(options = {}) {
     // Usar cache se disponível e não forçar atualização
     if (!forceRefresh && accountCredentials.has(accountId) && 
         (Date.now() - lastCacheTime < CACHE_TTL)) {
-      return accountCredentials.get(accountId);
+      const cached = accountCredentials.get(accountId);
+      console.log(`[API] Usando credenciais em cache para conta ${accountId}`);
+      console.log(`[API] Cache - API Key: ${cached.apiKey ? cached.apiKey.substring(0, 8) + '...' : 'FALTANDO'}`);
+      console.log(`[API] Cache - Secret Key: ${cached.secretKey ? 'Configurada' : 'FALTANDO'}`);
+      return cached;
     }
     
-    const db = await getDatabaseInstance(); // CORREÇÃO: Remover accountId
+    const db = await getDatabaseInstance();
     
-    // CORREÇÃO: Usar estrutura real da tabela contas
+    // CORREÇÃO: Query simplificada para verificar colunas existentes
     const [rows] = await db.query(`
       SELECT 
         id,
@@ -60,6 +64,23 @@ async function loadCredentialsFromDatabase(options = {}) {
     
     const account = rows[0];
     
+    // CORREÇÃO: Debug detalhado dos dados do banco
+    console.log(`[API] Dados do banco para conta ${accountId}:`);
+    console.log(`- ID: ${account.id}`);
+    console.log(`- Nome: ${account.nome}`);
+    console.log(`- API Key: ${account.api_key ? account.api_key.substring(0, 8) + '...' : 'NULL'}`);
+    console.log(`- API Secret: ${account.api_secret ? 'EXISTE (' + account.api_secret.length + ' chars)' : 'NULL'}`);
+    console.log(`- API URL: ${account.api_url || 'NULL'}`);
+    
+    // CORREÇÃO: Validação rigorosa antes de criar credentials
+    if (!account.api_key) {
+      throw new Error(`API Key não encontrada para conta ${accountId}`);
+    }
+    
+    if (!account.api_secret) {
+      throw new Error(`API Secret não encontrada para conta ${accountId}`);
+    }
+    
     // Determinar ambiente baseado na URL
     let environment = 'prd';
     let baseUrl = 'https://fapi.binance.com';
@@ -77,14 +98,18 @@ async function loadCredentialsFromDatabase(options = {}) {
       accountId: account.id,
       accountName: account.nome,
       apiKey: account.api_key,
-      secretKey: account.api_secret,
+      secretKey: account.api_secret, // CORREÇÃO: Garantir que não seja undefined
       baseUrl: baseUrl,
       environment: environment,
       broker: 'binance'
     };
 
+    // CORREÇÃO: Validação final antes de retornar
     if (!credentials.apiKey || !credentials.secretKey) {
-      throw new Error(`Credenciais incompletas para conta ${accountId}. API Key ou Secret Key não configurados.`);
+      console.error(`[API] ERRO: Credenciais inválidas após criação:`);
+      console.error(`- API Key: ${credentials.apiKey ? 'OK' : 'UNDEFINED'}`);
+      console.error(`- Secret Key: ${credentials.secretKey ? 'OK' : 'UNDEFINED'}`);
+      throw new Error(`Falha na validação das credenciais para conta ${accountId}`);
     }
 
     // Cache das credenciais
@@ -92,6 +117,8 @@ async function loadCredentialsFromDatabase(options = {}) {
     lastCacheTime = Date.now();
     
     console.log(`[API] ✅ Credenciais carregadas para conta ${accountId} (${account.nome}) - ${environment}`);
+    console.log(`[API] Final - API Key: ${credentials.apiKey.substring(0, 8)}...`);
+    console.log(`[API] Final - Secret Key: Configurada (${credentials.secretKey.length} chars)`);
     
     return credentials;
 
@@ -99,6 +126,13 @@ async function loadCredentialsFromDatabase(options = {}) {
     console.error(`[API] Erro ao carregar credenciais para conta ${accountId}:`, error.message);
     throw error;
   }
+}
+
+/**
+ * Função loadCredentials deve usar loadCredentialsFromDatabase
+ */
+async function loadCredentials(accountId = 1) {
+  return await loadCredentialsFromDatabase({ accountId });
 }
 
 /**

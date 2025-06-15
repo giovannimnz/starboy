@@ -18,6 +18,7 @@ try {
 
 // Cache para armazenar credenciais por conta
 const accountCredentialsCache = new Map();
+const accountConnections = new Map();
 const CACHE_TTL = 60 * 60 * 1000; // 1 hora em ms
 let lastCacheTime = 0;
 
