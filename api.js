@@ -70,6 +70,8 @@ async function loadCredentialsFromDatabase(options = {}) {
       apiSecret: account.api_secret,
       wsApiKey: account.ws_api_key,
       wsApiSecret: account.ws_api_secret,
+      // CORREÇÃO: usar ws_api_secret como privateKey para WebSocket API
+      privateKey: account.ws_api_secret,
       apiUrl: account.futures_rest_api_url,
       wsApiUrl: account.futures_ws_api_url,
       wssMarketUrl: account.futures_ws_market_url,
