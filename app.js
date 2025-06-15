@@ -50,6 +50,11 @@ function formatUptime(seconds) {
  */
 async function startInstance(accountId) {
   try {
+    // CORREÇÃO: Validar accountId
+    if (!accountId || typeof accountId !== 'number') {
+      throw new Error(`AccountId inválido: ${accountId} (tipo: ${typeof accountId})`);
+    }
+
     if (activeInstances.has(accountId)) {
       console.log(`[APP] A conta ${accountId} já está em execução`);
       return true;
@@ -65,17 +70,22 @@ async function startInstance(accountId) {
 
     console.log(`[APP] Iniciando monitoramento para conta ${accountId} (${accounts[0].nome})...`);
     
-    // Iniciar em processo separado para maior estabilidade
-    const monitorProcess = spawn('node', ['posicoes/monitoramento.js', '--account', accountId.toString()], {
+    // CORREÇÃO: Iniciar em processo separado passando accountId
+    const monitorProcess = spawn('node', [
+      'posicoes/monitoramento.js', 
+      '--account', 
+      accountId.toString() // CORREÇÃO: Garantir que accountId seja passado
+    ], {
       detached: true,
-      stdio: 'inherit' // Redirecionar stdout e stderr para o processo pai
+      stdio: 'inherit'
     });
     
     // Registrar o processo
     activeInstances.set(accountId, {
       process: monitorProcess,
       startTime: new Date(),
-      accountName: accounts[0].nome
+      accountName: accounts[0].nome,
+      accountId: accountId // CORREÇÃO: Incluir accountId
     });
     
     // Configurar handlers para o processo
@@ -149,6 +159,7 @@ async function startAllInstances() {
     
     let successCount = 0;
     for (const account of accounts) {
+      // CORREÇÃO: Passar account.id específico
       const success = await startInstance(account.id);
       if (success) successCount++;
     }
@@ -168,6 +179,11 @@ async function startAllInstances() {
  */
 async function restartInstance(accountId) {
   try {
+    // CORREÇÃO: Validar accountId
+    if (!accountId || typeof accountId !== 'number') {
+      throw new Error(`AccountId inválido: ${accountId} (tipo: ${typeof accountId})`);
+    }
+
     console.log(`[APP] Reiniciando conta ${accountId}...`);
     
     // Se já estiver em execução, parar primeiro
@@ -182,7 +198,7 @@ async function restartInstance(accountId) {
       await new Promise(resolve => setTimeout(resolve, 2000));
     }
     
-    // Iniciar a instância novamente
+    // CORREÇÃO: Iniciar a instância passando accountId
     return await startInstance(accountId);
   } catch (error) {
     console.error(`[APP] Erro ao reiniciar instância para conta ${accountId}:`, error.message);

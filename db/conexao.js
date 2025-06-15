@@ -987,19 +987,24 @@ function formatDateForMySQL(date) {
  * Atualiza o saldo da conta e possivelmente o saldo_base_calculo
  * @param {Object} db - Conexão com o banco de dados
  * @param {number} saldo - Novo valor de saldo
- * @param {number} accountId - ID da conta (padrão: 1)
+ * @param {number} accountId - ID da conta (obrigatório)
  * @returns {Promise<Object>} - Objeto com os valores atualizados
  */
 async function updateAccountBalance(db, saldo, accountId) {
+  // CORREÇÃO: Validar accountId obrigatório
+  if (!accountId || typeof accountId !== 'number') {
+    throw new Error(`AccountId é obrigatório: ${accountId} (tipo: ${typeof accountId})`);
+  }
+
   try {
     const connection = await db.getConnection();
     await connection.beginTransaction();
 
     try {
-      // 1. Buscar saldo atual e saldo_base_calculo
+      // 1. Buscar saldo atual e saldo_base_calculo para conta específica
       const [currentAccount] = await connection.query(
           'SELECT saldo, saldo_base_calculo FROM conta WHERE id = ?',
-          [accountId]
+          [accountId] // CORREÇÃO: usar accountId específico
       );
 
       if (currentAccount.length === 0) {
@@ -1007,29 +1012,26 @@ async function updateAccountBalance(db, saldo, accountId) {
       }
 
       const currentSaldo = parseFloat(currentAccount[0].saldo || 0);
-      let baseCalculo = parseFloat(currentAccount[0].saldo_base_calculo || 0);
-
-      // 2. Se o saldo_base_calculo ainda não existe ou é zero, inicializar com o saldo atual
-      if (baseCalculo === 0) {
+      const currentBaseCalculo = parseFloat(currentAccount[0].saldo_base_calculo || 0);
+      
+      // 2. Determinar novo saldo_base_calculo
+      let baseCalculo = currentBaseCalculo;
+      
+      if (saldo > currentBaseCalculo) {
         baseCalculo = saldo;
-      }
-      // 3. Se o novo saldo for maior que o saldo_base_calculo atual, atualizar o saldo_base_calculo
-      else if (saldo > baseCalculo) {
-        baseCalculo = saldo;
-        //console.log(`[DB] Saldo base de cálculo atualizado para: ${baseCalculo.toFixed(2)} USDT`);
-      } else {
-        //console.log(`[DB] Saldo diminuiu de ${currentSaldo.toFixed(2)} para ${saldo.toFixed(2)}, mantendo saldo base: ${baseCalculo.toFixed(2)} USDT`);
+        console.log(`[DB] Atualizando saldo_base_calculo da conta ${accountId}: ${currentBaseCalculo.toFixed(2)} → ${baseCalculo.toFixed(2)}`);
       }
 
-      // 4. Atualizar o saldo e possivelmente o saldo_base_calculo
+      // 3. Atualizar valores no banco para conta específica
       await connection.query(
           'UPDATE conta SET saldo = ?, saldo_base_calculo = ? WHERE id = ?',
-          [saldo, baseCalculo, accountId]
+          [saldo, baseCalculo, accountId] // CORREÇÃO: usar accountId específico
       );
 
       await connection.commit();
 
       return {
+        accountId: accountId, // CORREÇÃO: incluir accountId
         saldo: saldo,
         saldo_base_calculo: baseCalculo
       };
@@ -1040,7 +1042,7 @@ async function updateAccountBalance(db, saldo, accountId) {
       connection.release();
     }
   } catch (error) {
-    console.error(`[DB] Erro ao atualizar saldo da conta: ${error.message}`);
+    console.error(`[DB] Erro ao atualizar saldo da conta ${accountId}: ${error.message}`);
     throw error;
   }
 }
@@ -1048,131 +1050,126 @@ async function updateAccountBalance(db, saldo, accountId) {
 /**
  * Obtém o saldo_base_calculo do banco de dados
  * @param {Object} db - Conexão com o banco de dados
- * @param {number} accountId - ID da conta (padrão: 1)
+ * @param {number} accountId - ID da conta (obrigatório)
  * @returns {Promise<number>} - Valor do saldo_base_calculo
  */
 async function getBaseCalculoBalance(db, accountId) {
+  // CORREÇÃO: Validar accountId obrigatório
+  if (!accountId || typeof accountId !== 'number') {
+    throw new Error(`AccountId é obrigatório: ${accountId} (tipo: ${typeof accountId})`);
+  }
+
   try {
     const [rows] = await db.query(
-        'SELECT saldo_base_calculo FROM conta WHERE id = ?',
-        [accountId]
+      'SELECT saldo_base_calculo FROM conta WHERE id = ?', 
+      [accountId] // CORREÇÃO: usar accountId específico
     );
-
+    
     if (rows.length === 0) {
-      throw new Error(`Conta com ID ${accountId} não encontrada`);
+      throw new Error(`Conta ${accountId} não encontrada`);
     }
-
-    const baseCalculo = parseFloat(rows[0].saldo_base_calculo || 0);
-    return baseCalculo;
+    
+    return parseFloat(rows[0].saldo_base_calculo || 0);
   } catch (error) {
-    console.error(`[DB] Erro ao obter saldo base de cálculo: ${error.message}`);
+    console.error(`[DB] Erro ao obter saldo_base_calculo da conta ${accountId}:`, error.message);
     throw error;
   }
 }
 
 /**
  * Obtém as credenciais da API da Binance do banco de dados
- * @param {Object} options - Opções de consulta (opcional)
+ * @param {Object} options - Opções de consulta
  * @param {boolean} options.forceRefresh - Se true, força uma nova consulta ao banco de dados
- * @param {number} options.accountId - ID da conta a ser consultada (padrão: 1)
+ * @param {number} options.accountId - ID da conta a ser consultada (obrigatório)
  * @returns {Promise<Object>} - Objeto com as credenciais
  */
 async function getApiCredentials(options = {}) {
+  // CORREÇÃO: Tornar accountId obrigatório
   const { forceRefresh = false, accountId } = options;
-  const currentTime = Date.now();
   
-  // Usar cache se disponível e não expirado, a menos que forceRefresh seja true
-  if (cachedCredentials && !forceRefresh && (currentTime - lastCacheTime < CACHE_TTL)) {
-    return cachedCredentials;
+  if (!accountId || typeof accountId !== 'number') {
+    throw new Error(`AccountId é obrigatório: ${accountId} (tipo: ${typeof accountId})`);
   }
+
+  const cacheKey = `credentials_${accountId}`;
   
+  if (!forceRefresh && credentialsCache.has(cacheKey)) {
+    const cached = credentialsCache.get(cacheKey);
+    const now = Date.now();
+    
+    if (now - cached.timestamp < CACHE_DURATION) {
+      console.log(`[DB] Usando credenciais em cache para conta ${accountId}`);
+      return cached.data;
+    }
+  }
+
   try {
     const db = await getDatabaseInstance();
     
     if (!db) {
       throw new Error('Não foi possível obter conexão com o banco de dados');
     }
+
+    console.log(`[DB] Carregando credenciais da conta ${accountId} do banco de dados...`);
     
-    // Consulta modificada para fazer um JOIN com a tabela de corretoras
+    // CORREÇÃO: Query para conta específica
     const [rows] = await db.query(`
       SELECT 
-        c.rest_apikey,
-        c.rest_secretkey,
-        c.ws_apikey,
-        c.ws_secretkey,
-        c.ambiente,
-        c.corretora,
-        cor.id as corretora_id,
-        cor.spot_rest_api_url,
+        c.id,
+        c.nome,
+        c.api_key, 
+        c.api_secret,
+        c.ws_api_key,
+        c.ws_api_secret,
+        c.private_key,
+        c.api_url,
+        c.ws_url,
+        c.ws_api_url,
+        c.ativa,
+        c.id_corretora,
+        cor.corretora,
+        cor.ambiente,
         cor.futures_rest_api_url,
-        cor.futures_ws_market_url,
-        cor.futures_ws_api_url
-      FROM conta c
-      LEFT JOIN corretoras cor ON c.id_corretora = cor.id AND cor.ativa = 1 AND cor.corretora = c.corretora AND cor.ambiente = c.ambiente  
+        cor.futures_ws_api_url,
+        cor.futures_ws_market_url
+      FROM contas c
+      LEFT JOIN corretoras cor ON c.id_corretora = cor.id
       WHERE c.id = ? AND c.ativa = 1
     `, [accountId]);
-    
+
     if (rows.length === 0) {
-      throw new Error(`Conta com ID ${accountId} não encontrada ou não está ativa`);
+      throw new Error(`Conta ${accountId} não encontrada no banco de dados ou não está ativa`);
     }
 
-    // Se não encontrou uma corretora vinculada, tentar encontrar por nome e ambiente
-    if (!rows[0].corretora_id) {
-      const [corretoras] = await db.query(`
-        SELECT *
-        FROM corretoras 
-        WHERE corretora = ? AND ambiente = ? AND ativa = 1
-        LIMIT 1
-      `, [rows[0].corretora, rows[0].ambiente]);
-
-      if (corretoras.length > 0) {
-        // Vincular a conta à corretora encontrada
-        await db.query(
-          'UPDATE conta SET id_corretora = ? WHERE id = ?',
-          [corretoras[0].id, accountId]
-        );
-        
-        // Adicionar URLs ao resultado
-        rows[0].corretora_id = corretoras[0].id;
-        rows[0].spot_rest_api_url = corretoras[0].spot_rest_api_url;
-        rows[0].futures_rest_api_url = corretoras[0].futures_rest_api_url;
-        rows[0].futures_ws_market_url = corretoras[0].futures_ws_market_url;
-        rows[0].futures_ws_api_url = corretoras[0].futures_ws_api_url;
-        
-        console.log(`[DB] Conta ID ${accountId} vinculada automaticamente à corretora ID ${corretoras[0].id}`);
-      }
-    }
+    const account = rows[0];
     
-    // Construir o objeto de credenciais
     const credentials = {
-      restApiKey: rows[0].rest_apikey,
-      restSecretKey: rows[0].rest_secretkey,
-      wsApiKey: rows[0].ws_apikey,
-      wsSecretKey: rows[0].ws_secretkey,
-      ambiente: rows[0].ambiente,
-      corretora: rows[0].corretora,
-      isProd: rows[0].ambiente === 'prd',
-      
-      // Adicionar URLs da corretora
-      urls: {
-        spotRestApiUrl: rows[0].spot_rest_api_url,
-        futuresRestApiUrl: rows[0].futures_rest_api_url,
-        futuresWsMarketUrl: rows[0].futures_ws_market_url,
-        futuresWsApiUrl: rows[0].futures_ws_api_url
-      },
-      
-      // ID da corretora vinculada
-      corretoraId: rows[0].corretora_id
+      accountId: accountId,
+      accountName: account.nome,
+      apiKey: account.api_key,
+      apiSecret: account.api_secret,
+      wsApiKey: account.ws_api_key,
+      wsApiSecret: account.ws_api_secret,
+      privateKey: account.private_key,
+      apiUrl: account.api_url || account.futures_rest_api_url || 'https://fapi.binance.com/fapi',
+      wsUrl: account.ws_url || account.futures_ws_market_url || 'wss://fstream.binance.com/ws',
+      wsApiUrl: account.ws_api_url || account.futures_ws_api_url || 'wss://ws-fapi.binance.com/ws-fapi/v1',
+      corretora: account.corretora || 'binance',
+      ambiente: account.ambiente || 'prd'
     };
+
+    // Cache das credenciais
+    credentialsCache.set(cacheKey, {
+      data: credentials,
+      timestamp: Date.now()
+    });
+
+    console.log(`[DB] ✅ Credenciais carregadas para conta ${accountId} (${account.nome})`);
     
-    // Atualizar cache
-    cachedCredentials = credentials;
-    lastCacheTime = currentTime;
-    
-    console.log(`[DB] Credenciais da API carregadas do banco de dados (ambiente: ${credentials.ambiente}, corretora: ${credentials.corretora})`);
     return credentials;
+
   } catch (error) {
-    console.error(`[DB] Erro ao obter credenciais da API: ${error.message}`);
+    console.error(`[DB] Erro ao carregar credenciais da conta ${accountId}:`, error.message);
     throw error;
   }
 }

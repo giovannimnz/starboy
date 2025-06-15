@@ -1056,12 +1056,18 @@ async function getAccountInformationV2(params = {}, accountId) {
 /**
  * Versão simplificada que retorna apenas os dados essenciais da conta
  * @param {Object} params - Parâmetros adicionais (opcional)
+ * @param {number} accountId - ID da conta (obrigatório)
  * @returns {Promise<Object>} Objeto simplificado com informações essenciais da conta
  */
-async function getAccountBalance(params = {}) {
+async function getAccountBalance(params = {}, accountId) {
+    // CORREÇÃO: Validar accountId obrigatório
+    if (!accountId || typeof accountId !== 'number') {
+        throw new Error(`AccountId é obrigatório e deve ser um número: ${accountId}`);
+    }
+
     try {
-        // Chamar a versão completa
-        const response = await getAccountInformationV2(params);
+        // CORREÇÃO: Passar accountId para getAccountInformationV2
+        const response = await getAccountInformationV2(params, accountId);
         
         if (response.status === 200 && response.result) {
             // Extrair apenas os dados relevantes para saldo
@@ -1076,6 +1082,7 @@ async function getAccountBalance(params = {}) {
             // Montar objeto simplificado com os dados essenciais
             return {
                 success: true,
+                accountId: accountId, // CORREÇÃO: Incluir accountId
                 totalWalletBalance: parseFloat(totalWalletBalance),
                 availableBalance: parseFloat(availableBalance),
                 totalMarginBalance: parseFloat(totalMarginBalance),
@@ -1092,9 +1099,10 @@ async function getAccountBalance(params = {}) {
             throw new Error('Resposta inválida da API');
         }
     } catch (error) {
-        console.error(`[WS-API] Erro ao obter saldo da conta: ${error.message}`);
+        console.error(`[WS-API] Erro ao obter saldo da conta ${accountId}: ${error.message}`);
         return { 
             success: false, 
+            accountId: accountId,
             error: error.message,
             code: error.error?.code
         };
@@ -1102,23 +1110,26 @@ async function getAccountBalance(params = {}) {
 }
 
 /**
- * Sincroniza o saldo da conta com o banco de dados usando a WebSocket API V2
- * Substitui a versão anterior que usava a API REST
- * @returns {Promise<Object>} Objeto contendo saldo e saldo_base_calculo atualizados
+ * Sincroniza saldo da conta via WebSocket API e atualiza no banco
+ * @param {number} accountId - ID da conta (obrigatório)
+ * @returns {Promise<Object>} Resultado da sincronização
  */
 async function syncAccountBalanceViaWebSocket(accountId) {
+    // CORREÇÃO: Validar accountId obrigatório
     if (!accountId || typeof accountId !== 'number') {
         throw new Error(`AccountId é obrigatório e deve ser um número: ${accountId}`);
     }
 
     try {
+        console.log(`[WS-API] Sincronizando saldo da conta ${accountId} via WebSocket...`);
+        
         const db = await getDatabaseInstance();
         
         if (!db) {
             throw new Error('Não foi possível obter instância do banco de dados');
         }
         
-        // Garantir que a WebSocket API esteja conectada
+        // CORREÇÃO: Verificar WebSocket para conta específica
         if (!websockets.isWebSocketApiConnected(accountId)) {
             console.log(`[WS-API] Conectando WebSocket API para sincronização de saldo da conta ${accountId}...`);
             try {
@@ -1129,51 +1140,55 @@ async function syncAccountBalanceViaWebSocket(accountId) {
             }
         }
         
-        // CORREÇÃO: Usar accountId específico
+        // CORREÇÃO: Usar accountId específico em getAccountBalance
         const accountInfo = await getAccountBalance({}, accountId);
         
-        if (!accountInfo.success || !accountInfo.totalWalletBalance) {
-            throw new Error('Falha ao obter saldo da conta via WebSocket API');
+        if (!accountInfo || !accountInfo.success) {
+            throw new Error(`Falha ao obter informações da conta ${accountId}: ${accountInfo?.error || 'Erro desconhecido'}`);
         }
         
-        // Obter o saldo principal (USDT)
-        const usdtAsset = accountInfo.assets.find(asset => asset.asset === 'USDT');
-        if (!usdtAsset) {
-            throw new Error('Ativo USDT não encontrado nas informações da conta');
+        // Obter saldo_base_calculo atual
+        const [currentAccount] = await db.query(
+            'SELECT saldo, saldo_base_calculo FROM conta WHERE id = ?',
+            [accountId] // CORREÇÃO: usar accountId específico
+        );
+        
+        if (currentAccount.length === 0) {
+            throw new Error(`Conta ${accountId} não encontrada no banco de dados`);
         }
         
-        // Usar o saldo total da carteira como saldo real
+        const previousSaldo = parseFloat(currentAccount[0].saldo || 0);
+        const previousBaseCalculo = parseFloat(currentAccount[0].saldo_base_calculo || 0);
+        
         const realSaldo = accountInfo.totalWalletBalance;
+        const currentDateTime = new Date().toISOString().slice(0, 19).replace('T', ' ');
         
-        // Obter saldo atual e base de cálculo do banco
-        const [currentBalance] = await db.query('SELECT saldo, saldo_base_calculo FROM conta WHERE id = 1');
+        // Determinar novo saldo_base_calculo
+        let newBaseCalculo = previousBaseCalculo;
         
-        const currentSaldo = currentBalance.length > 0 ? parseFloat(currentBalance[0].saldo || 0) : 0;
-        const currentBaseCalculo = currentBalance.length > 0 ? parseFloat(currentBalance[0].saldo_base_calculo || 0) : 0;
+        if (realSaldo > previousBaseCalculo) {
+            newBaseCalculo = realSaldo;
+            console.log(`[WS-API] Atualizando saldo_base_calculo da conta ${accountId}: ${previousBaseCalculo.toFixed(2)} → ${newBaseCalculo.toFixed(2)} USDT`);
+        }
         
-        //console.log(`[WS-API] Saldo atual: ${currentSaldo.toFixed(2)} USDT | Base Cálculo: ${currentBaseCalculo.toFixed(2)} USDT`);
-        //console.log(`[WS-API] Novo saldo da corretora: ${realSaldo.toFixed(2)} USDT`);
-        
-        // Determinar se o saldo_base_calculo precisa ser atualizado
-        // Seguindo a mesma regra: saldo_base_calculo só é atualizado quando o saldo aumenta
-        const newBaseCalculo = realSaldo > currentBaseCalculo ? realSaldo : currentBaseCalculo;
-        
-        // Formatar data atual para MySQL
-        const currentDateTime = formatDateForMySQL(new Date());
-        
-        // Atualizar o registro no banco de dados com a data formatada
+        // CORREÇÃO: Atualizar conta específica no banco
         await db.query(
             'UPDATE conta SET saldo = ?, saldo_base_calculo = ?, ultima_atualizacao = ? WHERE id = ?',
-            [realSaldo, newBaseCalculo, currentDateTime, accountId]  // accountId específico
+            [realSaldo, newBaseCalculo, currentDateTime, accountId] // accountId específico
         );
+        
+        console.log(`[WS-API] ✅ Saldo da conta ${accountId} sincronizado: ${realSaldo.toFixed(2)} USDT`);
         
         return {
             success: true,
-            accountId: accountId,  // Incluir accountId na resposta
+            accountId: accountId, // CORREÇÃO: Incluir accountId na resposta
             saldo: realSaldo,
             saldo_base_calculo: newBaseCalculo,
-            // ...resto dos dados
+            previousSaldo: previousSaldo,
+            previousBaseCalculo: previousBaseCalculo,
+            updated_at: currentDateTime
         };
+        
     } catch (error) {
         console.error(`[WS-API] Erro ao sincronizar saldo da conta ${accountId} via WebSocket: ${error.message}`);
         return {

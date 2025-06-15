@@ -276,8 +276,16 @@ async function initializeMonitoring(accountId) {
 
 // Verifica se está sendo executado como script principal
 const accountId = process.argv.includes('--account') 
-  ? parseInt(process.argv[process.argv.indexOf('--account') + 1]) || 1 
-  : 1;
+  ? parseInt(process.argv[process.argv.indexOf('--account') + 1])
+  : null; // CORREÇÃO: Não forçar valor padrão
+
+// CORREÇÃO: Validar accountId obrigatório
+if (!accountId || isNaN(accountId) || accountId <= 0) {
+  console.error('[MONITOR] ❌ AccountId é obrigatório e deve ser um número válido');
+  console.error('[MONITOR] 📝 Uso: node posicoes/monitoramento.js --account <ID>');
+  console.error('[MONITOR] 📝 Exemplo: node posicoes/monitoramento.js --account 2');
+  process.exit(1);
+}
 
 console.log(`[MONITOR] Iniciando sistema de monitoramento para conta ID: ${accountId}`);
 
@@ -285,16 +293,13 @@ console.log(`[MONITOR] Iniciando sistema de monitoramento para conta ID: ${accou
 if (require.main === module) {
   (async () => {
     try {
-      //console.log('[MONITOR] Iniciando sistema de monitoramento...');
-      await initializeMonitoring(accountId);
+      await initializeMonitoring(accountId); // CORREÇÃO: Passar accountId validado
     } catch (error) {
-      console.error('[MONITOR] Erro crítico na inicialização:', error);
+      console.error(`[MONITOR] Erro crítico na inicialização para conta ${accountId}:`, error);
       process.exit(1);
     }
   })();
 }
-
-
 
 module.exports = {
   initializeMonitoring,
