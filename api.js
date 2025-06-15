@@ -30,10 +30,10 @@ async function loadCredentialsFromDatabase(options = {}) {
     console.log(`[WEBSOCKETS] Iniciando carregamento de credenciais para conta ID: ${accountId}`);
     
     // Usar cache se disponível e não forçar atualização
-    if (!forceRefresh && accountCredentialsCache.has(accountId) && 
+    if (!forceRefresh && accountCredentials.has(accountId) && 
         (Date.now() - lastCacheTime < CACHE_TTL)) {
       console.log(`[WEBSOCKETS] Usando credenciais em cache para conta ${accountId}`);
-      const cachedCreds = accountCredentialsCache.get(accountId);
+      const cachedCreds = accountCredentials.get(accountId);
       
       // Configurar estado da conexão a partir do cache
       const accountState = getAccountConnectionState(accountId, true);
@@ -129,7 +129,7 @@ async function loadCredentialsFromDatabase(options = {}) {
       ambiente: accountData.ambiente
     };
     
-    accountCredentialsCache.set(accountId, credentials);
+    accountCredentials.set(accountId, credentials);
     lastCacheTime = Date.now();
     
     console.log(`[WEBSOCKETS] Credenciais inicializadas com sucesso para conta ${accountId} (corretora: ${accountData.corretora}, ambiente: ${accountData.ambiente})`);
