@@ -159,11 +159,6 @@ function createEd25519Signature(payload, accountId = 1) {
     // Converter para Buffer se for string hex
     const keyBuffer = Buffer.from(privateKey, 'hex');
     
-    // Verificar se o tamanho está correto (32 bytes para Ed25519)
-    if (keyBuffer.length !== 32) {
-      throw new Error(`Tamanho inválido da chave privada: ${keyBuffer.length} bytes (esperado: 32)`);
-    }
-    
     // Criar assinatura usando crypto nativo do Node.js
     const sign = crypto.createSign('SHA256');
     sign.update(payload);
