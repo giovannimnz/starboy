@@ -49,8 +49,9 @@ async function initializeMonitoring(accountId = 1) {
     } catch (envError) {
       console.error('[MONITOR] Erro ao verificar consistência de ambiente, mas continuando:', envError.message);
     }
-
-    // Inicializar o bot do Telegram para esta conta
+    
+    // Inicializar bot do Telegram
+    /*
     let bot = null;
     try {
       bot = await initializeTelegramBot(accountId);
@@ -62,7 +63,9 @@ async function initializeMonitoring(accountId = 1) {
     } catch (telegramError) {
       console.error('[MONITOR] Erro ao inicializar bot do Telegram, mas continuando:', telegramError.message);
     }
-    
+    */
+
+
     // Inicializar os handlers no websocketApi
     try {
       console.log('[WS-API] Inicializando handlers para WebSocket API...');
