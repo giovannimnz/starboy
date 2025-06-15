@@ -147,7 +147,7 @@ async function initializeMonitoring(accountId = 1) {
         UPDATE webhook_signals 
         SET status = 'PENDING', 
             error_message = NULL,
-            ultima_atualizacao = NOW()
+            updated_at = NOW()
         WHERE status = 'PROCESSANDO' 
           AND conta_id = ?
       `, [accountId]);
