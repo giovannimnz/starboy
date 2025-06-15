@@ -8,6 +8,14 @@ const { getDatabaseInstance } = require('./db/conexao');
 
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
+// Tentar importar key @noble/ed25519 se disponível
+let ed25519Noble = null;
+try {
+  ed25519Noble = require('@noble/ed25519');
+} catch (e) {
+  // Biblioteca não disponível, usar métodos nativos
+}
+
 // Cache para armazenar credenciais por conta
 const accountCredentialsCache = new Map();
 const CACHE_TTL = 60 * 60 * 1000; // 1 hora em ms
@@ -136,7 +144,7 @@ async function loadCredentialsFromDatabase(options = {}) {
 }
 
 /**
- * Cria uma assinatura Ed25519 para requisições WebSocket API
+ * Cria uma assinatura Ed25519 para requisições WebSocket API - VERSÃO COMPATÍVEL
  * @param {string} payload - Dados a serem assinados
  * @param {string} privateKey - Chave privada Ed25519 em formato base64
  * @param {number} accountId - ID da conta
@@ -168,10 +176,11 @@ function createEd25519Signature(payload, privateKey, accountId) {
               format: 'pem',
               type: 'pkcs8'
             });
-            const rawKey = keyObject.export({
-              format: 'raw',
-              type: 'private'
+            const derKey = keyObject.export({
+              format: 'der',
+              type: 'pkcs8'
             });
+            const rawKey = derKey.slice(-32);
             privateKey = rawKey.toString('base64');
             console.log(`[WEBSOCKETS] Chave privada carregada do arquivo PEM para conta ${accountId}`);
           }
@@ -181,7 +190,7 @@ function createEd25519Signature(payload, privateKey, accountId) {
       }
       
       if (!privateKey) {
-        throw new Error(`Chave privada Ed25519 não encontrada para conta ${accountId}. Execute: node utils/configurarChavePEMAutomatico.js`);
+        throw new Error(`Chave privada Ed25519 não encontrada para conta ${accountId}. Execute: node utils/configurarChavePEMAutomaticoV2.js`);
       }
     }
 
@@ -199,30 +208,76 @@ function createEd25519Signature(payload, privateKey, accountId) {
       throw new Error(`Chave privada Ed25519 tem tamanho incorreto para conta ${accountId}. Esperado: 32 bytes, recebido: ${privateKeyBuffer.length} bytes`);
     }
 
-    // Criar objeto de chave privada Ed25519
-    let keyObject;
-    try {
-      keyObject = crypto.createPrivateKey({
-        key: privateKeyBuffer,
-        format: 'raw',
-        type: 'ed25519'
-      });
-    } catch (keyError) {
-      console.error(`[WEBSOCKETS] Erro ao criar objeto de chave Ed25519 para conta ${accountId}:`, keyError);
-      throw new Error(`Não foi possível criar chave Ed25519 para conta ${accountId}: ${keyError.message}`);
-    }
-
-    // Criar a assinatura
-    const signature = crypto.sign(null, Buffer.from(payload, 'utf8'), keyObject);
-    const signatureBase64 = signature.toString('base64');
+    // Criar assinatura - VERSÃO COMPATÍVEL
+    let signature;
+    let signatureBase64;
     
-    console.log(`[WEBSOCKETS] Assinatura Ed25519 criada com sucesso para conta ${accountId}`);
-    return signatureBase64;
+    // Método 1: Tentar com @noble/ed25519 se disponível
+    if (ed25519Noble) {
+      try {
+        const payloadBuffer = Buffer.from(payload, 'utf8');
+        signature = ed25519Noble.signSync(payloadBuffer, privateKeyBuffer);
+        signatureBase64 = Buffer.from(signature).toString('base64');
+        console.log(`[WEBSOCKETS] Assinatura Ed25519 criada com @noble/ed25519 para conta ${accountId}`);
+        return signatureBase64;
+      } catch (nobleError) {
+        console.log(`[WEBSOCKETS] Erro com @noble/ed25519 para conta ${accountId}, tentando método nativo...`);
+      }
+    }
+    
+    // Método 2: Usar método nativo com PEM temporário
+    try {
+      // Criar PEM temporário a partir da chave raw
+      const tempPem = createPemFromRawKey(privateKeyBuffer);
+      
+      const keyObject = crypto.createPrivateKey({
+        key: tempPem,
+        format: 'pem',
+        type: 'pkcs8'
+      });
+      
+      signature = crypto.sign(null, Buffer.from(payload, 'utf8'), keyObject);
+      signatureBase64 = signature.toString('base64');
+      
+      console.log(`[WEBSOCKETS] Assinatura Ed25519 criada com método nativo para conta ${accountId}`);
+      return signatureBase64;
+      
+    } catch (nativeError) {
+      console.error(`[WEBSOCKETS] Erro com método nativo para conta ${accountId}:`, nativeError);
+      throw new Error(`Não foi possível criar assinatura Ed25519 para conta ${accountId}: ${nativeError.message}`);
+    }
     
   } catch (error) {
     console.error(`[WEBSOCKETS] Erro ao criar assinatura Ed25519 para conta ${accountId}:`, error.message);
     throw error;
   }
+}
+
+// Função auxiliar para criar PEM a partir de chave raw
+function createPemFromRawKey(rawKeyBuffer) {
+  const algorithmIdentifier = Buffer.from([
+    0x30, 0x05,
+    0x06, 0x03, 0x2b, 0x65, 0x70
+  ]);
+  
+  const privateKeyInfo = Buffer.concat([
+    Buffer.from([0x04, 0x22]),
+    Buffer.from([0x04, 0x20]),
+    rawKeyBuffer
+  ]);
+  
+  const pkcs8 = Buffer.concat([
+    Buffer.from([0x30]),
+    Buffer.from([algorithmIdentifier.length + privateKeyInfo.length + 3]),
+    Buffer.from([0x02, 0x01, 0x00]),
+    algorithmIdentifier,
+    privateKeyInfo
+  ]);
+  
+  const base64 = pkcs8.toString('base64');
+  const pem = `-----BEGIN PRIVATE KEY-----\n${base64.match(/.{1,64}/g).join('\n')}\n-----END PRIVATE KEY-----`;
+  
+  return pem;
 }
 
 /**
