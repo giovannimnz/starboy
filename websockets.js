@@ -1035,7 +1035,7 @@ async function startUserDataStream(db, accountId = 1) {
       const ws = new WebSocket(wsUrl);
       
       ws.on('open', () => {
-        console.log(`[WEBSOCKET] UserDataStream conectado para conta ${accountId}`);
+        //console.log(`[WEBSOCKET] UserDataStream conectado para conta ${accountId}`);
         accountState.userDataWebSocket = ws;
         
         // Iniciar keep-alive do listenKey

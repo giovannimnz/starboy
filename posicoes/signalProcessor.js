@@ -174,7 +174,7 @@ async function processSignal(db, signal, currentPrice, accountId = 1) {
 async function checkNewTrades(accountId = 1) {
   try {
     const startTime = Date.now();
-    console.log(`[SIGNAL] Verificando sinais pendentes para conta ${accountId} às ${new Date().toLocaleString()}`);
+    //console.log(`[SIGNAL] Verificando sinais pendentes para conta ${accountId} às ${new Date().toLocaleString()}`);
     
     const db = await getDatabaseInstance(accountId);
     if (!db) {
@@ -190,7 +190,7 @@ async function checkNewTrades(accountId = 1) {
     `, [accountId]);
 
     if (pendingSignals.length === 0) {
-      console.log(`[SIGNAL] Nenhum sinal pendente encontrado para conta ${accountId}`);
+      //console.log(`[SIGNAL] Nenhum sinal pendente encontrado para conta ${accountId}`);
       return;
     }
 
