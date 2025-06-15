@@ -990,49 +990,51 @@ async function getMultipleOrderStatusViaWebSocket(symbol, orderIds) {
 }
 
 /**
- * Obtém informações detalhadas da conta através da WebSocket API V2
+ * Obtém informações detalhadas da conta através da WebSocket API V2 conforme documentação
  * @param {Object} params - Parâmetros adicionais (opcional)
+ * @param {number} accountId - ID da conta (obrigatório)
  * @returns {Promise<Object>} Resposta completa da API com informações da conta
  */
-async function getAccountInformationV2(params = {}) {
-    // Verificar se WebSocket API está conectado
-    if (!websockets.isWebSocketApiConnected()) {
+async function getAccountInformationV2(params = {}, accountId = 1) {
+    // Validar accountId explicitamente
+    if (!accountId || typeof accountId !== 'number') {
+        throw new Error(`ID da conta inválido: ${accountId} (tipo: ${typeof accountId})`);
+    }
+
+    console.log(`[WS-API] Obtendo informações da conta ${accountId} via WebSocket API V2...`);
+
+    // Verificar se WebSocket API está conectado e autenticado
+    if (!websockets.isWebSocketApiConnected(accountId) || !websockets.isWebSocketApiAuthenticated(accountId)) {
         try {
-            await websockets.startWebSocketApi();
+            console.log(`[WS-API] Conectando e autenticando WebSocket API para conta ${accountId}...`);
+            const connected = await websockets.startWebSocketApi(accountId);
             
-            if (!websockets.isWebSocketApiConnected()) {
-                throw new Error('[WS-API] WebSocket API não está conectado. Impossível obter informações da conta.');
+            if (!connected) {
+                throw new Error(`[WS-API] Falha na conexão/autenticação WebSocket API para conta ${accountId}`);
             }
         } catch (connError) {
-            console.error('[WS-API] Erro ao conectar WebSocket API:', connError.message);
+            console.error(`[WS-API] Erro ao conectar WebSocket API para conta ${accountId}:`, connError.message);
             throw new Error(`Falha ao conectar WebSocket API: ${connError.message}`);
         }
     }
     
     try {
-        // Preparar parâmetros da requisição
-        const requestParams = {
-            ...params,
-            timestamp: Date.now()
-        };
+        // CORREÇÃO: Usar método correto da documentação Binance
+        const request = websockets.createSignedRequest('v2/account.status', params, accountId);
         
-        // Criar requisição assinada
-        const request = websockets.createSignedRequest('v2/account.status', requestParams);
-        
-        // Log informativo
-        //console.log(`[WS-API] Consultando informações da conta via WebSocket API V2`);
+        console.log(`[WS-API] Consultando informações da conta ${accountId} via WebSocket API V2`);
         
         // Enviar requisição e aguardar resposta
-        const response = await websockets.sendWebSocketApiRequest(request);
+        const response = await websockets.sendWebSocketApiRequest(request, 30000, accountId);
         
-        // Verificar resposta
-        if (response.status === 200) {
-            //console.log(`[WS-API] Informações da conta obtidas com sucesso via WebSocket API V2`);
+        // Verificar resposta conforme formato da documentação
+        if (response.status === 200 && response.result) {
+            console.log(`[WS-API] ✅ Informações da conta ${accountId} obtidas com sucesso via WebSocket API V2`);
             
             // Log detalhado dos valores importantes
-            if (response.result) {
-                const { totalWalletBalance, availableBalance, maxWithdrawAmount } = response.result;
-                //console.log(`[WS-API] Saldo Total: ${totalWalletBalance}, Disponível: ${availableBalance}, Máx. Saque: ${maxWithdrawAmount}`);
+            if (response.result.totalWalletBalance) {
+                console.log(`[WS-API] Saldo Total: ${response.result.totalWalletBalance}`);
+                console.log(`[WS-API] Disponível: ${response.result.availableBalance || 'N/A'}`);
             }
             
             return response;
@@ -1041,9 +1043,8 @@ async function getAccountInformationV2(params = {}) {
         }
     } catch (error) {
         const errorMessage = error.error?.msg || error.message || 'Erro desconhecido';
-        console.error(`[WS-API] Erro ao obter informações da conta via WebSocket API V2: ${errorMessage}`);
+        console.error(`[WS-API] Erro ao obter informações da conta ${accountId} via WebSocket API V2: ${errorMessage}`);
         
-        // Para diagnóstico, incluir detalhes do erro (caso seja um objeto de erro da API)
         if (error.error?.code) {
             console.error(`[WS-API] Código de erro: ${error.error.code}, Mensagem: ${error.error.msg}`);
         }
