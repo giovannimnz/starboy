@@ -21,6 +21,14 @@ const accountCredentialsCache = new Map();
 const CACHE_TTL = 60 * 60 * 1000; // 1 hora em ms
 let lastCacheTime = 0;
 
+function getAccountConnectionState(accountId) {
+  return accountConnections.get(accountId);
+}
+
+function getAllAccountConnections() {
+  return accountConnections;
+}
+
 // Variáveis por conta
 const wsConnections = new Map(); // Mapeia accountId -> { wsApiConnection, userDataWebSocket, etc }
 const priceWebsocketsByAccount = new Map(); // Mapeia accountId -> { symbol -> websocket }
@@ -1221,12 +1229,10 @@ async function startUserDataStream(db, accountId) {
     if (!credentials) {
       throw new Error(`Credenciais não encontradas para conta ${accountId}`);
     }
-
-    // Resto da função continua igual...
     
     // Obter listenKey
     const listenKeyUrl = credentials.apiUrl ? 
-      `${credentials.apiUrl}/fapi/v1/listenKey` : 
+      `${credentials.apiUrl}/v1/listenKey` : 
       `https://fapi.binance.com/fapi/v1/listenKey`;
     
     console.log(`[WEBSOCKET] Obtendo listenKey via: ${listenKeyUrl} para conta ${accountId}`);
@@ -1926,6 +1932,8 @@ module.exports = {
   getAccountConnectionState,
   getCredentials,
   ensureWebSocketApiExists,
+  getAccountConnectionState,
+  getAllAccountConnections,
   // Novas funções para Ed25519
   createEd25519Signature,
   loadPrivateKeyFromPEMSync,
