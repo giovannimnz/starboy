@@ -4,7 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs');
-const { getDatabaseInstance } = require('../db/conexao');
+const { getDatabaseInstance } = require('./db/conexao');
 
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
