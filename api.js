@@ -23,67 +23,119 @@ let lastCacheTime = 0;
  * @param {boolean} forceRefresh - Se deve forçar atualização do cache
  * @returns {Promise<Object>} - Objeto com as credenciais
  */
-async function loadCredentialsFromDatabase(accountId = 1, forceRefresh = false) {
+async function loadCredentialsFromDatabase(options = {}) {
   try {
-    const currentTime = Date.now();
+    const { accountId = 1, forceRefresh = false } = options;
     
-    // Usar cache se disponível e não expirado, a menos que forceRefresh seja true
-    if (accountCredentials.has(accountId) && !forceRefresh && (currentTime - lastCacheTime < CACHE_TTL)) {
-      console.log(`[API] Usando credenciais em cache para conta ${accountId}`);
-      return accountCredentials.get(accountId);
+    console.log(`[WEBSOCKETS] Iniciando carregamento de credenciais para conta ID: ${accountId}`);
+    
+    // Usar cache se disponível e não forçar atualização
+    if (!forceRefresh && accountCredentialsCache.has(accountId) && 
+        (Date.now() - lastCacheTime < CACHE_TTL)) {
+      console.log(`[WEBSOCKETS] Usando credenciais em cache para conta ${accountId}`);
+      const cachedCreds = accountCredentialsCache.get(accountId);
+      
+      // Configurar estado da conexão a partir do cache
+      const accountState = getAccountConnectionState(accountId, true);
+      accountState.apiKey = cachedCreds.apiKey;
+      accountState.apiSecret = cachedCreds.apiSecret;
+      accountState.wsApiKey = cachedCreds.wsApiKey;
+      accountState.wsApiSecret = cachedCreds.wsApiSecret;
+      accountState.apiUrl = cachedCreds.apiUrl;
+      accountState.wssMarketUrl = cachedCreds.wssMarketUrl;
+      accountState.wsApiUrl = cachedCreds.wsApiUrl;
+      accountState.corretora = cachedCreds.corretora;
+      accountState.ambiente = cachedCreds.ambiente;
+      
+      return cachedCreds;
     }
     
     const db = await getDatabaseInstance();
     
-    if (!db) {
-      throw new Error(`Não foi possível obter conexão com o banco de dados para conta ${accountId}`);
-    }
-    
-    // Buscar credenciais desta conta específica junto com o id_corretora
+    // Buscar conta e JOIN com a tabela corretoras para obter as URLs corretas
     const [rows] = await db.query(`
       SELECT 
-        api_key, 
-        api_secret, 
-        ws_api_key, 
-        ws_api_secret, 
-        id_corretora
-      FROM contas WHERE id = ? AND ativa = 1`,
+        c.id,
+        c.api_key, 
+        c.api_secret, 
+        c.ws_api_key, 
+        c.ws_api_secret,
+        c.id_corretora,
+        cor.spot_rest_api_url,
+        cor.futures_rest_api_url,
+        cor.futures_ws_market_url,
+        cor.futures_ws_api_url,
+        cor.corretora,
+        cor.ambiente
+      FROM contas c
+      JOIN corretoras cor ON c.id_corretora = cor.id
+      WHERE c.id = ? AND c.ativa = 1 AND cor.ativa = 1`,
       [accountId]
     );
     
     if (rows.length === 0) {
-      throw new Error(`Conta ID ${accountId} não encontrada ou não está ativa`);
+      throw new Error(`Conta ID ${accountId} não encontrada, não está ativa ou corretora inativa`);
     }
 
-    // Buscar informações da corretora vinculada
-    const corretoraId = rows[0].id_corretora || 1; // Default para 1 se não estiver definido
+    const accountData = rows[0];
     
-    // Usar a nova função para obter URLs da corretora
-    const { getCorretoraPorId } = require('./db/conexao');
-    const corretora = await getCorretoraPorId(db, corretoraId);
-
-    const credentials = {
-      apiKey: rows[0].api_key,
-      apiSecret: rows[0].api_secret,
-      wsApiKey: rows[0].ws_api_key,
-      wsApiSecret: rows[0].ws_api_secret,
-      apiUrl: corretora.futures_rest_api_url,
-      wsUrl: corretora.futures_ws_market_url,
-      wsApiUrl: corretora.futures_ws_api_url,
-      apiUrlSpot: corretora.spot_rest_api_url,
-      corretora: corretora.corretora,
-      ambiente: corretora.ambiente,
-      corretoraId: corretora.id
-    };
+    // Verificar se as URLs estão consistentes com o ambiente da corretora
+    const isProductionEnv = accountData.ambiente === 'prd';
+    const hasTestnetUrls = accountData.futures_rest_api_url.includes('testnet') || 
+                            accountData.futures_ws_api_url.includes('testnet') ||
+                            accountData.futures_ws_market_url.includes('testnet');
+    
+    if (isProductionEnv && hasTestnetUrls) {
+      console.log(`[WEBSOCKETS] ⚠️ ALERTA: Corretora ${accountData.corretora} (ID ${accountData.id_corretora}) 
+                   está configurada como PRODUÇÃO, mas tem URLs de TESTNET. Corrigindo...`);
+      
+      // Corrigir URLs para ambiente de produção
+      await db.query(`
+        UPDATE corretoras 
+        SET futures_rest_api_url = 'https://fapi.binance.com/fapi',
+            futures_ws_market_url = 'wss://fstream.binance.com/ws',
+            futures_ws_api_url = 'wss://fstream.binance.com/ws-api/v3'
+        WHERE id = ?`,
+        [accountData.id_corretora]
+      );
+      
+      // Recarregar dados após a correção
+      return await loadCredentialsFromDatabase({ accountId, forceRefresh: true });
+    }
+    
+    // Atualizar estado da conexão para esta conta específica
+    const accountState = getAccountConnectionState(accountId, true);
+    
+    accountState.apiKey = accountData.api_key;
+    accountState.apiSecret = accountData.api_secret;
+    accountState.wsApiKey = accountData.ws_api_key;
+    accountState.wsApiSecret = accountData.ws_api_secret;
+    accountState.apiUrl = accountData.futures_rest_api_url;
+    accountState.wssMarketUrl = accountData.futures_ws_market_url;
+    accountState.wsApiUrl = accountData.futures_ws_api_url;
+    accountState.corretora = accountData.corretora;
+    accountState.ambiente = accountData.ambiente;
     
     // Armazenar no cache
-    accountCredentials.set(accountId, credentials);
-    lastCacheTime = currentTime;
+    const credentials = {
+      apiKey: accountData.api_key,
+      apiSecret: accountData.api_secret,
+      wsApiKey: accountData.ws_api_key,
+      wsApiSecret: accountData.ws_api_secret,
+      apiUrl: accountData.futures_rest_api_url,
+      wssMarketUrl: accountData.futures_ws_market_url,
+      wsApiUrl: accountData.futures_ws_api_url,
+      corretora: accountData.corretora,
+      ambiente: accountData.ambiente
+    };
     
-    console.log(`[API] Credenciais carregadas do banco de dados para conta ${accountId} (corretora: ${corretora.corretora}, ambiente: ${corretora.ambiente})`);
+    accountCredentialsCache.set(accountId, credentials);
+    lastCacheTime = Date.now();
+    
+    console.log(`[WEBSOCKETS] Credenciais inicializadas com sucesso para conta ${accountId} (corretora: ${accountData.corretora}, ambiente: ${accountData.ambiente})`);
     return credentials;
   } catch (error) {
-    console.error(`[API] Erro ao carregar credenciais para conta ${accountId}:`, error.message);
+    console.error(`[WEBSOCKETS] Erro ao carregar credenciais: ${error.message}`);
     throw error;
   }
 }
@@ -1823,6 +1875,95 @@ async function getOrderStatus(accountId, symbol, orderId) {
   }
 }
 
+/**
+ * Verifica e corrige inconsistências de ambiente entre REST e WebSocket APIs
+ * @param {number} accountId - ID da conta para verificação
+ * @returns {Promise<boolean>} - true se foram feitas correções
+ */
+async function verifyAndFixEnvironmentConsistency(accountId = 1) {
+  try {
+    const db = await getDatabaseInstance();
+    
+    // Buscar informações da conta e corretora
+    const [accountInfo] = await db.query(`
+      SELECT 
+        c.id, 
+        c.id_corretora, 
+        cor.corretora, 
+        cor.ambiente,
+        cor.futures_rest_api_url,
+        cor.futures_ws_api_url,
+        cor.futures_ws_market_url
+      FROM contas c
+      JOIN corretoras cor ON c.id_corretora = cor.id
+      WHERE c.id = ? AND c.ativa = 1
+    `, [accountId]);
+    
+    if (!accountInfo || accountInfo.length === 0) {
+      throw new Error(`Conta ID ${accountId} não encontrada ou não está ativa`);
+    }
+    
+    const account = accountInfo[0];
+    
+    // Verificar se o ambiente da corretora está consistente com suas URLs
+    const isEnvProduction = account.ambiente === 'prd';
+    const hasTestnetUrls = account.futures_rest_api_url.includes('testnet') || 
+                          account.futures_ws_api_url.includes('testnet') ||
+                          account.futures_ws_market_url.includes('testnet');
+    
+    let correctionsMade = false;
+    
+    if (isEnvProduction && hasTestnetUrls) {
+      console.log(`[API] ⚠️ CORREÇÃO CRÍTICA: Corretora ${account.corretora} (ID: ${account.id_corretora}) 
+                  está em ambiente PRODUÇÃO mas usando URLs de TESTNET`);
+      
+      // Corrigir URLs para ambiente de produção
+      await db.query(`
+        UPDATE corretoras 
+        SET futures_rest_api_url = 'https://fapi.binance.com/fapi',
+            futures_ws_market_url = 'wss://fstream.binance.com/ws',
+            futures_ws_api_url = 'wss://fstream.binance.com/ws-api/v3'
+        WHERE id = ?`,
+        [account.id_corretora]
+      );
+      
+      console.log(`[API] ✅ URLs corrigidas para ambiente de PRODUÇÃO`);
+      correctionsMade = true;
+    } else if (!isEnvProduction && !hasTestnetUrls) {
+      console.log(`[API] ⚠️ CORREÇÃO CRÍTICA: Corretora ${account.corretora} (ID: ${account.id_corretora}) 
+                  está em ambiente TESTNET mas usando URLs de PRODUÇÃO`);
+      
+      // Corrigir URLs para ambiente testnet
+      await db.query(`
+        UPDATE corretoras 
+        SET futures_rest_api_url = 'https://testnet.binancefuture.com/fapi',
+            futures_ws_market_url = 'wss://stream.binancefuture.com/ws',
+            futures_ws_api_url = 'wss://stream.binancefuture.com/ws-api/v3'
+        WHERE id = ?`,
+        [account.id_corretora]
+      );
+      
+      console.log(`[API] ✅ URLs corrigidas para ambiente de TESTNET`);
+      correctionsMade = true;
+    }
+    
+    // Se correções foram feitas, limpar cache
+    if (correctionsMade) {
+      // Limpar cache de credenciais
+      accountCredentials.delete(accountId);
+      lastCacheTime = 0;
+      
+      // Recarregar credenciais
+      await loadCredentialsFromDatabase(accountId, true);
+    }
+    
+    return correctionsMade;
+  } catch (error) {
+    console.error(`[API] Erro ao verificar consistência de ambiente: ${error.message}`);
+    return false;
+  }
+}
+
 // Aplique o mesmo padrão em todas as outras funções que usam accountId
 module.exports = {
   getFuturesAccountBalanceDetails,
@@ -1861,5 +2002,6 @@ module.exports = {
   updateLeverageBracketsInDatabase, // Adicione a função updateLeverageBracketsInDatabase
   getLeverageBracketsFromDb, // Adicione a função getLeverageBracketsFromDb
   cancelPendingEntry,
-  loadCredentialsFromDatabase
+  loadCredentialsFromDatabase,
+  verifyAndFixEnvironmentConsistency
 };

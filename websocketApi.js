@@ -10,61 +10,67 @@ async function initializeHandlers(accountId = 1) {
   try {
     // Verificar se já inicializamos
     if (handlers && handlers.initialized) {
-      console.log(`[WS-API] Handlers já estão inicializados para conta ${accountId}`);
       return handlers;
     }
     
     console.log(`[WS-API] Inicializando handlers para WebSocket API (conta ${accountId})...`);
     
     // Carregar credenciais
-    await websockets.loadCredentialsFromDatabase({ accountId });
+    await websockets.loadCredentialsFromDatabase({ accountId, forceRefresh: true });
     
-    // Obter credenciais diretamente do cache do websockets em vez de chamar getCredentials
-    // que não existe
+    // Obter estado da conexão
     const accountState = websockets.getAccountConnectionState(accountId);
     
     if (!accountState) {
       throw new Error(`Estado da conexão não encontrado para conta ${accountId}`);
     }
     
-    const credentials = {
-      apiUrl: accountState.apiUrl,
-      wsApiUrl: accountState.wsApiUrl,
-      apiKey: accountState.apiKey
-    };
+    // Obter conexão com o banco de dados para verificação de URLs
+    const db = await getDatabaseInstance(accountId);
     
-    // Verificar se a URL da WebSocket API corresponde ao ambiente
-    // da REST API (produção ou testnet)
-    if (credentials.apiUrl && credentials.wsApiUrl && 
-        credentials.apiUrl.includes('testnet') !== credentials.wsApiUrl.includes('testnet')) {
-      console.error(`[WS-API] ⚠️ ERRO CRÍTICO: Conflito de ambientes entre REST API e WebSocket API!`);
-      console.error(`[WS-API] REST API: ${credentials.apiUrl}`);
-      console.error(`[WS-API] WebSocket API: ${credentials.wsApiUrl}`);
+    // Obter informações da conta e corretora vinculada
+    const [accountInfo] = await db.query(`
+      SELECT c.id, c.id_corretora, cor.corretora, cor.ambiente, cor.futures_rest_api_url, cor.futures_ws_api_url
+      FROM contas c
+      JOIN corretoras cor ON c.id_corretora = cor.id
+      WHERE c.id = ? AND c.ativa = 1
+    `, [accountId]);
+    
+    if (!accountInfo || accountInfo.length === 0) {
+      throw new Error(`Conta ID ${accountId} não encontrada ou não está ativa`);
+    }
+    
+    const account = accountInfo[0];
+    
+    // Verificar se as URLs estão consistentes com o ambiente da corretora
+    const isRestProduction = account.futures_rest_api_url.includes('testnet') === false;
+    const isWsApiProduction = account.futures_ws_api_url.includes('testnet') === false;
+    
+    // Garantir consistência entre REST e WebSocket APIs
+    if (isRestProduction !== isWsApiProduction) {
+      console.log(`[WS-API] ⚠️ DETECTADA INCONSISTÊNCIA: REST API ${isRestProduction ? 'PRODUÇÃO' : 'TESTNET'} 
+                   mas WebSocket API ${isWsApiProduction ? 'PRODUÇÃO' : 'TESTNET'}`);
       
-      // Obter DB para corrigir
-      const { getDatabaseInstance } = require('./db/conexao');
-      const db = await getDatabaseInstance();
-      
-      // Corrigir automaticamente
-      if (credentials.apiUrl.includes('testnet')) {
-        // Se REST é testnet, WS também deve ser testnet
+      // Atualizar URL do WebSocket API para corresponder à REST API
+      if (isRestProduction) {
+        // Se REST é produção, WS deve ser produção
         await db.query(
-          `UPDATE corretoras SET futures_ws_api_url = 'wss://testnet.binancefuture.com/ws-fapi' 
-           WHERE id = (SELECT id_corretora FROM contas WHERE id = ?)`,
-          [accountId]
+          `UPDATE corretoras SET futures_ws_api_url = 'wss://fstream.binance.com/ws-api/v3' 
+           WHERE id = ?`,
+          [account.id_corretora]
         );
-        console.log(`[WS-API] URL do WebSocket API corrigida para testnet`);
+        console.log(`[WS-API] URL do WebSocket API corrigida para PRODUÇÃO`);
       } else {
-        // Se REST é produção, WS também deve ser produção
+        // Se REST é testnet, WS deve ser testnet
         await db.query(
-          `UPDATE corretoras SET futures_ws_api_url = 'wss://ws-fapi.binance.com/ws-fapi' 
-           WHERE id = (SELECT id_corretora FROM contas WHERE id = ?)`,
-          [accountId]
+          `UPDATE corretoras SET futures_ws_api_url = 'wss://stream.binancefuture.com/ws-api/v3' 
+           WHERE id = ?`,
+          [account.id_corretora]
         );
-        console.log(`[WS-API] URL do WebSocket API corrigida para produção`);
+        console.log(`[WS-API] URL do WebSocket API corrigida para TESTNET`);
       }
       
-      // Recarregar credenciais com a URL correta
+      // Atualizar o estado atual com a nova URL
       await websockets.loadCredentialsFromDatabase({ accountId, forceRefresh: true });
     }
     
