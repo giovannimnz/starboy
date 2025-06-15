@@ -103,6 +103,7 @@ async function loadCredentialsFromDatabase(options = {}) {
     
     accountState.apiKey = accountData.api_key;
     accountState.apiSecret = accountData.api_secret;
+    // CORREÇÃO: usar ws_api_secret como privateKey
     accountState.privateKey = accountData.ws_api_secret;
     accountState.apiUrl = accountData.futures_rest_api_url;
     accountState.wsApiUrl = accountData.futures_ws_api_url;
@@ -113,6 +114,7 @@ async function loadCredentialsFromDatabase(options = {}) {
     const credentials = {
       apiKey: accountState.apiKey,
       apiSecret: accountState.apiSecret,
+      // CORREÇÃO: usar ws_api_secret como privateKey
       privateKey: accountState.privateKey,
       apiUrl: accountState.apiUrl,
       wsApiUrl: accountState.wsApiUrl,
