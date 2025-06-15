@@ -36,7 +36,7 @@ async function loadCredentialsFromDatabase(options = {}) {
       const cachedCreds = accountCredentials.get(accountId);
       
       // Configurar estado da conexão a partir do cache
-      const accountState = getAccountConnectionState(accountId, true);
+      const accountState = websockets && typeof websockets.getAccountConnectionState === "function" ? websockets.getAccountConnectionState(accountId, true) : { apiKey: null, apiSecret: null, privateKey: null, apiUrl: null, wsApiUrl: null, wssMarketUrl: null };
       accountState.apiKey = cachedCreds.apiKey;
       accountState.apiSecret = cachedCreds.apiSecret;
       accountState.wsApiKey = cachedCreds.wsApiKey;
@@ -104,7 +104,7 @@ async function loadCredentialsFromDatabase(options = {}) {
     }
     
     // Atualizar estado da conexão para esta conta específica
-    const accountState = getAccountConnectionState(accountId, true);
+    const accountState = websockets && typeof websockets.getAccountConnectionState === "function" ? websockets.getAccountConnectionState(accountId, true) : { apiKey: null, apiSecret: null, privateKey: null, apiUrl: null, wsApiUrl: null, wssMarketUrl: null };
     
     accountState.apiKey = accountData.api_key;
     accountState.apiSecret = accountData.api_secret;
