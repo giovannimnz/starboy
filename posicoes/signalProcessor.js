@@ -225,7 +225,7 @@ async function checkNewTrades(accountId = 1) {
  * @param {number} accountId - ID da conta
  */
 async function forceProcessPendingSignals(accountId = 1) {
-  console.log(`[SIGNAL] Forçando processamento de sinais pendentes para conta ${accountId}...`);
+  //console.log(`[SIGNAL] Forçando processamento de sinais pendentes para conta ${accountId}...`);
   try {
     const db = await getDatabaseInstance(accountId);
     if (!db) {
@@ -240,10 +240,10 @@ async function forceProcessPendingSignals(accountId = 1) {
       ORDER BY created_at ASC
     `, [accountId]);
 
-    console.log(`[SIGNAL] Encontrados ${pendingSignals.length} sinais pendentes para processamento forçado`);
+    //console.log(`[SIGNAL] Encontrados ${pendingSignals.length} sinais pendentes para processamento forçado`);
 
     if (pendingSignals.length === 0) {
-      console.log(`[SIGNAL] Não há sinais pendentes para processar para conta ${accountId}`);
+      //console.log(`[SIGNAL] Não há sinais pendentes para processar para conta ${accountId}`);
       return;
     }
 
