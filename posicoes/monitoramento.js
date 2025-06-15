@@ -25,6 +25,11 @@ let scheduledJobs = {};
  * @returns {Promise<Object>} - Jobs agendados
  */
 async function initializeMonitoring(accountId) {
+  // CORREÇÃO: Validar accountId no início
+  if (!accountId || typeof accountId !== 'number') {
+    throw new Error(`AccountId inválido: ${accountId} (tipo: ${typeof accountId})`);
+  }
+
   console.log(`[MONITOR] Inicializando sistema de monitoramento para conta ID: ${accountId}...`);
 
   try {
@@ -116,12 +121,12 @@ async function initializeMonitoring(accountId) {
       console.error('[MONITOR] Erro ao configurar callbacks do WebSocket:', callbackError.message);
     }
     
-    // Iniciar userDataStream para esta conta
+    // CORREÇÃO: Iniciar userDataStream passando accountId
     try {
       await websockets.startUserDataStream(db, accountId);
       console.log(`[MONITOR] UserDataStream iniciado para conta ${accountId}`);
     } catch (userDataError) {
-      console.error(`[MONITOR] Erro ao iniciar UserDataStream, mas continuando: ${userDataError.message}`);
+      console.error(`[MONITOR] Erro ao iniciar UserDataStream para conta ${accountId}, mas continuando: ${userDataError.message}`);
     }
 
     // IMPORTANTE: Limpar sinais com erro antes de verificar pendentes
