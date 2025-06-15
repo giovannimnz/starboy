@@ -49,7 +49,7 @@ async function initializeMonitoring(accountId = 1) {
     } catch (envError) {
       console.error('[MONITOR] Erro ao verificar consistência de ambiente, mas continuando:', envError.message);
     }
-    
+
     // Inicializar bot do Telegram
     /*
     let bot = null;
@@ -156,7 +156,7 @@ async function initializeMonitoring(accountId = 1) {
     // Executar verificação imediata de sinais pendentes
     console.log('[MONITOR] Agendando verificação imediata de sinais pendentes...');
     setTimeout(() => {
-      console.log('[MONITOR] Executando verificação imediata...');
+      //console.log('[MONITOR] Executando verificação imediata...');
       forceProcessPendingSignals(accountId).catch(error => {
         console.error('[MONITOR] Erro na verificação imediata de sinais:', error);
       });
@@ -201,7 +201,7 @@ async function initializeMonitoring(accountId = 1) {
       console.error('[MONITOR] Erro ao fazer log de posições:', logError.message);
     }
 
-    console.log('[MONITOR] Sistema de monitoramento inicializado com sucesso!');
+    //console.log('[MONITOR] Sistema de monitoramento inicializado com sucesso!');
     
     return accountJobs;
   } catch (error) {
