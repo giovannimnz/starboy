@@ -20,7 +20,7 @@ const websocketEmptyCheckCounter = {};
  * @param {number} accountId - ID da conta
  * @returns {Promise<number>} - Número de símbolos sendo monitorados
  */
-async function startPriceMonitoring(accountId = 1) {
+async function startPriceMonitoring(accountId) {
   try {
     const db = await getDatabaseInstance(accountId);
     if (!db) {
@@ -80,7 +80,7 @@ async function startPriceMonitoring(accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<number|null>} - Preço atual ou null se falhar
  */
-async function getCurrentPrice(symbol, accountId = 1) {
+async function getCurrentPrice(symbol, accountId) {
   try {
     // Obter credenciais da conta específica
     const api = require('../api');
@@ -117,7 +117,7 @@ async function getCurrentPrice(symbol, accountId = 1) {
  * @param {number} maxAgeMs - Idade máxima do preço em cache (ms)
  * @returns {Promise<number|null>} - Preço atual
  */
-async function getWebSocketPrice(symbol, accountId = 1, maxAgeMs = 5000) {
+async function getWebSocketPrice(symbol, accountId, maxAgeMs = 5000) {
   try {
     // Se não temos o símbolo no cache, iniciar websocket
     if (!latestPrices.has(symbol)) {
@@ -202,7 +202,7 @@ function updatePriceCache(symbol, priceData) {
  * @param {Object} db - Conexão com banco
  * @param {number} accountId - ID da conta
  */
-async function onPriceUpdate(symbol, currentPrice, db, accountId = 1) {
+async function onPriceUpdate(symbol, currentPrice, db, accountId) {
   try {
     // Atualizar cache de preços
     updatePriceCache(symbol, currentPrice);

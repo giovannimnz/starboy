@@ -12,7 +12,7 @@ const processingSignals = new Set();
  * @param {Object} db - Conexão com banco
  * @param {number} accountId - ID da conta
  */
-async function processSignalTrigger(signal, currentPrice, db, accountId = 1) {
+async function processSignalTrigger(signal, currentPrice, db, accountId) {
   const entryPrice = parseFloat(signal.entry_price);
   const side = signal.side.toUpperCase();
   
@@ -41,7 +41,7 @@ async function processSignalTrigger(signal, currentPrice, db, accountId = 1) {
  * @param {number} currentPrice - Preço atual
  * @param {number} accountId - ID da conta
  */
-async function processSignal(db, signal, currentPrice, accountId = 1) {
+async function processSignal(db, signal, currentPrice, accountId) {
   // Verificar se já está sendo processado
   if (processingSignals.has(signal.id)) {
     console.log(`[SIGNAL] Sinal ${signal.id} já está sendo processado`);
@@ -171,7 +171,7 @@ async function processSignal(db, signal, currentPrice, accountId = 1) {
  * Verifica e processa novos sinais/trades
  * @param {number} accountId - ID da conta
  */
-async function checkNewTrades(accountId = 1) {
+async function checkNewTrades(accountId) {
   try {
     const db = await getDatabaseInstance(accountId);
     if (!db) {
@@ -208,7 +208,7 @@ async function checkNewTrades(accountId = 1) {
  * Força o processamento de sinais pendentes
  * @param {number} accountId - ID da conta
  */
-async function forceProcessPendingSignals(accountId = 1) {
+async function forceProcessPendingSignals(accountId) {
   try {
     const db = await getDatabaseInstance(accountId);
     if (!db) {

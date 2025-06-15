@@ -9,7 +9,7 @@ const telegramBots = new Map();
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object|null>} - Instância do bot ou null
  */
-async function initializeTelegramBot(accountId = 1) {
+async function initializeTelegramBot(accountId) {
   try {
     const db = await getDatabaseInstance(accountId);
     if (!db) {
@@ -68,7 +68,7 @@ async function initializeTelegramBot(accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Object|null} - Instância do bot ou null
  */
-function getTelegramBot(accountId = 1) {
+function getTelegramBot(accountId) {
   const botInfo = telegramBots.get(accountId);
   return botInfo ? botInfo.bot : null;
 }

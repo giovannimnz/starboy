@@ -24,7 +24,7 @@ let scheduledJobs = {};
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Jobs agendados
  */
-async function initializeMonitoring(accountId = 1) {
+async function initializeMonitoring(accountId) {
   console.log(`[MONITOR] Inicializando sistema de monitoramento para conta ID: ${accountId}...`);
 
   try {

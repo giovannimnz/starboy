@@ -6,7 +6,7 @@ const { getDatabaseInstance } = require('../db/conexao');
  * @param {Object} db - Conexão com banco
  * @param {number} accountId - ID da conta
  */
-async function handleOrderUpdate(orderMsg, db, accountId = 1) {
+async function handleOrderUpdate(orderMsg, db, accountId) {
   try {
     if (!db) {
       console.error(`[ORDER] Banco de dados não disponível para conta ${accountId}`);
@@ -64,7 +64,7 @@ async function handleOrderUpdate(orderMsg, db, accountId = 1) {
  * @param {Object} db - Conexão com banco
  * @param {number} accountId - ID da conta
  */
-async function handleAccountUpdate(message, db, accountId = 1) {
+async function handleAccountUpdate(message, db, accountId) {
   try {
     // Se não houver conexão com o banco, tentar estabelecer
     if (!db) {

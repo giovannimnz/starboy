@@ -6,7 +6,7 @@ let handlers = null;
  * Inicializa os handlers de webhook para uma conta específica
  * @param {number} accountId - ID da conta a ser inicializada
  */
-async function initializeHandlers(accountId = 1) {
+async function initializeHandlers(accountId) {
   try {
     // CORREÇÃO: Validar accountId no início
     if (!accountId || typeof accountId !== 'number') {
@@ -94,7 +94,7 @@ async function placeOrderViaWebSocket(orderParams) {
  * @param {number} [accountId=1] - ID da conta
  * @returns {Promise<Object>} Resposta da API
  */
-async function placeLimitMakerOrderViaWebSocket(symbol, quantity, side, price, accountId = 1) {
+async function placeLimitMakerOrderViaWebSocket(symbol, quantity, side, price, accountId) {
     // Verificar se WebSocket API está conectado
     if (!websockets.isWebSocketApiConnected(accountId)) {
         await websockets.startWebSocketApi(accountId);
@@ -995,7 +995,7 @@ async function getMultipleOrderStatusViaWebSocket(symbol, orderIds) {
  * @param {number} accountId - ID da conta (obrigatório)
  * @returns {Promise<Object>} Resposta completa da API com informações da conta
  */
-async function getAccountInformationV2(params = {}, accountId = 1) {
+async function getAccountInformationV2(params = {}, accountId) {
     // Validar accountId explicitamente
     if (!accountId || typeof accountId !== 'number') {
         throw new Error(`ID da conta inválido: ${accountId} (tipo: ${typeof accountId})`);

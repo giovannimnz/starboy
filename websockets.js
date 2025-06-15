@@ -34,7 +34,7 @@ const accountConnections = new Map(); // Mapa principal
 const priceWebsocketsByAccount = new Map(); // Mapeia accountId -> { symbol -> websocket }
 
 // CORREÇÃO: Função unificada para obter estado
-function getAccountConnectionState(accountId = 1, create = false) {
+function getAccountConnectionState(accountId, create = false) {
   // CORREÇÃO: Validar accountId
   if (!accountId || typeof accountId !== 'number') {
     console.error(`[WEBSOCKETS] ID da conta inválido: ${accountId} (tipo: ${typeof accountId})`);
@@ -97,7 +97,7 @@ function getAllAccountConnections() {
 }
 
 // Inicializar mapa de websockets de preço por conta
-function getPriceWebsockets(accountId = 1, create = false) {
+function getPriceWebsockets(accountId, create = false) {
   if (!priceWebsocketsByAccount.has(accountId) && create) {
     priceWebsocketsByAccount.set(accountId, new Map());
   }
@@ -230,7 +230,7 @@ async function loadCredentialsFromDatabase(accountId) {
  * @param {number} accountId - ID da conta
  * @returns {string} Assinatura em formato base64
  */
-function createEd25519Signature(payload, accountId = 1) {
+function createEd25519Signature(payload, accountId) {
     try {
         // Validar accountId
         if (!accountId || typeof accountId !== 'number') {
@@ -513,7 +513,7 @@ function createPemFromRawKey(rawKeyBuffer) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<string>} - ListenKey gerado pela API
  */
-async function createListenKey(accountId = 1) {
+async function createListenKey(accountId) {
   try {
     // Garantir que as credenciais estão carregadas
     const accountState = getAccountConnectionState(accountId);
@@ -555,7 +555,7 @@ async function createListenKey(accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Resposta da API
  */
-async function keepAliveListenKey(listenKey, accountId = 1) {
+async function keepAliveListenKey(listenKey, accountId) {
   try {
     const accountState = getAccountConnectionState(accountId);
     if (!accountState || !accountState.apiKey) {
@@ -581,7 +581,7 @@ async function keepAliveListenKey(listenKey, accountId = 1) {
  * @param {string} listenKey - ListenKey a ser mantido
  * @param {number} accountId - ID da conta
  */
-function startListenKeyKeepAlive(listenKey, accountId = 1) {
+function startListenKeyKeepAlive(listenKey, accountId) {
   const accountState = getAccountConnectionState(accountId, true);
   
   // Limpar intervalo anterior se existir
@@ -606,7 +606,7 @@ function startListenKeyKeepAlive(listenKey, accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Resposta da API
  */
-async function closeListenKey(listenKey, accountId = 1) {
+async function closeListenKey(listenKey, accountId) {
   try {
     const accountState = getAccountConnectionState(accountId);
     if (!accountState || !accountState.apiKey) {
@@ -732,7 +732,7 @@ async function startWebSocketApi(accountId) {
  * @param {Object} message - Mensagem recebida
  * @param {number} accountId - ID da conta
  */
-function handleWebSocketApiMessage(message, accountId = 1) {
+function handleWebSocketApiMessage(message, accountId) {
     try {
         // Log da mensagem para debug
         console.log(`[WS-API] Mensagem recebida para conta ${accountId}:`, JSON.stringify(message, null, 2));
@@ -791,7 +791,7 @@ function handleWebSocketApiMessage(message, accountId = 1) {
  * Limpa recursos do WebSocket API para uma conta específica
  * @param {number} accountId - ID da conta
  */
-function cleanupWebSocketApi(accountId = 1) {
+function cleanupWebSocketApi(accountId) {
   const accountState = getAccountConnectionState(accountId);
   if (!accountState) return;
   
@@ -816,7 +816,7 @@ function cleanupWebSocketApi(accountId = 1) {
  * Inicia o heartbeat do WebSocket API para uma conta específica
  * @param {number} accountId - ID da conta
  */
-function startHeartbeat(accountId = 1) {
+function startHeartbeat(accountId) {
   const accountState = getAccountConnectionState(accountId);
   if (!accountState) return;
   
@@ -855,7 +855,7 @@ function startHeartbeat(accountId = 1) {
  * @param {string} payload - Payload a ser enviado com o pong
  * @param {number} accountId - ID da conta
  */
-function sendPong(payload = '', accountId = 1) {
+function sendPong(payload = '', accountId) {
   const accountState = getAccountConnectionState(accountId);
   if (!accountState) return;
   
@@ -879,7 +879,7 @@ function sendPong(payload = '', accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Status da sessão
  */
-async function checkSessionStatus(accountId = 1) {
+async function checkSessionStatus(accountId) {
   try {
     const response = await sendWebSocketApiRequest({
       method: 'session.status'
@@ -990,7 +990,7 @@ async function authenticateWebSocketApi(ws, accountId) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Resposta da API
  */
-async function sendWebSocketApiRequest(request, timeout = 30000, accountId = 1) {
+async function sendWebSocketApiRequest(request, timeout = 30000, accountId) {
   const accountState = getAccountConnectionState(accountId, true);
   
   // Garantir que a conexão está ativa
@@ -1081,7 +1081,7 @@ async function sendWebSocketApiRequest(request, timeout = 30000, accountId = 1) 
  * @param {number} accountId - ID da conta
  * @returns {Object} - Requisição pronta para envio
  */
-function createSignedRequest(method, params = {}, accountId = 1) {
+function createSignedRequest(method, params = {}, accountId) {
   const accountState = getAccountConnectionState(accountId);
   if (!accountState) {
     throw new Error(`Estado da conexão não encontrado para conta ${accountId}. Chame loadCredentialsFromDatabase primeiro.`);
@@ -1135,7 +1135,7 @@ function createSignedRequest(method, params = {}, accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<void>}
  */
-async function ensurePriceWebsocketExists(symbol, accountId = 1) {
+async function ensurePriceWebsocketExists(symbol, accountId) {
   // Obter ou criar mapa de websockets para esta conta
   const priceWebsockets = getPriceWebsockets(accountId, true);
   
@@ -1211,7 +1211,7 @@ async function ensurePriceWebsocketExists(symbol, accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<void>}
  */
-async function handlePriceUpdate(symbol, tickerData, accountId = 1) {
+async function handlePriceUpdate(symbol, tickerData, accountId) {
   try {
     const accountState = getAccountConnectionState(accountId, true);
     let db = accountState.dbInstance;
@@ -1263,7 +1263,7 @@ async function handlePriceUpdate(symbol, tickerData, accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {WebSocket} Objeto websocket
  */
-function setupBookDepthWebsocket(symbol, callback, accountId = 1) {
+function setupBookDepthWebsocket(symbol, callback, accountId) {
   // Garantir que temos as credenciais
   const accountState = getAccountConnectionState(accountId, true);
   
@@ -1356,7 +1356,7 @@ function setupBookDepthWebsocket(symbol, callback, accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {boolean} - true se foi fechado com sucesso
  */
-function stopPriceMonitoring(symbol, accountId = 1) {
+function stopPriceMonitoring(symbol, accountId) {
   const priceWebsockets = getPriceWebsockets(accountId);
   if (!priceWebsockets) return false;
   
@@ -1473,7 +1473,7 @@ async function startUserDataStream(db, accountId) {
  * @param {Object} db - Conexão com o banco de dados (opcional)
  * @param {number} accountId - ID da conta
  */
-function restartUserDataStream(db, accountId = 1) {
+function restartUserDataStream(db, accountId) {
   const accountState = getAccountConnectionState(accountId);
   if (!accountState) return;
   
@@ -1499,7 +1499,7 @@ function restartUserDataStream(db, accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Object} O objeto handlers atualizado
  */
-function setMonitoringCallbacks(callbackHandlers, accountId = 1) {
+function setMonitoringCallbacks(callbackHandlers, accountId) {
   const accountState = getAccountConnectionState(accountId, true);
   accountState.handlers = { ...accountState.handlers, ...callbackHandlers };
   return accountState.handlers;
@@ -1510,7 +1510,7 @@ function setMonitoringCallbacks(callbackHandlers, accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Object} O objeto handlers atual
  */
-function getHandlers(accountId = 1) {
+function getHandlers(accountId) {
   const accountState = getAccountConnectionState(accountId);
   return accountState ? accountState.handlers : {};
 }
@@ -1520,7 +1520,7 @@ function getHandlers(accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Object} Credenciais carregadas ou null
  */
-function getCredentials(accountId = 1) {
+function getCredentials(accountId) {
   // Verificar se há em cache
   if (accountCredentialsCache.has(accountId)) {
     return accountCredentialsCache.get(accountId);
@@ -1614,7 +1614,7 @@ async function ensureWebSocketApiExists(accountId) {
  * @param {number} accountId - ID da conta
  * @returns {boolean} - true se conectado
  */
-function isWebSocketApiConnected(accountId = 1) {
+function isWebSocketApiConnected(accountId) {
   const accountState = getAccountConnectionState(accountId);
   if (!accountState) return false;
   
@@ -1628,7 +1628,7 @@ function isWebSocketApiConnected(accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {boolean} - true se autenticado
  */
-function isWebSocketApiAuthenticated(accountId = 1) {
+function isWebSocketApiAuthenticated(accountId) {
   const accountState = getAccountConnectionState(accountId);
   if (!accountState) return false;
   
@@ -1640,7 +1640,7 @@ function isWebSocketApiAuthenticated(accountId = 1) {
  * Reinicia as conexões WebSocket para uma conta específica
  * @param {number} accountId - ID da conta
  */
-function reset(accountId = 1) {
+function reset(accountId) {
   // Limpar WebSocket API
   cleanupWebSocketApi(accountId);
   
@@ -1874,7 +1874,7 @@ async function testEd25519Key(privateKeyBase64) {
  * @param {string} pemFilePath - Caminho para o arquivo PEM (opcional)
  * @returns {boolean} - true se atualizado com sucesso
  */
-async function updateEd25519FromPEM(accountId = 1, pemFilePath = null) {
+async function updateEd25519FromPEM(accountId, pemFilePath = null) {
   try {
     console.log(`[WEBSOCKETS] Atualizando chave Ed25519 para conta ${accountId} a partir do arquivo PEM`);
     
@@ -1922,7 +1922,7 @@ async function updateEd25519FromPEM(accountId = 1, pemFilePath = null) {
  * @param {number} accountId - ID da conta
  * @returns {boolean} - true se configurado com sucesso
  */
-async function setupEd25519FromPEM(accountId = 1) {
+async function setupEd25519FromPEM(accountId) {
   try {
     console.log(`[WEBSOCKETS] === CONFIGURANDO CHAVE ED25519 DO ARQUIVO PEM PARA CONTA ${accountId} ===`);
     

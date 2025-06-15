@@ -359,7 +359,7 @@ async function getPositionIdBySymbol(db, symbol) {
 }
 
 // Exemplo de modificação para checkPositionExists
-async function checkPositionExists(db, symbol, accountId = 1) {
+async function checkPositionExists(db, symbol, accountId) {
   try {
     const [rows] = await db.query(
       "SELECT id FROM posicoes WHERE simbolo = ? AND (status = 'OPEN' OR status = 'PENDING') AND conta_id = ?",
@@ -990,7 +990,7 @@ function formatDateForMySQL(date) {
  * @param {number} accountId - ID da conta (padrão: 1)
  * @returns {Promise<Object>} - Objeto com os valores atualizados
  */
-async function updateAccountBalance(db, saldo, accountId = 1) {
+async function updateAccountBalance(db, saldo, accountId) {
   try {
     const connection = await db.getConnection();
     await connection.beginTransaction();
@@ -1051,7 +1051,7 @@ async function updateAccountBalance(db, saldo, accountId = 1) {
  * @param {number} accountId - ID da conta (padrão: 1)
  * @returns {Promise<number>} - Valor do saldo_base_calculo
  */
-async function getBaseCalculoBalance(db, accountId = 1) {
+async function getBaseCalculoBalance(db, accountId) {
   try {
     const [rows] = await db.query(
         'SELECT saldo_base_calculo FROM conta WHERE id = ?',
@@ -1078,7 +1078,7 @@ async function getBaseCalculoBalance(db, accountId = 1) {
  * @returns {Promise<Object>} - Objeto com as credenciais
  */
 async function getApiCredentials(options = {}) {
-  const { forceRefresh = false, accountId = 1 } = options;
+  const { forceRefresh = false, accountId } = options;
   const currentTime = Date.now();
   
   // Usar cache se disponível e não expirado, a menos que forceRefresh seja true

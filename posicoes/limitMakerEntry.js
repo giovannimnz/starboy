@@ -17,7 +17,7 @@ const websockets = require('../websockets');
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} Resultado da operação
  */
-async function executeLimitMakerEntry(db, signal, currentPrice, accountId = 1) {
+async function executeLimitMakerEntry(db, signal, currentPrice, accountId) {
   console.log(`[LIMIT_ENTRY] Iniciando LIMIT MAKER para Sinal ID ${signal.id} (${signal.symbol})`);
     // Obter a conexão do banco de dados para a conta específica
     const connection = await db.getConnection();
@@ -1012,7 +1012,7 @@ if (fillRatio >= ENTRY_COMPLETE_THRESHOLD_RATIO) {
 }
 
 // Função auxiliar para obter saldo disponível
-async function getAvailableBalance(accountId = 1) {
+async function getAvailableBalance(accountId) {
     try {
         const db = await getDatabaseInstance(accountId);
         if (!db) {

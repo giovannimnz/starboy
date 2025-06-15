@@ -5,7 +5,7 @@ const { getAllOpenPositions } = require('../api');
  * Sincroniza posições entre banco de dados e corretora
  * @param {number} accountId - ID da conta
  */
-async function syncPositionsWithExchange(accountId = 1) {
+async function syncPositionsWithExchange(accountId) {
   try {
     const db = await getDatabaseInstance(accountId);
     if (!db) {
@@ -65,7 +65,7 @@ async function syncPositionsWithExchange(accountId = 1) {
  * Exibe log de posições abertas e ordens pendentes
  * @param {number} accountId - ID da conta
  */
-async function logOpenPositionsAndOrders(accountId = 1) {
+async function logOpenPositionsAndOrders(accountId) {
   try {
     const db = await getDatabaseInstance(accountId);
     if (!db) {

@@ -27,7 +27,7 @@ let lastCacheTime = 0;
  */
 async function loadCredentialsFromDatabase(options = {}) {
   try {
-    const { accountId = 1, forceRefresh = false } = options;
+    const { accountId, forceRefresh = false } = options;
     
     // Validar accountId
     if (!accountId || typeof accountId !== 'number') {
@@ -134,7 +134,7 @@ async function loadCredentialsFromDatabase(options = {}) {
 /**
  * Função loadCredentials deve usar loadCredentialsFromDatabase
  */
-async function loadCredentials(accountId = 1) {
+async function loadCredentials(accountId) {
   // CORREÇÃO: Forçar reload sem cache para debug
   return await loadCredentialsFromDatabase({ accountId, forceRefresh: true });
 }
@@ -184,7 +184,7 @@ function createSignature(queryString, secretKey) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Resposta da API
  */
-async function makeAuthenticatedRequest(endpoint, method = 'GET', data = {}, accountId = 1) {
+async function makeAuthenticatedRequest(endpoint, method = 'GET', data = {}, accountId) {
   try {
     // Carregar credenciais com debug detalhado
     const credentials = await loadCredentialsFromDatabase({ accountId });
@@ -269,7 +269,7 @@ async function makeAuthenticatedRequest(endpoint, method = 'GET', data = {}, acc
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Detalhes do saldo
  */
-async function getFuturesAccountBalanceDetails(accountId = 1) {
+async function getFuturesAccountBalanceDetails(accountId) {
   try {
     const response = await makeAuthenticatedRequest('/v2/account', {}, 'GET', accountId);
     return response;
@@ -285,7 +285,7 @@ async function getFuturesAccountBalanceDetails(accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<number>} - Alavancagem máxima
  */
-async function getMaxLeverage(symbol, accountId = 1) {
+async function getMaxLeverage(symbol, accountId) {
   try {
     const response = await makeAuthenticatedRequest('/v1/leverageBracket', { symbol }, 'GET', accountId);
     return response[0]?.brackets[0]?.initialLeverage || 20;
@@ -301,7 +301,7 @@ async function getMaxLeverage(symbol, accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<number>} - Alavancagem atual
  */
-async function getCurrentLeverage(symbol, accountId = 1) {
+async function getCurrentLeverage(symbol, accountId) {
   try {
     const response = await makeAuthenticatedRequest('/v2/positionRisk', { symbol }, 'GET', accountId);
     return parseInt(response[0]?.leverage || 20);
@@ -317,7 +317,7 @@ async function getCurrentLeverage(symbol, accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<string>} - Tipo de margem
  */
-async function getCurrentMarginType(symbol, accountId = 1) {
+async function getCurrentMarginType(symbol, accountId) {
   try {
     const response = await makeAuthenticatedRequest('/v2/positionRisk', { symbol }, 'GET', accountId);
     return response[0]?.marginType || 'cross';
@@ -334,7 +334,7 @@ async function getCurrentMarginType(symbol, accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Resposta da API
  */
-async function changeInitialLeverage(symbol, leverage, accountId = 1) {
+async function changeInitialLeverage(symbol, leverage, accountId) {
   try {
     const response = await makeAuthenticatedRequest('/v1/leverage', { symbol, leverage }, 'POST', accountId);
     console.log(`[API] Alavancagem alterada para ${leverage}x em ${symbol} (conta ${accountId})`);
@@ -352,7 +352,7 @@ async function changeInitialLeverage(symbol, leverage, accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Resposta da API
  */
-async function changeMarginType(symbol, marginType, accountId = 1) {
+async function changeMarginType(symbol, marginType, accountId) {
   try {
     const response = await makeAuthenticatedRequest('/v1/marginType', { symbol, marginType }, 'POST', accountId);
     console.log(`[API] Tipo de margem alterado para ${marginType} em ${symbol} (conta ${accountId})`);
@@ -369,7 +369,7 @@ async function changeMarginType(symbol, marginType, accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Resposta da API
  */
-async function newOrder(orderParams, accountId = 1) {
+async function newOrder(orderParams, accountId) {
   try {
     const response = await makeAuthenticatedRequest('/v1/order', orderParams, 'POST', accountId);
     console.log(`[API] Nova ordem criada: ${response.orderId} para ${orderParams.symbol}`);
@@ -389,7 +389,7 @@ async function newOrder(orderParams, accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Resposta da API
  */
-async function newEntryOrder(symbol, side, quantity, price, accountId = 1) {
+async function newEntryOrder(symbol, side, quantity, price, accountId) {
   const orderParams = {
     symbol,
     side,
@@ -551,7 +551,7 @@ async function newTakeProfitOrder(accountId, symbol, side, quantity, stopPrice) 
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Informações do tick size
  */
-async function getTickSize(symbol, accountId = 1) {
+async function getTickSize(symbol, accountId) {
   try {
     const credentials = await loadCredentialsFromDatabase({ accountId });
     const response = await axios.get(`${credentials.apiUrl}/v1/exchangeInfo`);
@@ -580,7 +580,7 @@ async function getTickSize(symbol, accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<number>} - Preço arredondado
  */
-async function roundPriceToTickSize(symbol, price, accountId = 1) {
+async function roundPriceToTickSize(symbol, price, accountId) {
   try {
     const tickInfo = await getTickSize(symbol, accountId);
     const tickSize = parseFloat(tickInfo.tickSize);
@@ -598,7 +598,7 @@ async function roundPriceToTickSize(symbol, price, accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Informações de precisão
  */
-async function getPrecision(symbol, accountId = 1) {
+async function getPrecision(symbol, accountId) {
   try {
     const credentials = await loadCredentialsFromDatabase({ accountId });
     const response = await axios.get(`${credentials.apiUrl}/v1/exchangeInfo`);
@@ -626,7 +626,7 @@ async function getPrecision(symbol, accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<Array>} - Lista de ordens abertas
  */
-async function getOpenOrders(symbol, accountId = 1) {
+async function getOpenOrders(symbol, accountId) {
   try {
     const params = symbol ? { symbol } : {};
     const response = await makeAuthenticatedRequest('/v1/openOrders', params, 'GET', accountId);
@@ -696,7 +696,7 @@ async function getMultipleOrderStatus(accountId, symbol, orderIds) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Detalhes da posição
  */
-async function getPositionDetails(symbol, accountId = 1) {
+async function getPositionDetails(symbol, accountId) {
   try {
     const params = symbol ? { symbol } : {};
     const response = await makeAuthenticatedRequest('/v2/positionRisk', params, 'GET', accountId);
@@ -717,7 +717,7 @@ async function getPositionDetails(symbol, accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<Array>} Array de posições abertas
  */
-async function getAllOpenPositions(accountId = 1) {
+async function getAllOpenPositions(accountId) {
   try {
     // CORREÇÃO: Especificar método explicitamente
     const data = await makeAuthenticatedRequest('/v2/positionRisk', 'GET', {}, accountId);
@@ -749,7 +749,7 @@ async function getAllOpenPositions(accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<number>} - Saldo total
  */
-async function obterSaldoPosicao(accountId = 1) {
+async function obterSaldoPosicao(accountId) {
   try {
     const response = await getFuturesAccountBalanceDetails(accountId);
     
@@ -789,7 +789,7 @@ async function cancelOrder(accountId, symbol, orderId) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Resposta da API
  */
-async function transferBetweenAccounts(asset, amount, type, accountId = 1) {
+async function transferBetweenAccounts(asset, amount, type, accountId) {
   try {
     const params = { asset, amount: amount.toString(), type };
     const response = await makeAuthenticatedRequest('/v1/futures/transfer', params, 'POST', accountId);
@@ -825,7 +825,7 @@ async function cancelAllOpenOrders(accountId, symbol) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Resposta da API
  */
-async function encerrarPosicao(symbol, accountId = 1) {
+async function encerrarPosicao(symbol, accountId) {
   try {
     // Obter detalhes da posição atual
     const position = await getPositionDetails(symbol, accountId);
@@ -861,7 +861,7 @@ async function encerrarPosicao(symbol, accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<Array>} - Brackets de alavancagem
  */
-async function getAllLeverageBrackets(symbol, accountId = 1) {
+async function getAllLeverageBrackets(symbol, accountId) {
   try {
     const params = symbol ? { symbol } : {};
     const response = await makeAuthenticatedRequest('/v1/leverageBracket', params, 'GET', accountId);
@@ -878,7 +878,7 @@ async function getAllLeverageBrackets(symbol, accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Resposta da API
  */
-async function setPositionMode(dualSidePosition, accountId = 1) {
+async function setPositionMode(dualSidePosition, accountId) {
   try {
     const params = { dualSidePosition: dualSidePosition.toString() };
     const response = await makeAuthenticatedRequest('/v1/positionSide/dual', params, 'POST', accountId);
@@ -895,7 +895,7 @@ async function setPositionMode(dualSidePosition, accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Modo de posição atual
  */
-async function getPositionMode(accountId = 1) {
+async function getPositionMode(accountId) {
   try {
     const response = await makeAuthenticatedRequest('/v1/positionSide/dual', {}, 'GET', accountId);
     return response;
@@ -912,7 +912,7 @@ async function getPositionMode(accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Resposta da API
  */
-async function closePosition(symbol, side, accountId = 1) {
+async function closePosition(symbol, side, accountId) {
   try {
     const orderParams = {
       symbol,
@@ -936,7 +936,7 @@ async function closePosition(symbol, side, accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<number>} - Preço atual
  */
-async function getPrice(symbol, accountId = 1) {
+async function getPrice(symbol, accountId) {
   try {
     const credentials = await loadCredentialsFromDatabase({ accountId });
     const response = await axios.get(`${credentials.apiUrl}/v1/ticker/price?symbol=${symbol}`);
@@ -965,7 +965,7 @@ async function getPrice(symbol, accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<void>}
  */
-async function updateLeverageBracketsInDatabase(exchange = 'binance', accountId = 1) {
+async function updateLeverageBracketsInDatabase(exchange = 'binance', accountId) {
   try {
     console.log(`[API] Atualizando brackets de alavancagem para ${exchange}...`);
     
@@ -1044,7 +1044,7 @@ async function updateLeverageBracketsInDatabase(exchange = 'binance', accountId 
  * @param {number} accountId - ID da conta
  * @returns {Promise<Array>} - Brackets do banco de dados
  */
-async function getLeverageBracketsFromDb(symbol, exchange = 'binance', accountId = 1) {
+async function getLeverageBracketsFromDb(symbol, exchange = 'binance', accountId) {
   try {
     const db = await getDatabaseInstance(accountId);
     
@@ -1079,7 +1079,7 @@ async function getLeverageBracketsFromDb(symbol, exchange = 'binance', accountId
  * @param {number} accountId - ID da conta
  * @returns {Promise<boolean>} - true se cancelado com sucesso
  */
-async function cancelPendingEntry(symbol, accountId = 1) {
+async function cancelPendingEntry(symbol, accountId) {
   try {
     const openOrders = await getOpenOrders(symbol, accountId);
     
@@ -1110,7 +1110,7 @@ async function cancelPendingEntry(symbol, accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<boolean>} - true se correções foram feitas
  */
-async function verifyAndFixEnvironmentConsistency(accountId = 1) {
+async function verifyAndFixEnvironmentConsistency(accountId) {
   try {
     const db = await getDatabaseInstance(accountId);
     
@@ -1197,7 +1197,7 @@ async function verifyAndFixEnvironmentConsistency(accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<number>} - Alavancagem máxima
  */
-async function getMaxLeverageFromDb(symbol, exchange = 'binance', accountId = 1) {
+async function getMaxLeverageFromDb(symbol, exchange = 'binance', accountId) {
   try {
     const db = await getDatabaseInstance(accountId);
     
@@ -1224,7 +1224,7 @@ async function getMaxLeverageFromDb(symbol, exchange = 'binance', accountId = 1)
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Informações de margem
  */
-async function getMarginInfoFromDb(symbol, notionalValue, exchange = 'binance', accountId = 1) {
+async function getMarginInfoFromDb(symbol, notionalValue, exchange = 'binance', accountId) {
   try {
     const db = await getDatabaseInstance(accountId);
     
@@ -1289,7 +1289,7 @@ async function getMarginInfoFromDb(symbol, notionalValue, exchange = 'binance', 
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Informações de margem calculada
  */
-async function calculateRequiredMargin(symbol, notionalValue, leverage, exchange = 'binance', accountId = 1) {
+async function calculateRequiredMargin(symbol, notionalValue, leverage, exchange = 'binance', accountId) {
   try {
     const marginInfo = await getMarginInfoFromDb(symbol, notionalValue, exchange, accountId);
     
@@ -1331,7 +1331,7 @@ async function calculateRequiredMargin(symbol, notionalValue, leverage, exchange
  * @param {number} accountId - ID da conta
  * @returns {Promise<number>} - Alavancagem máxima
  */
-async function getMaxLeverageFromDb(symbol, exchange = 'binance', accountId = 1) {
+async function getMaxLeverageFromDb(symbol, exchange = 'binance', accountId) {
   try {
     const db = await getDatabaseInstance(accountId);
     
@@ -1358,7 +1358,7 @@ async function getMaxLeverageFromDb(symbol, exchange = 'binance', accountId = 1)
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Informações de margem
  */
-async function getMarginInfoFromDb(symbol, notionalValue, exchange = 'binance', accountId = 1) {
+async function getMarginInfoFromDb(symbol, notionalValue, exchange = 'binance', accountId) {
   try {
     const db = await getDatabaseInstance(accountId);
     
@@ -1423,7 +1423,7 @@ async function getMarginInfoFromDb(symbol, notionalValue, exchange = 'binance', 
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Informações de margem calculada
  */
-async function calculateRequiredMargin(symbol, notionalValue, leverage, exchange = 'binance', accountId = 1) {
+async function calculateRequiredMargin(symbol, notionalValue, leverage, exchange = 'binance', accountId) {
   try {
     const marginInfo = await getMarginInfoFromDb(symbol, notionalValue, exchange, accountId);
     
