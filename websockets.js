@@ -1364,28 +1364,40 @@ function getCredentials(accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<WebSocket>} - Conexão estabelecida
  */
-async function ensureWebSocketApiExists(accountId = 1) {
-  const accountState = getAccountConnectionState(accountId, true);
-  
-  // Se já existe uma conexão WebSocket API ativa, retorná-la
-  if (accountState.wsApiConnection && 
-      accountState.wsApiConnection.readyState === WebSocket.OPEN) {
-    return accountState.wsApiConnection;
-  }
-  
-  // Se não existe ou não está aberta, iniciar uma nova conexão
-  //console.log(`[WS-API] Iniciando WebSocket API para conta ${accountId}...`);
-  const wsConnection = await startWebSocketApi(accountId);
-  
-  // Tentar autenticar após conexão estabelecida
+async function ensureWebSocketApiExists(accountId) {
   try {
-    const authenticated = await authenticateWebSocketApi(accountId);
-    console.log(`[WS-API] Autenticação da WebSocket API ${authenticated ? 'bem-sucedida' : 'falhou'} para conta ${accountId}`);
-  } catch (authError) {
-    console.error(`[WS-API] Erro na autenticação da WebSocket API para conta ${accountId}:`, authError.message);
+    // CORREÇÃO: Validar accountId
+    if (!accountId || typeof accountId !== 'number') {
+      console.error(`[WEBSOCKETS] ID da conta inválido: ${accountId} (tipo: ${typeof accountId})`);
+      return false;
+    }
+
+    const accountState = getAccountConnectionState(accountId);
+    
+    if (!accountState) {
+      console.error(`[WEBSOCKETS] Estado da conta não encontrado para ID: ${accountId}`);
+      return false;
+    }
+
+    // Se WebSocket já existe e está conectado
+    if (accountState.wsApi && accountState.wsApi.readyState === WebSocket.OPEN) {
+      if (accountState.isAuthenticated) {
+        console.log(`[WEBSOCKETS] WebSocket API já está conectado e autenticado para conta ${accountId}`);
+        return true;
+      } else {
+        console.log(`[WEBSOCKETS] WebSocket API conectado mas não autenticado para conta ${accountId}, tentando autenticar...`);
+        return await authenticateWebSocketApi(accountState.wsApi, accountId);
+      }
+    }
+
+    // Criar nova conexão WebSocket API
+    console.log(`[WEBSOCKETS] Criando nova conexão WebSocket API para conta ${accountId}...`);
+    return await startWebSocketApi(accountId);
+    
+  } catch (error) {
+    console.error(`[WEBSOCKETS] Erro ao garantir WebSocket API para conta ${accountId}:`, error.message);
+    return false;
   }
-  
-  return wsConnection;
 }
 
 // Adicionar à lista de exportações

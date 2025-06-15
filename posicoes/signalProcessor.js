@@ -168,104 +168,77 @@ async function processSignal(db, signal, currentPrice, accountId = 1) {
 }
 
 /**
- * Verifica sinais pendentes e os processa
+ * Verifica e processa novos sinais/trades
  * @param {number} accountId - ID da conta
  */
 async function checkNewTrades(accountId = 1) {
   try {
-    const startTime = Date.now();
-    //console.log(`[SIGNAL] Verificando sinais pendentes para conta ${accountId} às ${new Date().toLocaleString()}`);
-    
     const db = await getDatabaseInstance(accountId);
     if (!db) {
-      console.error(`[SIGNAL] Não foi possível conectar ao banco para conta ${accountId}`);
+      console.error(`[CHECK_TRADES] Não foi possível conectar ao banco para conta ${accountId}`);
       return;
     }
 
-    // Verificar sinais PENDING na tabela webhook_signals
     const [pendingSignals] = await db.query(`
-      SELECT * FROM webhook_signals
-      WHERE status = 'PENDING' AND (conta_id = ? OR conta_id IS NULL)
+      SELECT * FROM webhook_signals 
+      WHERE status IN ('PENDING', 'AGUARDANDO_ACIONAMENTO') 
+      AND (conta_id = ? OR conta_id IS NULL)
       ORDER BY created_at ASC
     `, [accountId]);
 
-    if (pendingSignals.length === 0) {
-      //console.log(`[SIGNAL] Nenhum sinal pendente encontrado para conta ${accountId}`);
-      return;
-    }
-
-    console.log(`[SIGNAL] Encontrados ${pendingSignals.length} sinais pendentes para processar (Conta ${accountId})`);
-
-    // Processar cada sinal pendente
-    for (const signal of pendingSignals) {
-      try {
-        // Obter preço atual
-        const { getWebSocketPrice } = require('./priceMonitoring');
-        const currentPrice = await getWebSocketPrice(signal.symbol, accountId);
-        
-        if (currentPrice) {
-          await processSignal(db, signal, currentPrice, accountId);
-        } else {
-          console.warn(`[SIGNAL] Não foi possível obter preço para ${signal.symbol}`);
+    if (pendingSignals.length > 0) {
+      console.log(`[CHECK_TRADES] Processando ${pendingSignals.length} sinais pendentes para conta ${accountId}...`);
+      
+      for (const signal of pendingSignals) {
+        try {
+          await processSignal(db, signal, accountId);
+        } catch (signalError) {
+          console.error(`[CHECK_TRADES] Erro ao processar sinal ${signal.id}:`, signalError.message);
         }
-      } catch (signalError) {
-        console.error(`[SIGNAL] Erro ao processar sinal ${signal.id}:`, signalError);
       }
+    } else {
+      console.log(`[CHECK_TRADES] Nenhum sinal pendente para conta ${accountId}`);
     }
-    
-    const endTime = Date.now();
-    console.log(`[SIGNAL] Verificação de sinais concluída em ${(endTime - startTime)/1000} segundos`);
   } catch (error) {
-    console.error(`[SIGNAL] Erro ao verificar sinais pendentes:`, error);
+    console.error(`[CHECK_TRADES] Erro para conta ${accountId}:`, error);
   }
 }
 
 /**
- * Força processamento de sinais pendentes
+ * Força o processamento de sinais pendentes
  * @param {number} accountId - ID da conta
  */
 async function forceProcessPendingSignals(accountId = 1) {
-  //console.log(`[SIGNAL] Forçando processamento de sinais pendentes para conta ${accountId}...`);
   try {
     const db = await getDatabaseInstance(accountId);
     if (!db) {
-      console.error(`[SIGNAL] Não foi possível conectar ao banco para conta ${accountId}`);
+      console.error(`[FORCE_PROCESS] Não foi possível conectar ao banco para conta ${accountId}`);
       return;
     }
 
-    // Selecionar sinais pendentes
-    const [pendingSignals] = await db.query(`
-      SELECT * FROM webhook_signals
-      WHERE status = 'PENDING' AND (conta_id = ? OR conta_id IS NULL)
-      ORDER BY created_at ASC
+    // Verificar qual coluna de atualização existe
+    const [tableInfo] = await db.query(`
+      SHOW COLUMNS FROM webhook_signals LIKE '%update%'
+    `);
+    
+    let updateColumn = 'last_update'; // padrão
+    if (tableInfo.length > 0) {
+      updateColumn = tableInfo[0].Field;
+    }
+
+    // Resetar sinais travados há mais de 5 minutos
+    await db.query(`
+      UPDATE webhook_signals 
+      SET status = 'PENDING' 
+      WHERE status = 'PROCESSANDO' 
+      AND TIMESTAMPDIFF(MINUTE, ${updateColumn}, NOW()) > 5
+      AND (conta_id = ? OR conta_id IS NULL)
     `, [accountId]);
 
-    //console.log(`[SIGNAL] Encontrados ${pendingSignals.length} sinais pendentes para processamento forçado`);
-
-    if (pendingSignals.length === 0) {
-      //console.log(`[SIGNAL] Não há sinais pendentes para processar para conta ${accountId}`);
-      return;
-    }
-
-    // Processar cada sinal pendente
-    for (const signal of pendingSignals) {
-      try {
-        // Obter preço atual via API se necessário
-        const { getCurrentPrice } = require('./priceMonitoring');
-        const currentPrice = await getCurrentPrice(signal.symbol, accountId);
-        
-        if (currentPrice) {
-          await processSignal(db, signal, currentPrice, accountId);
-        } else {
-          console.warn(`[SIGNAL] Não foi possível obter preço para ${signal.symbol}`);
-        }
-      } catch (signalError) {
-        console.error(`[SIGNAL] Erro ao processar sinal ${signal.id}:`, signalError);
-      }
-    }
+    console.log(`[FORCE_PROCESS] Sinais travados resetados para conta ${accountId}`);
+    await checkNewTrades(accountId);
   } catch (error) {
-    console.error(`[SIGNAL] Erro ao forçar processamento de sinais:`, error);
-    throw error;
+    console.error(`[FORCE_PROCESS] Erro para conta ${accountId}:`, error);
   }
 }
 
