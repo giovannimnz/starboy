@@ -45,7 +45,7 @@ async function initializeMonitoring(accountId = 1) {
     // Verificar e corrigir inconsistências de ambiente
     try {
       await verifyAndFixEnvironmentConsistency(accountId);
-      console.log('[MONITOR] Verificação de consistência de ambiente concluída.');
+      //console.log('[MONITOR] Verificação de consistência de ambiente concluída.');
     } catch (envError) {
       console.error('[MONITOR] Erro ao verificar consistência de ambiente, mas continuando:', envError.message);
     }
@@ -121,7 +121,7 @@ async function initializeMonitoring(accountId = 1) {
 
     // IMPORTANTE: Limpar sinais com erro antes de verificar pendentes
     try {
-      console.log('[MONITOR] Limpando sinais com erro...');
+      //console.log('[MONITOR] Limpando sinais com erro...');
       await db.query(`
         UPDATE webhook_signals 
         SET status = 'ERROR', 
@@ -130,7 +130,7 @@ async function initializeMonitoring(accountId = 1) {
           AND error_message LIKE '%not defined%'
           AND conta_id = ?
       `, [accountId]);
-      console.log('[MONITOR] Sinais com erro limpos.');
+      //console.log('[MONITOR] Sinais com erro limpos.');
     } catch (cleanError) {
       console.error('[MONITOR] Erro ao limpar sinais com erro:', cleanError.message);
     }
@@ -167,7 +167,7 @@ async function initializeMonitoring(accountId = 1) {
     const accountJobs = {};
     
     // Agendar verificação periódica de sinais a cada 15 segundos
-    console.log(`[MONITOR] Agendando verificação periódica de sinais a cada 15 segundos`);
+    //console.log(`[MONITOR] Agendando verificação periódica de sinais a cada 15 segundos`);
     accountJobs.checkNewTrades = schedule.scheduleJob('*/15 * * * * *', async () => {
       try {
         await checkNewTrades(accountId);
@@ -187,9 +187,9 @@ async function initializeMonitoring(accountId = 1) {
 
     // Sincronizar posições com a corretora
     try {
-      console.log('[MONITOR] Iniciando sincronização de posições...');
+      //console.log('[MONITOR] Iniciando sincronização de posições...');
       await syncPositionsWithExchange(accountId);
-      console.log('[MONITOR] Sincronização de posições concluída com sucesso.');
+      //console.log('[MONITOR] Sincronização de posições concluída com sucesso.');
     } catch (syncError) {
       console.error('[MONITOR] Erro ao sincronizar posições, mas continuando:', syncError.message);
     }
@@ -246,7 +246,7 @@ console.log(`[MONITOR] Iniciando sistema de monitoramento para conta ID: ${accou
 if (require.main === module) {
   (async () => {
     try {
-      console.log('[MONITOR] Iniciando sistema de monitoramento...');
+      //console.log('[MONITOR] Iniciando sistema de monitoramento...');
       await initializeMonitoring(accountId);
     } catch (error) {
       console.error('[MONITOR] Erro crítico na inicialização:', error);
