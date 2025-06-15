@@ -136,41 +136,78 @@ async function loadCredentialsFromDatabase(options = {}) {
 }
 
 /**
- * Cria uma assinatura Ed25519 para autenticação na API
+ * Cria uma assinatura Ed25519 para requisições WebSocket API
  * @param {string} payload - Dados a serem assinados
+ * @param {string} privateKey - Chave privada Ed25519 em formato base64
  * @param {number} accountId - ID da conta
- * @returns {string} - Assinatura codificada em base64 ou hex
+ * @returns {string} - Assinatura em formato base64
  */
-function createEd25519Signature(payload, accountId = 1) {
+function createEd25519Signature(payload, privateKey, accountId) {
   try {
-    const accountState = getAccountConnectionState(accountId);
-    if (!accountState || !accountState.privateKey) {
-      throw new Error(`Chave privada não carregada para conta ${accountId}`);
+    if (!privateKey) {
+      throw new Error(`Chave privada Ed25519 não encontrada para conta ${accountId}`);
     }
-    
-    // Verificar se a chave privada está no formato correto
-    let privateKey = accountState.privateKey;
-    
-    // Remover prefixos se existirem
-    if (privateKey.startsWith('0x')) {
-      privateKey = privateKey.slice(2);
+
+    // Converter a chave privada de base64 para buffer
+    let privateKeyBuffer;
+    try {
+      privateKeyBuffer = Buffer.from(privateKey, 'base64');
+    } catch (error) {
+      console.error(`[WEBSOCKETS] Erro ao decodificar chave privada Ed25519 para conta ${accountId}:`, error);
+      throw new Error(`Chave privada Ed25519 inválida para conta ${accountId}`);
     }
+
+    // Verificar se a chave tem o tamanho correto (32 bytes para Ed25519)
+    if (privateKeyBuffer.length !== 32) {
+      throw new Error(`Chave privada Ed25519 tem tamanho incorreto para conta ${accountId}. Esperado: 32 bytes, recebido: ${privateKeyBuffer.length} bytes`);
+    }
+
+    // CORREÇÃO: Usar a sintaxe correta para Node.js v20+
+    let keyObject;
+    try {
+      // Tentar a abordagem moderna primeiro (Node.js 15.6.0+)
+      keyObject = crypto.createPrivateKey({
+        key: privateKeyBuffer,
+        format: 'raw',
+        type: 'ed25519'
+      });
+    } catch (modernError) {
+      console.log(`[WEBSOCKETS] Método moderno falhou para conta ${accountId}, tentando método alternativo...`);
+      
+      try {
+        // Abordagem alternativa para versões mais antigas
+        const keyPair = crypto.generateKeyPairSync('ed25519', {
+          privateKeyEncoding: { type: 'raw', format: 'buffer' }
+        });
+        
+        // Substituir a chave gerada pela nossa chave
+        keyObject = crypto.createPrivateKey({
+          key: Buffer.concat([privateKeyBuffer, Buffer.alloc(32)]).slice(0, 32),
+          format: 'raw',
+          type: 'ed25519'
+        });
+      } catch (alternativeError) {
+        console.error(`[WEBSOCKETS] Todas as abordagens falharam para conta ${accountId}:`, alternativeError);
+        
+        // Último recurso: usar biblioteca externa se disponível
+        try {
+          const ed25519 = require('@noble/ed25519');
+          const payloadBuffer = Buffer.from(payload, 'utf8');
+          const signature = ed25519.sign(payloadBuffer, privateKeyBuffer);
+          return Buffer.from(signature).toString('base64');
+        } catch (externalError) {
+          throw new Error(`Não foi possível criar assinatura Ed25519 para conta ${accountId}. Verifique a versão do Node.js (recomendado: 18+) ou instale @noble/ed25519`);
+        }
+      }
+    }
+
+    // Criar a assinatura
+    const signature = crypto.sign(null, Buffer.from(payload, 'utf8'), keyObject);
+    const signatureBase64 = signature.toString('base64');
     
-    // Converter para Buffer se for string hex
-    const keyBuffer = Buffer.from(privateKey, 'hex');
+    console.log(`[WEBSOCKETS] Assinatura Ed25519 criada com sucesso para conta ${accountId}`);
+    return signatureBase64;
     
-    // Criar assinatura usando crypto nativo do Node.js
-    const sign = crypto.createSign('SHA256');
-    sign.update(payload);
-    sign.end();
-    
-    // Para Ed25519, use o método sign com a chave
-    const signature = crypto.sign(null, Buffer.from(payload), {
-      key: keyBuffer,
-      type: 'ed25519'
-    });
-    
-    return signature.toString('base64');
   } catch (error) {
     console.error(`[WEBSOCKETS] Erro ao criar assinatura Ed25519 para conta ${accountId}:`, error.message);
     throw error;
@@ -1019,7 +1056,7 @@ async function startUserDataStream(db, accountId = 1) {
     // Verificar se já existe uma conexão ativa
     if (accountState.userDataWebSocket && 
         accountState.userDataWebSocket.readyState === WebSocket.OPEN) {
-      console.log(`[WEBSOCKET] UserDataStream já está ativo para conta ${accountId}`);
+      console.log(`[WEBSOCKETS] UserDataStream já está ativo para conta ${accountId}`);
       return accountState.currentListenKey;
     }
     
@@ -1030,12 +1067,12 @@ async function startUserDataStream(db, accountId = 1) {
     if (listenKey) {
       // Construir URL correta para o WebSocket UserData
       const wsUrl = `${accountState.wssMarketUrl}/ws/${listenKey}`;
-      console.log(`[WEBSOCKET] Conectando UserDataStream para conta ${accountId}: ${wsUrl}`);
+      console.log(`[WEBSOCKETS] Conectando UserDataStream para conta ${accountId}: ${wsUrl}`);
       
       const ws = new WebSocket(wsUrl);
       
       ws.on('open', () => {
-        //console.log(`[WEBSOCKET] UserDataStream conectado para conta ${accountId}`);
+        //console.log(`[WEBSOCKETS] UserDataStream conectado para conta ${accountId}`);
         accountState.userDataWebSocket = ws;
         
         // Iniciar keep-alive do listenKey
