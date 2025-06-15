@@ -3,6 +3,9 @@ const crypto = require("crypto");
 require('dotenv').config();
 const { getDatabaseInstance } = require('./db/conexao');
 
+axios.defaults.timeout = 30000;
+axios.defaults.headers.common['User-Agent'] = 'StarBoy-Trading-Bot/1.0';
+
 let websockets;
 try {
   websockets = require('./websockets');
@@ -183,10 +186,10 @@ function createSignature(queryString, secretKey) {
  */
 async function makeAuthenticatedRequest(endpoint, method = 'GET', data = {}, accountId = 1) {
   try {
-    // CORREÇÃO: Carregar credenciais com debug detalhado
+    // Carregar credenciais com debug detalhado
     const credentials = await loadCredentialsFromDatabase({ accountId });
     
-    // CORREÇÃO: Validação extra das credenciais antes de usar
+    // Validação extra das credenciais antes de usar
     console.log(`[API] DEBUG - Validando credenciais para requisição ${endpoint}:`);
     console.log(`- accountId: ${accountId}`);
     console.log(`- credentials existe: ${credentials ? 'SIM' : 'NÃO'}`);
@@ -216,7 +219,7 @@ async function makeAuthenticatedRequest(endpoint, method = 'GET', data = {}, acc
       .map(key => `${key}=${encodeURIComponent(baseParams[key])}`)
       .join('&');
 
-    // CORREÇÃO: Passar secretKey validada para createSignature
+    // Passar secretKey validada para createSignature
     console.log(`[API] Criando assinatura para: ${queryString}`);
     const signature = createSignature(queryString, credentials.secretKey);
 
@@ -230,15 +233,16 @@ async function makeAuthenticatedRequest(endpoint, method = 'GET', data = {}, acc
     
     console.log(`[API] Fazendo requisição ${method} para: ${credentials.baseUrl}${endpoint}`);
 
-    // Fazer requisição
+    // CORREÇÃO: Configuração correta do Axios
     const config = {
-      method,
+      method: method.toUpperCase(), // CORREÇÃO: Garantir que method seja string e maiúscula
       url: finalUrl,
       headers,
       timeout: 30000
     };
 
-    if (method === 'POST' && Object.keys(data).length > 0) {
+    // CORREÇÃO: Só adicionar data se for POST/PUT/PATCH
+    if (['POST', 'PUT', 'PATCH'].includes(method.toUpperCase()) && Object.keys(data).length > 0) {
       config.data = data;
     }
 
@@ -709,31 +713,31 @@ async function getPositionDetails(symbol, accountId = 1) {
 }
 
 /**
- * Obtém todas as posições abertas
+ * Obtém todas as posições abertas do usuário
  * @param {number} accountId - ID da conta
- * @param {string} symbol - Símbolo específico (opcional)
- * @returns {Promise<Array>} - Lista de posições abertas
+ * @returns {Promise<Array>} Array de posições abertas
  */
-async function getAllOpenPositions(accountId = 1, symbol = null) {
+async function getAllOpenPositions(accountId = 1) {
   try {
-    const params = symbol ? { symbol } : {};
-    const response = await makeAuthenticatedRequest('/v2/positionRisk', params, 'GET', accountId);
+    // CORREÇÃO: Especificar método explicitamente
+    const data = await makeAuthenticatedRequest('/fapi/v2/positionRisk', 'GET', {}, accountId);
     
     // Filtrar apenas posições com quantidade diferente de zero
-    const openPositions = response
-      .filter(pos => parseFloat(pos.positionAmt) !== 0)
-      .map(pos => ({
-        simbolo: pos.symbol,
-        quantidade: parseFloat(pos.positionAmt),
-        precoEntrada: parseFloat(pos.entryPrice),
-        precoAtual: parseFloat(pos.markPrice),
-        pnlNaoRealizado: parseFloat(pos.unRealizedProfit),
-        lado: parseFloat(pos.positionAmt) > 0 ? 'BUY' : 'SELL',
-        alavancagem: parseInt(pos.leverage),
-        tipoMargem: pos.marginType
-      }));
-    
-    return openPositions;
+    const openPositions = data.filter(position => {
+      const positionAmt = parseFloat(position.positionAmt);
+      return Math.abs(positionAmt) > 0;
+    });
+
+    return openPositions.map(position => ({
+      simbolo: position.symbol,
+      quantidade: parseFloat(position.positionAmt),
+      precoEntrada: parseFloat(position.entryPrice),
+      precoAtual: parseFloat(position.markPrice),
+      lado: parseFloat(position.positionAmt) > 0 ? 'BUY' : 'SELL',
+      pnlNaoRealizado: parseFloat(position.unRealizedProfit),
+      margem: parseFloat(position.isolatedMargin),
+      alavancagem: parseInt(position.leverage)
+    }));
   } catch (error) {
     console.error(`[API] Erro ao obter posições abertas:`, error.message);
     throw error;
