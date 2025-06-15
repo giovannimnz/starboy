@@ -144,43 +144,40 @@ async function loadCredentialsFromDatabase(options = {}) {
 function createEd25519Signature(payload, accountId = 1) {
   try {
     const accountState = getAccountConnectionState(accountId);
-    if (!accountState) {
-      throw new Error(`Estado da conexão não encontrado para conta ${accountId}. Chame loadCredentialsFromDatabase primeiro.`);
+    if (!accountState || !accountState.privateKey) {
+      throw new Error(`Chave privada não carregada para conta ${accountId}`);
     }
     
-    if (!accountState.privateKey) {
-      throw new Error(`Chave privada Ed25519 não disponível para conta ${accountId}`);
+    // Verificar se a chave privada está no formato correto
+    let privateKey = accountState.privateKey;
+    
+    // Remover prefixos se existirem
+    if (privateKey.startsWith('0x')) {
+      privateKey = privateKey.slice(2);
     }
     
-    try {
-      // Converter o payload para Buffer
-      const messageBuffer = Buffer.from(payload);
-      
-      // Ed25519 não usa o método createSign com digest
-      // Em vez disso, usamos diretamente sign com a chave privada
-      const signature = crypto.sign(null, messageBuffer, accountState.privateKey);
-      
-      // Converter a assinatura para base64
-      return signature.toString('base64');
-    } catch (signError) {
-      console.error(`[WS-API] Erro específico ao assinar com Ed25519 para conta ${accountId}:`, signError);
-      
-      // Fallback para compatibilidade: se falhar com Ed25519, tentar com HMAC SHA256 
-      console.log(`[WS-API] Tentando fallback para HMAC-SHA256 para conta ${accountId}`);
-      
-      if (!accountState.apiSecret) {
-        throw new Error(`API_SECRET não disponível para fallback na conta ${accountId}`);
-      }
-      
-      const signature = crypto
-        .createHmac('sha256', accountState.apiSecret)
-        .update(payload)
-        .digest('hex');
-        
-      return signature;
+    // Converter para Buffer se for string hex
+    const keyBuffer = Buffer.from(privateKey, 'hex');
+    
+    // Verificar se o tamanho está correto (32 bytes para Ed25519)
+    if (keyBuffer.length !== 32) {
+      throw new Error(`Tamanho inválido da chave privada: ${keyBuffer.length} bytes (esperado: 32)`);
     }
+    
+    // Criar assinatura usando crypto nativo do Node.js
+    const sign = crypto.createSign('SHA256');
+    sign.update(payload);
+    sign.end();
+    
+    // Para Ed25519, use o método sign com a chave
+    const signature = crypto.sign(null, Buffer.from(payload), {
+      key: keyBuffer,
+      type: 'ed25519'
+    });
+    
+    return signature.toString('base64');
   } catch (error) {
-    console.error(`[WS-API] Erro ao criar assinatura Ed25519 para conta ${accountId}:`, error);
+    console.error(`[WEBSOCKETS] Erro ao criar assinatura Ed25519 para conta ${accountId}:`, error.message);
     throw error;
   }
 }
