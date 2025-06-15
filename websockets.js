@@ -1878,6 +1878,7 @@ module.exports = {
   getCredentials,
   ensureWebSocketApiExists,
   // Novas funções para Ed25519
+  createEd25519Signature,
   loadPrivateKeyFromPEMSync,
   loadEd25519FromPEM,
   testEd25519Key,
