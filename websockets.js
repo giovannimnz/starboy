@@ -604,11 +604,11 @@ async function authenticateWebSocketApi(accountId = 1) {
         return false;
       }
     } catch (authError) {
-      console.error(`[WS-API] Erro durante autenticação Ed25519 para conta ${accountId}:`, authError);
+      //console.error(`[WS-API] Erro durante autenticação Ed25519 para conta ${accountId}:`, authError);
       return false;
     }
   } catch (error) {
-    console.error(`[WS-API] Erro durante autenticação Ed25519 para conta ${accountId}:`, error);
+    //console.error(`[WS-API] Erro durante autenticação Ed25519 para conta ${accountId}:`, error);
     return false;
   }
 }
