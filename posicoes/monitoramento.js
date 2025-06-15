@@ -69,11 +69,17 @@ async function initializeMonitoring(accountId = 1) {
     // CORREÇÃO: Comentar WebSocket API temporariamente devido ao erro Ed25519
     try {
       console.log('[WS-API] Inicializando handlers para WebSocket API...');
-      // TEMPORARIAMENTE DESABILITADO devido ao erro Ed25519
-      // await websocketApi.initializeHandlers(accountId);
-      console.log(`[MONITOR] WebSocket API temporariamente desabilitado para conta ${accountId} - usando apenas REST API`);
+      await websocketApi.initializeHandlers(accountId);
+      console.log(`[MONITOR] WebSocket API handlers inicializados para conta ${accountId}`);
     } catch (wsError) {
       console.error(`[MONITOR] Erro ao inicializar WebSocket API handlers, continuando com REST API fallback: ${wsError.message}`);
+      
+      // Se o erro for de chave Ed25519, oferecer solução
+      if (wsError.message.includes('Ed25519') || wsError.message.includes('private key')) {
+        console.log('\n🔧 SOLUÇÃO: Execute o comando abaixo para configurar a chave Ed25519:');
+        console.log('node utils/configurarChavePEMAutomatico.js');
+        console.log('');
+      }
     }
     
     // Configurar handlers com os callbacks adaptados para accountId
