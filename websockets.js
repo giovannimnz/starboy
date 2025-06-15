@@ -144,38 +144,44 @@ async function loadCredentialsFromDatabase(options = {}) {
  */
 function createEd25519Signature(payload, privateKey, accountId) {
   try {
-    // CORREÇÃO: Validar accountId
+    // Validar accountId
     if (!accountId || typeof accountId !== 'number') {
       throw new Error(`ID da conta inválido: ${accountId} (tipo: ${typeof accountId})`);
     }
 
-    // Se privateKey não foi fornecida, tentar carregar do arquivo PEM
+    // Se privateKey não foi fornecida, tentar obter do estado da conta
     if (!privateKey || typeof privateKey !== 'string') {
-      console.log(`[WEBSOCKETS] Chave privada não fornecida para conta ${accountId}, tentando carregar do arquivo PEM...`);
+      console.log(`[WEBSOCKETS] Buscando chave privada para conta ${accountId}...`);
       
-      try {
-        // Carregar sincronamente para esta função (pode ser melhorado para async se necessário)
-        const pemPath = path.join(__dirname, 'utils', 'binance_key', 'private_key.pem');
-        if (fs.existsSync(pemPath)) {
-          const pemContent = fs.readFileSync(pemPath, 'utf8');
-          const keyObject = crypto.createPrivateKey({
-            key: pemContent,
-            format: 'pem',
-            type: 'pkcs8'
-          });
-          const rawKey = keyObject.export({
-            format: 'raw',
-            type: 'private'
-          });
-          privateKey = rawKey.toString('base64');
-          console.log(`[WEBSOCKETS] Chave privada Ed25519 carregada do arquivo PEM para conta ${accountId}`);
+      const accountState = getAccountConnectionState(accountId);
+      if (accountState && accountState.privateKey) {
+        privateKey = accountState.privateKey;
+        console.log(`[WEBSOCKETS] Chave privada encontrada no estado da conta ${accountId}`);
+      } else {
+        // Tentar carregar do arquivo PEM como fallback
+        try {
+          const pemPath = path.join(__dirname, 'utils', 'binance_key', 'private_key.pem');
+          if (fs.existsSync(pemPath)) {
+            const pemContent = fs.readFileSync(pemPath, 'utf8');
+            const keyObject = crypto.createPrivateKey({
+              key: pemContent,
+              format: 'pem',
+              type: 'pkcs8'
+            });
+            const rawKey = keyObject.export({
+              format: 'raw',
+              type: 'private'
+            });
+            privateKey = rawKey.toString('base64');
+            console.log(`[WEBSOCKETS] Chave privada carregada do arquivo PEM para conta ${accountId}`);
+          }
+        } catch (pemError) {
+          console.error(`[WEBSOCKETS] Erro ao carregar chave do PEM para conta ${accountId}:`, pemError.message);
         }
-      } catch (pemError) {
-        console.error(`[WEBSOCKETS] Erro ao carregar chave do PEM para conta ${accountId}:`, pemError.message);
       }
       
       if (!privateKey) {
-        throw new Error(`Chave privada Ed25519 não encontrada para conta ${accountId}`);
+        throw new Error(`Chave privada Ed25519 não encontrada para conta ${accountId}. Execute: node utils/configurarChavePEMAutomatico.js`);
       }
     }
 
