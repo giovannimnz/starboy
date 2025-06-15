@@ -144,7 +144,7 @@ async function loadCredentialsFromDatabase(options = {}) {
 }
 
 /**
- * Cria uma assinatura Ed25519 para requisições WebSocket API - VERSÃO COMPATÍVEL
+ * Cria uma assinatura Ed25519 para requisições WebSocket API - COM FALLBACK PEM
  * @param {string} payload - Dados a serem assinados
  * @param {string} privateKey - Chave privada Ed25519 em formato base64
  * @param {number} accountId - ID da conta
@@ -166,27 +166,9 @@ function createEd25519Signature(payload, privateKey, accountId) {
         privateKey = accountState.privateKey;
         console.log(`[WEBSOCKETS] Chave privada encontrada no estado da conta ${accountId}`);
       } else {
-        // Tentar carregar do arquivo PEM como fallback
-        try {
-          const pemPath = path.join(__dirname, 'utils', 'binance_key', 'private_key.pem');
-          if (fs.existsSync(pemPath)) {
-            const pemContent = fs.readFileSync(pemPath, 'utf8');
-            const keyObject = crypto.createPrivateKey({
-              key: pemContent,
-              format: 'pem',
-              type: 'pkcs8'
-            });
-            const derKey = keyObject.export({
-              format: 'der',
-              type: 'pkcs8'
-            });
-            const rawKey = derKey.slice(-32);
-            privateKey = rawKey.toString('base64');
-            console.log(`[WEBSOCKETS] Chave privada carregada do arquivo PEM para conta ${accountId}`);
-          }
-        } catch (pemError) {
-          console.error(`[WEBSOCKETS] Erro ao carregar chave do PEM para conta ${accountId}:`, pemError.message);
-        }
+        // FALLBACK: Tentar carregar diretamente do arquivo PEM
+        console.log(`[WEBSOCKETS] Estado da conta sem chave, tentando carregar do arquivo PEM para conta ${accountId}...`);
+        privateKey = loadPrivateKeyFromPEMSync(accountId);
       }
       
       if (!privateKey) {
@@ -208,7 +190,7 @@ function createEd25519Signature(payload, privateKey, accountId) {
       throw new Error(`Chave privada Ed25519 tem tamanho incorreto para conta ${accountId}. Esperado: 32 bytes, recebido: ${privateKeyBuffer.length} bytes`);
     }
 
-    // Criar assinatura - VERSÃO COMPATÍVEL
+    // Criar assinatura - VERSÃO COM FALLBACK
     let signature;
     let signatureBase64;
     
@@ -253,31 +235,133 @@ function createEd25519Signature(payload, privateKey, accountId) {
   }
 }
 
-// Função auxiliar para criar PEM a partir de chave raw
+/**
+ * Carrega chave privada diretamente do arquivo PEM (síncrono) - FALLBACK
+ * @param {number} accountId - ID da conta
+ * @returns {string|null} - Chave privada em base64 ou null
+ */
+function loadPrivateKeyFromPEMSync(accountId) {
+  try {
+    const pemPath = path.join(__dirname, 'utils', 'binance_key', 'private_key.pem');
+    
+    if (!fs.existsSync(pemPath)) {
+      console.log(`[WEBSOCKETS] Arquivo PEM não encontrado: ${pemPath}`);
+      return null;
+    }
+    
+    console.log(`[WEBSOCKETS] Carregando chave privada do arquivo PEM para conta ${accountId}...`);
+    
+    const pemContent = fs.readFileSync(pemPath, 'utf8');
+    
+    if (!pemContent || !pemContent.includes('-----BEGIN PRIVATE KEY-----')) {
+      console.error(`[WEBSOCKETS] Arquivo PEM inválido para conta ${accountId}`);
+      return null;
+    }
+    
+    // MÉTODO CORRIGIDO: Usar decodificação manual do PEM
+    try {
+      // Extrair apenas a parte base64 do PEM
+      const base64Data = pemContent
+        .replace('-----BEGIN PRIVATE KEY-----', '')
+        .replace('-----END PRIVATE KEY-----', '')
+        .replace(/\n/g, '')
+        .replace(/\r/g, '')
+        .trim();
+      
+      // Decodificar o DER
+      const derBuffer = Buffer.from(base64Data, 'base64');
+      
+      // Para Ed25519 PKCS#8, a estrutura é:
+      // 30 2e (SEQUENCE, 46 bytes)
+      //   02 01 00 (INTEGER version = 0)
+      //   30 05 (SEQUENCE algorithm)
+      //     06 03 2b 65 70 (OID Ed25519)
+      //   04 22 (OCTET STRING, 34 bytes)
+      //     04 20 (OCTET STRING, 32 bytes)
+      //       [32 bytes da chave privada]
+      
+      // A chave privada está nos últimos 32 bytes
+      const rawKey = derBuffer.slice(-32);
+      
+      if (rawKey.length !== 32) {
+        throw new Error(`Chave extraída tem tamanho incorreto: ${rawKey.length} bytes`);
+      }
+      
+      const privateKeyBase64 = rawKey.toString('base64');
+      
+      console.log(`[WEBSOCKETS] ✅ Chave privada carregada do PEM para conta ${accountId} (${rawKey.length} bytes)`);
+      console.log(`[WEBSOCKETS] Preview: ${privateKeyBase64.substring(0, 20)}...`);
+      
+      return privateKeyBase64;
+      
+    } catch (extractError) {
+      console.error(`[WEBSOCKETS] Erro ao extrair chave do PEM para conta ${accountId}:`, extractError.message);
+      
+      // FALLBACK 2: Tentar método crypto nativo sem 'raw'
+      try {
+        const keyObject = crypto.createPrivateKey({
+          key: pemContent,
+          format: 'pem',
+          type: 'pkcs8'
+        });
+        
+        // Tentar obter DER e extrair chave
+        const derKey = keyObject.export({
+          format: 'der',
+          type: 'pkcs8'
+        });
+        
+        const rawKey = derKey.slice(-32);
+        const privateKeyBase64 = rawKey.toString('base64');
+        
+        console.log(`[WEBSOCKETS] ✅ Chave privada extraída via crypto nativo para conta ${accountId}`);
+        return privateKeyBase64;
+        
+      } catch (cryptoError) {
+        console.error(`[WEBSOCKETS] Erro com crypto nativo para conta ${accountId}:`, cryptoError.message);
+        return null;
+      }
+    }
+    
+  } catch (error) {
+    console.error(`[WEBSOCKETS] Erro geral ao carregar PEM para conta ${accountId}:`, error.message);
+    return null;
+  }
+}
+
+// Função auxiliar para criar PEM a partir de chave raw (para teste)
 function createPemFromRawKey(rawKeyBuffer) {
-  const algorithmIdentifier = Buffer.from([
-    0x30, 0x05,
-    0x06, 0x03, 0x2b, 0x65, 0x70
-  ]);
-  
-  const privateKeyInfo = Buffer.concat([
-    Buffer.from([0x04, 0x22]),
-    Buffer.from([0x04, 0x20]),
-    rawKeyBuffer
-  ]);
-  
-  const pkcs8 = Buffer.concat([
-    Buffer.from([0x30]),
-    Buffer.from([algorithmIdentifier.length + privateKeyInfo.length + 3]),
-    Buffer.from([0x02, 0x01, 0x00]),
-    algorithmIdentifier,
-    privateKeyInfo
-  ]);
-  
-  const base64 = pkcs8.toString('base64');
-  const pem = `-----BEGIN PRIVATE KEY-----\n${base64.match(/.{1,64}/g).join('\n')}\n-----END PRIVATE KEY-----`;
-  
-  return pem;
+  try {
+    // Estrutura PKCS#8 para Ed25519
+    const algorithmIdentifier = Buffer.from([
+      0x30, 0x05,  // SEQUENCE (5 bytes)
+      0x06, 0x03, 0x2b, 0x65, 0x70  // OID para Ed25519
+    ]);
+    
+    const privateKeyInfo = Buffer.concat([
+      Buffer.from([0x04, 0x22]),  // OCTET STRING (34 bytes)
+      Buffer.from([0x04, 0x20]),  // OCTET STRING (32 bytes)
+      rawKeyBuffer  // 32 bytes da chave privada
+    ]);
+    
+    const totalLength = 3 + algorithmIdentifier.length + privateKeyInfo.length; // version + algorithm + privateKey
+    
+    const pkcs8 = Buffer.concat([
+      Buffer.from([0x30]),  // SEQUENCE
+      Buffer.from([totalLength]),  // Comprimento total
+      Buffer.from([0x02, 0x01, 0x00]),  // version INTEGER 0
+      algorithmIdentifier,
+      privateKeyInfo
+    ]);
+    
+    const base64 = pkcs8.toString('base64');
+    const pem = `-----BEGIN PRIVATE KEY-----\n${base64.match(/.{1,64}/g).join('\n')}\n-----END PRIVATE KEY-----`;
+    
+    return pem;
+  } catch (error) {
+    console.error('[WEBSOCKETS] Erro ao criar PEM temporário:', error.message);
+    throw error;
+  }
 }
 
 /**
@@ -954,7 +1038,7 @@ async function handlePriceUpdate(symbol, tickerData, accountId = 1) {
           db = await accountState.handlers.getDbConnection();
           accountState.dbInstance = db;
         } catch (dbHandlerError) {
-          console.error(`[WEBSOCKET] Erro ao obter DB via handler para ${symbol}: ${dbHandlerError.message}`);
+          console.error(`[WEBSOCKETS] Erro ao obter DB via handler para ${symbol}: ${dbHandlerError.message}`);
         }
       }
       
@@ -965,13 +1049,13 @@ async function handlePriceUpdate(symbol, tickerData, accountId = 1) {
           db = await getDatabaseInstance(accountId);
           accountState.dbInstance = db;
         } catch (directDbError) {
-          console.error(`[WEBSOCKET] Erro ao obter DB diretamente para ${symbol}: ${directDbError.message}`);
+          console.error(`[WEBSOCKETS] Erro ao obter DB diretamente para ${symbol}: ${directDbError.message}`);
         }
       }
     }
 
     if (!db) {
-      console.error(`[WEBSOCKET] Não foi possível obter conexão com o banco de dados para ${symbol} (conta ${accountId})`);
+      console.error(`[WEBSOCKETS] Não foi possível obter conexão com o banco de dados para ${symbol} (conta ${accountId})`);
       return;
     }
 
@@ -983,7 +1067,7 @@ async function handlePriceUpdate(symbol, tickerData, accountId = 1) {
       await accountState.handlers.onPriceUpdate(symbol, currentPrice, db, accountId);
     }
   } catch (error) {
-    console.error(`[WEBSOCKET] Erro ao processar atualização de preço para ${symbol} (conta ${accountId}):`, error);
+    console.error(`[WEBSOCKETS] Erro ao processar atualização de preço para ${symbol} (conta ${accountId}):`, error);
   }
 }
 
@@ -1156,7 +1240,7 @@ async function startUserDataStream(db, accountId = 1) {
               await accountState.handlers.handleOrderUpdate(message.o, db, accountId);
             }
           } else if (message.e === 'ACCOUNT_UPDATE') {
-            console.log(`[WEBSOCKET] Atualização de conta recebida para conta ${accountId}`);
+            console.log(`[WEBSOCKETS] Atualização de conta recebida para conta ${accountId}`);
             if (accountState.handlers && accountState.handlers.handleAccountUpdate) {
               await accountState.handlers.handleAccountUpdate(message, db, accountId);
             }
@@ -1664,6 +1748,111 @@ async function setupEd25519FromPEM(accountId = 1) {
     
   } catch (error) {
     console.error(`[WEBSOCKETS] ❌ Erro geral ao configurar Ed25519 para conta ${accountId}:`, error.message);
+    return false;
+  }
+}
+
+/**
+ * Autentica na WebSocket API usando Ed25519
+ * @param {WebSocket} ws - Conexão WebSocket
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<boolean>} - true se autenticação bem-sucedida
+ */
+async function authenticateWebSocketApi(ws, accountId) {
+  try {
+    // CORREÇÃO: Validar accountId antes de usar
+    if (!accountId || typeof accountId !== 'number') {
+      console.error(`[WS-API] ID da conta inválido para autenticação: ${accountId} (tipo: ${typeof accountId})`);
+      return false;
+    }
+
+    const accountState = getAccountConnectionState(accountId);
+    
+    if (!accountState.wsApiKey) {
+      console.error(`[WS-API] wsApiKey não encontrada para conta ${accountId}`);
+      return false;
+    }
+
+    // Tentar obter chave privada (do estado ou PEM)
+    let privateKey = accountState.privateKey;
+    if (!privateKey) {
+      console.log(`[WS-API] Chave privada não encontrada no estado, tentando carregar do PEM para conta ${accountId}...`);
+      privateKey = loadPrivateKeyFromPEMSync(accountId);
+      
+      if (!privateKey) {
+        console.error(`[WS-API] Não foi possível obter chave privada para conta ${accountId}`);
+        return false;
+      }
+      
+      // Atualizar o estado da conta com a chave carregada
+      accountState.privateKey = privateKey;
+    }
+
+    const timestamp = Date.now();
+    const payload = `${timestamp}`;
+    
+    console.log(`[WS-API] Iniciando autenticação para conta ${accountId}...`);
+    
+    // Criar assinatura Ed25519 (agora com fallback)
+    let signature;
+    try {
+      signature = createEd25519Signature(payload, privateKey, accountId);
+    } catch (sigError) {
+      console.error(`[WS-API] Falha na criação da assinatura para conta ${accountId}:`, sigError.message);
+      return false;
+    }
+
+    const authRequest = {
+      id: `auth-${accountId}-${timestamp}`,
+      method: 'session.logon',
+      params: {
+        apiKey: accountState.wsApiKey,
+        signature: signature,
+        timestamp: timestamp
+      }
+    };
+
+    // Enviar requisição de autenticação
+    return new Promise((resolve) => {
+      // Configurar callback para resposta de autenticação
+      const authTimeout = setTimeout(() => {
+        console.error(`[WS-API] Timeout na autenticação para conta ${accountId}`);
+        resolve(false);
+      }, 10000);
+
+      accountState.requestCallbacks.set(authRequest.id, {
+        resolve: (response) => {
+          clearTimeout(authTimeout);
+          if (response.status === 200) {
+            console.log(`[WS-API] Autenticação bem-sucedida para conta ${accountId}`);
+            accountState.isAuthenticated = true;
+            resolve(true);
+          } else {
+            console.error(`[WS-API] Autenticação falhou para conta ${accountId}:`, response.error || response);
+            resolve(false);
+          }
+        },
+        reject: (error) => {
+          clearTimeout(authTimeout);
+          console.error(`[WS-API] Erro na autenticação para conta ${accountId}:`, error);
+          resolve(false);
+        },
+        timer: authTimeout
+      });
+
+      // Enviar a requisição
+      try {
+        ws.send(JSON.stringify(authRequest));
+        console.log(`[WS-API] Requisição de autenticação enviada para conta ${accountId}`);
+      } catch (sendError) {
+        clearTimeout(authTimeout);
+        console.error(`[WS-API] Erro ao enviar autenticação para conta ${accountId}:`, sendError.message);
+        resolve(false);
+      }
+    });
+
+  } catch (error) {
+    console.error(`[WS-API] Erro geral na autenticação para conta ${accountId}:`, error.message);
     return false;
   }
 }
