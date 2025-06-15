@@ -135,7 +135,7 @@ async function initializeMonitoring(accountId = 1) {
           AND error_message LIKE '%not defined%'
           AND conta_id = ?
       `, [accountId]);
-      console.log('[MONITOR] Sinais com erro limpos.');
+      //console.log('[MONITOR] Sinais com erro limpos.');
     } catch (cleanError) {
       console.error('[MONITOR] Erro ao limpar sinais com erro:', cleanError.message);
     }
@@ -169,7 +169,7 @@ async function initializeMonitoring(accountId = 1) {
         AND (error_message IS NULL OR error_message NOT LIKE '%not defined%')
       `, [accountId]);
 
-      console.log(`[MONITOR] Ao iniciar, encontrados ${pendingSignals.length} sinais pendentes válidos para conta ${accountId}:`);
+      //console.log(`[MONITOR] Ao iniciar, encontrados ${pendingSignals.length} sinais pendentes válidos para conta ${accountId}:`);
       pendingSignals.forEach(signal => {
         console.log(`  - ID: ${signal.id}, Symbol: ${signal.symbol}, Side: ${signal.side}, Entry: ${signal.entry_price}, Status: ${signal.status}`);
       });
@@ -188,7 +188,7 @@ async function initializeMonitoring(accountId = 1) {
 
     // Sincronizar posições com a corretora
     try {
-      console.log('[MONITOR] Iniciando sincronização de posições...');
+      //console.log('[MONITOR] Iniciando sincronização de posições...');
       await syncPositionsWithExchange(accountId);
       console.log('[MONITOR] Sincronização de posições concluída com sucesso.');
     } catch (syncError) {

@@ -34,13 +34,13 @@ async function loadCredentialsFromDatabase(options = {}) {
       throw new Error(`ID da conta inválido: ${accountId} (tipo: ${typeof accountId})`);
     }
     
-    console.log(`[API] Carregando credenciais para conta ID: ${accountId}`);
+    //console.log(`[API] Carregando credenciais para conta ID: ${accountId}`);
     
     // Usar cache se disponível e não forçar atualização
     if (!forceRefresh && accountCredentials.has(accountId) && 
         (Date.now() - lastCacheTime < CACHE_TTL)) {
       const cached = accountCredentials.get(accountId);
-      console.log(`[API] Usando credenciais em cache para conta ${accountId}`);
+      //console.log(`[API] Usando credenciais em cache para conta ${accountId}`);
       console.log(`[API] Cache - API Key: ${cached.apiKey ? cached.apiKey.substring(0, 8) + '...' : 'FALTANDO'}`);
       console.log(`[API] Cache - Secret Key: ${cached.secretKey ? 'Configurada' : 'FALTANDO'}`);
       return cached;
@@ -720,7 +720,7 @@ async function getPositionDetails(symbol, accountId = 1) {
 async function getAllOpenPositions(accountId = 1) {
   try {
     // CORREÇÃO: Especificar método explicitamente
-    const data = await makeAuthenticatedRequest('/fapi/v2/positionRisk', 'GET', {}, accountId);
+    const data = await makeAuthenticatedRequest('/v2/positionRisk', 'GET', {}, accountId);
     
     // Filtrar apenas posições com quantidade diferente de zero
     const openPositions = data.filter(position => {
