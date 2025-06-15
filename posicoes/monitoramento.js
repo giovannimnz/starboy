@@ -230,17 +230,6 @@ async function initializeMonitoring(accountId = 1) {
     //});
 
 
-    // EXECUTAR VERIFICAÇÃO FORÇADA após 10 segundos se a primeira não processar
-    setTimeout(async () => {
-      try {
-        console.log('[MONITOR] === EXECUTANDO VERIFICAÇÃO FORÇADA ===');
-        await forceProcessPendingSignals(accountId);
-        console.log('[MONITOR] === VERIFICAÇÃO FORÇADA CONCLUÍDA ===');
-      } catch (error) {
-        console.error('[MONITOR] Erro na verificação forçada:', error);
-      }
-    }, 10000);
-
     console.log('[MONITOR] Sistema de monitoramento inicializado com sucesso!');
     console.log(`[MONITOR] Jobs agendados: ${Object.keys(accountJobs).length}`);
     

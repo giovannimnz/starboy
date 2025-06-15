@@ -26,37 +26,33 @@ async function loadCredentialsFromDatabase(options = {}) {
   try {
     const { accountId = 1, forceRefresh = false } = options;
     
+    // CORREÇÃO: Validar accountId
+    if (!accountId || typeof accountId !== 'number') {
+      throw new Error(`ID da conta inválido: ${accountId} (tipo: ${typeof accountId})`);
+    }
+    
     console.log(`[API] Carregando credenciais para conta ID: ${accountId}`);
     
     // Usar cache se disponível e não forçar atualização
     if (!forceRefresh && accountCredentials.has(accountId) && 
         (Date.now() - lastCacheTime < CACHE_TTL)) {
-      //console.log(`[API] Usando credenciais em cache para conta ${accountId}`);
       return accountCredentials.get(accountId);
     }
     
-    const db = await getDatabaseInstance(accountId);
+    const db = await getDatabaseInstance(); // CORREÇÃO: Remover accountId
     
-    // Buscar conta e JOIN com a tabela corretoras para obter as URLs corretas
+    // CORREÇÃO: Usar estrutura real da tabela contas
     const [rows] = await db.query(`
       SELECT 
-        c.id,
-        c.api_key, 
-        c.api_secret, 
-        c.ws_api_key, 
-        c.ws_api_secret,
-        c.id_corretora,
-        cor.spot_rest_api_url,
-        cor.futures_rest_api_url,
-        cor.futures_ws_market_url,
-        cor.futures_ws_api_url,
-        cor.corretora,
-        cor.ambiente
-      FROM contas c
-      JOIN corretoras cor ON c.id_corretora = cor.id
-      WHERE c.id = ? AND c.ativa = 1 AND cor.ativa = 1`,
-      [accountId]
-    );
+        id,
+        nome,
+        api_key, 
+        api_secret,
+        api_url,
+        ativa
+      FROM contas 
+      WHERE id = ? AND ativa = 1
+    `, [accountId]);
     
     if (!rows || rows.length === 0) {
       throw new Error(`Conta ID ${accountId} não encontrada ou não está ativa`);
@@ -64,31 +60,43 @@ async function loadCredentialsFromDatabase(options = {}) {
     
     const account = rows[0];
     
-    // Criar objeto de credenciais
-    const credentials = {
-      apiKey: account.api_key,
-      apiSecret: account.api_secret,
-      wsApiKey: account.ws_api_key,
-      wsApiSecret: account.ws_api_secret,
-      // CORREÇÃO: usar ws_api_secret como privateKey para WebSocket API
-      privateKey: account.ws_api_secret,
-      apiUrl: account.futures_rest_api_url,
-      wsApiUrl: account.futures_ws_api_url,
-      wssMarketUrl: account.futures_ws_market_url,
-      corretora: account.corretora,
-      ambiente: account.ambiente,
-      corretoraId: account.id_corretora,
-      accountId
-    };
+    // Determinar ambiente baseado na URL
+    let environment = 'prd';
+    let baseUrl = 'https://fapi.binance.com';
     
-    // Armazenar no cache
+    if (account.api_url) {
+      if (account.api_url.includes('testnet')) {
+        environment = 'test';
+        baseUrl = 'https://testnet.binancefuture.com';
+      } else {
+        baseUrl = account.api_url;
+      }
+    }
+    
+    const credentials = {
+      accountId: account.id,
+      accountName: account.nome,
+      apiKey: account.api_key,
+      secretKey: account.api_secret,
+      baseUrl: baseUrl,
+      environment: environment,
+      broker: 'binance'
+    };
+
+    if (!credentials.apiKey || !credentials.secretKey) {
+      throw new Error(`Credenciais incompletas para conta ${accountId}. API Key ou Secret Key não configurados.`);
+    }
+
+    // Cache das credenciais
     accountCredentials.set(accountId, credentials);
     lastCacheTime = Date.now();
     
-    //console.log(`[API] Credenciais carregadas com sucesso para conta ${accountId} (corretora: ${account.corretora}, ambiente: ${account.ambiente})`);
+    console.log(`[API] ✅ Credenciais carregadas para conta ${accountId} (${account.nome}) - ${environment}`);
+    
     return credentials;
+
   } catch (error) {
-    console.error(`[API] Erro ao carregar credenciais para conta ${options.accountId || 1}:`, error.message);
+    console.error(`[API] Erro ao carregar credenciais para conta ${accountId}:`, error.message);
     throw error;
   }
 }

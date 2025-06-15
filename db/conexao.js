@@ -26,37 +26,24 @@ async function initPool() {
   return dbPool;
 }
 
-// Função para obter conexão com o banco de dados
-async function getDatabaseInstance(accountId = 1) {
+/**
+ * Obtém uma instância de conexão com o banco de dados
+ * @param {number} accountId - ID da conta (opcional, para compatibilidade)
+ * @returns {Promise<Object>} - Conexão com o banco
+ */
+async function getDatabaseInstance(accountId = null) {
   try {
-    // Se já temos uma pool para esta conta, retorná-la
-    if (dbPools.has(accountId)) {
-      return dbPools.get(accountId);
+    // Se accountId for fornecido, apenas loggar para debug
+    if (accountId) {
+      console.log(`[DB] Solicitação de conexão para conta ${accountId}`);
     }
-
-    // Criar nova pool para esta conta
-    const pool = await mysql.createPool({
-      host: process.env.DB_HOST,
-      port: process.env.DB_PORT,
-      user: process.env.DB_USER,
-      password: process.env.DB_PASSWORD,
-      database: process.env.DB_NAME,
-      waitForConnections: true,
-      connectionLimit: 10,
-      queueLimit: 0
-    });
     
-    // Estender o objeto pool com o accountId
-    pool.accountId = accountId;
-    
-    // Adicionar ao cache
-    dbPools.set(accountId, pool);
-    
-    // Retornar a nova pool
+    // Retornar a conexão global do pool
     return pool;
-  } catch (err) {
-    console.error(`Erro ao conectar ao banco de dados MySQL para conta ${accountId}:`, err.message);
-    return null;
+    
+  } catch (error) {
+    console.error(`[DB] Erro ao obter instância do banco:`, error.message);
+    throw error;
   }
 }
 

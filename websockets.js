@@ -59,81 +59,123 @@ function getPriceWebsockets(accountId = 1, create = false) {
 }
 
 /**
- * Carrega credenciais do banco de dados para uma conta específica
- * @param {Object} options - Opções de carregamento
- * @returns {Promise<Object>} - Objeto com as credenciais
+ * Carrega credenciais do banco de dados para uma conta
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Credenciais carregadas
  */
-async function loadCredentialsFromDatabase(options = {}) {
+async function loadCredentialsFromDatabase(accountId) {
   try {
-    const { accountId = 1, forceRefresh = false } = options;
-    
-    console.log(`[API] Carregando credenciais para conta ID: ${accountId}`);
-    
-    // Usar cache se disponível e não forçar atualização
-    if (!forceRefresh && accountCredentials.has(accountId) && 
-        (Date.now() - lastCacheTime < CACHE_TTL)) {
-      //console.log(`[API] Usando credenciais em cache para conta ${accountId}`);
-      return accountCredentials.get(accountId);
+    // CORREÇÃO: Validar accountId no início
+    if (!accountId || typeof accountId !== 'number') {
+      throw new Error(`ID da conta inválido: ${accountId} (tipo: ${typeof accountId})`);
     }
+
+    // Verificar se já está em cache
+    if (accountCredentialsCache.has(accountId)) {
+      console.log(`[WEBSOCKETS] Usando credenciais em cache para conta ${accountId}`);
+      const cachedCreds = accountCredentialsCache.get(accountId);
+      
+      // Garantir que o estado da conta existe
+      if (!accountConnections.has(accountId)) {
+        console.log(`[WEBSOCKETS] Inicializando estado da conta ${accountId} a partir do cache...`);
+        accountConnections.set(accountId, {
+          ...cachedCreds,
+          isAuthenticated: false,
+          wsApi: null,
+          requestCallbacks: new Map(),
+          messageQueue: []
+        });
+      }
+      
+      return cachedCreds;
+    }
+
+    console.log(`[WEBSOCKETS] Carregando credenciais do banco para conta ${accountId}...`);
     
-    const db = await getDatabaseInstance(accountId);
-    
-    // CORREÇÃO: Usar estrutura real da tabela contas
+    const db = await getDatabaseInstance(); // CORREÇÃO: Remover accountId do getDatabaseInstance
+    if (!db) {
+      throw new Error(`Não foi possível conectar ao banco para conta ${accountId}`);
+    }
+
+    // CORREÇÃO: Usar estrutura correta da tabela contas
     const [rows] = await db.query(`
       SELECT 
         id,
         nome,
         api_key, 
         api_secret,
+        ws_api_key, 
+        ws_api_secret, 
+        private_key,
         api_url,
-        ativa
+        ws_url,
+        ws_api_url,
+        ativa,
+        id_corretora
       FROM contas 
       WHERE id = ? AND ativa = 1
     `, [accountId]);
-    
-    if (!rows || rows.length === 0) {
-      throw new Error(`Conta ID ${accountId} não encontrada ou não está ativa`);
+
+    if (rows.length === 0) {
+      throw new Error(`Conta ${accountId} não encontrada no banco de dados ou não está ativa`);
     }
-    
+
     const account = rows[0];
     
-    // Determinar ambiente baseado na URL
+    // Determinar corretora e ambiente baseado nas URLs
+    let broker = 'binance';
     let environment = 'prd';
-    let baseUrl = 'https://fapi.binance.com';
     
-    if (account.api_url) {
-      if (account.api_url.includes('testnet')) {
-        environment = 'test';
-        baseUrl = 'https://testnet.binancefuture.com';
-      } else {
-        baseUrl = account.api_url;
-      }
+    if (account.api_url && account.api_url.includes('testnet')) {
+      environment = 'test';
     }
     
     const credentials = {
-      accountId: account.id,
-      accountName: account.nome,
       apiKey: account.api_key,
       secretKey: account.api_secret,
-      baseUrl: baseUrl,
+      wsApiKey: account.ws_api_key,
+      wsApiSecret: account.ws_api_secret,
+      privateKey: account.private_key,
+      broker: broker,
       environment: environment,
-      broker: 'binance'
+      accountName: account.nome,
+      apiUrl: account.api_url,
+      wsUrl: account.ws_url,
+      wsApiUrl: account.ws_api_url
     };
 
-    if (!credentials.apiKey || !credentials.secretKey) {
-      throw new Error(`Credenciais incompletas para conta ${accountId}. API Key ou Secret Key não configurados.`);
-    }
+    console.log(`[WEBSOCKETS] Credenciais carregadas para conta ${accountId} (${account.nome}):`);
+    console.log(`- API Key: ${credentials.apiKey ? credentials.apiKey.substring(0, 8) + '...' : '❌ Não encontrada'}`);
+    console.log(`- Secret Key: ${credentials.secretKey ? '✅ Encontrada' : '❌ Não encontrada'}`);
 
     // Cache das credenciais
-    accountCredentials.set(accountId, credentials);
-    lastCacheTime = Date.now();
-    
-    console.log(`[API] ✅ Credenciais carregadas para conta ${accountId} (${account.nome}) - ${environment}`);
+    accountCredentialsCache.set(accountId, credentials);
+
+    // Inicializar estado da conta
+    if (!accountConnections.has(accountId)) {
+      console.log(`[WEBSOCKETS] Inicializando estado da conexão para conta ${accountId}...`);
+      accountConnections.set(accountId, {
+        ...credentials,
+        isAuthenticated: false,
+        wsApi: null,
+        requestCallbacks: new Map(),
+        messageQueue: []
+      });
+    } else {
+      // Atualizar credenciais no estado existente
+      const existingState = accountConnections.get(accountId);
+      accountConnections.set(accountId, {
+        ...existingState,
+        ...credentials
+      });
+    }
+
+    console.log(`[WEBSOCKETS] ✅ Credenciais inicializadas com sucesso para conta ${accountId}`);
     
     return credentials;
 
   } catch (error) {
-    console.error(`[API] Erro ao carregar credenciais para conta ${accountId}:`, error.message);
+    console.error(`[WEBSOCKETS] Erro ao carregar credenciais para conta ${accountId}:`, error.message);
     throw error;
   }
 }
@@ -1156,100 +1198,100 @@ function stopPriceMonitoring(symbol, accountId = 1) {
 }
 
 /**
- * Inicia o stream de dados do usuário
- * @param {Object} db - Conexão com o banco de dados (opcional)
+ * Inicia stream de dados do usuário para uma conta
+ * @param {Object} db - Conexão com banco
  * @param {number} accountId - ID da conta
- * @returns {Promise<string>} - O listenKey gerado
+ * @returns {Promise<boolean>} - true se iniciado com sucesso
  */
-/**
- * Inicia o stream de dados do usuário
- * @param {Object} db - Conexão com o banco de dados (opcional)
- * @param {number} accountId - ID da conta
- * @returns {Promise<string>} - O listenKey gerado
- */
-async function startUserDataStream(db, accountId = 1) {
+async function startUserDataStream(db, accountId) {
   try {
-    // Garantir que as credenciais estão carregadas
-    await loadCredentialsFromDatabase({ accountId });
+    // CORREÇÃO: Validar accountId
+    if (!accountId || typeof accountId !== 'number') {
+      throw new Error(`ID da conta inválido: ${accountId} (tipo: ${typeof accountId})`);
+    }
+
+    console.log(`[WEBSOCKETS] Iniciando stream de dados do usuário para conta ${accountId}...`);
     
-    const accountState = getAccountConnectionState(accountId, true);
-    
-    // Verificar se já existe uma conexão ativa
-    if (accountState.userDataWebSocket && 
-        accountState.userDataWebSocket.readyState === WebSocket.OPEN) {
-      console.log(`[WEBSOCKETS] UserDataStream já está ativo para conta ${accountId}`);
-      return accountState.currentListenKey;
+    // Carregar credenciais se não estiverem em cache
+    if (!accountCredentialsCache.has(accountId)) {
+      await loadCredentialsFromDatabase(accountId); // CORREÇÃO: Passar accountId diretamente
     }
     
-    // Obter um novo listenKey
-    const listenKey = await createListenKey(accountId);
-    accountState.currentListenKey = listenKey;
+    const credentials = accountCredentialsCache.get(accountId);
+    if (!credentials) {
+      throw new Error(`Credenciais não encontradas para conta ${accountId}`);
+    }
+
+    // Resto da função continua igual...
     
-    if (listenKey) {
-      // Construir URL correta para o WebSocket UserData
-      const wsUrl = `${accountState.wssMarketUrl}/ws/${listenKey}`;
-      console.log(`[WEBSOCKETS] Conectando UserDataStream para conta ${accountId}: ${wsUrl}`);
-      
-      const ws = new WebSocket(wsUrl);
-      
-      ws.on('open', () => {
-        //console.log(`[WEBSOCKETS] UserDataStream conectado para conta ${accountId}`);
-        accountState.userDataWebSocket = ws;
-        
-        // Iniciar keep-alive do listenKey
-        startListenKeyKeepAlive(listenKey, accountId);
+    // Obter listenKey
+    const listenKeyUrl = credentials.apiUrl ? 
+      `${credentials.apiUrl}/fapi/v1/listenKey` : 
+      `https://fapi.binance.com/fapi/v1/listenKey`;
+    
+    console.log(`[WEBSOCKET] Obtendo listenKey via: ${listenKeyUrl} para conta ${accountId}`);
+    
+    const timestamp = Date.now();
+    const headers = {
+      'X-MBX-APIKEY': credentials.apiKey
+    };
+
+    const response = await axios.post(listenKeyUrl, {}, { headers });
+    const listenKey = response.data.listenKey;
+    
+    console.log(`[WEBSOCKET] ListenKey obtido com sucesso para conta ${accountId}: ${listenKey.substring(0, 10)}...`);
+
+    // Determinar URL do WebSocket
+    const wsUrl = credentials.wsUrl ? 
+      `${credentials.wsUrl}/ws/${listenKey}` : 
+      `wss://fstream.binance.com/ws/${listenKey}`;
+    
+    console.log(`[WEBSOCKETS] Conectando UserDataStream para conta ${accountId}: ${wsUrl}`);
+
+    // Criar conexão WebSocket
+    const ws = new WebSocket(wsUrl);
+    
+    // Armazenar no estado da conta
+    let accountState = getAccountConnectionState(accountId);
+    if (!accountState) {
+      accountConnections.set(accountId, {
+        ...credentials,
+        userDataStream: ws,
+        listenKey: listenKey,
+        isAuthenticated: false,
+        wsApi: null,
+        requestCallbacks: new Map(),
+        messageQueue: []
       });
-      
-      ws.on('message', async (data) => {
-        try {
-          const message = JSON.parse(data);
-          
-          // Processar diferentes tipos de eventos
-          if (message.e === 'ORDER_TRADE_UPDATE') {
-            console.log(`[WEBSOCKET] Atualização de ordem recebida para conta ${accountId}:`, message.o.i);
-            if (accountState.handlers && accountState.handlers.handleOrderUpdate) {
-              await accountState.handlers.handleOrderUpdate(message.o, db, accountId);
-            }
-          } else if (message.e === 'ACCOUNT_UPDATE') {
-            console.log(`[WEBSOCKETS] Atualização de conta recebida para conta ${accountId}`);
-            if (accountState.handlers && accountState.handlers.handleAccountUpdate) {
-              await accountState.handlers.handleAccountUpdate(message, db, accountId);
-            }
-          }
-        } catch (parseError) {
-          console.error(`[WEBSOCKETS] Erro ao processar mensagem UserData para conta ${accountId}:`, parseError);
-        }
-      });
-      
-      ws.on('error', (error) => {
-        console.error(`[WEBSOCKETS] Erro na conexão de dados do usuário para conta ${accountId}:`, error);
-        
-        // Limpar estado
-        accountState.userDataWebSocket = null;
-        if (accountState.listenKeyKeepAliveInterval) {
-          clearInterval(accountState.listenKeyKeepAliveInterval);
-          accountState.listenKeyKeepAliveInterval = null;
-        }
-        
-        // NÃO tentar reconectar automaticamente para evitar loop infinito
-        console.log(`[WEBSOCKETS] UserDataStream será reiniciado apenas quando necessário para conta ${accountId}`);
-      });
-      
-      ws.on('close', () => {
-        console.log(`[WEBSOCKETS] Conexão de dados do usuário fechada para conta ${accountId}`);
-        
-        // Limpar estado
-        accountState.userDataWebSocket = null;
-        if (accountState.listenKeyKeepAliveInterval) {
-          clearInterval(accountState.listenKeyKeepAliveInterval);
-          accountState.listenKeyKeepAliveInterval = null;
-        }
-      });
-      
-      return listenKey;
     } else {
-      throw new Error(`Falha ao obter listenKey para conta ${accountId}`);
+      accountState.userDataStream = ws;
+      accountState.listenKey = listenKey;
     }
+
+    // Configurar handlers
+    ws.on('open', () => {
+      console.log(`[WEBSOCKET] UserDataStream conectado para conta ${accountId}`);
+    });
+
+    ws.on('message', async (data) => {
+      try {
+        const message = JSON.parse(data.toString());
+        await handleUserDataMessage(message, db, accountId);
+      } catch (parseError) {
+        console.error(`[WEBSOCKET] Erro ao processar mensagem UserDataStream para conta ${accountId}:`, parseError.message);
+      }
+    });
+
+    ws.on('error', (error) => {
+      console.error(`[WEBSOCKET] Erro no UserDataStream para conta ${accountId}:`, error.message);
+    });
+
+    ws.on('close', () => {
+      console.log(`[WEBSOCKET] UserDataStream fechado para conta ${accountId}`);
+    });
+
+    return true;
+
   } catch (error) {
     console.error(`[WEBSOCKETS] Erro ao iniciar stream de dados do usuário para conta ${accountId}:`, error.message);
     throw error;
