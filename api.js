@@ -132,71 +132,131 @@ async function loadCredentialsFromDatabase(options = {}) {
  * Função loadCredentials deve usar loadCredentialsFromDatabase
  */
 async function loadCredentials(accountId = 1) {
-  return await loadCredentialsFromDatabase({ accountId });
+  // CORREÇÃO: Forçar reload sem cache para debug
+  return await loadCredentialsFromDatabase({ accountId, forceRefresh: true });
 }
 
 /**
  * Cria assinatura HMAC SHA256 para requisições autenticadas
  * @param {string} queryString - String de query para assinar
- * @param {string} secret - Chave secreta da API
- * @returns {string} - Assinatura hexadecimal
+ * @param {string} secretKey - Chave secreta para assinatura
+ * @returns {string} - Assinatura hex
  */
-function createSignature(queryString, secret) {
-  return crypto
-    .createHmac('sha256', secret)
-    .update(queryString)
-    .digest('hex');
+function createSignature(queryString, secretKey) {
+  // CORREÇÃO: Validação rigorosa da secretKey
+  if (!secretKey || typeof secretKey !== 'string' || secretKey.trim() === '') {
+    console.error(`[API] ERRO CRÍTICO: secretKey inválida`);
+    console.error(`- secretKey type: ${typeof secretKey}`);
+    console.error(`- secretKey value: ${secretKey}`);
+    console.error(`- secretKey length: ${secretKey ? secretKey.length : 'N/A'}`);
+    throw new Error(`Secret Key inválida ou não fornecida. Tipo: ${typeof secretKey}, Valor: ${secretKey ? 'Existe' : 'NULL/undefined'}`);
+  }
+  
+  try {
+    const signature = crypto.createHmac('sha256', secretKey.trim())
+                           .update(queryString)
+                           .digest('hex');
+    return signature;
+  } catch (cryptoError) {
+    console.error(`[API] Erro ao criar assinatura HMAC:`, cryptoError);
+    throw new Error(`Falha ao criar assinatura: ${cryptoError.message}`);
+  }
 }
 
 /**
- * Faz requisição autenticada para a API da Binance
+ * Faz uma requisição autenticada para a API da Binance
  * @param {string} endpoint - Endpoint da API
- * @param {Object} params - Parâmetros da requisição
  * @param {string} method - Método HTTP (GET, POST, etc.)
+ * @param {Object} data - Dados para enviar
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Resposta da API
  */
-async function makeAuthenticatedRequest(endpoint, params = {}, method = 'GET', accountId = 1) {
+
+
+/**
+ * Faz uma requisição autenticada para a API da Binance
+ * @param {string} endpoint - Endpoint da API
+ * @param {string} method - Método HTTP (GET, POST, etc.)
+ * @param {Object} data - Dados para enviar
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Resposta da API
+ */
+async function makeAuthenticatedRequest(endpoint, method = 'GET', data = {}, accountId = 1) {
   try {
+    // CORREÇÃO: Carregar credenciais com debug detalhado
     const credentials = await loadCredentialsFromDatabase({ accountId });
     
-    // Adicionar timestamp
-    params.timestamp = Date.now();
+    // CORREÇÃO: Validação extra das credenciais antes de usar
+    console.log(`[API] DEBUG - Validando credenciais para requisição ${endpoint}:`);
+    console.log(`- accountId: ${accountId}`);
+    console.log(`- credentials existe: ${credentials ? 'SIM' : 'NÃO'}`);
     
+    if (!credentials) {
+      throw new Error(`Credenciais não encontradas para conta ${accountId}`);
+    }
+    
+    console.log(`- apiKey existe: ${credentials.apiKey ? 'SIM' : 'NÃO'}`);
+    console.log(`- secretKey existe: ${credentials.secretKey ? 'SIM' : 'NÃO'}`);
+    console.log(`- secretKey tipo: ${typeof credentials.secretKey}`);
+    console.log(`- secretKey length: ${credentials.secretKey ? credentials.secretKey.length : 'N/A'}`);
+    
+    if (!credentials.apiKey || !credentials.secretKey) {
+      throw new Error(`Credenciais incompletas para conta ${accountId}. API Key: ${credentials.apiKey ? 'OK' : 'FALTANDO'}, Secret Key: ${credentials.secretKey ? 'OK' : 'FALTANDO'}`);
+    }
+
+    // Timestamp obrigatório
+    const timestamp = Date.now();
+    const baseParams = {
+      timestamp,
+      ...data
+    };
+
     // Criar query string
-    const queryString = new URLSearchParams(params).toString();
-    
-    // Criar assinatura
-    const signature = createSignature(queryString, credentials.apiSecret);
-    
-    // Adicionar assinatura
-    params.signature = signature;
-    
-    // Configurar headers
+    const queryString = Object.keys(baseParams)
+      .map(key => `${key}=${encodeURIComponent(baseParams[key])}`)
+      .join('&');
+
+    // CORREÇÃO: Passar secretKey validada para createSignature
+    console.log(`[API] Criando assinatura para: ${queryString}`);
+    const signature = createSignature(queryString, credentials.secretKey);
+
+    // Headers da requisição
     const headers = {
       'X-MBX-APIKEY': credentials.apiKey,
-      'Content-Type': 'application/x-www-form-urlencoded'
+      'Content-Type': 'application/json'
     };
+
+    const finalUrl = `${credentials.baseUrl}${endpoint}?${queryString}&signature=${signature}`;
     
+    console.log(`[API] Fazendo requisição ${method} para: ${credentials.baseUrl}${endpoint}`);
+
     // Fazer requisição
     const config = {
       method,
-      url: `${credentials.apiUrl}${endpoint}`,
+      url: finalUrl,
       headers,
-      timeout: 10000
+      timeout: 30000
     };
-    
-    if (method === 'GET') {
-      config.params = params;
-    } else {
-      config.data = new URLSearchParams(params).toString();
+
+    if (method === 'POST' && Object.keys(data).length > 0) {
+      config.data = data;
     }
-    
+
     const response = await axios(config);
     return response.data;
+
   } catch (error) {
-    console.error(`[API] Erro na requisição autenticada (${endpoint}):`, error.message);
-    throw error;
+    // Log detalhado do erro
+    if (error.response) {
+      console.error(`[API] Erro na requisição autenticada (${endpoint}):`, error.response.status, error.response.data);
+      throw new Error(`API Error: ${error.response.status} - ${JSON.stringify(error.response.data)}`);
+    } else if (error.code === 'ERR_INVALID_ARG_TYPE') {
+      console.error(`[API] Erro na requisição autenticada (${endpoint}):`, error.message);
+      throw error; // Re-throw para debug
+    } else {
+      console.error(`[API] Erro na requisição autenticada (${endpoint}):`, error.message);
+      throw error;
+    }
   }
 }
 
