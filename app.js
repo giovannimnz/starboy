@@ -6,9 +6,6 @@ const { spawn } = require('child_process');
 const { initPool } = require('./db/conexao');
 
 
-await initPool();
-
-
 // Mapear contas ativas para seus processos
 const activeInstances = new Map();
 
@@ -25,6 +22,25 @@ function pergunta(texto) {
       resolve(resposta);
     });
   });
+}
+
+/**
+ * Formatar tempo de execução
+ * @param {number} seconds - Segundos de execução
+ * @returns {string} - Tempo formatado
+ */
+function formatUptime(seconds) {
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  
+  if (hours > 0) {
+    return `${hours}h ${minutes}m ${secs}s`;
+  } else if (minutes > 0) {
+    return `${minutes}m ${secs}s`;
+  } else {
+    return `${secs}s`;
+  }
 }
 
 /**
@@ -84,33 +100,38 @@ async function startInstance(accountId) {
 
 /**
  * Interrompe uma instância em execução
- * @param {number} accountId - ID da conta a ser interrompida
+ * @param {number} accountId - ID da conta a ser parada
  * @returns {Promise<boolean>} - true se parada com sucesso
  */
 async function stopInstance(accountId) {
   try {
     if (!activeInstances.has(accountId)) {
       console.log(`[APP] A conta ${accountId} não está em execução`);
-      return false;
+      return true;
     }
-    
+
     const instance = activeInstances.get(accountId);
+    
     console.log(`[APP] Encerrando processo para conta ${accountId} (${instance.accountName})...`);
     
-    // Enviar sinal para encerrar graciosamente
-    const killed = instance.process.kill('SIGTERM');
+    // Enviar sinal SIGTERM para encerramento gracioso
+    instance.process.kill('SIGTERM');
     
-    if (killed) {
-      console.log(`[APP] Sinal enviado para encerrar processo da conta ${accountId}`);
-      activeInstances.delete(accountId);
-      return true;
-    } else {
-      console.error(`[APP] Falha ao enviar sinal para encerrar processo da conta ${accountId}`);
-      return false;
+    // Aguardar um momento para o processo encerrar
+    await new Promise(resolve => setTimeout(resolve, 3000));
+    
+    // Se ainda estiver rodando, forçar encerramento
+    if (!instance.process.killed) {
+      console.log(`[APP] Forçando encerramento do processo da conta ${accountId}...`);
+      instance.process.kill('SIGKILL');
     }
     
+    activeInstances.delete(accountId);
+    console.log(`[APP] Sinal enviado para encerrar processo da conta ${accountId}`);
+    
+    return true;
   } catch (error) {
-    console.error(`[APP] Erro ao interromper instância para conta ${accountId}:`, error.message);
+    console.error(`[APP] Erro ao parar instância para conta ${accountId}:`, error.message);
     return false;
   }
 }
@@ -189,25 +210,6 @@ function listActiveInstances() {
   }
   
   return instances;
-}
-
-/**
- * Formata o tempo de atividade em formato legível
- * @param {number} seconds - Tempo em segundos
- * @returns {string} - Tempo formatado
- */
-function formatUptime(seconds) {
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  const remainingSeconds = seconds % 60;
-  
-  let result = '';
-  
-  if (hours > 0) result += `${hours}h `;
-  if (minutes > 0 || hours > 0) result += `${minutes}m `;
-  result += `${remainingSeconds}s`;
-  
-  return result;
 }
 
 // Menu principal
@@ -324,11 +326,10 @@ async function iniciarContaEspecifica() {
 
 // Parar conta específica
 async function pararContaEspecifica() {
-  // Mostrar apenas contas ativas
   const instancias = listActiveInstances();
   
   if (instancias.length === 0) {
-    console.log('\nNão há contas ativas para interromper.');
+    console.log('\nNão há contas ativas para parar.');
     return;
   }
   
@@ -337,7 +338,7 @@ async function pararContaEspecifica() {
     console.log(`[${inst.accountId}] ${inst.name} - Ativo há ${inst.uptimeFormatted}`);
   });
   
-  const idConta = await pergunta('\nDigite o ID da conta a ser interrompida: ');
+  const idConta = await pergunta('\nDigite o ID da conta a ser parada: ');
   const accountId = parseInt(idConta);
   
   if (isNaN(accountId) || accountId <= 0) {
@@ -345,18 +346,13 @@ async function pararContaEspecifica() {
     return;
   }
   
-  if (!activeInstances.has(accountId)) {
-    console.log(`\nA conta ID ${accountId} não está ativa.`);
-    return;
-  }
-  
-  console.log(`\nInterrompendo conta ID ${accountId}...`);
+  console.log(`\nParando conta ID ${accountId}...`);
   const resultado = await stopInstance(accountId);
   
   if (resultado) {
-    console.log(`\nConta ID ${accountId} interrompida com sucesso!`);
+    console.log(`\nConta ID ${accountId} parada com sucesso!`);
   } else {
-    console.log(`\nFalha ao interromper conta ID ${accountId}.`);
+    console.log(`\nFalha ao parar conta ID ${accountId}.`);
   }
 }
 
@@ -471,6 +467,7 @@ async function init() {
     console.log('Inicializando banco de dados...');
     
     // CORREÇÃO: Garantir que o pool seja inicializado primeiro
+    await initPool(); // ✅ AGORA DENTRO DA FUNÇÃO ASYNC
     
     // Depois inicializar tabelas
     await initializeDatabase();
