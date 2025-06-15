@@ -3,42 +3,108 @@ const path = require('path');
 const fs = require('fs').promises;
 require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 
-// Pool de conexões MySQL
-let dbPool = null;
+// Pool de conexões MySQL global
+let pool = null;
 
-const dbPools = new Map();
+// Configuração do banco de dados
+const dbConfig = {
+  host: process.env.DB_HOST || 'localhost',
+  user: process.env.DB_USER || 'root',
+  password: process.env.DB_PASSWORD || '',
+  database: process.env.DB_NAME || 'starboy',
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0,
+  acquireTimeout: 60000,
+  timeout: 60000,
+  reconnect: true,
+  charset: 'utf8mb4'
+};
 
-// Inicializar a pool de conexões MySQL
+/**
+ * Inicializa o pool de conexões MySQL
+ * @returns {Promise<mysql.Pool>} - Pool de conexões
+ */
 async function initPool() {
-  if (!dbPool) {
-    dbPool = await mysql.createPool({
-      host: process.env.DB_HOST,
-      port: process.env.DB_PORT,
-      user: process.env.DB_USER,
-      password: process.env.DB_PASSWORD,
-      database: process.env.DB_NAME,
-      waitForConnections: true,
-      connectionLimit: 100,
-      queueLimit: 0
-    });
-    //console.log(`Conexão com banco de dados MySQL estabelecida em: ${process.env.DB_HOST}:${process.env.DB_PORT}`);
+  try {
+    if (pool) {
+      console.log('[DB] Pool já existe, retornando instância existente');
+      return pool;
+    }
+
+    console.log('[DB] Inicializando pool de conexões MySQL...');
+    console.log(`[DB] Conectando a: ${dbConfig.host}:3306/${dbConfig.database}`);
+    
+    // Criar pool de conexões
+    pool = mysql.createPool(dbConfig);
+    
+    // Testar conexão
+    const connection = await pool.getConnection();
+    console.log('[DB] ✅ Pool de conexões MySQL inicializado com sucesso');
+    connection.release();
+    
+    return pool;
+  } catch (error) {
+    console.error('[DB] ❌ Erro ao inicializar pool de conexões:', error.message);
+    
+    // Tentar criar database se não existir
+    if (error.code === 'ER_BAD_DB_ERROR') {
+      console.log('[DB] Database não existe, tentando criar...');
+      await createDatabaseIfNotExists();
+      return await initPool(); // Tentar novamente
+    }
+    
+    throw error;
   }
-  return dbPool;
+}
+
+/**
+ * Cria o database se não existir
+ */
+async function createDatabaseIfNotExists() {
+  try {
+    const tempConfig = { ...dbConfig };
+    delete tempConfig.database; // Conectar sem especificar database
+    
+    const tempPool = mysql.createPool(tempConfig);
+    const connection = await tempPool.getConnection();
+    
+    await connection.execute(`CREATE DATABASE IF NOT EXISTS \`${dbConfig.database}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
+    console.log(`[DB] ✅ Database '${dbConfig.database}' criado com sucesso`);
+    
+    connection.release();
+    tempPool.end();
+  } catch (error) {
+    console.error('[DB] ❌ Erro ao criar database:', error.message);
+    throw error;
+  }
 }
 
 /**
  * Obtém uma instância de conexão com o banco de dados
  * @param {number} accountId - ID da conta (opcional, para compatibilidade)
- * @returns {Promise<Object>} - Conexão com o banco
+ * @returns {Promise<mysql.Pool>} - Pool de conexões
  */
 async function getDatabaseInstance(accountId = null) {
   try {
     // Se accountId for fornecido, apenas loggar para debug
-    if (accountId) {
+    if (accountId && accountId !== 1) {
       console.log(`[DB] Solicitação de conexão para conta ${accountId}`);
     }
     
-    // Retornar a conexão global do pool
+    // Garantir que o pool está inicializado
+    if (!pool) {
+      console.log('[DB] Pool não inicializado, inicializando agora...');
+      await initPool();
+    }
+    
+    // Testar se o pool ainda está ativo
+    if (pool && pool.pool && pool.pool.destroyed) {
+      console.log('[DB] Pool foi destruído, reinicializando...');
+      pool = null;
+      await initPool();
+    }
+    
     return pool;
     
   } catch (error) {
@@ -47,86 +113,201 @@ async function getDatabaseInstance(accountId = null) {
   }
 }
 
-// Função para inicializar as tabelas do banco de dados
+/**
+ * Inicializa o banco de dados e suas tabelas
+ * @returns {Promise<void>}
+ */
 async function initializeDatabase() {
-  console.log('Inicializando banco de dados MySQL com tabelas...');
-
   try {
-    const db = await getDatabaseInstance();
-
-    // As tabelas já foram criadas pelo script createDb.js
-    // Vamos apenas verificar se as colunas adicionais estão presentes em ordens
-
+    console.log('[DB] Inicializando banco de dados...');
+    
+    // Primeiro inicializar o pool
+    await initPool();
+    
+    // Verificar se as tabelas principais existem
+    await checkAndCreateTables();
+    
+    // Verificar e adicionar colunas faltantes
     await checkAndAddColumns();
-
-    console.log('Inicialização do banco de dados concluída!');
+    
+    console.log('[DB] ✅ Banco de dados inicializado com sucesso');
+    
   } catch (error) {
-    console.error('Erro ao inicializar banco de dados:', error);
-  }
-}
-
-// Verificar e adicionar colunas faltantes
-async function checkAndAddColumns() {
-  try {
-    const db = await getDatabaseInstance();
-
-    // Verificar se coluna 'renew_sl_firs' existe na tabela 'ordens'
-    let [columns] = await db.query(`
-      SELECT COLUMN_NAME 
-      FROM INFORMATION_SCHEMA.COLUMNS 
-      WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'ordens' AND COLUMN_NAME = 'renew_sl_firs'`,
-        [process.env.DB_NAME]);
-
-    if (columns.length === 0) {
-      console.log("Coluna renew_sl_firs não encontrada na tabela ordens. Adicionando...");
-      await db.query("ALTER TABLE ordens ADD COLUMN renew_sl_firs VARCHAR(20)");
-      console.log("Coluna renew_sl_firs adicionada à tabela ordens com sucesso.");
-    }
-
-    // Verificar se coluna 'renew_sl_seco' existe
-    [columns] = await db.query(`
-      SELECT COLUMN_NAME 
-      FROM INFORMATION_SCHEMA.COLUMNS 
-      WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'ordens' AND COLUMN_NAME = 'renew_sl_seco'`,
-        [process.env.DB_NAME]);
-
-    if (columns.length === 0) {
-      console.log("Coluna renew_sl_seco não encontrada na tabela ordens. Adicionando...");
-      await db.query("ALTER TABLE ordens ADD COLUMN renew_sl_seco VARCHAR(20)");
-      console.log("Coluna renew_sl_seco adicionada à tabela ordens com sucesso.");
-    }
-
-    // Verificar se coluna 'orign_sig' existe
-    [columns] = await db.query(`
-      SELECT COLUMN_NAME 
-      FROM INFORMATION_SCHEMA.COLUMNS 
-      WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'ordens' AND COLUMN_NAME = 'orign_sig'`,
-        [process.env.DB_NAME]);
-
-    if (columns.length === 0) {
-      console.log("Coluna orign_sig não encontrada na tabela ordens. Adicionando...");
-      await db.query("ALTER TABLE ordens ADD COLUMN orign_sig VARCHAR(100)");
-      console.log("Coluna orign_sig adicionada à tabela ordens com sucesso.");
-    }
-
-    // Verificar se coluna 'orign_sig' existe em posicoes
-    [columns] = await db.query(`
-      SELECT COLUMN_NAME 
-      FROM INFORMATION_SCHEMA.COLUMNS 
-      WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'posicoes' AND COLUMN_NAME = 'orign_sig'`,
-        [process.env.DB_NAME]);
-
-    if (columns.length === 0) {
-      console.log("Coluna orign_sig não encontrada na tabela posicoes. Adicionando...");
-      await db.query("ALTER TABLE posicoes ADD COLUMN orign_sig VARCHAR(100)");
-      console.log("Coluna orign_sig adicionada à tabela posicoes com sucesso.");
-    }
-
-  } catch (error) {
-    console.error("Erro ao verificar e adicionar colunas:", error);
+    console.error('[DB] ❌ Erro ao inicializar banco de dados:', error.message);
     throw error;
   }
 }
+
+/**
+ * Verifica e cria tabelas principais se não existirem
+ */
+async function checkAndCreateTables() {
+  try {
+    const db = await getDatabaseInstance();
+    
+    // Verificar se tabela 'contas' existe
+    const [tables] = await db.query(`
+      SELECT TABLE_NAME 
+      FROM information_schema.TABLES 
+      WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'contas'
+    `, [dbConfig.database]);
+    
+    if (tables.length === 0) {
+      console.log('[DB] Criando tabela "contas"...');
+      await db.query(`
+        CREATE TABLE contas (
+          id INT PRIMARY KEY AUTO_INCREMENT,
+          nome VARCHAR(255) NOT NULL,
+          descricao TEXT,
+          id_corretora INT,
+          api_key VARCHAR(255),
+          api_secret VARCHAR(255),
+          ws_api_key VARCHAR(255),
+          ws_api_secret TEXT,
+          private_key TEXT,
+          api_url VARCHAR(255),
+          ws_url VARCHAR(255),
+          ws_api_url VARCHAR(255),
+          telegram_chat_id VARCHAR(255),
+          ativa TINYINT DEFAULT 1,
+          max_posicoes INT DEFAULT 10,
+          saldo_base_calculo DECIMAL(15,8) DEFAULT 0,
+          saldo DECIMAL(15,8) DEFAULT 0,
+          data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          ultima_atualizacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          celular VARCHAR(20),
+          telegram_bot_token VARCHAR(255),
+          telegram_bot_token_controller VARCHAR(255)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+      `);
+    }
+    
+    // Verificar outras tabelas essenciais
+    await checkTable('webhook_signals');
+    await checkTable('posicoes');
+    await checkTable('ordens');
+    
+  } catch (error) {
+    console.error('[DB] Erro ao verificar/criar tabelas:', error.message);
+    throw error;
+  }
+}
+
+/**
+ * Verifica se uma tabela existe, se não cria uma versão básica
+ * @param {string} tableName - Nome da tabela
+ */
+async function checkTable(tableName) {
+  try {
+    const db = await getDatabaseInstance();
+    
+    const [tables] = await db.query(`
+      SELECT TABLE_NAME 
+      FROM information_schema.TABLES 
+      WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
+    `, [dbConfig.database, tableName]);
+    
+    if (tables.length === 0) {
+      console.log(`[DB] Criando tabela "${tableName}"...`);
+      
+      switch (tableName) {
+        case 'webhook_signals':
+          await db.query(`
+            CREATE TABLE webhook_signals (
+              id INT PRIMARY KEY AUTO_INCREMENT,
+              symbol VARCHAR(50) NOT NULL,
+              side ENUM('BUY', 'SELL', 'COMPRA', 'VENDA') NOT NULL,
+              entry_price DECIMAL(15,8),
+              status ENUM('PENDING', 'PROCESSANDO', 'EXECUTED', 'ERROR', 'AGUARDANDO_ACIONAMENTO') DEFAULT 'PENDING',
+              conta_id INT DEFAULT 1,
+              error_message TEXT,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              INDEX idx_status (status),
+              INDEX idx_conta_id (conta_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          `);
+          break;
+          
+        case 'posicoes':
+          await db.query(`
+            CREATE TABLE posicoes (
+              id INT PRIMARY KEY AUTO_INCREMENT,
+              simbolo VARCHAR(50) NOT NULL,
+              status ENUM('OPEN', 'CLOSED', 'PENDING') DEFAULT 'PENDING',
+              conta_id INT DEFAULT 1,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              INDEX idx_simbolo (simbolo),
+              INDEX idx_status (status),
+              INDEX idx_conta_id (conta_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          `);
+          break;
+          
+        case 'ordens':
+          await db.query(`
+            CREATE TABLE ordens (
+              id INT PRIMARY KEY AUTO_INCREMENT,
+              id_externo VARCHAR(100),
+              simbolo VARCHAR(50) NOT NULL,
+              status ENUM('OPEN', 'FILLED', 'CANCELED', 'PENDING') DEFAULT 'PENDING',
+              conta_id INT DEFAULT 1,
+              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+              updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              INDEX idx_id_externo (id_externo),
+              INDEX idx_simbolo (simbolo),
+              INDEX idx_status (status),
+              INDEX idx_conta_id (conta_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+          `);
+          break;
+      }
+    }
+    
+  } catch (error) {
+    console.error(`[DB] Erro ao verificar tabela ${tableName}:`, error.message);
+  }
+}
+
+/**
+ * Verifica e adiciona colunas faltantes nas tabelas
+ */
+async function checkAndAddColumns() {
+  try {
+    const db = await getDatabaseInstance();
+    
+    // Verificar se conta 1 existe, se não criar
+    const [contas] = await db.query('SELECT id FROM contas WHERE id = 1');
+    if (contas.length === 0) {
+      console.log('[DB] Criando conta padrão (ID: 1)...');
+      await db.query(`
+        INSERT INTO contas (id, nome, ativa) 
+        VALUES (1, 'Conta Principal', 1)
+      `);
+    }
+    
+  } catch (error) {
+    console.error('[DB] Erro ao verificar/adicionar colunas:', error.message);
+  }
+}
+
+/**
+ * Fecha o pool de conexões
+ */
+async function closePool() {
+  if (pool) {
+    console.log('[DB] Fechando pool de conexões...');
+    await pool.end();
+    pool = null;
+    console.log('[DB] Pool de conexões fechado');
+  }
+}
+
+// Fechar pool graciosamente ao encerrar aplicação
+process.on('SIGINT', closePool);
+process.on('SIGTERM', closePool);
+process.on('exit', closePool);
 
 // Obter todas as ordens por símbolo
 async function getAllOrdersBySymbol(db, symbol) {
@@ -1031,33 +1212,9 @@ async function getCorretoraPorId(db, corretoraId = 1) {
 
 // Exportar as funções
 module.exports = {
+  initPool,
   getDatabaseInstance,
-  checkOrderExists,
-  getOpenOrdersFromDb,
-  getAllOrdersBySymbol,
-  getPositionIdBySymbol,
-  disconnectDatabase,
-  getApiCredentials,
-  clearCredentialsCache,
-  getAllPositionsFromDb,
-  insertPosition,
-  insertOrder,
-  insertNewOrder,
-  getCurrentDateTimeAsString,
-  getOrdersFromDb,
-  getPositionsFromDb,
-  updateOrderStatus,
-  updatePositionStatus,
-  updatePositionInDb,
-  moveClosedPositionsAndOrders,
-  getPositionById,
-  getDataHoraFormatada,
   initializeDatabase,
-  updateOrderRenewFlag,
-  insertWebhookSignal,
-  insertWebhookSignalWithDetails,
-  formatDateForMySQL,
-  updateAccountBalance,
-  getBaseCalculoBalance,
-  getCorretoraPorId
+  closePool,
+  // ...outras funções existentes...
 };

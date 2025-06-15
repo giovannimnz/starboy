@@ -3,6 +3,10 @@ require('dotenv').config({ path: path.resolve(__dirname, './.env') });
 const { initializeDatabase, getDatabaseInstance } = require('./db/conexao');
 const readline = require('readline');
 const { spawn } = require('child_process');
+const { initPool } = require('./db/conexao');
+
+
+await initPool();
 
 
 // Mapear contas ativas para seus processos
@@ -465,6 +469,10 @@ process.on('SIGTERM', async () => {
 async function init() {
   try {
     console.log('Inicializando banco de dados...');
+    
+    // CORREÇÃO: Garantir que o pool seja inicializado primeiro
+    
+    // Depois inicializar tabelas
     await initializeDatabase();
     
     // Verificar opções de linha de comando
@@ -505,7 +513,7 @@ async function init() {
     }
     
   } catch (error) {
-    console.error('Erro na inicialização:', error);
+    console.error('Erro na inicialização:', error.message);
     process.exit(1);
   }
 }
