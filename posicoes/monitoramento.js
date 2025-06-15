@@ -154,7 +154,7 @@ async function initializeMonitoring(accountId = 1) {
     }
 
     // Executar verificação imediata de sinais pendentes
-    console.log('[MONITOR] Agendando verificação imediata de sinais pendentes...');
+    //console.log('[MONITOR] Agendando verificação imediata de sinais pendentes...');
     setTimeout(() => {
       //console.log('[MONITOR] Executando verificação imediata...');
       forceProcessPendingSignals(accountId).catch(error => {
@@ -163,7 +163,7 @@ async function initializeMonitoring(accountId = 1) {
     }, 5000);
 
     // Agendar jobs específicos para esta conta
-    console.log('[MONITOR] Iniciando agendamento de jobs...');
+    //console.log('[MONITOR] Iniciando agendamento de jobs...');
     const accountJobs = {};
     
     // Agendar verificação periódica de sinais a cada 15 segundos
@@ -178,9 +178,9 @@ async function initializeMonitoring(accountId = 1) {
     
     // Iniciar monitoramento de preços para posições abertas
     try {
-      console.log('[MONITOR] Iniciando monitoramento de preços...');
+      //console.log('[MONITOR] Iniciando monitoramento de preços...');
       const symbolsCount = await startPriceMonitoring(accountId);
-      console.log(`[MONITOR] Monitoramento de preços iniciado para ${symbolsCount} símbolos.`);
+      //console.log(`[MONITOR] Monitoramento de preços iniciado para ${symbolsCount} símbolos.`);
     } catch (priceError) {
       console.error('[MONITOR] Erro ao iniciar monitoramento de preços, mas continuando:', priceError.message);
     }

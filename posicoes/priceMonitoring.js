@@ -49,7 +49,7 @@ async function startPriceMonitoring(accountId = 1) {
       WHERE (status = 'AGUARDANDO_ACIONAMENTO' OR status = 'PENDING') AND conta_id = ?
     `, [accountId]);
 
-    console.log(`[PRICE] Encontrados ${pendingSignals.length} sinais pendentes para monitoramento (conta ${accountId})`);
+    //console.log(`[PRICE] Encontrados ${pendingSignals.length} sinais pendentes para monitoramento (conta ${accountId})`);
 
     const symbols = new Set();
 
