@@ -1,5 +1,6 @@
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+const { setupEd25519FromPEM } = require('../websockets');
 
 const schedule = require('node-schedule');
 const { getDatabaseInstance } = require('../db/conexao');
@@ -50,6 +51,7 @@ async function initializeMonitoring(accountId = 1) {
     }
 
     // Inicializar o bot do Telegram para esta conta
+    /*
     let bot = null;
     try {
       bot = await initializeTelegramBot(accountId);
@@ -61,7 +63,9 @@ async function initializeMonitoring(accountId = 1) {
     } catch (telegramError) {
       console.error('[MONITOR] Erro ao inicializar bot do Telegram, mas continuando:', telegramError.message);
     }
+      */
     
+    await setupEd25519FromPEM(1);
     // CORREÇÃO: Comentar WebSocket API temporariamente devido ao erro Ed25519
     try {
       console.log('[WS-API] Inicializando handlers para WebSocket API...');
@@ -299,6 +303,8 @@ if (require.main === module) {
     }
   })();
 }
+
+
 
 module.exports = {
   initializeMonitoring,

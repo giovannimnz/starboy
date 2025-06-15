@@ -144,8 +144,39 @@ async function loadCredentialsFromDatabase(options = {}) {
  */
 function createEd25519Signature(payload, privateKey, accountId) {
   try {
-    if (!privateKey) {
-      throw new Error(`Chave privada Ed25519 não encontrada para conta ${accountId}`);
+    // CORREÇÃO: Validar accountId
+    if (!accountId || typeof accountId !== 'number') {
+      throw new Error(`ID da conta inválido: ${accountId} (tipo: ${typeof accountId})`);
+    }
+
+    // Se privateKey não foi fornecida, tentar carregar do arquivo PEM
+    if (!privateKey || typeof privateKey !== 'string') {
+      console.log(`[WEBSOCKETS] Chave privada não fornecida para conta ${accountId}, tentando carregar do arquivo PEM...`);
+      
+      try {
+        // Carregar sincronamente para esta função (pode ser melhorado para async se necessário)
+        const pemPath = path.join(__dirname, 'utils', 'binance_key', 'private_key.pem');
+        if (fs.existsSync(pemPath)) {
+          const pemContent = fs.readFileSync(pemPath, 'utf8');
+          const keyObject = crypto.createPrivateKey({
+            key: pemContent,
+            format: 'pem',
+            type: 'pkcs8'
+          });
+          const rawKey = keyObject.export({
+            format: 'raw',
+            type: 'private'
+          });
+          privateKey = rawKey.toString('base64');
+          console.log(`[WEBSOCKETS] Chave privada Ed25519 carregada do arquivo PEM para conta ${accountId}`);
+        }
+      } catch (pemError) {
+        console.error(`[WEBSOCKETS] Erro ao carregar chave do PEM para conta ${accountId}:`, pemError.message);
+      }
+      
+      if (!privateKey) {
+        throw new Error(`Chave privada Ed25519 não encontrada para conta ${accountId}`);
+      }
     }
 
     // Converter a chave privada de base64 para buffer
@@ -162,43 +193,17 @@ function createEd25519Signature(payload, privateKey, accountId) {
       throw new Error(`Chave privada Ed25519 tem tamanho incorreto para conta ${accountId}. Esperado: 32 bytes, recebido: ${privateKeyBuffer.length} bytes`);
     }
 
-    // CORREÇÃO: Usar a sintaxe correta para Node.js v20+
+    // Criar objeto de chave privada Ed25519
     let keyObject;
     try {
-      // Tentar a abordagem moderna primeiro (Node.js 15.6.0+)
       keyObject = crypto.createPrivateKey({
         key: privateKeyBuffer,
         format: 'raw',
         type: 'ed25519'
       });
-    } catch (modernError) {
-      console.log(`[WEBSOCKETS] Método moderno falhou para conta ${accountId}, tentando método alternativo...`);
-      
-      try {
-        // Abordagem alternativa para versões mais antigas
-        const keyPair = crypto.generateKeyPairSync('ed25519', {
-          privateKeyEncoding: { type: 'raw', format: 'buffer' }
-        });
-        
-        // Substituir a chave gerada pela nossa chave
-        keyObject = crypto.createPrivateKey({
-          key: Buffer.concat([privateKeyBuffer, Buffer.alloc(32)]).slice(0, 32),
-          format: 'raw',
-          type: 'ed25519'
-        });
-      } catch (alternativeError) {
-        console.error(`[WEBSOCKETS] Todas as abordagens falharam para conta ${accountId}:`, alternativeError);
-        
-        // Último recurso: usar biblioteca externa se disponível
-        try {
-          const ed25519 = require('@noble/ed25519');
-          const payloadBuffer = Buffer.from(payload, 'utf8');
-          const signature = ed25519.sign(payloadBuffer, privateKeyBuffer);
-          return Buffer.from(signature).toString('base64');
-        } catch (externalError) {
-          throw new Error(`Não foi possível criar assinatura Ed25519 para conta ${accountId}. Verifique a versão do Node.js (recomendado: 18+) ou instale @noble/ed25519`);
-        }
-      }
+    } catch (keyError) {
+      console.error(`[WEBSOCKETS] Erro ao criar objeto de chave Ed25519 para conta ${accountId}:`, keyError);
+      throw new Error(`Não foi possível criar chave Ed25519 para conta ${accountId}: ${keyError.message}`);
     }
 
     // Criar a assinatura
@@ -943,7 +948,7 @@ function setupBookDepthWebsocket(symbol, callback, accountId = 1) {
 
   connectionTimeout = setTimeout(() => {
     if (ws.readyState !== WebSocket.OPEN) {
-      console.error(`[WEBSOCKET] Timeout ao estabelecer conexão para ${symbol} BookTicker (conta ${accountId})`);
+      console.error(`[WEBSOCKETS] Timeout ao estabelecer conexão para ${symbol} BookTicker (conta ${accountId})`);
       ws.terminate();
     }
   }, 10000);
@@ -1096,12 +1101,12 @@ async function startUserDataStream(db, accountId = 1) {
             }
           }
         } catch (parseError) {
-          console.error(`[WEBSOCKET] Erro ao processar mensagem UserData para conta ${accountId}:`, parseError);
+          console.error(`[WEBSOCKETS] Erro ao processar mensagem UserData para conta ${accountId}:`, parseError);
         }
       });
       
       ws.on('error', (error) => {
-        console.error(`[WEBSOCKET] Erro na conexão de dados do usuário para conta ${accountId}:`, error);
+        console.error(`[WEBSOCKETS] Erro na conexão de dados do usuário para conta ${accountId}:`, error);
         
         // Limpar estado
         accountState.userDataWebSocket = null;
@@ -1111,11 +1116,11 @@ async function startUserDataStream(db, accountId = 1) {
         }
         
         // NÃO tentar reconectar automaticamente para evitar loop infinito
-        console.log(`[WEBSOCKET] UserDataStream será reiniciado apenas quando necessário para conta ${accountId}`);
+        console.log(`[WEBSOCKETS] UserDataStream será reiniciado apenas quando necessário para conta ${accountId}`);
       });
       
       ws.on('close', () => {
-        console.log(`[WEBSOCKET] Conexão de dados do usuário fechada para conta ${accountId}`);
+        console.log(`[WEBSOCKETS] Conexão de dados do usuário fechada para conta ${accountId}`);
         
         // Limpar estado
         accountState.userDataWebSocket = null;
@@ -1393,6 +1398,215 @@ async function verificarChavePrivada() {
   }
 }
 
+/**
+ * Carrega e processa a chave privada Ed25519 do arquivo PEM
+ * @param {string} pemFilePath - Caminho para o arquivo PEM (opcional)
+ * @returns {string} - Chave privada em formato base64
+ */
+async function loadEd25519FromPEM(pemFilePath = null) {
+  try {
+    // Usar caminho padrão se não especificado
+    const defaultPemPath = path.join(__dirname, 'utils', 'binance_key', 'private_key.pem');
+    const pemPath = pemFilePath || defaultPemPath;
+    
+    console.log(`[WEBSOCKETS] Carregando chave privada Ed25519 do arquivo: ${pemPath}`);
+    
+    // Verificar se o arquivo existe
+    if (!fs.existsSync(pemPath)) {
+      throw new Error(`Arquivo PEM não encontrado: ${pemPath}`);
+    }
+    
+    // Ler o arquivo PEM
+    const pemContent = fs.readFileSync(pemPath, 'utf8');
+    
+    if (!pemContent || !pemContent.includes('-----BEGIN PRIVATE KEY-----')) {
+      throw new Error('Arquivo PEM inválido ou corrompido');
+    }
+    
+    console.log('[WEBSOCKETS] Arquivo PEM carregado com sucesso');
+    
+    // Extrair a chave privada do formato PEM
+    let privateKeyBase64;
+    try {
+      // Criar objeto de chave privada do PEM
+      const keyObject = crypto.createPrivateKey({
+        key: pemContent,
+        format: 'pem',
+        type: 'pkcs8'
+      });
+      
+      // Exportar como raw bytes (32 bytes para Ed25519)
+      const rawKey = keyObject.export({
+        format: 'raw',
+        type: 'private'
+      });
+      
+      // Converter para base64 (formato que o sistema espera)
+      privateKeyBase64 = rawKey.toString('base64');
+      
+      console.log('[WEBSOCKETS] Chave privada extraída do PEM com sucesso');
+      console.log(`[WEBSOCKETS] - Tamanho em bytes: ${rawKey.length} bytes`);
+      console.log(`[WEBSOCKETS] - Formato base64: ${privateKeyBase64.substring(0, 20)}...`);
+      
+    } catch (keyError) {
+      console.error('[WEBSOCKETS] Erro ao processar chave PEM:', keyError.message);
+      throw new Error(`Falha ao processar chave PEM: ${keyError.message}`);
+    }
+    
+    // Verificar se a chave tem o tamanho correto
+    const keyBuffer = Buffer.from(privateKeyBase64, 'base64');
+    if (keyBuffer.length !== 32) {
+      throw new Error(`Chave Ed25519 tem tamanho incorreto: ${keyBuffer.length} bytes (esperado: 32)`);
+    }
+    
+    console.log('[WEBSOCKETS] ✅ Chave Ed25519 validada - tamanho correto (32 bytes)');
+    
+    // Testar a chave criando uma assinatura de teste
+    await testEd25519Key(privateKeyBase64);
+    
+    return privateKeyBase64;
+    
+  } catch (error) {
+    console.error('[WEBSOCKETS] ❌ Erro ao carregar chave Ed25519 do PEM:', error.message);
+    throw error;
+  }
+}
+
+/**
+ * Testa uma chave Ed25519 criando uma assinatura de teste
+ * @param {string} privateKeyBase64 - Chave privada em formato base64
+ * @returns {boolean} - true se a chave funciona
+ */
+async function testEd25519Key(privateKeyBase64) {
+  try {
+    console.log('[WEBSOCKETS] Testando chave Ed25519...');
+    
+    const payload = 'test_payload_' + Date.now();
+    const privateKeyBuffer = Buffer.from(privateKeyBase64, 'base64');
+    
+    // Tentar criar assinatura
+    const keyObject = crypto.createPrivateKey({
+      key: privateKeyBuffer,
+      format: 'raw',
+      type: 'ed25519'
+    });
+    
+    const signature = crypto.sign(null, Buffer.from(payload, 'utf8'), keyObject);
+    
+    console.log('[WEBSOCKETS] ✅ Chave Ed25519 testada com sucesso!');
+    console.log(`[WEBSOCKETS] - Payload teste: ${payload}`);
+    console.log(`[WEBSOCKETS] - Assinatura: ${signature.toString('base64').substring(0, 20)}...`);
+    
+    return true;
+  } catch (testError) {
+    console.error('[WEBSOCKETS] ❌ Erro ao testar chave Ed25519:', testError.message);
+    throw new Error(`Chave Ed25519 não funciona: ${testError.message}`);
+  }
+}
+
+/**
+ * Atualiza a chave privada Ed25519 no banco de dados a partir do arquivo PEM
+ * @param {number} accountId - ID da conta
+ * @param {string} pemFilePath - Caminho para o arquivo PEM (opcional)
+ * @returns {boolean} - true se atualizado com sucesso
+ */
+async function updateEd25519FromPEM(accountId = 1, pemFilePath = null) {
+  try {
+    console.log(`[WEBSOCKETS] Atualizando chave Ed25519 para conta ${accountId} a partir do arquivo PEM`);
+    
+    // Carregar chave do arquivo PEM
+    const privateKeyBase64 = await loadEd25519FromPEM(pemFilePath);
+    
+    // Conectar ao banco de dados
+    const db = await getDatabaseInstance(accountId);
+    
+    // Verificar se a conta existe
+    const [contas] = await db.query('SELECT id, nome FROM contas WHERE id = ?', [accountId]);
+    
+    if (contas.length === 0) {
+      throw new Error(`Conta ID ${accountId} não encontrada`);
+    }
+    
+    console.log(`[WEBSOCKETS] Conta encontrada: ${contas[0].nome}`);
+    
+    // Atualizar ws_api_secret e private_key com a chave do PEM
+    await db.query(`
+      UPDATE contas 
+      SET ws_api_secret = ?, 
+          private_key = ?,
+          ultima_atualizacao = NOW()
+      WHERE id = ?
+    `, [privateKeyBase64, privateKeyBase64, accountId]);
+    
+    console.log('[WEBSOCKETS] ✅ Chave privada Ed25519 atualizada no banco de dados com sucesso!');
+    
+    // Limpar cache de credenciais para forçar recarregamento
+    accountCredentialsCache.delete(accountId);
+    
+    console.log('[WEBSOCKETS] ✅ Cache de credenciais limpo - nova chave será carregada na próxima requisição');
+    
+    return true;
+    
+  } catch (error) {
+    console.error(`[WEBSOCKETS] ❌ Erro ao atualizar chave Ed25519 para conta ${accountId}:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Configura a chave Ed25519 a partir do arquivo PEM automaticamente
+ * @param {number} accountId - ID da conta
+ * @returns {boolean} - true se configurado com sucesso
+ */
+async function setupEd25519FromPEM(accountId = 1) {
+  try {
+    console.log(`[WEBSOCKETS] === CONFIGURANDO CHAVE ED25519 DO ARQUIVO PEM PARA CONTA ${accountId} ===`);
+    
+    // Verificar se o arquivo PEM existe
+    const pemPath = path.join(__dirname, 'utils', 'binance_key', 'private_key.pem');
+    
+    if (!fs.existsSync(pemPath)) {
+      console.log(`[WEBSOCKETS] ⚠️ Arquivo PEM não encontrado: ${pemPath}`);
+      console.log('[WEBSOCKETS] Para usar WebSocket API com Ed25519:');
+      console.log('[WEBSOCKETS] 1. Crie o diretório: utils/binance_key/');
+      console.log('[WEBSOCKETS] 2. Coloque sua chave privada Ed25519 em: utils/binance_key/private_key.pem');
+      console.log('[WEBSOCKETS] 3. Execute novamente o sistema');
+      return false;
+    }
+    
+    try {
+      // Tentar atualizar a chave do arquivo PEM
+      const success = await updateEd25519FromPEM(accountId, pemPath);
+      
+      if (success) {
+        console.log('[WEBSOCKETS] 🎯 CONFIGURAÇÃO ED25519 CONCLUÍDA COM SUCESSO!');
+        console.log('[WEBSOCKETS] ✅ Chave privada Ed25519 carregada do arquivo PEM');
+        console.log('[WEBSOCKETS] ✅ Banco de dados atualizado');
+        console.log('[WEBSOCKETS] ✅ WebSocket API pronta para uso');
+        return true;
+      }
+      
+    } catch (updateError) {
+      console.error('[WEBSOCKETS] ❌ Erro ao configurar chave Ed25519:', updateError.message);
+      
+      // Se falhar, tentar apenas carregar para verificar se o arquivo está correto
+      try {
+        await loadEd25519FromPEM(pemPath);
+        console.log('[WEBSOCKETS] ⚠️ Arquivo PEM está correto, mas houve erro ao atualizar banco de dados');
+        console.log('[WEBSOCKETS] ⚠️ Verifique as permissões do banco de dados');
+      } catch (loadError) {
+        console.error('[WEBSOCKETS] ❌ Arquivo PEM está corrompido ou inválido:', loadError.message);
+      }
+      
+      return false;
+    }
+    
+  } catch (error) {
+    console.error(`[WEBSOCKETS] ❌ Erro geral ao configurar Ed25519 para conta ${accountId}:`, error.message);
+    return false;
+  }
+}
+
 module.exports = {
   startUserDataStream,
   setupBookDepthWebsocket,
@@ -1411,6 +1625,11 @@ module.exports = {
   setMonitoringCallbacks,
   getHandlers,
   getAccountConnectionState,
-  getCredentials,  // Adicionar esta função
-  ensureWebSocketApiExists,  // Adicionar esta função
+  getCredentials,
+  ensureWebSocketApiExists,
+  // Novas funções para Ed25519
+  loadEd25519FromPEM,
+  testEd25519Key,
+  updateEd25519FromPEM,
+  setupEd25519FromPEM
 };
