@@ -22,7 +22,7 @@ async function syncPositionsWithExchange(accountId = 1) {
     // Obter posições da corretora
     const exchangePositions = await getAllOpenPositions(accountId);
 
-    console.log(`[SYNC] Verificando ${dbPositions.length} posições no banco vs ${exchangePositions.length} na corretora (conta ${accountId})...`);
+    //console.log(`[SYNC] Verificando ${dbPositions.length} posições no banco vs ${exchangePositions.length} na corretora (conta ${accountId})...`);
 
     // Mapear posições da corretora por símbolo
     const exchangePositionsMap = {};
