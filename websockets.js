@@ -62,8 +62,6 @@ async function loadCredentialsFromDatabase(options = {}) {
     if (accountCredentialsCache.has(accountId) && !forceRefresh && 
         (currentTime - lastCacheTime < CACHE_TTL)) {
       console.log(`[WEBSOCKETS] Usando credenciais em cache para conta ${accountId}`);
-      // Atualizar estado da conexão com os valores em cache
-      // ... (código existente)
       return accountCredentialsCache.get(accountId);
     }
     
@@ -73,7 +71,7 @@ async function loadCredentialsFromDatabase(options = {}) {
       throw new Error(`Não foi possível obter conexão com o banco de dados para conta ${accountId}`);
     }
     
-    // Buscar conta e JOIN com a tabela corretoras para obter as URLs corretas
+    // Query corrigida para usar os nomes corretos das colunas
     const [rows] = await db.query(`
       SELECT 
         c.id,
@@ -90,7 +88,7 @@ async function loadCredentialsFromDatabase(options = {}) {
         cor.ambiente
       FROM contas c
       JOIN corretoras cor ON c.id_corretora = cor.id
-      WHERE c.id = ? AND c.ativa = 1`,
+      WHERE c.id = ? AND c.ativa = 1 AND cor.ativa = 1`,
       [accountId]
     );
     
@@ -109,6 +107,7 @@ async function loadCredentialsFromDatabase(options = {}) {
     accountState.apiUrl = accountData.futures_rest_api_url;
     accountState.wsApiUrl = accountData.futures_ws_api_url;
     accountState.wssMarketUrl = accountData.futures_ws_market_url;
+    accountState.ambiente = accountData.ambiente;
     
     // Criar objeto de credenciais para o cache
     const credentials = {
@@ -204,7 +203,7 @@ async function createListenKey(accountId = 1) {
       throw new Error(`Credenciais não carregadas corretamente para conta ${accountId}`);
     }
     
-    const endpoint = '/v1/listenkey';
+    const endpoint = '/v1/listenKey';
     const fullUrl = `${accountState2.apiUrl}${endpoint}`;
 
     console.log(`[WEBSOCKET] Obtendo listenKey via: ${fullUrl} para conta ${accountId}`);
@@ -242,7 +241,7 @@ async function keepAliveListenKey(listenKey, accountId = 1) {
     
     const updatedAccountState = getAccountConnectionState(accountId);
     
-    const endpoint = '/v1/listenkey';
+    const endpoint = '/v1/listenKey';
     return axios.put(`${updatedAccountState.apiUrl}${endpoint}?listenKey=${listenKey}`, null, {
       headers: {
         'X-MBX-APIKEY': updatedAccountState.apiKey
@@ -293,7 +292,7 @@ async function closeListenKey(listenKey, accountId = 1) {
     
     const updatedAccountState = getAccountConnectionState(accountId);
     
-    const endpoint = '/v1/listenkey';
+    const endpoint = '/v1/listenKey';
     return axios.delete(`${updatedAccountState.apiUrl}${endpoint}?listenKey=${listenKey}`, {
       headers: {
         'X-MBX-APIKEY': updatedAccountState.apiKey
@@ -329,9 +328,13 @@ async function startWebSocketApi(accountId = 1) {
     console.log(`[WS-API] Iniciando conexão com API WebSocket para conta ${accountId}...`);
     
     // Determinar a URL correta
-    const wsApiEndpoint = process.env.NODE_ENV === 'production' 
-      ? accountState.wsApiUrl || 'wss://ws-fapi.binance.com/ws-fapi/v1'
-      : 'wss://testnet.binancefuture.com/ws-fapi/v1';
+    // Determinar a URL correta baseada no ambiente da conta
+    let wsApiEndpoint;
+    if (accountState.ambiente === 'prd') {
+      wsApiEndpoint = accountState.wsApiUrl || 'wss://ws-fapi.binance.com/ws-fapi/v1';
+    } else {
+      wsApiEndpoint = 'wss://testnet.binancefuture.com/ws-fapi/v1';
+    }
     
     console.log(`[WS-API] Conectando ao endpoint: ${wsApiEndpoint} para conta ${accountId}`);
     
@@ -797,7 +800,7 @@ async function ensurePriceWebsocketExists(symbol, accountId = 1) {
 
   console.log(`[WEBSOCKET] Iniciando monitoramento de preço para ${symbol} (conta ${accountId})`);
 
-  const wsUrl = `${updatedAccountState.wssMarketUrl}/${symbol.toLowerCase()}@bookTicker`;
+  const wsUrl = `${updatedAccountState.wssMarketUrl}/ws/${symbol.toLowerCase()}@bookTicker`;
   console.log(`[WEBSOCKET] URL para monitoramento de preço: ${wsUrl}`);
 
   const ws = new WebSocket(wsUrl);
@@ -1020,7 +1023,7 @@ async function startUserDataStream(db, accountId = 1) {
     
     // Iniciar o WebSocket para dados do usuário
     if (listenKey) {
-      console.log(`[WEBSOCKET] Obtendo listenKey via: ${accountState.apiUrl}/v1/listenkey para conta ${accountId}`);
+      console.log(`[WEBSOCKET] Obtendo listenKey via: ${accountState.apiUrl}/v1/listenKey para conta ${accountId}`);
       
       // Configuração do WebSocket
       const wsUrl = `${accountState.wssMarketUrl}/${listenKey}`;

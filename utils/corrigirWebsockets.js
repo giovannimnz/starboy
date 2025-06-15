@@ -3,176 +3,136 @@ const path = require('path');
 
 async function corrigirWebsockets() {
   try {
-    console.log('Adicionando função isWebSocketApiConnected ao websockets.js');
+    console.log('=== CORRIGINDO WEBSOCKETS.JS ===');
     
-    // Caminho do arquivo websockets.js
-    const websocketsFile = path.join(__dirname, '..', 'websockets.js');
+    const websocketsPath = path.join(__dirname, '..', 'websockets.js');
+    let conteudo = await fs.readFile(websocketsPath, 'utf8');
     
-    // Ler o conteúdo atual do arquivo
-    let content = await fs.readFile(websocketsFile, 'utf8');
+    // 1. Corrigir endpoint do listenKey (case sensitive)
+    conteudo = conteudo.replace(
+      /\/v1\/listenkey/g,
+      '/v1/listenKey'
+    );
     
-    // Verificar se a função já existe
-    if (content.includes('function isWebSocketApiConnected')) {
-      console.log('A função isWebSocketApiConnected já existe, mas não está na lista de exportações.');
+    // 2. Corrigir determinação de URL da WebSocket API
+    const wsApiEndpointFix = `
+    // Determinar a URL correta baseada no ambiente da conta
+    let wsApiEndpoint;
+    if (accountState.ambiente === 'prd') {
+      wsApiEndpoint = accountState.wsApiUrl || 'wss://ws-fapi.binance.com/ws-fapi/v1';
     } else {
-      // Adicionar a implementação da função antes do module.exports
-      const newFunction = `
-/**
- * Verifica se a conexão WebSocket API está ativa
- * @param {number} accountId - ID da conta
- * @returns {boolean} - true se conectado
- */
-function isWebSocketApiConnected(accountId = 1) {
-  const accountState = getAccountConnectionState(accountId);
-  if (!accountState) return false;
-  
-  return accountState.wsApiConnection && 
-         accountState.wsApiConnection.readyState === WebSocket.OPEN;
-}
-
-`;
-
-      // Encontrar a posição correta para inserir a função (antes do module.exports)
-      const moduleExportsIndex = content.lastIndexOf('module.exports');
-      if (moduleExportsIndex === -1) {
-        throw new Error('Não foi possível encontrar module.exports no arquivo');
-      }
-
-      // Inserir a função antes do module.exports
-      content = content.slice(0, moduleExportsIndex) + newFunction + content.slice(moduleExportsIndex);
-      console.log('Função isWebSocketApiConnected adicionada');
+      wsApiEndpoint = 'wss://testnet.binancefuture.com/ws-fapi/v1';
+    }`;
+    
+    conteudo = conteudo.replace(
+      /const wsApiEndpoint = process\.env\.NODE_ENV === 'production'[\s\S]*?'wss:\/\/testnet\.binancefuture\.com\/ws-fapi\/v1';/,
+      wsApiEndpointFix.trim()
+    );
+    
+    // 3. Corrigir URL do WebSocket Market Stream
+    conteudo = conteudo.replace(
+      /const wsUrl = `\$\{updatedAccountState\.wssMarketUrl\}\/\$\{symbol\.toLowerCase\(\)\}@bookTicker`;/,
+      'const wsUrl = `${updatedAccountState.wssMarketUrl}/ws/${symbol.toLowerCase()}@bookTicker`;'
+    );
+    
+    // 4. Garantir que as credenciais sejam carregadas corretamente
+    const loadCredentialsImprovement = `
+async function loadCredentialsFromDatabase(options = {}) {
+  try {
+    const accountId = options.accountId || 1;
+    const forceRefresh = options.forceRefresh || false;
+    const currentTime = Date.now();
+    
+    console.log('[WEBSOCKETS] Iniciando carregamento de credenciais para conta ID:', accountId);
+    
+    // Usar cache se disponível e não expirado
+    if (accountCredentialsCache.has(accountId) && !forceRefresh && 
+        (currentTime - lastCacheTime < CACHE_TTL)) {
+      console.log(\`[WEBSOCKETS] Usando credenciais em cache para conta \${accountId}\`);
+      return accountCredentialsCache.get(accountId);
+    }
+    
+    const db = await getDatabaseInstance(accountId);
+    
+    if (!db) {
+      throw new Error(\`Não foi possível obter conexão com o banco de dados para conta \${accountId}\`);
+    }
+    
+    // Query corrigida para usar os nomes corretos das colunas
+    const [rows] = await db.query(\`
+      SELECT 
+        c.id,
+        c.api_key, 
+        c.api_secret, 
+        c.ws_api_key, 
+        c.ws_api_secret,
+        c.id_corretora,
+        cor.spot_rest_api_url,
+        cor.futures_rest_api_url,
+        cor.futures_ws_market_url,
+        cor.futures_ws_api_url,
+        cor.corretora,
+        cor.ambiente
+      FROM contas c
+      JOIN corretoras cor ON c.id_corretora = cor.id
+      WHERE c.id = ? AND c.ativa = 1 AND cor.ativa = 1\`,
+      [accountId]
+    );
+    
+    if (rows.length === 0) {
+      throw new Error(\`Conta ID \${accountId} não encontrada ou não está ativa\`);
     }
 
-    // Verificar também a função isWebSocketApiAuthenticated
-    if (!content.includes('function isWebSocketApiAuthenticated')) {
-      // Adicionar também essa função que pode estar faltando
-      const authFunction = `
-/**
- * Verifica se a conexão WebSocket API está autenticada
- * @param {number} accountId - ID da conta
- * @returns {boolean} - true se autenticado
- */
-function isWebSocketApiAuthenticated(accountId = 1) {
-  const accountState = getAccountConnectionState(accountId);
-  if (!accountState) return false;
-  
-  return accountState.wsApiAuthenticated === true;
-}
-
-`;
-
-      // Encontrar a posição correta para inserir a função (antes do module.exports)
-      const moduleExportsIndex = content.lastIndexOf('module.exports');
-      if (moduleExportsIndex === -1) {
-        throw new Error('Não foi possível encontrar module.exports no arquivo');
-      }
-
-      // Inserir a função antes do module.exports
-      content = content.slice(0, moduleExportsIndex) + authFunction + content.slice(moduleExportsIndex);
-      console.log('Função isWebSocketApiAuthenticated adicionada');
-    }
-
-    // Adicionar função reset que também pode estar faltando
-    if (!content.includes('function reset(')) {
-      const resetFunction = `
-/**
- * Reinicia as conexões WebSocket para uma conta específica
- * @param {number} accountId - ID da conta
- */
-function reset(accountId = 1) {
-  // Limpar WebSocket API
-  cleanupWebSocketApi(accountId);
-  
-  // Limpar WebSockets de preço
-  const priceWebsockets = getPriceWebsockets(accountId);
-  if (priceWebsockets) {
-    for (const [symbol, ws] of priceWebsockets.entries()) {
-      if (ws && ws.readyState !== WebSocket.CLOSED) {
-        ws.close();
-      }
-    }
-    priceWebsockets.clear();
+    const accountData = rows[0];
+    
+    // Atualizar estado da conexão para esta conta específica
+    const accountState = getAccountConnectionState(accountId, true);
+    
+    accountState.apiKey = accountData.api_key;
+    accountState.apiSecret = accountData.api_secret;
+    accountState.privateKey = accountData.ws_api_secret;
+    accountState.apiUrl = accountData.futures_rest_api_url;
+    accountState.wsApiUrl = accountData.futures_ws_api_url;
+    accountState.wssMarketUrl = accountData.futures_ws_market_url;
+    accountState.ambiente = accountData.ambiente;
+    
+    // Criar objeto de credenciais para o cache
+    const credentials = {
+      apiKey: accountState.apiKey,
+      apiSecret: accountState.apiSecret,
+      privateKey: accountState.privateKey,
+      apiUrl: accountState.apiUrl,
+      wsApiUrl: accountState.wsApiUrl,
+      wssMarketUrl: accountState.wssMarketUrl,
+      corretora: accountData.corretora,
+      ambiente: accountData.ambiente,
+      corretoraId: accountData.id_corretora,
+      accountId
+    };
+    
+    // Armazenar no cache
+    accountCredentialsCache.set(accountId, credentials);
+    lastCacheTime = currentTime;
+    
+    console.log(\`[WEBSOCKETS] Credenciais inicializadas com sucesso para conta \${accountId} (corretora: \${accountData.corretora}, ambiente: \${accountData.ambiente})\`);
+    return credentials;
+  } catch (error) {
+    console.error(\`[CONFIG] Erro ao carregar credenciais do banco de dados para conta \${options.accountId || 1}:\`, error.message);
+    throw error;
   }
-  
-  // Limpar userDataWebSocket
-  const accountState = getAccountConnectionState(accountId);
-  if (accountState) {
-    if (accountState.userDataWebSocket && accountState.userDataWebSocket.readyState !== WebSocket.CLOSED) {
-      accountState.userDataWebSocket.close();
-    }
+}`;
     
-    accountState.userDataWebSocket = null;
+    // Substituir a função loadCredentialsFromDatabase
+    conteudo = conteudo.replace(
+      /async function loadCredentialsFromDatabase\(options = \{\}\)[\s\S]*?^}/m,
+      loadCredentialsImprovement.trim()
+    );
     
-    // Limpar keepalive do listenKey
-    if (accountState.listenKeyKeepAliveInterval) {
-      clearInterval(accountState.listenKeyKeepAliveInterval);
-      accountState.listenKeyKeepAliveInterval = null;
-    }
-  }
-  
-  console.log(\`[WEBSOCKETS] Todas as conexões WebSocket foram reiniciadas para conta \${accountId}\`);
-}
-
-`;
-
-      // Encontrar a posição correta para inserir a função (antes do module.exports)
-      const moduleExportsIndex = content.lastIndexOf('module.exports');
-      if (moduleExportsIndex === -1) {
-        throw new Error('Não foi possível encontrar module.exports no arquivo');
-      }
-
-      // Inserir a função antes do module.exports
-      content = content.slice(0, moduleExportsIndex) + resetFunction + content.slice(moduleExportsIndex);
-      console.log('Função reset adicionada');
-    }
-
-    // Salvar as alterações
-    await fs.writeFile(websocketsFile, content, 'utf8');
-    console.log('Arquivo websockets.js atualizado com sucesso!');
-    
-    // Agora verificar e atualizar o websocketApi.js para usar a função getCredentials
-    const websocketApiFile = path.join(__dirname, '..', 'websocketApi.js');
-    let apiContent = await fs.readFile(websocketApiFile, 'utf8');
-    
-    // Verificar se há referência a getCredentials
-    if (apiContent.includes('const credentials = await websockets.getCredentials(')) {
-      // Substituir com código que funciona com ou sem a função getCredentials
-      apiContent = apiContent.replace(
-        /const credentials = await websockets\.getCredentials\(accountId\);/g,
-        `// Obter credenciais de forma segura
-    let credentials;
-    try {
-      // Tentar usar getCredentials se existir
-      if (typeof websockets.getCredentials === 'function') {
-        credentials = await websockets.getCredentials(accountId);
-      } else {
-        // Fallback: obter do estado da conexão
-        const accountState = websockets.getAccountConnectionState(accountId);
-        if (!accountState) {
-          throw new Error(\`Estado da conexão não encontrado para conta \${accountId}\`);
-        }
-        
-        credentials = {
-          apiKey: accountState.apiKey,
-          apiSecret: accountState.apiSecret,
-          apiUrl: accountState.apiUrl,
-          wsApiUrl: accountState.wsApiUrl
-        };
-      }
-    } catch (credError) {
-      console.error(\`[WS-API] Erro ao obter credenciais: \${credError.message}\`);
-      throw credError;
-    }`
-      );
-      
-      console.log('Código de obtenção de credenciais no websocketApi.js atualizado');
-      await fs.writeFile(websocketApiFile, apiContent, 'utf8');
-    }
-    
-    console.log('\nCorreções aplicadas com sucesso. Execute novamente seus scripts.');
+    await fs.writeFile(websocketsPath, conteudo, 'utf8');
+    console.log('✅ Arquivo websockets.js corrigido com sucesso!');
     
   } catch (error) {
-    console.error('Erro ao atualizar websockets.js:', error);
+    console.error('❌ Erro ao corrigir websockets.js:', error);
   }
 }
 
