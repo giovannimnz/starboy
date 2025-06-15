@@ -40,17 +40,10 @@ function testarWebSocketApi(url, descricao) {
     // Tentar conectar
     let ws;
     try {
-      // Para WebSocket Market Stream, adicionar um símbolo de teste
+      // Para WebSocket Market Stream, adicionar um símbolo e stream específico
       let wsUrl = url;
       if (url.includes('fstream.binance.com') || url.includes('stream.binancefuture.com')) {
-        wsUrl = `${url}/btcusdt@bookTicker`;
-      }
-      
-      // Para WebSocket API, remover o /v1 duplicado
-      if (url.endsWith('/v1')) {
-        wsUrl = url;
-      } else if (url.includes('/ws-fapi')) {
-        wsUrl = url.replace(/\/v1\/v1$/, '/v1');
+        wsUrl = `${url}/ws/btcusdt@bookTicker`;
       }
       
       ws = new WebSocket(wsUrl);
@@ -59,26 +52,11 @@ function testarWebSocketApi(url, descricao) {
         console.log(`✅ ${descricao} funcionando! Conexão WebSocket estabelecida com sucesso.`);
         clearTimeout(timeout);
         
-        // Enviar ping simples
-        if (url.includes('ws-api') || url.includes('ws-fapi')) {
-          // WebSocket API (FAPI) - usar formato de requisição adequado
-          const pingRequest = {
-            id: '1',
-            method: 'ping'
-          };
-          ws.send(JSON.stringify(pingRequest));
-          
-          // Esperar um pouco antes de fechar
-          setTimeout(() => {
-            ws.close();
-            resolve(true);
-          }, 1000);
-        } else {
-          // WebSocket de market data (simples)
-          // Fechar após conexão com sucesso
+        // Fechar após conexão com sucesso
+        setTimeout(() => {
           ws.close();
           resolve(true);
-        }
+        }, 1000);
       });
       
       ws.on('message', (data) => {
