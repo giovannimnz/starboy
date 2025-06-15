@@ -3,7 +3,7 @@ require('dotenv').config({ path: path.resolve(__dirname, './.env') });
 const { initializeDatabase, getDatabaseInstance } = require('./db/conexao');
 const readline = require('readline');
 const { spawn } = require('child_process');
-const { initPool } = require('./db/conexao');
+const { initPool, formatDateForMySQL } = require('./db/conexao');
 
 
 // Mapear contas ativas para seus processos
