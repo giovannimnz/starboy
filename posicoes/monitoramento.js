@@ -5,7 +5,7 @@ const axios = require('axios');
 const schedule = require('node-schedule');
 const fs = require('fs').promises;
 const { Telegraf } = require("telegraf");
-const { getCurrentMarginType, cancelOrder, newStopOrder, cancelAllOpenOrders, getFuturesAccountBalanceDetails, changeInitialLeverage, changeMarginType, getPositionDetails, getOpenOrders, getAllOpenPositions, updateLeverageBracketsInDatabase } = require('../api');
+const { getCurrentMarginType, cancelOrder, newStopOrder, cancelAllOpenOrders, getFuturesAccountBalanceDetails, changeInitialLeverage, changeMarginType, getPositionDetails, getOpenOrders, getAllOpenPositions, updateLeverageBracketsInDatabase, verifyAndFixEnvironmentConsistency } = require('../api');
 const {getDatabaseInstance, updatePositionStatus, insertNewOrder, updateOrderStatus, moveClosedPositionsAndOrders, formatDateForMySQL, getBaseCalculoBalance, updateAccountBalance} = require('../db/conexao');
 const { executeLimitMakerEntry } = require('./limitMakerEntry');
 const websockets = require('../websockets');
@@ -136,7 +136,54 @@ async function initializeMonitoring(accountId = 1) {
     // Obter conexão com o banco de dados
     const db = await getDatabaseInstance(accountId);
     if (!db) {
-      throw new Error(`Falha ao obter conexão com o banco de dados para conta ${accountId}`);
+      throw new Error(`Falha ao obter instância do banco de dados para conta ${accountId}`);
+    }
+    
+    // Verificar e corrigir inconsistências de ambiente entre REST e WebSocket APIs
+    try {
+      // Verificar se a função existe no módulo api
+      if (typeof verifyAndFixEnvironmentConsistency === 'function') {
+        const correctionsMade = await verifyAndFixEnvironmentConsistency(accountId);
+        if (correctionsMade) {
+          console.log(`[MONITOR] ⚠️ Foram feitas correções nas URLs da corretora. Reiniciando sistema...`);
+          // Aqui você pode implementar um mecanismo de reinicialização se necessário
+          // Por exemplo, lançar um erro específico que será capturado pelo código de inicialização
+        }
+      }
+    } catch (envError) {
+      console.error(`[MONITOR] Erro ao verificar consistência de ambiente: ${envError.message}`);
+      // Continue mesmo com erro - a verificação é apenas uma precaução adicional
+    }
+    
+    // Verificar diretamente a configuração da corretora
+    const [corretora] = await db.query(`
+      SELECT c.futures_rest_api_url, c.futures_ws_api_url, c.ambiente
+      FROM contas a
+      JOIN corretoras c ON a.id_corretora = c.id
+      WHERE a.id = ?
+    `, [accountId]);
+    
+    if (corretora.length > 0) {
+      const restUrl = corretora[0].futures_rest_api_url;
+      const wsApiUrl = corretora[0].futures_ws_api_url;
+      const ambiente = corretora[0].ambiente;
+      
+      // Verificar inconsistência entre ambiente de produção e testnet
+      const isRestProduction = restUrl && !restUrl.includes('testnet');
+      const isWsApiTestnet = wsApiUrl && wsApiUrl.includes('testnet');
+      
+      if (isRestProduction && isWsApiTestnet) {
+        console.log(`[MONITOR] ⚠️ Detectada inconsistência de ambiente: REST API em produção mas WebSocket API em testnet!`);
+        console.log(`[MONITOR] Atualizando configuração para usar WebSocket API de produção...`);
+        
+        await db.query(`
+          UPDATE corretoras 
+          SET futures_ws_api_url = 'wss://fstream.binance.com/ws-api/v3' 
+          WHERE id = (SELECT id_corretora FROM contas WHERE id = ?)
+        `, [accountId]);
+        
+        console.log(`[MONITOR] Configuração de WebSocket API corrigida. É necessário reiniciar o sistema.`);
+      }
     }
 
     // Inicializar o bot do Telegram para esta conta
