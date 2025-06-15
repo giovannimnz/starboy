@@ -197,7 +197,7 @@ async function checkNewTrades(accountId = 1) {
         }
       }
     } else {
-      console.log(`[CHECK_TRADES] Nenhum sinal pendente para conta ${accountId}`);
+      //console.log(`[CHECK_TRADES] Nenhum sinal pendente para conta ${accountId}`);
     }
   } catch (error) {
     console.error(`[CHECK_TRADES] Erro para conta ${accountId}:`, error);

@@ -210,7 +210,7 @@ async function initializeMonitoring(accountId = 1) {
     console.log(`[MONITOR] Agendando verificação de sinais a cada 15 segundos para conta ${accountId}`);
     accountJobs.checkNewTrades = schedule.scheduleJob('*/15 * * * * *', async () => {
       try {
-        console.log(`[MONITOR] Executando verificação periódica de sinais para conta ${accountId}...`);
+        //console.log(`[MONITOR] Executando verificação periódica de sinais para conta ${accountId}...`);
         await checkNewTrades(accountId);
       } catch (error) {
         console.error(`[MONITOR] Erro na verificação periódica de sinais para conta ${accountId}:`, error);
