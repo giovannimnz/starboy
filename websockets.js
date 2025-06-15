@@ -59,88 +59,81 @@ function getPriceWebsockets(accountId = 1, create = false) {
 }
 
 /**
- * Carrega credenciais do banco de dados para uma conta
- * @param {number} accountId - ID da conta
- * @returns {Promise<Object>} - Credenciais carregadas
+ * Carrega credenciais do banco de dados para uma conta específica
+ * @param {Object} options - Opções de carregamento
+ * @returns {Promise<Object>} - Objeto com as credenciais
  */
-async function loadCredentialsFromDatabase(accountId) {
+async function loadCredentialsFromDatabase(options = {}) {
   try {
-    // Verificar se já está em cache
-    if (accountCredentialsCache.has(accountId)) {
-      console.log(`[WEBSOCKETS] Usando credenciais em cache para conta ${accountId}`);
-      const cachedCreds = accountCredentialsCache.get(accountId);
-      
-      // CORREÇÃO: Garantir que o estado da conta existe
-      if (!accountConnections.has(accountId)) {
-        console.log(`[WEBSOCKETS] Inicializando estado da conta ${accountId} a partir do cache...`);
-        accountConnections.set(accountId, {
-          ...cachedCreds,
-          isAuthenticated: false,
-          wsApi: null,
-          requestCallbacks: new Map(),
-          messageQueue: []
-        });
-      }
-      
-      return cachedCreds;
+    const { accountId = 1, forceRefresh = false } = options;
+    
+    console.log(`[API] Carregando credenciais para conta ID: ${accountId}`);
+    
+    // Usar cache se disponível e não forçar atualização
+    if (!forceRefresh && accountCredentials.has(accountId) && 
+        (Date.now() - lastCacheTime < CACHE_TTL)) {
+      //console.log(`[API] Usando credenciais em cache para conta ${accountId}`);
+      return accountCredentials.get(accountId);
     }
-
-    console.log(`[WEBSOCKETS] Carregando credenciais do banco para conta ${accountId}...`);
     
     const db = await getDatabaseInstance(accountId);
-    if (!db) {
-      throw new Error(`Não foi possível conectar ao banco para conta ${accountId}`);
-    }
-
+    
+    // CORREÇÃO: Usar estrutura real da tabela contas
     const [rows] = await db.query(`
-      SELECT api_key, api_secret, ws_api_key, ws_api_secret, private_key, corretora, ambiente
+      SELECT 
+        id,
+        nome,
+        api_key, 
+        api_secret,
+        api_url,
+        ativa
       FROM contas 
-      WHERE id = ?
+      WHERE id = ? AND ativa = 1
     `, [accountId]);
-
-    if (rows.length === 0) {
-      throw new Error(`Conta ${accountId} não encontrada no banco de dados`);
+    
+    if (!rows || rows.length === 0) {
+      throw new Error(`Conta ID ${accountId} não encontrada ou não está ativa`);
     }
-
+    
     const account = rows[0];
+    
+    // Determinar ambiente baseado na URL
+    let environment = 'prd';
+    let baseUrl = 'https://fapi.binance.com';
+    
+    if (account.api_url) {
+      if (account.api_url.includes('testnet')) {
+        environment = 'test';
+        baseUrl = 'https://testnet.binancefuture.com';
+      } else {
+        baseUrl = account.api_url;
+      }
+    }
+    
     const credentials = {
+      accountId: account.id,
+      accountName: account.nome,
       apiKey: account.api_key,
       secretKey: account.api_secret,
-      wsApiKey: account.ws_api_key,
-      wsApiSecret: account.ws_api_secret,
-      privateKey: account.private_key,
-      broker: account.corretora,
-      environment: account.ambiente
+      baseUrl: baseUrl,
+      environment: environment,
+      broker: 'binance'
     };
 
-    // Cache das credenciais
-    accountCredentialsCache.set(accountId, credentials);
-
-    // CORREÇÃO PRINCIPAL: Inicializar estado da conta
-    if (!accountConnections.has(accountId)) {
-      console.log(`[WEBSOCKETS] Inicializando estado da conexão para conta ${accountId}...`);
-      accountConnections.set(accountId, {
-        ...credentials,
-        isAuthenticated: false,
-        wsApi: null,
-        requestCallbacks: new Map(),
-        messageQueue: []
-      });
-    } else {
-      // Atualizar credenciais no estado existente
-      const existingState = accountConnections.get(accountId);
-      accountConnections.set(accountId, {
-        ...existingState,
-        ...credentials
-      });
+    if (!credentials.apiKey || !credentials.secretKey) {
+      throw new Error(`Credenciais incompletas para conta ${accountId}. API Key ou Secret Key não configurados.`);
     }
 
-    console.log(`[WEBSOCKETS] Credenciais inicializadas com sucesso para conta ${accountId} (corretora: ${account.corretora}, ambiente: ${account.ambiente})`);
+    // Cache das credenciais
+    accountCredentials.set(accountId, credentials);
+    lastCacheTime = Date.now();
+    
+    console.log(`[API] ✅ Credenciais carregadas para conta ${accountId} (${account.nome}) - ${environment}`);
     
     return credentials;
 
   } catch (error) {
-    console.error(`[WEBSOCKETS] Erro ao carregar credenciais para conta ${accountId}:`, error.message);
+    console.error(`[API] Erro ao carregar credenciais para conta ${accountId}:`, error.message);
     throw error;
   }
 }
@@ -494,7 +487,7 @@ async function startWebSocketApi(accountId) {
   try {
     console.log(`[WS-API] Iniciando WebSocket API para conta ${accountId}...`);
     
-    // CORREÇÃO: Garantir que as credenciais estão carregadas
+    // Garantir que as credenciais estão carregadas
     let accountState = getAccountConnectionState(accountId);
     
     if (!accountState) {
@@ -514,11 +507,20 @@ async function startWebSocketApi(accountId) {
       return false;
     }
 
-    // Determinar endpoint baseado no ambiente
-    const isTestnet = accountState.environment === 'test' || accountState.environment === 'testnet';
-    const endpoint = isTestnet ? 
-      'wss://testnet.binancefuture.com/ws-fapi/v1' : 
-      'wss://ws-fapi.binance.com/ws-fapi/v1';
+    // CORREÇÃO: Usar URL customizada se disponível, senão usar padrão
+    let endpoint;
+    
+    if (accountState.wsApiUrl) {
+      endpoint = accountState.wsApiUrl;
+      console.log(`[WS-API] Usando URL customizada da conta: ${endpoint}`);
+    } else {
+      // Determinar endpoint baseado no ambiente
+      const isTestnet = accountState.environment === 'test' || accountState.environment === 'testnet';
+      endpoint = isTestnet ? 
+        'wss://testnet.binancefuture.com/ws-fapi/v1' : 
+        'wss://ws-fapi.binance.com/ws-fapi/v1';
+      console.log(`[WS-API] Usando URL padrão (${accountState.environment}): ${endpoint}`);
+    }
 
     console.log(`[WS-API] Conectando ao endpoint: ${endpoint} para conta ${accountId}`);
 
