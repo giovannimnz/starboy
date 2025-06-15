@@ -55,7 +55,7 @@ async function initializeHandlers(accountId = 1) {
       if (isRestProduction) {
         // Se REST é produção, WS deve ser produção
         await db.query(
-          `UPDATE corretoras SET futures_ws_api_url = 'wss://fstream.binance.com/ws-api/v3' 
+          `UPDATE corretoras SET futures_ws_api_url = 'wss://fstream.binance.com/ws-api/v1' 
            WHERE id = ?`,
           [account.id_corretora]
         );
@@ -63,7 +63,7 @@ async function initializeHandlers(accountId = 1) {
       } else {
         // Se REST é testnet, WS deve ser testnet
         await db.query(
-          `UPDATE corretoras SET futures_ws_api_url = 'wss://stream.binancefuture.com/ws-api/v3' 
+          `UPDATE corretoras SET futures_ws_api_url = 'wss://stream.binancefuture.com/ws-api/v1' 
            WHERE id = ?`,
           [account.id_corretora]
         );

@@ -121,7 +121,7 @@ async function verificarCorretoras() {
       await testarWebSocketApi(corretora.futures_ws_market_url, "WebSocket Market Stream");
       
       // Testar URL WebSocket API
-      await testarWebSocketApi(corretora.futures_ws_api_url + '/v1', "WebSocket API (FAPI)");
+      await testarWebSocketApi(corretora.futures_ws_api_url + "WebSocket API (FAPI)");
       
       // Verificar se as URLs estão sendo utilizadas corretamente
       console.log("\nVerificando se alguma conta usa esta corretora...");
