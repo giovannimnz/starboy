@@ -23,7 +23,7 @@ async function testarApiUrl(url, descricao) {
   }
 }
 
-// Função para testar a WebSocket API
+// Função para testar a WebSocket Market Stream
 function testarWebSocketApi(url, descricao) {
   return new Promise((resolve) => {
     console.log(`Testando ${descricao}: ${url}`);
@@ -40,7 +40,20 @@ function testarWebSocketApi(url, descricao) {
     // Tentar conectar
     let ws;
     try {
-      ws = new WebSocket(url);
+      // Para WebSocket Market Stream, adicionar um símbolo de teste
+      let wsUrl = url;
+      if (url.includes('fstream.binance.com') || url.includes('stream.binancefuture.com')) {
+        wsUrl = `${url}/btcusdt@bookTicker`;
+      }
+      
+      // Para WebSocket API, remover o /v1 duplicado
+      if (url.endsWith('/v1')) {
+        wsUrl = url;
+      } else if (url.includes('/ws-fapi')) {
+        wsUrl = url.replace(/\/v1\/v1$/, '/v1');
+      }
+      
+      ws = new WebSocket(wsUrl);
       
       ws.on('open', () => {
         console.log(`✅ ${descricao} funcionando! Conexão WebSocket estabelecida com sucesso.`);
@@ -120,8 +133,12 @@ async function verificarCorretoras() {
       // Testar URL WebSocket Market (Stream)
       await testarWebSocketApi(corretora.futures_ws_market_url, "WebSocket Market Stream");
       
-      // Testar URL WebSocket API
-      await testarWebSocketApi(corretora.futures_ws_api_url + '/v1', "WebSocket API (FAPI)");
+      // Testar URL WebSocket API - remover o /v1 adicionado incorretamente
+      const wsApiUrl = corretora.futures_ws_api_url.endsWith('/v1') 
+        ? corretora.futures_ws_api_url
+        : `${corretora.futures_ws_api_url}/v1`;
+        
+      await testarWebSocketApi(wsApiUrl, "WebSocket API (FAPI)");
       
       // Verificar se as URLs estão sendo utilizadas corretamente
       console.log("\nVerificando se alguma conta usa esta corretora...");
