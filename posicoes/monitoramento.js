@@ -218,27 +218,17 @@ async function initializeMonitoring(accountId = 1) {
     });
     
     // Job secundário: forçar processamento de sinais pendentes a cada 60 segundos
-    console.log(`[MONITOR] Agendando verificação forçada de sinais a cada 60 segundos para conta ${accountId}`);
-    accountJobs.forceProcessPending = schedule.scheduleJob('0 */1 * * * *', async () => {
-      try {
-        console.log(`[MONITOR] Executando verificação forçada de sinais pendentes para conta ${accountId}...`);
-        await forceProcessPendingSignals(accountId);
-      } catch (error) {
-        console.error(`[MONITOR] Erro na verificação forçada de sinais para conta ${accountId}:`, error);
-      }
-    });
+     
+    //console.log(`[MONITOR] Agendando verificação forçada de sinais a cada 60 segundos para conta ${accountId}`);
+    //accountJobs.forceProcessPending = schedule.scheduleJob('0 */1 * * * *', async () => {
+    //  try {
+    //    console.log(`[MONITOR] Executando verificação forçada de sinais pendentes para conta ${accountId}...`);
+    //    await forceProcessPendingSignals(accountId);
+    //  } catch (error) {
+    //    console.error(`[MONITOR] Erro na verificação forçada de sinais para conta ${accountId}:`, error);
+    //  }
+    //});
 
-    // EXECUTAR VERIFICAÇÃO IMEDIATA após 5 segundos
-    console.log('[MONITOR] Agendando verificação imediata de sinais pendentes...');
-    setTimeout(async () => {
-      try {
-        console.log('[MONITOR] === EXECUTANDO VERIFICAÇÃO IMEDIATA ===');
-        await checkNewTrades(accountId);
-        console.log('[MONITOR] === VERIFICAÇÃO IMEDIATA CONCLUÍDA ===');
-      } catch (error) {
-        console.error('[MONITOR] Erro na verificação imediata de sinais:', error);
-      }
-    }, 5000);
 
     // EXECUTAR VERIFICAÇÃO FORÇADA após 10 segundos se a primeira não processar
     setTimeout(async () => {
@@ -290,81 +280,6 @@ async function initializeMonitoring(accountId = 1) {
   }
 }
 
-/**
- * Verifica e processa novos sinais/trades
- * @param {number} accountId - ID da conta
- */
-async function checkNewTrades(accountId = 1) {
-  try {
-    const db = await getDatabaseInstance(accountId);
-    if (!db) {
-      console.error(`[CHECK_TRADES] Não foi possível conectar ao banco para conta ${accountId}`);
-      return;
-    }
-
-    const [pendingSignals] = await db.query(`
-      SELECT * FROM webhook_signals 
-      WHERE status IN ('PENDING', 'AGUARDANDO_ACIONAMENTO') 
-      AND (conta_id = ? OR conta_id IS NULL)
-      ORDER BY created_at ASC
-    `, [accountId]);
-
-    if (pendingSignals.length > 0) {
-      console.log(`[CHECK_TRADES] Processando ${pendingSignals.length} sinais pendentes para conta ${accountId}...`);
-      
-      for (const signal of pendingSignals) {
-        try {
-          await processSignal(db, signal, accountId);
-        } catch (signalError) {
-          console.error(`[CHECK_TRADES] Erro ao processar sinal ${signal.id}:`, signalError.message);
-        }
-      }
-    } else {
-      console.log(`[CHECK_TRADES] Nenhum sinal pendente para conta ${accountId}`);
-    }
-  } catch (error) {
-    console.error(`[CHECK_TRADES] Erro para conta ${accountId}:`, error);
-  }
-}
-
-/**
- * Força o processamento de sinais pendentes
- * @param {number} accountId - ID da conta
- */
-async function forceProcessPendingSignals(accountId = 1) {
-  try {
-    const db = await getDatabaseInstance(accountId);
-    if (!db) {
-      console.error(`[FORCE_PROCESS] Não foi possível conectar ao banco para conta ${accountId}`);
-      return;
-    }
-
-    // Verificar qual coluna de atualização existe
-    const [tableInfo] = await db.query(`
-      SHOW COLUMNS FROM webhook_signals LIKE '%update%'
-    `);
-    
-    let updateColumn = 'last_update'; // padrão
-    if (tableInfo.length > 0) {
-      updateColumn = tableInfo[0].Field;
-    }
-
-    // Resetar sinais travados há mais de 5 minutos
-    await db.query(`
-      UPDATE webhook_signals 
-      SET status = 'PENDING' 
-      WHERE status = 'PROCESSANDO' 
-      AND TIMESTAMPDIFF(MINUTE, ${updateColumn}, NOW()) > 5
-      AND (conta_id = ? OR conta_id IS NULL)
-    `, [accountId]);
-
-    console.log(`[FORCE_PROCESS] Sinais travados resetados para conta ${accountId}`);
-    await checkNewTrades(accountId);
-  } catch (error) {
-    console.error(`[FORCE_PROCESS] Erro para conta ${accountId}:`, error);
-  }
-}
-
 // Verifica se está sendo executado como script principal
 const accountId = process.argv.includes('--account') 
   ? parseInt(process.argv[process.argv.indexOf('--account') + 1]) || 1 
@@ -389,10 +304,6 @@ if (require.main === module) {
 
 module.exports = {
   initializeMonitoring,
-  checkNewTrades,
-  forceProcessPendingSignals,
-  processSignal,
-  handleOrderUpdate,
-  handleAccountUpdate,
-  onPriceUpdate
+  checkNewTrades: (accountId) => checkNewTrades(accountId),
+  forceProcessPendingSignals: (accountId) => forceProcessPendingSignals(accountId)
 };
