@@ -4,7 +4,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const fs = require('fs');
-const { getDatabaseInstance } = require('./db/conexao');
+const { getDatabaseInstance } = require('../db/conexao');
 
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
@@ -103,7 +103,6 @@ async function loadCredentialsFromDatabase(options = {}) {
     
     accountState.apiKey = accountData.api_key;
     accountState.apiSecret = accountData.api_secret;
-    // CORREÇÃO: usar ws_api_secret como privateKey
     accountState.privateKey = accountData.ws_api_secret;
     accountState.apiUrl = accountData.futures_rest_api_url;
     accountState.wsApiUrl = accountData.futures_ws_api_url;
@@ -114,7 +113,6 @@ async function loadCredentialsFromDatabase(options = {}) {
     const credentials = {
       apiKey: accountState.apiKey,
       apiSecret: accountState.apiSecret,
-      // CORREÇÃO: usar ws_api_secret como privateKey
       privateKey: accountState.privateKey,
       apiUrl: accountState.apiUrl,
       wsApiUrl: accountState.wsApiUrl,
@@ -1273,6 +1271,94 @@ function reset(accountId = 1) {
   }
   
   console.log(`[WEBSOCKETS] Todas as conexões WebSocket foram reiniciadas para conta ${accountId}`);
+}
+
+async function verificarChavePrivada() {
+  try {
+    console.log('=== VERIFICAÇÃO DA CHAVE PRIVADA ED25519 ===');
+    
+    const db = await getDatabaseInstance();
+    
+    // Verificar credenciais da conta 1
+    const [contas] = await db.query(`
+      SELECT c.id, c.nome, c.api_key, c.api_secret, 
+             c.ws_api_key, c.ws_api_secret, c.private_key,
+             cor.corretora, cor.ambiente
+      FROM contas c 
+      JOIN corretoras cor ON c.id_corretora = cor.id
+      WHERE c.id = 1
+    `);
+    
+    if (contas.length === 0) {
+      console.log('❌ Conta ID 1 não encontrada');
+      return;
+    }
+    
+    const conta = contas[0];
+    console.log('Informações da Conta:');
+    console.log(`- ID: ${conta.id}`);
+    console.log(`- Nome: ${conta.nome}`);
+    console.log(`- Corretora: ${conta.corretora} (${conta.ambiente})`);
+    console.log(`- API Key: ${conta.api_key ? `${conta.api_key.substring(0, 8)}...` : '❌ Não configurada'}`);
+    console.log(`- API Secret: ${conta.api_secret ? '✅ Configurada' : '❌ Não configurada'}`);
+    console.log(`- WS API Key: ${conta.ws_api_key ? `${conta.ws_api_key.substring(0, 8)}...` : '❌ Não configurada'}`);
+    console.log(`- WS API Secret: ${conta.ws_api_secret ? '✅ Configurada' : '❌ Não configurada'}`);
+    console.log(`- Private Key: ${conta.private_key ? '✅ Configurada' : '❌ Não configurada'}`);
+    
+    // Verificar se private_key está vazia ou null
+    if (!conta.private_key || conta.private_key.trim() === '') {
+      console.log('\n⚠️ PROBLEMA IDENTIFICADO: Private Key está vazia!');
+      console.log('\nSoluções possíveis:');
+      console.log('1. Se você tem uma chave privada Ed25519, atualize o banco de dados');
+      console.log('2. Se você só tem API Key/Secret padrão, desabilite WebSocket API');
+      console.log('3. Gere uma nova chave Ed25519 na Binance');
+      
+      const readline = require('readline');
+      const rl = readline.createInterface({
+        input: process.stdin,
+        output: process.stdout
+      });
+      
+      rl.question('\nDeseja desabilitar temporariamente a WebSocket API? (s/n): ', async (resposta) => {
+        if (resposta.toLowerCase() === 's' || resposta.toLowerCase() === 'sim') {
+          // Atualizar para copiar api_secret para private_key temporariamente
+          await db.query(
+            'UPDATE contas SET private_key = ? WHERE id = 1',
+            [conta.api_secret || 'temp_disabled']
+          );
+          console.log('✅ Private key temporária configurada');
+          console.log('⚠️ WebSocket API pode não funcionar corretamente');
+        } else {
+          console.log('Para configurar uma chave privada Ed25519:');
+          console.log('1. Acesse sua conta Binance');
+          console.log('2. Vá em API Management');
+          console.log('3. Gere uma nova API Key com Ed25519');
+          console.log('4. Atualize o banco: UPDATE contas SET private_key = "SUA_CHAVE_PRIVADA" WHERE id = 1;');
+        }
+        rl.close();
+        process.exit(0);
+      });
+    } else {
+      // Verificar se a chave privada tem o tamanho correto
+      let privateKey = conta.private_key;
+      if (privateKey.startsWith('0x')) {
+        privateKey = privateKey.slice(2);
+      }
+      
+      const keyBuffer = Buffer.from(privateKey, 'hex');
+      console.log(`\nTamanho da chave privada: ${keyBuffer.length} bytes`);
+      
+      if (keyBuffer.length === 32) {
+        console.log('✅ Chave privada Ed25519 tem tamanho correto');
+      } else {
+        console.log('❌ Chave privada Ed25519 tem tamanho incorreto (esperado: 32 bytes)');
+        console.log('A chave pode ser uma API Secret normal, não uma chave Ed25519');
+      }
+    }
+    
+  } catch (error) {
+    console.error('Erro:', error);
+  }
 }
 
 module.exports = {
