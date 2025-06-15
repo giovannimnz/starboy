@@ -113,7 +113,7 @@ function determineOrderType(orderMsg) {
 }
 
 // Atualizar dados de alavancagem ao iniciar o sistema
-/*
+
 (async () => {
   try {
     try {
@@ -128,7 +128,7 @@ function determineOrderType(orderMsg) {
     console.error('Erro ao atualizar dados de alavancagem:', error);
   }
 })();
-*/
+
 
 const accountId = process.argv.includes('--account') 
   ? parseInt(process.argv[process.argv.indexOf('--account') + 1]) || 1 
