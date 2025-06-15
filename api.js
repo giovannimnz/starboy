@@ -845,6 +845,18 @@ async function getPrice(symbol, accountId = 1) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<void>}
  */
+/**
+ * Atualiza brackets de alavancagem no banco de dados
+ * @param {string} exchange - Nome da corretora
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<void>}
+ */
+/**
+ * Atualiza brackets de alavancagem no banco de dados
+ * @param {string} exchange - Nome da corretora
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<void>}
+ */
 async function updateLeverageBracketsInDatabase(exchange = 'binance', accountId = 1) {
   try {
     console.log(`[API] Atualizando brackets de alavancagem para ${exchange}...`);
@@ -853,7 +865,7 @@ async function updateLeverageBracketsInDatabase(exchange = 'binance', accountId 
     
     // Verificar última atualização
     const [lastUpdate] = await db.query(
-      'SELECT MAX(data_atualizacao) as ultima_atualizacao FROM alavancagem_brackets WHERE exchange = ?',
+      'SELECT MAX(updated_at) as ultima_atualizacao FROM alavancagem WHERE corretora = ?',
       [exchange]
     );
     
@@ -872,23 +884,25 @@ async function updateLeverageBracketsInDatabase(exchange = 'binance', accountId 
     const brackets = await getAllLeverageBrackets(null, accountId);
     
     // Limpar dados antigos
-    await db.query('DELETE FROM alavancagem_brackets WHERE exchange = ?', [exchange]);
+    await db.query('DELETE FROM alavancagem WHERE corretora = ?', [exchange]);
     
     // Inserir novos dados
     for (const bracket of brackets) {
-      for (const levelBracket of bracket.brackets) {
+      for (let i = 0; i < bracket.brackets.length; i++) {
+        const levelBracket = bracket.brackets[i];
         await db.query(
-          `INSERT INTO alavancagem_brackets 
-           (exchange, symbol, notional_floor, notional_cap, maint_margin_ratio, cum, initial_leverage, data_atualizacao)
-           VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`,
+          `INSERT INTO alavancagem 
+           (symbol, corretora, bracket, initial_leverage, notional_cap, notional_floor, maint_margin_ratio, cum, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
           [
-            exchange,
             bracket.symbol,
-            parseFloat(levelBracket.notionalFloor),
+            exchange,
+            i + 1, // bracket number (1, 2, 3, etc.)
+            parseInt(levelBracket.initialLeverage),
             parseFloat(levelBracket.notionalCap),
+            parseFloat(levelBracket.notionalFloor),
             parseFloat(levelBracket.maintMarginRatio),
-            parseFloat(levelBracket.cum),
-            parseInt(levelBracket.initialLeverage)
+            parseFloat(levelBracket.cum)
           ]
         );
       }
@@ -908,14 +922,39 @@ async function updateLeverageBracketsInDatabase(exchange = 'binance', accountId 
  * @param {number} accountId - ID da conta
  * @returns {Promise<Array>} - Brackets do banco de dados
  */
+/**
+ * Obtém brackets de alavancagem do banco de dados
+ * @param {string} symbol - Símbolo do par
+ * @param {string} exchange - Nome da corretora
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Array>} - Brackets do banco de dados
+ */
+/**
+ * Obtém brackets de alavancagem do banco de dados
+ * @param {string} symbol - Símbolo do par
+ * @param {string} exchange - Nome da corretora
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Array>} - Brackets do banco de dados
+ */
 async function getLeverageBracketsFromDb(symbol, exchange = 'binance', accountId = 1) {
   try {
     const db = await getDatabaseInstance(accountId);
     
     const [brackets] = await db.query(
-      `SELECT * FROM alavancagem_brackets 
-       WHERE symbol = ? AND exchange = ? 
-       ORDER BY notional_floor ASC`,
+      `SELECT 
+        id,
+        symbol,
+        corretora,
+        bracket,
+        initial_leverage,
+        notional_cap,
+        notional_floor,
+        maint_margin_ratio,
+        cum,
+        updated_at
+       FROM alavancagem 
+       WHERE symbol = ? AND corretora = ? 
+       ORDER BY bracket ASC`,
       [symbol, exchange]
     );
     
@@ -1041,6 +1080,274 @@ async function verifyAndFixEnvironmentConsistency(accountId = 1) {
   }
 }
 
+
+
+/**
+ * Obtém alavancagem máxima para um símbolo do banco de dados
+ * @param {string} symbol - Símbolo do par
+ * @param {string} exchange - Nome da corretora
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<number>} - Alavancagem máxima
+ */
+async function getMaxLeverageFromDb(symbol, exchange = 'binance', accountId = 1) {
+  try {
+    const db = await getDatabaseInstance(accountId);
+    
+    const [result] = await db.query(
+      `SELECT MAX(initial_leverage) as max_leverage 
+       FROM alavancagem 
+       WHERE symbol = ? AND corretora = ?`,
+      [symbol, exchange]
+    );
+    
+    return result[0]?.max_leverage || 20; // Default 20x se não encontrar
+  } catch (error) {
+    console.error(`[API] Erro ao obter alavancagem máxima do banco para ${symbol}:`, error.message);
+    return 20; // Default
+  }
+}
+
+
+/**
+ * Obtém informações de margem baseada no valor notional
+ * @param {string} symbol - Símbolo do par
+ * @param {number} notionalValue - Valor notional da posição
+ * @param {string} exchange - Nome da corretora
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Informações de margem
+ */
+async function getMarginInfoFromDb(symbol, notionalValue, exchange = 'binance', accountId = 1) {
+  try {
+    const db = await getDatabaseInstance(accountId);
+    
+    const [brackets] = await db.query(
+      `SELECT 
+        bracket,
+        initial_leverage,
+        notional_cap,
+        notional_floor,
+        maint_margin_ratio,
+        cum
+       FROM alavancagem 
+       WHERE symbol = ? AND corretora = ? 
+         AND notional_floor <= ? 
+         AND (notional_cap >= ? OR notional_cap = 0)
+       ORDER BY bracket ASC
+       LIMIT 1`,
+      [symbol, exchange, notionalValue, notionalValue]
+    );
+    
+    if (brackets.length === 0) {
+      // Se não encontrar, pegar o primeiro bracket disponível
+      const [fallback] = await db.query(
+        `SELECT * FROM alavancagem 
+         WHERE symbol = ? AND corretora = ? 
+         ORDER BY bracket ASC 
+         LIMIT 1`,
+        [symbol, exchange]
+      );
+      
+      return fallback[0] || {
+        bracket: 1,
+        initial_leverage: 20,
+        notional_cap: 50000,
+        notional_floor: 0,
+        maint_margin_ratio: 0.004,
+        cum: 0
+      };
+    }
+    
+    return brackets[0];
+  } catch (error) {
+    console.error(`[API] Erro ao obter informações de margem do banco para ${symbol}:`, error.message);
+    return {
+      bracket: 1,
+      initial_leverage: 20,
+      notional_cap: 50000,
+      notional_floor: 0,
+      maint_margin_ratio: 0.004,
+      cum: 0
+    };
+  }
+}
+
+
+/**
+ * Calcula margem necessária baseada no valor notional
+ * @param {string} symbol - Símbolo do par
+ * @param {number} notionalValue - Valor notional da posição
+ * @param {number} leverage - Alavancagem a ser usada
+ * @param {string} exchange - Nome da corretora
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Informações de margem calculada
+ */
+async function calculateRequiredMargin(symbol, notionalValue, leverage, exchange = 'binance', accountId = 1) {
+  try {
+    const marginInfo = await getMarginInfoFromDb(symbol, notionalValue, exchange, accountId);
+    
+    // Verificar se a alavancagem solicitada é permitida
+    if (leverage > marginInfo.initial_leverage) {
+      throw new Error(`Alavancagem ${leverage}x não permitida para ${symbol}. Máxima: ${marginInfo.initial_leverage}x`);
+    }
+    
+    // Calcular margem inicial
+    const initialMargin = notionalValue / leverage;
+    
+    // Calcular margem de manutenção
+    const maintMargin = (notionalValue * marginInfo.maint_margin_ratio) - marginInfo.cum;
+    
+    return {
+      symbol,
+      notionalValue,
+      leverage,
+      bracket: marginInfo.bracket,
+      initialMargin: parseFloat(initialMargin.toFixed(8)),
+      maintMargin: parseFloat(maintMargin.toFixed(8)),
+      maintMarginRatio: marginInfo.maint_margin_ratio,
+      maxLeverage: marginInfo.initial_leverage,
+      notionalCap: marginInfo.notional_cap,
+      notionalFloor: marginInfo.notional_floor
+    };
+  } catch (error) {
+    console.error(`[API] Erro ao calcular margem necessária para ${symbol}:`, error.message);
+    throw error;
+  }
+}
+
+
+
+/**
+ * Obtém alavancagem máxima para um símbolo do banco de dados
+ * @param {string} symbol - Símbolo do par
+ * @param {string} exchange - Nome da corretora
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<number>} - Alavancagem máxima
+ */
+async function getMaxLeverageFromDb(symbol, exchange = 'binance', accountId = 1) {
+  try {
+    const db = await getDatabaseInstance(accountId);
+    
+    const [result] = await db.query(
+      `SELECT MAX(initial_leverage) as max_leverage 
+       FROM alavancagem 
+       WHERE symbol = ? AND corretora = ?`,
+      [symbol, exchange]
+    );
+    
+    return result[0]?.max_leverage || 20; // Default 20x se não encontrar
+  } catch (error) {
+    console.error(`[API] Erro ao obter alavancagem máxima do banco para ${symbol}:`, error.message);
+    return 20; // Default
+  }
+}
+
+
+/**
+ * Obtém informações de margem baseada no valor notional
+ * @param {string} symbol - Símbolo do par
+ * @param {number} notionalValue - Valor notional da posição
+ * @param {string} exchange - Nome da corretora
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Informações de margem
+ */
+async function getMarginInfoFromDb(symbol, notionalValue, exchange = 'binance', accountId = 1) {
+  try {
+    const db = await getDatabaseInstance(accountId);
+    
+    const [brackets] = await db.query(
+      `SELECT 
+        bracket,
+        initial_leverage,
+        notional_cap,
+        notional_floor,
+        maint_margin_ratio,
+        cum
+       FROM alavancagem 
+       WHERE symbol = ? AND corretora = ? 
+         AND notional_floor <= ? 
+         AND (notional_cap >= ? OR notional_cap = 0)
+       ORDER BY bracket ASC
+       LIMIT 1`,
+      [symbol, exchange, notionalValue, notionalValue]
+    );
+    
+    if (brackets.length === 0) {
+      // Se não encontrar, pegar o primeiro bracket disponível
+      const [fallback] = await db.query(
+        `SELECT * FROM alavancagem 
+         WHERE symbol = ? AND corretora = ? 
+         ORDER BY bracket ASC 
+         LIMIT 1`,
+        [symbol, exchange]
+      );
+      
+      return fallback[0] || {
+        bracket: 1,
+        initial_leverage: 20,
+        notional_cap: 50000,
+        notional_floor: 0,
+        maint_margin_ratio: 0.004,
+        cum: 0
+      };
+    }
+    
+    return brackets[0];
+  } catch (error) {
+    console.error(`[API] Erro ao obter informações de margem do banco para ${symbol}:`, error.message);
+    return {
+      bracket: 1,
+      initial_leverage: 20,
+      notional_cap: 50000,
+      notional_floor: 0,
+      maint_margin_ratio: 0.004,
+      cum: 0
+    };
+  }
+}
+
+
+/**
+ * Calcula margem necessária baseada no valor notional
+ * @param {string} symbol - Símbolo do par
+ * @param {number} notionalValue - Valor notional da posição
+ * @param {number} leverage - Alavancagem a ser usada
+ * @param {string} exchange - Nome da corretora
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Informações de margem calculada
+ */
+async function calculateRequiredMargin(symbol, notionalValue, leverage, exchange = 'binance', accountId = 1) {
+  try {
+    const marginInfo = await getMarginInfoFromDb(symbol, notionalValue, exchange, accountId);
+    
+    // Verificar se a alavancagem solicitada é permitida
+    if (leverage > marginInfo.initial_leverage) {
+      throw new Error(`Alavancagem ${leverage}x não permitida para ${symbol}. Máxima: ${marginInfo.initial_leverage}x`);
+    }
+    
+    // Calcular margem inicial
+    const initialMargin = notionalValue / leverage;
+    
+    // Calcular margem de manutenção
+    const maintMargin = (notionalValue * marginInfo.maint_margin_ratio) - marginInfo.cum;
+    
+    return {
+      symbol,
+      notionalValue,
+      leverage,
+      bracket: marginInfo.bracket,
+      initialMargin: parseFloat(initialMargin.toFixed(8)),
+      maintMargin: parseFloat(maintMargin.toFixed(8)),
+      maintMarginRatio: marginInfo.maint_margin_ratio,
+      maxLeverage: marginInfo.initial_leverage,
+      notionalCap: marginInfo.notional_cap,
+      notionalFloor: marginInfo.notional_floor
+    };
+  } catch (error) {
+    console.error(`[API] Erro ao calcular margem necessária para ${symbol}:`, error.message);
+    throw error;
+  }
+}
+
 module.exports = {
   getFuturesAccountBalanceDetails,
   getMaxLeverage,
@@ -1077,6 +1384,9 @@ module.exports = {
   getPrice,
   updateLeverageBracketsInDatabase,
   getLeverageBracketsFromDb,
+  getMaxLeverageFromDb,
+  getMarginInfoFromDb,
+  calculateRequiredMargin,
   cancelPendingEntry,
   loadCredentialsFromDatabase,
   verifyAndFixEnvironmentConsistency
