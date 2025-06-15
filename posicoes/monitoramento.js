@@ -1,5 +1,6 @@
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+const { setupEd25519FromPEM } = require('../websockets');
 
 const schedule = require('node-schedule');
 const { getDatabaseInstance } = require('../db/conexao');
@@ -39,18 +40,17 @@ async function initializeMonitoring(accountId = 1) {
       console.log('[MONITOR] Atualização de brackets de alavancagem concluída com sucesso.');
     } catch (bracketError) {
       console.error('[MONITOR] Erro ao atualizar brackets de alavancagem, mas continuando inicialização:', bracketError.message);
-      // Continuar mesmo com erro nos brackets
     }
     
     // Verificar e corrigir inconsistências de ambiente
     try {
       await verifyAndFixEnvironmentConsistency(accountId);
-      //console.log('[MONITOR] Verificação de consistência de ambiente concluída.');
+      console.log('[MONITOR] Verificação de consistência de ambiente concluída.');
     } catch (envError) {
       console.error('[MONITOR] Erro ao verificar consistência de ambiente, mas continuando:', envError.message);
     }
 
-    // Inicializar bot do Telegram
+    // Inicializar o bot do Telegram para esta conta
     /*
     let bot = null;
     try {
@@ -63,17 +63,17 @@ async function initializeMonitoring(accountId = 1) {
     } catch (telegramError) {
       console.error('[MONITOR] Erro ao inicializar bot do Telegram, mas continuando:', telegramError.message);
     }
-    */
-
-
-    // Inicializar os handlers no websocketApi
+      */
+    
+    await setupEd25519FromPEM(1);
+    // CORREÇÃO: Comentar WebSocket API temporariamente devido ao erro Ed25519
     try {
       console.log('[WS-API] Inicializando handlers para WebSocket API...');
-      await websocketApi.initializeHandlers(accountId);
-      console.log(`[MONITOR] WebSocket API handlers inicializados para conta ${accountId}`);
+      // TEMPORARIAMENTE DESABILITADO devido ao erro Ed25519
+      // await websocketApi.initializeHandlers(accountId);
+      console.log(`[MONITOR] WebSocket API temporariamente desabilitado para conta ${accountId} - usando apenas REST API`);
     } catch (wsError) {
       console.error(`[MONITOR] Erro ao inicializar WebSocket API handlers, continuando com REST API fallback: ${wsError.message}`);
-      // Continuar mesmo com erro, já que podemos usar API REST como fallback
     }
     
     // Configurar handlers com os callbacks adaptados para accountId
@@ -116,12 +116,11 @@ async function initializeMonitoring(accountId = 1) {
       console.log(`[MONITOR] UserDataStream iniciado para conta ${accountId}`);
     } catch (userDataError) {
       console.error(`[MONITOR] Erro ao iniciar UserDataStream, mas continuando: ${userDataError.message}`);
-      // Continuar mesmo com erro
     }
 
     // IMPORTANTE: Limpar sinais com erro antes de verificar pendentes
     try {
-      //console.log('[MONITOR] Limpando sinais com erro...');
+      console.log('[MONITOR] Limpando sinais com erro...');
       await db.query(`
         UPDATE webhook_signals 
         SET status = 'ERROR', 
@@ -130,9 +129,28 @@ async function initializeMonitoring(accountId = 1) {
           AND error_message LIKE '%not defined%'
           AND conta_id = ?
       `, [accountId]);
-      //console.log('[MONITOR] Sinais com erro limpos.');
+      console.log('[MONITOR] Sinais com erro limpos.');
     } catch (cleanError) {
       console.error('[MONITOR] Erro ao limpar sinais com erro:', cleanError.message);
+    }
+
+    // CORREÇÃO: Resetar sinais em PROCESSANDO para PENDING
+    try {
+      console.log('[MONITOR] Resetando sinais em processamento...');
+      const [resetResult] = await db.query(`
+        UPDATE webhook_signals 
+        SET status = 'PENDING', 
+            error_message = NULL,
+            last_update = NOW()
+        WHERE status = 'PROCESSANDO' 
+          AND conta_id = ?
+      `, [accountId]);
+      
+      if (resetResult.affectedRows > 0) {
+        console.log(`[MONITOR] ${resetResult.affectedRows} sinais resetados de PROCESSANDO para PENDING`);
+      }
+    } catch (resetError) {
+      console.error('[MONITOR] Erro ao resetar sinais em processamento:', resetError.message);
     }
 
     // Verificar sinais pendentes ao iniciar
@@ -140,7 +158,7 @@ async function initializeMonitoring(accountId = 1) {
       const [pendingSignals] = await db.query(`
         SELECT id, symbol, side, entry_price, status, error_message
         FROM webhook_signals 
-        WHERE status IN ('PENDING', 'PROCESSANDO', 'AGUARDANDO_ACIONAMENTO')
+        WHERE status IN ('PENDING', 'AGUARDANDO_ACIONAMENTO')
         AND (conta_id = ? OR conta_id IS NULL)
         AND (error_message IS NULL OR error_message NOT LIKE '%not defined%')
       `, [accountId]);
@@ -153,43 +171,20 @@ async function initializeMonitoring(accountId = 1) {
       console.error('[MONITOR] Erro ao verificar sinais pendentes:', signalCheckError.message);
     }
 
-    // Executar verificação imediata de sinais pendentes
-    //console.log('[MONITOR] Agendando verificação imediata de sinais pendentes...');
-    setTimeout(() => {
-      //console.log('[MONITOR] Executando verificação imediata...');
-      forceProcessPendingSignals(accountId).catch(error => {
-        console.error('[MONITOR] Erro na verificação imediata de sinais:', error);
-      });
-    }, 5000);
-
-    // Agendar jobs específicos para esta conta
-    //console.log('[MONITOR] Iniciando agendamento de jobs...');
-    const accountJobs = {};
-    
-    // Agendar verificação periódica de sinais a cada 15 segundos
-    //console.log(`[MONITOR] Agendando verificação periódica de sinais a cada 15 segundos`);
-    accountJobs.checkNewTrades = schedule.scheduleJob('*/15 * * * * *', async () => {
-      try {
-        await checkNewTrades(accountId);
-      } catch (error) {
-        console.error(`[MONITOR] Erro na verificação periódica de sinais:`, error);
-      }
-    });
-    
     // Iniciar monitoramento de preços para posições abertas
     try {
-      //console.log('[MONITOR] Iniciando monitoramento de preços...');
+      console.log('[MONITOR] Iniciando monitoramento de preços...');
       const symbolsCount = await startPriceMonitoring(accountId);
-      //console.log(`[MONITOR] Monitoramento de preços iniciado para ${symbolsCount} símbolos.`);
+      console.log(`[MONITOR] Monitoramento de preços iniciado para ${symbolsCount} símbolos.`);
     } catch (priceError) {
       console.error('[MONITOR] Erro ao iniciar monitoramento de preços, mas continuando:', priceError.message);
     }
 
     // Sincronizar posições com a corretora
     try {
-      //console.log('[MONITOR] Iniciando sincronização de posições...');
+      console.log('[MONITOR] Iniciando sincronização de posições...');
       await syncPositionsWithExchange(accountId);
-      //console.log('[MONITOR] Sincronização de posições concluída com sucesso.');
+      console.log('[MONITOR] Sincronização de posições concluída com sucesso.');
     } catch (syncError) {
       console.error('[MONITOR] Erro ao sincronizar posições, mas continuando:', syncError.message);
     }
@@ -201,7 +196,60 @@ async function initializeMonitoring(accountId = 1) {
       console.error('[MONITOR] Erro ao fazer log de posições:', logError.message);
     }
 
-    //console.log('[MONITOR] Sistema de monitoramento inicializado com sucesso!');
+    // CORREÇÃO PRINCIPAL: Agendar jobs de verificação periódica
+    console.log('[MONITOR] Iniciando agendamento de jobs...');
+    const accountJobs = {};
+    
+    // Job principal: verificar sinais pendentes a cada 15 segundos
+    console.log(`[MONITOR] Agendando verificação de sinais a cada 15 segundos para conta ${accountId}`);
+    accountJobs.checkNewTrades = schedule.scheduleJob('*/15 * * * * *', async () => {
+      try {
+        console.log(`[MONITOR] Executando verificação periódica de sinais para conta ${accountId}...`);
+        await checkNewTrades(accountId);
+      } catch (error) {
+        console.error(`[MONITOR] Erro na verificação periódica de sinais para conta ${accountId}:`, error);
+      }
+    });
+    
+    // Job secundário: forçar processamento de sinais pendentes a cada 60 segundos
+    console.log(`[MONITOR] Agendando verificação forçada de sinais a cada 60 segundos para conta ${accountId}`);
+    accountJobs.forceProcessPending = schedule.scheduleJob('0 */1 * * * *', async () => {
+      try {
+        console.log(`[MONITOR] Executando verificação forçada de sinais pendentes para conta ${accountId}...`);
+        await forceProcessPendingSignals(accountId);
+      } catch (error) {
+        console.error(`[MONITOR] Erro na verificação forçada de sinais para conta ${accountId}:`, error);
+      }
+    });
+
+    // EXECUTAR VERIFICAÇÃO IMEDIATA após 5 segundos
+    console.log('[MONITOR] Agendando verificação imediata de sinais pendentes...');
+    setTimeout(async () => {
+      try {
+        console.log('[MONITOR] === EXECUTANDO VERIFICAÇÃO IMEDIATA ===');
+        await checkNewTrades(accountId);
+        console.log('[MONITOR] === VERIFICAÇÃO IMEDIATA CONCLUÍDA ===');
+      } catch (error) {
+        console.error('[MONITOR] Erro na verificação imediata de sinais:', error);
+      }
+    }, 5000);
+
+    // EXECUTAR VERIFICAÇÃO FORÇADA após 10 segundos se a primeira não processar
+    setTimeout(async () => {
+      try {
+        console.log('[MONITOR] === EXECUTANDO VERIFICAÇÃO FORÇADA ===');
+        await forceProcessPendingSignals(accountId);
+        console.log('[MONITOR] === VERIFICAÇÃO FORÇADA CONCLUÍDA ===');
+      } catch (error) {
+        console.error('[MONITOR] Erro na verificação forçada:', error);
+      }
+    }, 10000);
+
+    console.log('[MONITOR] Sistema de monitoramento inicializado com sucesso!');
+    console.log(`[MONITOR] Jobs agendados: ${Object.keys(accountJobs).length}`);
+    
+    // Armazenar jobs para possível cancelamento futuro
+    scheduledJobs[accountId] = accountJobs;
     
     return accountJobs;
   } catch (error) {
@@ -218,6 +266,7 @@ async function initializeMonitoring(accountId = 1) {
         const basicJobs = {};
         basicJobs.checkNewTrades = schedule.scheduleJob('*/30 * * * * *', async () => {
           try {
+            console.log(`[MONITOR] Verificação básica de sinais para conta ${accountId}...`);
             await checkNewTrades(accountId);
           } catch (jobError) {
             console.error(`[MONITOR] Erro na verificação básica de sinais:`, jobError);
@@ -254,6 +303,8 @@ if (require.main === module) {
     }
   })();
 }
+
+
 
 module.exports = {
   initializeMonitoring,
