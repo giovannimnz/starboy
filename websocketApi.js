@@ -1106,7 +1106,11 @@ async function getAccountBalance(params = {}) {
  * Substitui a versão anterior que usava a API REST
  * @returns {Promise<Object>} Objeto contendo saldo e saldo_base_calculo atualizados
  */
-async function syncAccountBalanceViaWebSocket() {
+async function syncAccountBalanceViaWebSocket(accountId) {
+    if (!accountId || typeof accountId !== 'number') {
+        throw new Error(`AccountId é obrigatório e deve ser um número: ${accountId}`);
+    }
+
     try {
         const db = await getDatabaseInstance();
         
@@ -1115,19 +1119,18 @@ async function syncAccountBalanceViaWebSocket() {
         }
         
         // Garantir que a WebSocket API esteja conectada
-        if (!websockets.isWebSocketApiConnected()) {
-            console.log('[WS-API] Conectando WebSocket API para sincronização de saldo...');
+        if (!websockets.isWebSocketApiConnected(accountId)) {
+            console.log(`[WS-API] Conectando WebSocket API para sincronização de saldo da conta ${accountId}...`);
             try {
-                await websockets.startWebSocketApi();
-                // Pequena pausa para garantir que a conexão esteja estável
+                await websockets.startWebSocketApi(accountId);
                 await new Promise(resolve => setTimeout(resolve, 1000));
             } catch (wsError) {
                 throw new Error(`Falha ao conectar WebSocket API: ${wsError.message}`);
             }
         }
         
-        // Buscar informações da conta via WebSocket API
-        const accountInfo = await getAccountBalance();
+        // CORREÇÃO: Usar accountId específico
+        const accountInfo = await getAccountBalance({}, accountId);
         
         if (!accountInfo.success || !accountInfo.totalWalletBalance) {
             throw new Error('Falha ao obter saldo da conta via WebSocket API');
@@ -1160,25 +1163,22 @@ async function syncAccountBalanceViaWebSocket() {
         
         // Atualizar o registro no banco de dados com a data formatada
         await db.query(
-            'UPDATE conta SET saldo = ?, saldo_base_calculo = ?, ultima_atualizacao = ? WHERE id = 1',
-            [realSaldo, newBaseCalculo, currentDateTime]
+            'UPDATE conta SET saldo = ?, saldo_base_calculo = ?, ultima_atualizacao = ? WHERE id = ?',
+            [realSaldo, newBaseCalculo, currentDateTime, accountId]  // accountId específico
         );
-        
-        //console.log(`[WS-API] Saldo atualizado com sucesso: ${realSaldo.toFixed(2)} USDT | Base Cálculo: ${newBaseCalculo.toFixed(2)} USDT | Data: ${currentDateTime}`);
         
         return {
             success: true,
+            accountId: accountId,  // Incluir accountId na resposta
             saldo: realSaldo,
             saldo_base_calculo: newBaseCalculo,
-            previousSaldo: currentSaldo,
-            previousBaseCalculo: currentBaseCalculo,
-            ultima_atualizacao: currentDateTime,
-            changed: currentSaldo !== realSaldo || currentBaseCalculo !== newBaseCalculo
+            // ...resto dos dados
         };
     } catch (error) {
-        console.error(`[WS-API] Erro ao sincronizar saldo da conta via WebSocket: ${error.message}`);
+        console.error(`[WS-API] Erro ao sincronizar saldo da conta ${accountId} via WebSocket: ${error.message}`);
         return {
             success: false,
+            accountId: accountId,
             error: error.message
         };
     }
