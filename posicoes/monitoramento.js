@@ -115,7 +115,13 @@ function determineOrderType(orderMsg) {
 // Atualizar dados de alavancagem ao iniciar o sistema
 (async () => {
   try {
-    await updateLeverageBracketsInDatabase();
+    try {
+      await updateLeverageBracketsInDatabase();
+      console.log('[MONITOR] Atualização de brackets de alavancagem concluída com sucesso.');
+    } catch (bracketError) {
+      console.error('[MONITOR] Erro ao atualizar brackets de alavancagem, mas continuando inicialização:', bracketError.message);
+      // Continuar mesmo com erro nos brackets
+    }
     //console.log('Dados de alavancagem atualizados com sucesso.');
   } catch (error) {
     console.error('Erro ao atualizar dados de alavancagem:', error);
@@ -237,16 +243,19 @@ async function initializeMonitoring(accountId = 1) {
       console.log(`  - ID: ${signal.id}, Symbol: ${signal.symbol}, Side: ${signal.side}, Entry: ${signal.entry_price}`);
     });
 
-    // Executar verificação inicial de novas operações imediatamente
-    console.log(`[MONITOR] Executando verificação imediata de sinais pendentes...`);
+    // Executar verificação imediata de sinais pendentes
+    console.log('[MONITOR] Agendando verificação imediata de sinais pendentes...');
     setTimeout(() => {
-      checkNewTrades(accountId).catch(error => {
-        console.error(`[MONITOR] Erro na verificação imediata de sinais:`, error);
+      console.log('[MONITOR] Executando verificação imediata...');
+      // Forçar processamento dos sinais pendentes
+      forceProcessPendingSignals(accountId).catch(error => {
+        console.error('[MONITOR] Erro ao processar sinais pendentes:', error);
       });
     }, 5000);
 
     // Agendar jobs específicos para esta conta
-    const accountJobs = {};
+    console.log('[MONITOR] Iniciando agendamento de jobs...');
+      const accountJobs = {};
     
     // Agendar verificação periódica de novas operações a cada 15 segundos
     console.log(`[MONITOR] Agendando verificação periódica de sinais a cada 15 segundos`);
@@ -259,11 +268,19 @@ async function initializeMonitoring(accountId = 1) {
     });
     
     // Iniciar monitoramento de preços para posições abertas
-    await startPriceMonitoring(accountId);
+    console.log('[MONITOR] Iniciando monitoramento de preços...');
+      await startPriceMonitoring(accountId);
+      console.log('[MONITOR] Monitoramento de preços iniciado com sucesso.');
 
     // Sincronizar posições com a corretora
     try {
-      await syncPositionsWithExchange(accountId);
+      console.log('[MONITOR] Iniciando sincronização de posições...');
+      try {
+        await syncPositionsWithExchange(accountId);
+        console.log('[MONITOR] Sincronização de posições concluída com sucesso.');
+      } catch (syncError) {
+        console.error('[MONITOR] Erro ao sincronizar posições, mas continuando:', syncError.message);
+      }
     } catch (syncError) {
       console.error(`[MONITOR] Erro ao sincronizar posições:`, syncError);
     }
@@ -619,6 +636,8 @@ async function checkNewTrades(accountId = 1) {
 // Função para processar um sinal
 // Atualizar a função processSignal para ter melhor tratamento de erros
 async function processSignal(db, signal, currentPrice, accountId = 1) {
+  // Importar API para garantir que está definido
+  const api = require('../api');
   console.log(`[MONITOR] Processando sinal ID ${signal.id} para ${signal.symbol}: ${signal.side} a ${signal.entry_price}`);
   
   const connection = await db.getConnection();
