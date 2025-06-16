@@ -256,14 +256,14 @@ async function initializeMonitoring(accountId) {
         const basicJobs = {};
         basicJobs.checkNewTrades = schedule.scheduleJob('*/30 * * * * *', async () => {
           try {
-            console.log(`[MONITOR] Verificação básica de sinais para conta ${accountId}...`);
+            //console.log(`[MONITOR] Verificação básica de sinais para conta ${accountId}...`);
             await checkNewTrades(accountId);
           } catch (jobError) {
             console.error(`[MONITOR] Erro na verificação básica de sinais:`, jobError);
           }
         });
         
-        console.log('[MONITOR] Modo de recuperação ativado - apenas verificação básica de sinais.');
+        //console.log('[MONITOR] Modo de recuperação ativado - apenas verificação básica de sinais.');
         return basicJobs;
       }
     } catch (recoveryError) {
