@@ -81,8 +81,6 @@ def make_binance_request(endpoint, params=None):
             'Content-Type': 'application/json'
         }
         
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BINANCE] Fazendo requisição: {endpoint}")
-        
         # Fazer requisição
         response = requests.get(url, headers=headers, timeout=30)
         
@@ -105,8 +103,6 @@ def update_leverage_brackets_database():
     Atualiza os brackets de alavancagem no banco de dados de forma otimizada
     """
     try:
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] Iniciando atualização eficiente de brackets...")
-        
         # === FASE 1: OBTER DADOS DA BINANCE ===
         brackets_data = make_binance_request('/v1/leverageBracket')
         
@@ -123,9 +119,6 @@ def update_leverage_brackets_database():
             return False
         
         cursor = conn.cursor(dictionary=True)
-        
-        # === FASE 3: OBTER DADOS ATUAIS DO BANCO ===
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] 📊 Carregando dados atuais do banco...")
         
         cursor.execute("""
             SELECT symbol, bracket, initial_leverage, notional_cap, notional_floor, 
@@ -144,8 +137,6 @@ def update_leverage_brackets_database():
             if symbol not in current_brackets:
                 current_brackets[symbol] = {}
             current_brackets[symbol][row['bracket']] = row
-        
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] 📊 Dados do banco: {len(current_brackets)} símbolos, {len(current_data)} brackets")
         
         # === FASE 4: PROCESSAR DIFERENÇAS ===
         binance_symbols = set()
@@ -263,11 +254,10 @@ def update_leverage_brackets_database():
         conn.close()
         
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ✅ Atualização concluída:")
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS]   - Símbolos processados: {processed_symbols}")
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS]   - Inserções: {inserts}")
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS]   - Atualizações: {updates}")
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS]   - Remoções de brackets: {deletes}")
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS]   - Símbolos obsoletos removidos: {symbols_deleted}")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS]   - Símbolos removidos: {symbols_deleted}")
         
         # Mostrar estatísticas finais
         total_changes = inserts + updates + deletes + symbols_deleted
@@ -359,8 +349,6 @@ def run_scheduler():
     schedule.every().day.at("12:00").do(update_leverage_brackets)
     schedule.every().day.at("18:00").do(update_leverage_brackets)
     
-    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [SCHEDULER] ✅ Jobs agendados: 4x ao dia (00:00, 06:00, 12:00, 18:00)")
-    
     while not shutdown_event.is_set():
         try:
             schedule.run_pending()
@@ -390,7 +378,6 @@ def initialize_bracket_scheduler():
             return
         
         # Atualizar brackets na inicialização
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] Executando atualização inicial de brackets...")
         update_leverage_brackets()
         
         # Iniciar scheduler em thread separada
@@ -1686,9 +1673,7 @@ def test_database_connection():
 def run_scheduler():
     """
     Executa o scheduler em uma thread separada
-    """
-    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [SCHEDULER] Iniciando scheduler de brackets...")
-    
+    """    
     # Agendar 4 vezes ao dia: 00:00, 06:00, 12:00, 18:00
     schedule.every().day.at("00:00").do(update_leverage_brackets)
     schedule.every().day.at("06:00").do(update_leverage_brackets)
@@ -1732,8 +1717,6 @@ def initialize_bracket_scheduler():
         # Iniciar scheduler em thread separada
         scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
         scheduler_thread.start()
-        
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] ✅ Scheduler de brackets inicializado em thread separada")
         
     except Exception as e:
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] ❌ Erro ao inicializar scheduler: {e}")
