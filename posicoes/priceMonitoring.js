@@ -85,27 +85,6 @@ async function startPriceMonitoring(accountId) {
 }
 
 /**
- * Função para obter preço atual via REST API
- * @param {string} symbol - Símbolo do par
- * @param {number} accountId - ID da conta
- * @returns {Promise<number>} - Preço atual
- */
-async function getCurrentPrice(symbol, accountId) {
-  try {
-    // CORREÇÃO: Validar accountId
-    if (!accountId || typeof accountId !== 'number') {
-      throw new Error(`AccountId inválido em getCurrentPrice: ${accountId} (tipo: ${typeof accountId})`);
-    }
-
-    const { getPrice } = require('../api');
-    return await getPrice(symbol, accountId);
-  } catch (error) {
-    console.error(`[PRICE] Erro ao obter preço para ${symbol}:`, error);
-    throw error;
-  }
-}
-
-/**
  * Atualiza cache de preços
  * @param {string} symbol - Símbolo
  * @param {number} price - Preço
@@ -211,22 +190,21 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
         openPositionsCount === 0 && 
         pendingOrdersCount === 0) {
       
-      // Incrementar contador de verificações vazias
       if (!websocketEmptyCheckCounter[symbol]) {
         websocketEmptyCheckCounter[symbol] = 0;
       }
       websocketEmptyCheckCounter[symbol]++;
       
-      // Se não há atividade por muito tempo, remover WebSocket
       if (websocketEmptyCheckCounter[symbol] >= MAX_EMPTY_CHECKS) {
         console.log(`[PRICE] ${symbol}: Sem atividade por ${MAX_EMPTY_CHECKS} verificações. Removendo WebSocket.`);
-        const websockets = require('../websockets');
-        websockets.removePriceWebsocket(symbol, accountId);
+        // Agora 'websockets' se refere à instância importada no topo do arquivo
+        websockets.stopPriceMonitoring(symbol, accountId); // SUBSTITUÍDO AQUI
         delete websocketEmptyCheckCounter[symbol];
-        return;
+        latestPrices.delete(symbol);
+        delete lastPriceLogTime[symbol];
+        return; 
       }
     } else {
-      // Reset contador se há atividade
       websocketEmptyCheckCounter[symbol] = 0;
     }
 
@@ -244,7 +222,7 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
       }
     }
   } catch (error) {
-    console.error(`[PRICE] Erro no processamento de preço para ${symbol}:`, error);
+    console.error(`[PRICE] Erro no processamento de preço para ${symbol} (conta ${accountId}):`, error);
   }
 }
 
@@ -288,8 +266,8 @@ async function checkAndCloseWebsocket(db, symbol, accountId) {
 
     if (totalActivity === 0) {
       console.log(`[PRICE] Fechando websocket de ${symbol} para conta ${accountId} - sem atividade restante`);
-      const websockets = require('../websockets');
-      websockets.removePriceWebsocket(symbol, accountId);
+      // const websockets = require('../websockets'); // Esta linha pode ser removida se websockets já está no topo
+      websockets.stopPriceMonitoring(symbol, accountId); // SUBSTITUÍDO AQUI
       latestPrices.delete(symbol);
       delete lastPriceLogTime[symbol];
       delete websocketEmptyCheckCounter[symbol];
@@ -317,6 +295,5 @@ module.exports = {
   onPriceUpdate,
   updatePriceCache,
   getPriceFromCache,
-  getCurrentPrice,
   checkAndCloseWebsocket
 };
