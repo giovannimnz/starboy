@@ -1672,8 +1672,6 @@ def run_scheduler():
     schedule.every().day.at("12:00").do(update_leverage_brackets)
     schedule.every().day.at("18:00").do(update_leverage_brackets)
     
-    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [SCHEDULER] ✅ Jobs agendados: 4x ao dia (00:00, 06:00, 12:00, 18:00)")
-    
     while not shutdown_event.is_set():
         try:
             schedule.run_pending()
