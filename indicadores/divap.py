@@ -1725,7 +1725,7 @@ async def main():
     """
     Função principal para iniciar o cliente
     """
-    print("[INFO] Iniciando monitoramento do Telegram...")
+    #print("[INFO] Iniciando monitoramento do Telegram...")
 
     # NOVO: Inicializar scheduler de brackets
     initialize_bracket_scheduler()
