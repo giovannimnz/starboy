@@ -993,19 +993,21 @@ async function updateLeverageBracketsInDatabase(broker = 'binance', accountId) {
 
       // Atualizar brackets para este símbolo
       for (const bracket of leverageBrackets) {
-        const { bracket: bracketId, initialLeverage, notionalCap, notionalFloor, maintMarginRatio } = bracket;
+        const { bracket: bracketId, initialLeverage, notionalCap, notionalFloor, maintMarginRatio, cum } = bracket;
         
+        // CORREÇÃO: Usar tabela 'alavancagem' existente com campos corretos
         await db.query(`
-          INSERT INTO leverage_brackets 
-          (symbol, bracket_id, initial_leverage, notional_cap, notional_floor, maint_margin_ratio, broker, updated_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
+          INSERT INTO alavancagem 
+          (symbol, corretora, bracket, initial_leverage, notional_cap, notional_floor, maint_margin_ratio, cum, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
           ON DUPLICATE KEY UPDATE
           initial_leverage = VALUES(initial_leverage),
           notional_cap = VALUES(notional_cap),
           notional_floor = VALUES(notional_floor),
           maint_margin_ratio = VALUES(maint_margin_ratio),
+          cum = VALUES(cum),
           updated_at = NOW()
-        `, [symbol, bracketId, initialLeverage, notionalCap, notionalFloor, maintMarginRatio, broker]);
+        `, [symbol, broker, bracketId, initialLeverage, notionalCap, notionalFloor, maintMarginRatio, cum || 0]);
       }
     }
 
@@ -1193,8 +1195,9 @@ async function verifyAndFixEnvironmentConsistency(accountId) {
  */
 async function getMaxLeverageFromDb(symbol, exchange = 'binance', accountId) {
   try {
-    const db = await getDatabaseInstance(accountId);
+    const db = await getDatabaseInstance();
     
+    // CORREÇÃO: Usar tabela 'alavancagem' com campo 'corretora'
     const [result] = await db.query(
       `SELECT MAX(initial_leverage) as max_leverage 
        FROM alavancagem 
@@ -1209,6 +1212,43 @@ async function getMaxLeverageFromDb(symbol, exchange = 'binance', accountId) {
   }
 }
 
+/**
+ * Obtém brackets de alavancagem do banco de dados
+ * @param {string} symbol - Símbolo do par
+ * @param {string} exchange - Nome da corretora
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Array>} - Brackets de alavancagem
+ */
+async function getLeverageBracketsFromDb(symbol, exchange = 'binance', accountId) {
+  try {
+    const db = await getDatabaseInstance();
+    
+    // CORREÇÃO: Usar tabela 'alavancagem' com campos corretos
+    const [brackets] = await db.query(
+      `SELECT 
+        id,
+        symbol,
+        corretora,
+        bracket,
+        initial_leverage,
+        notional_cap,
+        notional_floor,
+        maint_margin_ratio,
+        cum,
+        updated_at
+       FROM alavancagem 
+       WHERE symbol = ? AND corretora = ? 
+       ORDER BY bracket ASC`,
+      [symbol, exchange]
+    );
+    
+    return brackets;
+  } catch (error) {
+    console.error(`[API] Erro ao obter brackets do banco para ${symbol}:`, error.message);
+    return [];
+  }
+}
+
 
 /**
  * Obtém informações de margem baseada no valor notional
@@ -1220,8 +1260,9 @@ async function getMaxLeverageFromDb(symbol, exchange = 'binance', accountId) {
  */
 async function getMarginInfoFromDb(symbol, notionalValue, exchange = 'binance', accountId) {
   try {
-    const db = await getDatabaseInstance(accountId);
+    const db = await getDatabaseInstance();
     
+    // CORREÇÃO: Usar tabela 'alavancagem' com campos corretos
     const [brackets] = await db.query(
       `SELECT 
         bracket,
