@@ -1,6 +1,5 @@
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
-const { setupEd25519FromPEM } = require('../websockets');
 
 const schedule = require('node-schedule');
 const { getDatabaseInstance } = require('../db/conexao');
@@ -12,12 +11,46 @@ const websocketApi = require('../websocketApi');
 const { initializeTelegramBot } = require('./telegramBot');
 const { startPriceMonitoring, onPriceUpdate } = require('./priceMonitoring');
 const { checkNewTrades, forceProcessPendingSignals } = require('./signalProcessor');
-const { syncPositionsWithExchange, logOpenPositionsAndOrders } = require('./positionSync');
+const { syncOpenPositionsWithExchange: syncPositionsWithExchange, logOpenPositionsAndOrders } = require('./positionSync');
 const { handleOrderUpdate, handleAccountUpdate } = require('./orderHandlers');
 
 // Variáveis globais
 let handlers = {};
 let scheduledJobs = {};
+
+/**
+ * Sincroniza saldo da conta via WebSocket API
+ * @param {number} accountId - ID da conta (obrigatório)
+ * @returns {Promise<Object|null>} Resultado da sincronização
+ */
+async function syncAccountBalance(accountId) {
+  if (!accountId || typeof accountId !== 'number') {
+    throw new Error(`AccountId é obrigatório para syncAccountBalance: ${accountId}`);
+  }
+
+  try {
+    const websocketApi = require('../websocketApi');
+    const result = await websocketApi.syncAccountBalanceViaWebSocket(accountId);
+    
+    if (result && result.success) {
+      if (result.saldo_base_calculo > result.previousBaseCalculo) {
+        console.log(`[MONITOR] Base de cálculo aumentada para conta ${accountId}: ${result.previousBaseCalculo.toFixed(2)} → ${result.saldo_base_calculo.toFixed(2)} USDT`);
+      }
+      
+      return {
+        accountId: accountId,
+        saldo: result.saldo,
+        saldo_base_calculo: result.saldo_base_calculo
+      };
+    } else {
+      console.error(`[MONITOR] Falha ao sincronizar saldo via WebSocket API para conta ${accountId}:`, result?.error || 'Resposta inválida');
+      return null;
+    }
+  } catch (error) {
+    console.error(`[MONITOR] Erro ao sincronizar saldo da conta ${accountId}: ${error.message}`);
+    return null;
+  }
+}
 
 /**
  * Função principal para inicializar o monitoramento
@@ -33,13 +66,16 @@ async function initializeMonitoring(accountId) {
   console.log(`[MONITOR] Inicializando sistema de monitoramento para conta ID: ${accountId}...`);
 
   try {
-    // Obter conexão com o banco de dados
-    const db = await getDatabaseInstance(accountId);
+    // === ETAPA 1: Verificar conexão com banco ===
+    console.log(`📊 ETAPA 1: Verificando conexão com banco de dados para conta ${accountId}...`);
+    const db = await getDatabaseInstance();
     if (!db) {
       throw new Error(`Não foi possível conectar ao banco de dados para conta ${accountId}`);
     }
+    console.log(`✅ Banco de dados conectado com sucesso para conta ${accountId}\n`);
     
-    // Atualizar dados de alavancagem
+    // === ETAPA 2: Atualizar dados de alavancagem ===
+    console.log(`🔧 ETAPA 2: Atualizando brackets de alavancagem para conta ${accountId}...`);
     try {
       await updateLeverageBracketsInDatabase('binance', accountId);
       console.log('[MONITOR] Atualização de brackets de alavancagem concluída com sucesso.');
@@ -47,7 +83,8 @@ async function initializeMonitoring(accountId) {
       console.error('[MONITOR] Erro ao atualizar brackets de alavancagem, mas continuando inicialização:', bracketError.message);
     }
     
-    // Verificar e corrigir inconsistências de ambiente
+    // === ETAPA 3: Verificar consistência de ambiente ===
+    console.log(`🔍 ETAPA 3: Verificando consistência de ambiente para conta ${accountId}...`);
     try {
       await verifyAndFixEnvironmentConsistency(accountId);
       console.log('[MONITOR] Verificação de consistência de ambiente concluída.');
@@ -55,29 +92,93 @@ async function initializeMonitoring(accountId) {
       console.error('[MONITOR] Erro ao verificar consistência de ambiente, mas continuando:', envError.message);
     }
 
-    // Inicializar o bot do Telegram para esta conta
-    /*
-    let bot = null;
+    // === ETAPA 4: Carregar credenciais WebSocket ===
+    console.log(`🔑 ETAPA 4: Carregando credenciais da conta ${accountId}...`);
     try {
-      bot = await initializeTelegramBot(accountId);
-      if (!bot) {
-        console.log(`[MONITOR] Bot do Telegram não inicializado para conta ${accountId}`);
-      } else {
-        console.log(`[MONITOR] Bot do Telegram inicializado para conta ${accountId}`);
-      }
-    } catch (telegramError) {
-      console.error('[MONITOR] Erro ao inicializar bot do Telegram, mas continuando:', telegramError.message);
+      const credentials = await websockets.loadCredentialsFromDatabase(accountId);
+      console.log('✅ Credenciais carregadas com sucesso');
+      
+      console.log(`📋 Detalhes das credenciais:`);
+      console.log(`- API Key: ${credentials.apiKey ? credentials.apiKey.substring(0, 8) + '...' : 'NÃO ENCONTRADA'}`);
+      console.log(`- Secret Key: ${credentials.secretKey ? 'ENCONTRADA' : 'NÃO ENCONTRADA'}`);
+      console.log(`- WS API Key: ${credentials.wsApiKey ? credentials.wsApiKey.substring(0, 8) + '...' : 'NÃO ENCONTRADA'}`);
+      console.log(`- Private Key: ${credentials.privateKey ? 'ENCONTRADA' : 'NÃO ENCONTRADA'}`);
+      console.log();
+    } catch (credError) {
+      console.error('❌ Erro ao carregar credenciais:', credError.message);
+      throw credError;
     }
-      */
     
-    await setupEd25519FromPEM(1);
-    // CORREÇÃO: Comentar WebSocket API temporariamente devido ao erro Ed25519
+    // === ETAPA 5: Verificar estado da conta ===
+    console.log(`🔗 ETAPA 5: Verificando estado da conexão da conta ${accountId}...`);
+    
+    let accountState = websockets.getAccountConnectionState(accountId);
+    
+    if (!accountState) {
+      console.log('⚠️ Estado da conta não existe ainda, tentando inicializar...');
+      
+      const allConnections = websockets.getAllAccountConnections();
+      console.log(`📊 Total de conexões no mapa: ${allConnections.size}`);
+      
+      if (allConnections.has(accountId)) {
+        console.log(`✅ Conta ${accountId} existe no mapa de conexões`);
+        accountState = allConnections.get(accountId);
+      } else {
+        console.log(`❌ Conta ${accountId} não existe no mapa de conexões`);
+        
+        console.log('🔄 Tentando forçar inicialização do estado...');
+        accountState = websockets.getAccountConnectionState(accountId, true);
+        
+        if (!accountState) {
+          throw new Error('Impossível inicializar estado da conta mesmo forçando');
+        }
+      }
+    }
+    
+    console.log('📋 Informações do estado da conta:');
+    console.log(`- API Key: ${accountState.apiKey ? accountState.apiKey.substring(0, 8) + '...' : 'NÃO ENCONTRADA'}`);
+    console.log(`- WS API Key: ${accountState.wsApiKey ? accountState.wsApiKey.substring(0, 8) + '...' : 'NÃO ENCONTRADA'}`);
+    console.log(`- Private Key: ${accountState.privateKey ? 'CONFIGURADA' : 'NÃO ENCONTRADA'}`);
+    console.log(`- WS API URL: ${accountState.wsApiUrl || 'PADRÃO'}`);
+    console.log(`- Authenticated: ${accountState.isAuthenticated || accountState.wsApiAuthenticated || false}`);
+    console.log();
+
+    // === ETAPA 6: Inicializar WebSocket API ===
+    console.log(`🔧 ETAPA 6: Inicializando WebSocket API para conta ${accountId}...`);
+    
     try {
-      console.log('[WS-API] Inicializando handlers para WebSocket API...');
+      console.log(`📞 Chamando websockets.startWebSocketApi(${accountId})...`);
+      const wsConnected = await websockets.startWebSocketApi(accountId);
+      
+      if (wsConnected) {
+        console.log('✅ WebSocket API inicializado com sucesso!');
+      } else {
+        console.log('⚠️ WebSocket API não foi inicializado, mas continuando...');
+      }
+    } catch (wsInitError) {
+      console.warn('⚠️ Erro ao inicializar WebSocket API:', wsInitError.message);
+    }
+    console.log();
+
+    // === ETAPA 7: Verificar status da sessão ===
+    console.log(`🔍 ETAPA 7: Verificando status da sessão WebSocket para conta ${accountId}...`);
+    try {
+      const sessionStatus = await websockets.checkSessionStatus(accountId);
+      console.log('📊 Status da sessão:', JSON.stringify(sessionStatus, null, 2));
+    } catch (sessionError) {
+      console.warn('⚠️ Erro ao verificar status da sessão:', sessionError.message);
+    }
+    console.log();
+
+    // === ETAPA 8: Inicializar handlers WebSocket API ===
+    console.log(`🎯 ETAPA 8: Inicializando handlers WebSocket API para conta ${accountId}...`);
+    
+    try {
+      console.log(`📞 Chamando websocketApi.initializeHandlers(${accountId})...`);
       await websocketApi.initializeHandlers(accountId);
       console.log(`[MONITOR] WebSocket API handlers inicializados para conta ${accountId}`);
     } catch (wsError) {
-      console.error(`[MONITOR] Erro ao inicializar WebSocket API handlers, continuando com REST API fallback: ${wsError.message}`);
+      console.error(`[MONITOR] Erro ao inicializar WebSocket API handlers para conta ${accountId}, continuando com REST API fallback: ${wsError.message}`);
       
       // Se o erro for de chave Ed25519, oferecer solução
       if (wsError.message.includes('Ed25519') || wsError.message.includes('private key')) {
@@ -87,41 +188,45 @@ async function initializeMonitoring(accountId) {
       }
     }
     
-    // Configurar handlers com os callbacks adaptados para accountId
-    handlers = {
+    // === ETAPA 9: Configurar handlers com accountId ===
+    console.log(`🔄 ETAPA 9: Configurando handlers para conta ${accountId}...`);
+    
+    const handlers = {
       handleOrderUpdate: async (msg, db) => {
         try {
-          await handleOrderUpdate(msg, db, accountId);
+          await handleOrderUpdate(msg, db, accountId); // Passar accountId
         } catch (error) {
-          console.error(`[MONITOR] Erro em handleOrderUpdate:`, error);
+          console.error(`[MONITOR] Erro em handleOrderUpdate para conta ${accountId}:`, error);
         }
       },
       handleAccountUpdate: async (msg, db) => {
         try {
-          await handleAccountUpdate(msg, db, accountId);
+          await handleAccountUpdate(msg, db, accountId); // Passar accountId
         } catch (error) {
-          console.error(`[MONITOR] Erro em handleAccountUpdate:`, error);
+          console.error(`[MONITOR] Erro em handleAccountUpdate para conta ${accountId}:`, error);
         }
       },
       onPriceUpdate: async (symbol, price, db) => {
         try {
-          await onPriceUpdate(symbol, price, db, accountId);
+          await onPriceUpdate(symbol, price, db, accountId); // Passar accountId
         } catch (error) {
-          console.error(`[MONITOR] Erro em onPriceUpdate para ${symbol}:`, error);
+          console.error(`[MONITOR] Erro em onPriceUpdate para ${symbol} conta ${accountId}:`, error);
         }
       },
-      getDbConnection: async () => await getDatabaseInstance(accountId)
+      getDbConnection: async () => await getDatabaseInstance()
     };
     
-    // Usar os handlers configurados nos websockets
+    // CORREÇÃO: Configurar callbacks com accountId
     try {
-      websockets.setMonitoringCallbacks(handlers);
-      console.log('[MONITOR] Callbacks do WebSocket configurados com sucesso.');
+      websockets.setMonitoringCallbacks(handlers, accountId);
+      console.log(`[MONITOR] Callbacks do WebSocket configurados para conta ${accountId}`);
     } catch (callbackError) {
-      console.error('[MONITOR] Erro ao configurar callbacks do WebSocket:', callbackError.message);
+      console.error(`[MONITOR] Erro ao configurar callbacks do WebSocket para conta ${accountId}:`, callbackError.message);
     }
     
-    // CORREÇÃO: Iniciar userDataStream passando accountId
+    // === ETAPA 10: Iniciar UserDataStream ===
+    console.log(`🌐 ETAPA 10: Iniciando UserDataStream para conta ${accountId}...`);
+    
     try {
       await websockets.startUserDataStream(db, accountId);
       console.log(`[MONITOR] UserDataStream iniciado para conta ${accountId}`);
@@ -129,9 +234,10 @@ async function initializeMonitoring(accountId) {
       console.error(`[MONITOR] Erro ao iniciar UserDataStream para conta ${accountId}, mas continuando: ${userDataError.message}`);
     }
 
-    // IMPORTANTE: Limpar sinais com erro antes de verificar pendentes
+    // === ETAPA 11: Limpeza e preparação de sinais ===
+    console.log(`🧹 ETAPA 11: Limpando sinais com erro para conta ${accountId}...`);
+    
     try {
-      console.log('[MONITOR] Limpando sinais com erro...');
       await db.query(`
         UPDATE webhook_signals 
         SET status = 'ERROR', 
@@ -140,14 +246,12 @@ async function initializeMonitoring(accountId) {
           AND error_message LIKE '%not defined%'
           AND conta_id = ?
       `, [accountId]);
-      //console.log('[MONITOR] Sinais com erro limpos.');
     } catch (cleanError) {
-      console.error('[MONITOR] Erro ao limpar sinais com erro:', cleanError.message);
+      console.error(`[MONITOR] Erro ao limpar sinais com erro para conta ${accountId}:`, cleanError.message);
     }
 
-    // CORREÇÃO: Resetar sinais em PROCESSANDO para PENDING
     try {
-      console.log('[MONITOR] Resetando sinais em processamento...');
+      console.log(`[MONITOR] Resetando sinais em processamento para conta ${accountId}...`);
       const [resetResult] = await db.query(`
         UPDATE webhook_signals 
         SET status = 'PENDING', 
@@ -158,116 +262,117 @@ async function initializeMonitoring(accountId) {
       `, [accountId]);
       
       if (resetResult.affectedRows > 0) {
-        console.log(`[MONITOR] ${resetResult.affectedRows} sinais resetados de PROCESSANDO para PENDING`);
+        console.log(`[MONITOR] ${resetResult.affectedRows} sinais resetados de PROCESSANDO para PENDING para conta ${accountId}`);
       }
     } catch (resetError) {
-      console.error('[MONITOR] Erro ao resetar sinais em processamento:', resetError.message);
+      console.error(`[MONITOR] Erro ao resetar sinais em processamento para conta ${accountId}:`, resetError.message);
     }
 
-    // Verificar sinais pendentes ao iniciar
+    // === ETAPA 12: Verificar sinais pendentes ===
+    console.log(`📋 ETAPA 12: Verificando sinais pendentes para conta ${accountId}...`);
+    
     try {
-      const [pendingSignals] = await db.query(`
-        SELECT id, symbol, side, entry_price, status, error_message
-        FROM webhook_signals 
-        WHERE status IN ('PENDING', 'AGUARDANDO_ACIONAMENTO')
-        AND (conta_id = ? OR conta_id IS NULL)
-        AND (error_message IS NULL OR error_message NOT LIKE '%not defined%')
-      `, [accountId]);
-
-      //console.log(`[MONITOR] Ao iniciar, encontrados ${pendingSignals.length} sinais pendentes válidos para conta ${accountId}:`);
-      pendingSignals.forEach(signal => {
-        console.log(`  - ID: ${signal.id}, Symbol: ${signal.symbol}, Side: ${signal.side}, Entry: ${signal.entry_price}, Status: ${signal.status}`);
-      });
+      await checkNewTrades(accountId);
     } catch (signalCheckError) {
-      console.error('[MONITOR] Erro ao verificar sinais pendentes:', signalCheckError.message);
+      console.error(`[MONITOR] Erro ao verificar sinais pendentes para conta ${accountId}:`, signalCheckError.message);
     }
 
-    // Iniciar monitoramento de preços para posições abertas
+    // === ETAPA 13: Iniciar monitoramento de preços ===
+    console.log(`📈 ETAPA 13: Iniciando monitoramento de preços para conta ${accountId}...`);
+    
     try {
-      console.log('[MONITOR] Iniciando monitoramento de preços...');
       const symbolsCount = await startPriceMonitoring(accountId);
-      console.log(`[MONITOR] Monitoramento de preços iniciado para ${symbolsCount} símbolos.`);
+      console.log(`[MONITOR] Monitoramento de preços iniciado para ${symbolsCount} símbolos da conta ${accountId}.`);
     } catch (priceError) {
-      console.error('[MONITOR] Erro ao iniciar monitoramento de preços, mas continuando:', priceError.message);
+      console.error(`[MONITOR] Erro ao iniciar monitoramento de preços para conta ${accountId}, mas continuando:`, priceError.message);
     }
 
-    // Sincronizar posições com a corretora
+    // === ETAPA 14: Sincronizar posições ===
+    console.log(`🔄 ETAPA 14: Sincronizando posições para conta ${accountId}...`);
+    
     try {
-      //console.log('[MONITOR] Iniciando sincronização de posições...');
       await syncPositionsWithExchange(accountId);
-      console.log('[MONITOR] Sincronização de posições concluída com sucesso.');
+      console.log(`[MONITOR] Sincronização de posições concluída para conta ${accountId}.`);
     } catch (syncError) {
-      console.error('[MONITOR] Erro ao sincronizar posições, mas continuando:', syncError.message);
+      console.error(`[MONITOR] Erro ao sincronizar posições para conta ${accountId}, mas continuando:`, syncError.message);
     }
 
-    // Log inicial de posições e ordens
-    try {
-      await logOpenPositionsAndOrders(accountId);
-    } catch (logError) {
-      console.error('[MONITOR] Erro ao fazer log de posições:', logError.message);
+    // === ETAPA 15: Diagnóstico detalhado ===
+    console.log(`🔧 ETAPA 15: Diagnóstico detalhado do WebSocket para conta ${accountId}...`);
+    
+    console.log('🔍 Estado atual das conexões:');
+    console.log(`- WebSocket API conectado: ${websockets.isWebSocketApiConnected(accountId)}`);
+    console.log(`- WebSocket API autenticado: ${websockets.isWebSocketApiAuthenticated(accountId)}`);
+    
+    const allConnections = websockets.getAllAccountConnections();
+    console.log(`- Total de conexões ativas: ${allConnections.size}`);
+    
+    if (allConnections.has(accountId)) {
+      const conn = allConnections.get(accountId);
+      console.log(`📋 Detalhes da conexão da conta ${accountId}:`);
+      console.log(`  - wsApi existe: ${conn.wsApi ? 'SIM' : 'NÃO'}`);
+      console.log(`  - wsApi estado: ${conn.wsApi ? conn.wsApi.readyState : 'N/A'}`);
+      console.log(`  - isAuthenticated: ${conn.isAuthenticated}`);
+      console.log(`  - wsApiAuthenticated: ${conn.wsApiAuthenticated}`);
+      console.log(`  - requestCallbacks: ${conn.requestCallbacks ? conn.requestCallbacks.size : 'N/A'}`);
     }
 
-    // CORREÇÃO PRINCIPAL: Agendar jobs de verificação periódica
-    console.log('[MONITOR] Iniciando agendamento de jobs...');
+    // === ETAPA 16: Agendar jobs específicos da conta ===
+    console.log(`⏰ ETAPA 16: Agendando jobs para conta ${accountId}...`);
+    
     const accountJobs = {};
     
     // Job principal: verificar sinais pendentes a cada 15 segundos
     console.log(`[MONITOR] Agendando verificação de sinais a cada 15 segundos para conta ${accountId}`);
     accountJobs.checkNewTrades = schedule.scheduleJob('*/15 * * * * *', async () => {
       try {
-        //console.log(`[MONITOR] Executando verificação periódica de sinais para conta ${accountId}...`);
         await checkNewTrades(accountId);
       } catch (error) {
         console.error(`[MONITOR] Erro na verificação periódica de sinais para conta ${accountId}:`, error);
       }
     });
     
-    // Job secundário: forçar processamento de sinais pendentes a cada 60 segundos
-     
-    //console.log(`[MONITOR] Agendando verificação forçada de sinais a cada 60 segundos para conta ${accountId}`);
-    //accountJobs.forceProcessPending = schedule.scheduleJob('0 */1 * * * *', async () => {
-    //  try {
-    //    console.log(`[MONITOR] Executando verificação forçada de sinais pendentes para conta ${accountId}...`);
-    //    await forceProcessPendingSignals(accountId);
-    //  } catch (error) {
-    //    console.error(`[MONITOR] Erro na verificação forçada de sinais para conta ${accountId}:`, error);
-    //  }
-    //});
+    // Job de sincronização de saldo a cada 5 minutos
+    console.log(`[MONITOR] Agendando sincronização de saldo a cada 5 minutos para conta ${accountId}`);
+    accountJobs.syncBalance = schedule.scheduleJob('*/5 * * * *', async () => {
+      try {
+        await syncAccountBalance(accountId);
+      } catch (error) {
+        console.error(`[MONITOR] Erro na sincronização periódica de saldo para conta ${accountId}:`, error);
+      }
+    });
 
-
-    console.log('[MONITOR] Sistema de monitoramento inicializado com sucesso!');
+    console.log(`[MONITOR] Sistema de monitoramento inicializado com sucesso para conta ${accountId}!`);
     console.log(`[MONITOR] Jobs agendados: ${Object.keys(accountJobs).length}`);
     
-    // Armazenar jobs para possível cancelamento futuro
     scheduledJobs[accountId] = accountJobs;
     
     return accountJobs;
+    
   } catch (error) {
     console.error(`[MONITOR] Erro CRÍTICO na configuração inicial para conta ${accountId}: ${error.message}`);
     console.error('[MONITOR] Stack trace:', error.stack);
     
-    // Mesmo com erro crítico, tentar continuar com funcionalidades básicas
-    console.log('[MONITOR] Tentando continuar com funcionalidades básicas...');
+    console.log(`[MONITOR] Tentando continuar com funcionalidades básicas para conta ${accountId}...`);
     
     try {
-      const db = await getDatabaseInstance(accountId);
+      const db = await getDatabaseInstance();
       if (db) {
-        // Pelo menos tentar agendar verificação de sinais
         const basicJobs = {};
         basicJobs.checkNewTrades = schedule.scheduleJob('*/30 * * * * *', async () => {
           try {
-            //console.log(`[MONITOR] Verificação básica de sinais para conta ${accountId}...`);
+            console.log(`[MONITOR] Verificação básica de sinais para conta ${accountId}...`);
             await checkNewTrades(accountId);
           } catch (jobError) {
             console.error(`[MONITOR] Erro na verificação básica de sinais:`, jobError);
           }
         });
         
-        //console.log('[MONITOR] Modo de recuperação ativado - apenas verificação básica de sinais.');
+        console.log(`[MONITOR] Modo de recuperação ativado para conta ${accountId} - apenas verificação básica de sinais.`);
         return basicJobs;
       }
     } catch (recoveryError) {
-      console.error('[MONITOR] Falha total na inicialização:', recoveryError.message);
+      console.error(`[MONITOR] Falha total na inicialização para conta ${accountId}:`, recoveryError.message);
     }
     
     throw error;
@@ -277,7 +382,7 @@ async function initializeMonitoring(accountId) {
 // Verifica se está sendo executado como script principal
 const accountId = process.argv.includes('--account') 
   ? parseInt(process.argv[process.argv.indexOf('--account') + 1])
-  : null; // CORREÇÃO: Não forçar valor padrão
+  : null;
 
 // CORREÇÃO: Validar accountId obrigatório
 if (!accountId || isNaN(accountId) || accountId <= 0) {
@@ -293,7 +398,7 @@ console.log(`[MONITOR] Iniciando sistema de monitoramento para conta ID: ${accou
 if (require.main === module) {
   (async () => {
     try {
-      await initializeMonitoring(accountId); // CORREÇÃO: Passar accountId validado
+      await initializeMonitoring(accountId);
     } catch (error) {
       console.error(`[MONITOR] Erro crítico na inicialização para conta ${accountId}:`, error);
       process.exit(1);
@@ -303,6 +408,7 @@ if (require.main === module) {
 
 module.exports = {
   initializeMonitoring,
+  syncAccountBalance,
   checkNewTrades: (accountId) => checkNewTrades(accountId),
   forceProcessPendingSignals: (accountId) => forceProcessPendingSignals(accountId)
 };

@@ -178,89 +178,97 @@ function createSignature(queryString, secretKey) {
 
 /**
  * Faz uma requisição autenticada para a API da Binance
- * @param {string} endpoint - Endpoint da API
- * @param {string} method - Método HTTP (GET, POST, etc.)
- * @param {Object} data - Dados para enviar
+ * @param {string} method - Método HTTP (GET, POST, PUT, DELETE)
+ * @param {string} endpoint - Endpoint da API (ex: /v1/account)
+ * @param {Object} params - Parâmetros da requisição
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Resposta da API
  */
-async function makeAuthenticatedRequest(endpoint, method = 'GET', data = {}, accountId) {
+async function makeAuthenticatedRequest(method, endpoint, params = {}, accountId) {
+  // CORREÇÃO: Validar method como string
+  if (!method || typeof method !== 'string') {
+    throw new Error(`Método HTTP inválido: ${method} (tipo: ${typeof method})`);
+  }
+  
+  // CORREÇÃO: Garantir que method seja string antes de chamar toUpperCase
+  const httpMethod = String(method).toUpperCase();
+  
+  // CORREÇÃO: Validar accountId
+  if (!accountId || typeof accountId !== 'number') {
+    throw new Error(`AccountId é obrigatório: ${accountId} (tipo: ${typeof accountId})`);
+  }
+
   try {
-    // Carregar credenciais com debug detalhado
-    const credentials = await loadCredentialsFromDatabase({ accountId });
+    const credentials = await loadCredentialsFromDatabase({ accountId, forceRefresh: false });
     
-    // Validação extra das credenciais antes de usar
+    if (!credentials || !credentials.apiKey || !credentials.secretKey) {
+      throw new Error(`Credenciais não encontradas ou inválidas para conta ${accountId}`);
+    }
+
     console.log(`[API] DEBUG - Validando credenciais para requisição ${endpoint}:`);
     console.log(`- accountId: ${accountId}`);
     console.log(`- credentials existe: ${credentials ? 'SIM' : 'NÃO'}`);
-    
-    if (!credentials) {
-      throw new Error(`Credenciais não encontradas para conta ${accountId}`);
-    }
-    
     console.log(`- apiKey existe: ${credentials.apiKey ? 'SIM' : 'NÃO'}`);
     console.log(`- secretKey existe: ${credentials.secretKey ? 'SIM' : 'NÃO'}`);
     console.log(`- secretKey tipo: ${typeof credentials.secretKey}`);
     console.log(`- secretKey length: ${credentials.secretKey ? credentials.secretKey.length : 'N/A'}`);
-    
-    if (!credentials.apiKey || !credentials.secretKey) {
-      throw new Error(`Credenciais incompletas para conta ${accountId}. API Key: ${credentials.apiKey ? 'OK' : 'FALTANDO'}, Secret Key: ${credentials.secretKey ? 'OK' : 'FALTANDO'}`);
-    }
 
-    // Timestamp obrigatório
+    // Preparar parâmetros com timestamp
     const timestamp = Date.now();
-    const baseParams = {
-      timestamp,
-      ...data
-    };
+    const allParams = { ...params, timestamp };
 
-    // Criar query string
-    const queryString = Object.keys(baseParams)
-      .map(key => `${key}=${encodeURIComponent(baseParams[key])}`)
+    // Criar query string para assinatura
+    const queryString = Object.keys(allParams)
+      .sort()
+      .map(key => `${key}=${allParams[key]}`)
       .join('&');
 
-    // Passar secretKey validada para createSignature
     console.log(`[API] Criando assinatura para: ${queryString}`);
-    const signature = createSignature(queryString, credentials.secretKey);
 
-    // Headers da requisição
-    const headers = {
-      'X-MBX-APIKEY': credentials.apiKey,
-      'Content-Type': 'application/json'
-    };
+    // Criar assinatura HMAC
+    const signature = crypto
+      .createHmac('sha256', credentials.secretKey)
+      .update(queryString)
+      .digest('hex');
 
-    const finalUrl = `${credentials.baseUrl}${endpoint}?${queryString}&signature=${signature}`;
+    // Adicionar assinatura aos parâmetros
+    allParams.signature = signature;
+
+    // Construir URL completa
+    const baseUrl = credentials.baseUrl || 'https://fapi.binance.com';
+    const fullUrl = `${baseUrl}${endpoint}`;
     
-    console.log(`[API] Fazendo requisição ${method} para: ${credentials.baseUrl}${endpoint}`);
-
-    // CORREÇÃO: Configuração correta do Axios
+    // Configurar requisição
     const config = {
-      method: method.toUpperCase(), // CORREÇÃO: Garantir que method seja string e maiúscula
-      url: finalUrl,
-      headers,
-      timeout: 30000
+      method: httpMethod, // CORREÇÃO: Usar httpMethod validado
+      url: fullUrl,
+      headers: {
+        'X-MBX-APIKEY': credentials.apiKey,
+        'Content-Type': 'application/json'
+      }
     };
 
-    // CORREÇÃO: Só adicionar data se for POST/PUT/PATCH
-    if (['POST', 'PUT', 'PATCH'].includes(method.toUpperCase()) && Object.keys(data).length > 0) {
-      config.data = data;
+    // CORREÇÃO: Adicionar parâmetros conforme método HTTP
+    if (httpMethod === 'GET' || httpMethod === 'DELETE') {
+      config.params = allParams;
+    } else {
+      config.data = allParams;
     }
+
+    console.log(`[API] Fazendo requisição ${httpMethod} para: ${fullUrl}`);
 
     const response = await axios(config);
     return response.data;
 
   } catch (error) {
-    // Log detalhado do erro
+    console.error(`[API] Erro na requisição autenticada (${endpoint}):`, error.message);
+    
     if (error.response) {
-      console.error(`[API] Erro na requisição autenticada (${endpoint}):`, error.response.status, error.response.data);
-      throw new Error(`API Error: ${error.response.status} - ${JSON.stringify(error.response.data)}`);
-    } else if (error.code === 'ERR_INVALID_ARG_TYPE') {
-      console.error(`[API] Erro na requisição autenticada (${endpoint}):`, error.message);
-      throw error; // Re-throw para debug
-    } else {
-      console.error(`[API] Erro na requisição autenticada (${endpoint}):`, error.message);
-      throw error;
+      console.error(`[API] Status: ${error.response.status}`);
+      console.error(`[API] Data:`, error.response.data);
     }
+    
+    throw error;
   }
 }
 
@@ -948,78 +956,64 @@ async function getPrice(symbol, accountId) {
 }
 
 /**
- * Atualiza brackets de alavancagem no banco de dados
- * @param {string} exchange - Nome da corretora
+ * Atualiza os brackets de alavancagem no banco de dados
+ * @param {string} broker - Nome da corretora
  * @param {number} accountId - ID da conta
  * @returns {Promise<void>}
  */
-/**
- * Atualiza brackets de alavancagem no banco de dados
- * @param {string} exchange - Nome da corretora
- * @param {number} accountId - ID da conta
- * @returns {Promise<void>}
- */
-/**
- * Atualiza brackets de alavancagem no banco de dados
- * @param {string} exchange - Nome da corretora
- * @param {number} accountId - ID da conta
- * @returns {Promise<void>}
- */
-async function updateLeverageBracketsInDatabase(exchange = 'binance', accountId) {
+async function updateLeverageBracketsInDatabase(broker = 'binance', accountId) {
+  // CORREÇÃO: Validar accountId
+  if (!accountId || typeof accountId !== 'number') {
+    throw new Error(`AccountId é obrigatório: ${accountId} (tipo: ${typeof accountId})`);
+  }
+
   try {
-    console.log(`[API] Atualizando brackets de alavancagem para ${exchange}...`);
+    console.log(`[API] Atualizando brackets de alavancagem para ${broker}...`);
     
-    const db = await getDatabaseInstance(accountId);
+    // CORREÇÃO: Passar método como string explícita
+    const brackets = await makeAuthenticatedRequest('GET', '/v1/leverageBracket', {}, accountId);
     
-    // Verificar última atualização
-    const [lastUpdate] = await db.query(
-      'SELECT MAX(updated_at) as ultima_atualizacao FROM alavancagem WHERE corretora = ?',
-      [exchange]
-    );
-    
-    const lastUpdateTime = lastUpdate[0]?.ultima_atualizacao;
-    const now = new Date();
-    const sixHoursAgo = new Date(now.getTime() - 6 * 60 * 60 * 1000);
-    
-    if (lastUpdateTime && new Date(lastUpdateTime) > sixHoursAgo) {
-      const timeDiff = Math.round((now - new Date(lastUpdateTime)) / (1000 * 60 * 60 * 10)) / 100;
-      //console.log(`[API] Última atualização de alavancagem para ${exchange} foi há ${timeDiff} horas`);
-      //console.log(`[API] Brackets de alavancagem foram atualizados recentemente. Pulando atualização.`);
-      return;
+    if (!brackets || !Array.isArray(brackets)) {
+      throw new Error('Resposta inválida da API de brackets de alavancagem');
     }
-    
-    // Obter brackets da API
-    const brackets = await getAllLeverageBrackets(null, accountId);
-    
-    // Limpar dados antigos
-    await db.query('DELETE FROM alavancagem WHERE corretora = ?', [exchange]);
-    
-    // Inserir novos dados
-    for (const bracket of brackets) {
-      for (let i = 0; i < bracket.brackets.length; i++) {
-        const levelBracket = bracket.brackets[i];
-        await db.query(
-          `INSERT INTO alavancagem 
-           (symbol, corretora, bracket, initial_leverage, notional_cap, notional_floor, maint_margin_ratio, cum, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())`,
-          [
-            bracket.symbol,
-            exchange,
-            i + 1, // bracket number (1, 2, 3, etc.)
-            parseInt(levelBracket.initialLeverage),
-            parseFloat(levelBracket.notionalCap),
-            parseFloat(levelBracket.notionalFloor),
-            parseFloat(levelBracket.maintMarginRatio),
-            parseFloat(levelBracket.cum)
-          ]
-        );
+
+    const db = await getDatabaseInstance();
+    if (!db) {
+      throw new Error('Não foi possível conectar ao banco de dados');
+    }
+
+    // Processar cada símbolo
+    for (const symbolData of brackets) {
+      const { symbol, brackets: leverageBrackets } = symbolData;
+      
+      if (!leverageBrackets || !Array.isArray(leverageBrackets)) {
+        console.warn(`[API] Brackets inválidos para símbolo ${symbol}`);
+        continue;
+      }
+
+      // Atualizar brackets para este símbolo
+      for (const bracket of leverageBrackets) {
+        const { bracket: bracketId, initialLeverage, notionalCap, notionalFloor, maintMarginRatio } = bracket;
+        
+        await db.query(`
+          INSERT INTO leverage_brackets 
+          (symbol, bracket_id, initial_leverage, notional_cap, notional_floor, maint_margin_ratio, broker, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, NOW())
+          ON DUPLICATE KEY UPDATE
+          initial_leverage = VALUES(initial_leverage),
+          notional_cap = VALUES(notional_cap),
+          notional_floor = VALUES(notional_floor),
+          maint_margin_ratio = VALUES(maint_margin_ratio),
+          updated_at = NOW()
+        `, [symbol, bracketId, initialLeverage, notionalCap, notionalFloor, maintMarginRatio, broker]);
       }
     }
-    
-    console.log(`[API] Brackets de alavancagem atualizados com sucesso para ${exchange}`);
+
+    console.log(`[API] ✅ Brackets de alavancagem atualizados para ${brackets.length} símbolos`);
+
   } catch (error) {
     console.error(`[API] Erro ao atualizar brackets de alavancagem:`, error.message);
-    // Não re-throw o erro para não quebrar a inicialização
+    throw error;
   }
 }
 
