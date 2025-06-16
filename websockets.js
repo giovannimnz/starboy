@@ -1756,29 +1756,6 @@ function forceCleanupAccount(accountId) {
   }
 }
 
-/**
- * Função para debugar formato da chave privada
- * @param {string} privateKey - Chave privada
- * @param {number} accountId - ID da conta
- */
-function debugPrivateKey(privateKey, accountId) {
-  console.log(`[WS-API DEBUG] Analisando chave privada para conta ${accountId}:`);
-  console.log(`- Tamanho: ${privateKey.length} caracteres`);
-  console.log(`- Começa com: ${privateKey.substring(0, 20)}...`);
-  console.log(`- Termina com: ...${privateKey.substring(privateKey.length - 20)}`);
-  console.log(`- Contém BEGIN: ${privateKey.includes('BEGIN')}`);
-  console.log(`- Contém END: ${privateKey.includes('END')}`);
-  console.log(`- É base64 válido: ${/^[A-Za-z0-9+/]+=*$/.test(privateKey)}`);
-  console.log(`- É hex válido: ${/^[0-9a-fA-F]+$/.test(privateKey)}`);
-  
-  try {
-    const decoded = Buffer.from(privateKey, 'base64');
-    console.log(`- Base64 decodificado: ${decoded.length} bytes`);
-  } catch (e) {
-    console.log(`- Erro ao decodificar base64: ${e.message}`);
-  }
-}
-
 // Atualizar função reset para usar o novo cleanup
 function reset(accountId) {
   forceCleanupAccount(accountId);
@@ -1811,6 +1788,5 @@ module.exports = {
   createEd25519DERFromRaw,
   forceCleanupAccount,
   reset,
-  loadNobleEd25519().catch(() => {
-  console.log('[WS-API] ⚠️ Usando tweetnacl como única opção');
+  loadNobleEd25519,
 };
