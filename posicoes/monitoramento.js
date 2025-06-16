@@ -3,7 +3,7 @@ require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
 const schedule = require('node-schedule');
 const { getDatabaseInstance } = require('../db/conexao');
-const { updateLeverageBracketsInDatabase, verifyAndFixEnvironmentConsistency } = require('../api');
+const { verifyAndFixEnvironmentConsistency } = require('../api');
 const websockets = require('../websockets');
 const websocketApi = require('../websocketApi');
 
