@@ -128,7 +128,7 @@ async function loadCredentialsFromDatabase(accountId) {
       accountState.apiKey = cachedCreds.apiKey;
       accountState.secretKey = cachedCreds.secretKey;
       accountState.wsApiKey = cachedCreds.wsApiKey;
-      accountState.wsApiSecret = cachedCreds.wsApiSecret;
+      accountState.wsApiSecret = cachedCreds.wsApiSecret; // CORREÇÃO: ws_api_secret
       accountState.privateKey = cachedCreds.privateKey;
       accountState.apiUrl = cachedCreds.apiUrl;
       accountState.wsApiUrl = cachedCreds.wsApiUrl;
@@ -145,7 +145,7 @@ async function loadCredentialsFromDatabase(accountId) {
       throw new Error(`Não foi possível conectar ao banco para conta ${accountId}`);
     }
 
-    // CORREÇÃO CRÍTICA: Query adaptada para nova estrutura das tabelas
+    // CORREÇÃO CRÍTICA: Query atualizada para nova estrutura do banco
     const [rows] = await db.query(`
       SELECT 
         c.id,
@@ -153,8 +153,7 @@ async function loadCredentialsFromDatabase(accountId) {
         c.api_key, 
         c.api_secret,
         c.ws_api_key, 
-        c.ws_api_secret, 
-        c.private_key,
+        c.ws_api_secret,
         c.ativa,
         c.id_corretora,
         cor.spot_rest_api_url,
@@ -200,8 +199,8 @@ async function loadCredentialsFromDatabase(accountId) {
       apiKey: account.api_key,
       secretKey: account.api_secret,
       wsApiKey: account.ws_api_key || account.api_key, // Fallback para API key normal
-      wsApiSecret: account.ws_api_secret,
-      privateKey: account.private_key,
+      wsApiSecret: account.ws_api_secret, // CORREÇÃO: Nova coluna ws_api_secret
+      privateKey: account.ws_api_secret, // CORREÇÃO: ws_api_secret É a chave privada Ed25519
       apiUrl: apiUrl,
       wsUrl: wsUrl,
       wsApiUrl: wsApiUrl,
@@ -217,6 +216,11 @@ async function loadCredentialsFromDatabase(accountId) {
       throw new Error(`Credenciais API REST incompletas para conta ${accountId}`);
     }
 
+    // CORREÇÃO: Validar se tem chave Ed25519 para WebSocket API
+    if (!credentials.wsApiSecret) {
+      console.warn(`[WEBSOCKETS] ⚠️ Chave privada Ed25519 não encontrada para conta ${accountId} - WebSocket API não funcionará`);
+    }
+
     // Cache das credenciais
     accountCredentialsCache.set(accountId, credentials);
 
@@ -226,7 +230,7 @@ async function loadCredentialsFromDatabase(accountId) {
     accountState.secretKey = credentials.secretKey;
     accountState.wsApiKey = credentials.wsApiKey;
     accountState.wsApiSecret = credentials.wsApiSecret;
-    accountState.privateKey = credentials.privateKey;
+    accountState.privateKey = credentials.privateKey; // Agora é ws_api_secret
     accountState.apiUrl = credentials.apiUrl;
     accountState.wsApiUrl = credentials.wsApiUrl;
     accountState.wsUrl = credentials.wsUrl;
@@ -237,7 +241,7 @@ async function loadCredentialsFromDatabase(accountId) {
     console.log(`- API Key: ${credentials.apiKey ? credentials.apiKey.substring(0, 8) + '...' : 'NÃO ENCONTRADA'}`);
     console.log(`- Secret Key: ${credentials.secretKey ? '✅ Encontrada' : '❌ Não encontrada'}`);
     console.log(`- WS API Key: ${credentials.wsApiKey ? credentials.wsApiKey.substring(0, 8) + '...' : 'NÃO ENCONTRADA'}`);
-    console.log(`- Private Key: ${credentials.privateKey ? '✅ Encontrada' : '❌ Não encontrada'}`);
+    console.log(`- WS API Secret (Ed25519): ${credentials.wsApiSecret ? '✅ Encontrada' : '❌ Não encontrada'}`);
     console.log(`- Ambiente: ${credentials.environment}`);
     console.log(`- Corretora: ${credentials.broker} (ID: ${credentials.brokerId})`);
     console.log(`- API URL: ${credentials.apiUrl}`);
@@ -255,7 +259,7 @@ async function loadCredentialsFromDatabase(accountId) {
 }
 
 /**
- * Cria assinatura Ed25519 usando crypto nativo do Node.js conforme documentação Binance
+ * Cria assinatura Ed25519 usando crypto nativo conforme documentação Binance
  * @param {string} payload - Payload para assinar
  * @param {number} accountId - ID da conta
  * @returns {string} - Assinatura em base64
@@ -270,22 +274,21 @@ function createEd25519Signature(payload, accountId) {
     console.log(`[WS-API] Gerando assinatura Ed25519 para conta ${accountId}`);
     console.log(`[WS-API] Payload: ${payload}`);
 
-    // CORREÇÃO CRÍTICA: Usar crypto nativo do Node.js como na documentação Python
+    // CORREÇÃO CRÍTICA: Usar crypto nativo conforme documentação Python
     const crypto = require('crypto');
     
     let privateKeyObject;
     
     try {
-      // CORREÇÃO: Tentar carregar a chave privada conforme formato armazenado
-      if (accountState.privateKey.includes('-----BEGIN')) {
-        // Formato PEM
-        console.log(`[WS-API] Carregando chave PEM para conta ${accountId}`);
+      // CORREÇÃO: A chave deve estar em formato PEM Ed25519
+      if (accountState.privateKey.includes('BEGIN PRIVATE KEY') || accountState.privateKey.includes('BEGIN ED25519')) {
+        console.log(`[WS-API] Carregando chave PEM Ed25519 para conta ${accountId}`);
         privateKeyObject = crypto.createPrivateKey({
           key: accountState.privateKey,
           format: 'pem'
         });
       } else {
-        // Tentar como base64 DER
+        // Se não é PEM, pode ser base64 DER
         console.log(`[WS-API] Tentando carregar chave como base64 DER para conta ${accountId}`);
         const keyBuffer = Buffer.from(accountState.privateKey, 'base64');
         privateKeyObject = crypto.createPrivateKey({
@@ -295,22 +298,27 @@ function createEd25519Signature(payload, accountId) {
         });
       }
       
-      console.log(`[WS-API] Chave privada carregada com sucesso para conta ${accountId}`);
+      console.log(`[WS-API] Chave privada Ed25519 carregada com sucesso para conta ${accountId}`);
       
     } catch (keyError) {
-      console.error(`[WS-API] Erro ao carregar chave privada:`, keyError.message);
-      throw new Error(`Formato de chave privada inválido: ${keyError.message}`);
+      console.error(`[WS-API] Erro ao carregar chave privada Ed25519:`, keyError.message);
+      
+      // Se a chave no banco não é válida, mostrar como gerar uma nova
+      console.error(`[WS-API] ⚠️ A chave no banco precisa ser regenerada!`);
+      console.error(`[WS-API] Execute: node utils/generateEd25519Key.js`);
+      
+      throw new Error(`Chave privada Ed25519 inválida. Execute utils/generateEd25519Key.js para gerar uma nova.`);
     }
 
-    // CORREÇÃO: Assinar usando o método nativo do Node.js conforme documentação
+    // CORREÇÃO: Assinar usando Ed25519 conforme documentação
     try {
-      // Converter payload para buffer como na documentação Python (encode('ASCII'))
+      // Converter payload para buffer (encode('ASCII') do Python)
       const payloadBuffer = Buffer.from(payload, 'ascii');
       
       // Assinar usando Ed25519 - equivalente ao private_key.sign() do Python
       const signatureBuffer = crypto.sign(null, payloadBuffer, privateKeyObject);
       
-      // Converter para base64 como na documentação (base64.b64encode())
+      // Converter para base64 (base64.b64encode() do Python)
       const signature = signatureBuffer.toString('base64');
       
       console.log(`[WS-API] ✅ Assinatura Ed25519 criada com crypto nativo para conta ${accountId}`);
@@ -320,7 +328,7 @@ function createEd25519Signature(payload, accountId) {
       
     } catch (signError) {
       console.error(`[WS-API] Erro ao assinar com crypto nativo:`, signError.message);
-      throw new Error(`Falha na assinatura: ${signError.message}`);
+      throw new Error(`Falha na assinatura Ed25519: ${signError.message}`);
     }
 
   } catch (error) {
@@ -814,26 +822,26 @@ async function authenticateWebSocketApi(ws, accountId) {
 
     console.log(`[WS-API] Iniciando autenticação session.logon para conta ${accountId}...`);
 
-    // CORREÇÃO: Criar parâmetros conforme documentação exata
+    // CORREÇÃO: Parâmetros conforme documentação exata
     const timestamp = Date.now();
     
-    // CORREÇÃO: Apenas os parâmetros necessários para session.logon
+    // CORREÇÃO: Apenas os parâmetros obrigatórios para session.logon
     const authParams = {
       apiKey: accountState.wsApiKey,
       timestamp: timestamp
     };
 
-    // CORREÇÃO: Criar payload conforme formato da documentação Python
+    // CORREÇÃO: Payload conforme formato da documentação Python
     // payload = '&'.join([f'{param}={value}' for param, value in sorted(params.items())])
     const sortedKeys = Object.keys(authParams).sort();
     const payload = sortedKeys.map(key => `${key}=${authParams[key]}`).join('&');
     
     console.log(`[WS-API] Payload para assinatura: ${payload}`);
 
-    // Criar assinatura Ed25519 usando crypto nativo
+    // Criar assinatura Ed25519
     const signature = createEd25519Signature(payload, accountId);
 
-    // CORREÇÃO: Criar requisição conforme exemplo exato da documentação
+    // CORREÇÃO: Requisição conforme exemplo exato da documentação
     const authRequest = {
       id: `auth-${timestamp}`,
       method: 'session.logon',
@@ -841,7 +849,7 @@ async function authenticateWebSocketApi(ws, accountId) {
         apiKey: authParams.apiKey,
         signature: signature,
         timestamp: authParams.timestamp
-        // NOTA: recvWindow é opcional conforme documentação
+        // recvWindow é opcional conforme documentação
       }
     };
 
