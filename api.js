@@ -574,6 +574,106 @@ async function roundPriceToTickSize(symbol, price, accountId) {
 }
 
 /**
+ * Obtém informações de tick size para um símbolo
+ * @param {string} symbol - Símbolo do par
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Informações de tick size
+ */
+async function getTickSize(symbol, accountId) {
+  try {
+    // CORREÇÃO: Validar accountId
+    if (!accountId || typeof accountId !== 'number') {
+      throw new Error(`AccountId é obrigatório para getTickSize: ${accountId} (tipo: ${typeof accountId})`);
+    }
+    
+    console.log(`[API] Obtendo informações do símbolo ${symbol} para conta ${accountId}...`);
+    
+    // CORREÇÃO: Carregar credenciais para obter a URL correta da API
+    const credentials = await loadCredentialsFromDatabase(accountId);
+    
+    if (!credentials || !credentials.apiKey) {
+      throw new Error(`Credenciais não encontradas para conta ${accountId}`);
+    }
+    
+    // CORREÇÃO: Usar a URL base das credenciais em vez de variável indefinida
+    const baseUrl = credentials.baseUrl || 'https://fapi.binance.com';
+    const apiUrl = `${baseUrl}/fapi`;
+    
+    console.log(`[API] Fazendo requisição para: ${apiUrl}/v1/exchangeInfo?symbol=${symbol}`);
+    
+    const response = await axios.get(`${apiUrl}/v1/exchangeInfo?symbol=${symbol}`, {
+      timeout: 10000,
+      headers: {
+        'User-Agent': 'StarBoy-Trading-Bot/1.0'
+      }
+    });
+    
+    if (!response.data || !response.data.symbols || !response.data.symbols.length) {
+      throw new Error(`Nenhuma informação encontrada para o símbolo ${symbol}`);
+    }
+    
+    const symbolInfo = response.data.symbols.find(s => s.symbol === symbol);
+    if (!symbolInfo) {
+      throw new Error(`Símbolo ${symbol} não encontrado`);
+    }
+    
+    // Obter informações de filtros
+    const priceFilter = symbolInfo.filters.find(f => f.filterType === 'PRICE_FILTER');
+    if (!priceFilter) {
+      throw new Error(`Filtro de preço não encontrado para ${symbol}`);
+    }
+    
+    const lotSizeFilter = symbolInfo.filters.find(f => f.filterType === 'LOT_SIZE');
+    const marketLotSizeFilter = symbolInfo.filters.find(f => f.filterType === 'MARKET_LOT_SIZE');
+    
+    console.log(`[API] ✅ Informações obtidas para ${symbol}: tickSize=${priceFilter.tickSize}`);
+    
+    return {
+      tickSize: priceFilter.tickSize,
+      minPrice: priceFilter.minPrice,
+      maxPrice: priceFilter.maxPrice,
+      stepSize: lotSizeFilter?.stepSize || '1',
+      minQty: lotSizeFilter?.minQty || '1',
+      maxQty: lotSizeFilter?.maxQty || '9000000',
+      marketMinQty: marketLotSizeFilter?.minQty || '1',
+      marketMaxQty: marketLotSizeFilter?.maxQty || '9000000'
+    };
+    
+  } catch (error) {
+    console.error(`[API] Erro ao obter tick size para ${symbol} (conta ${accountId}):`, error.message);
+    
+    // FALLBACK: Se falhar, tentar sem autenticação (endpoint público)
+    try {
+      console.log(`[API] Tentando fallback sem autenticação para ${symbol}...`);
+      const fallbackResponse = await axios.get(`https://fapi.binance.com/fapi/v1/exchangeInfo?symbol=${symbol}`, {
+        timeout: 5000
+      });
+      
+      if (fallbackResponse.data?.symbols?.length > 0) {
+        const symbolInfo = fallbackResponse.data.symbols[0];
+        const priceFilter = symbolInfo.filters.find(f => f.filterType === 'PRICE_FILTER');
+        
+        if (priceFilter) {
+          console.log(`[API] ✅ Fallback bem-sucedido para ${symbol}`);
+          return {
+            tickSize: priceFilter.tickSize,
+            minPrice: priceFilter.minPrice,
+            maxPrice: priceFilter.maxPrice,
+            stepSize: '1',
+            minQty: '1',
+            maxQty: '9000000'
+          };
+        }
+      }
+    } catch (fallbackError) {
+      console.error(`[API] Fallback também falhou para ${symbol}:`, fallbackError.message);
+    }
+    
+    throw error;
+  }
+}
+
+/**
  * Obtém precisão para um símbolo
  * @param {string} symbol - Símbolo do par
  * @param {number} accountId - ID da conta
