@@ -17,7 +17,7 @@ const { handleOrderUpdate, handleAccountUpdate } = require('./orderHandlers');
 // Variáveis globais
 let handlers = {};
 let scheduledJobs = {};
-isShuttingDown = false;
+let isShuttingDown = false;
 
 /**
  * Sincroniza saldo da conta via WebSocket API
