@@ -560,7 +560,7 @@ async function loadCredentialsFromDatabase(accountId) {
     const db = await getDatabaseInstance();
     
     const [rows] = await db.query(`
-      SELECT api_key, api_secret, ws_api_key, private_key_pem 
+      SELECT api_key, api_secret, ws_api_key, private_key 
       FROM contas 
       WHERE id = ? AND ativa = 1
     `, [numericAccountId]);
@@ -575,7 +575,7 @@ async function loadCredentialsFromDatabase(accountId) {
       apiKey: account.api_key,
       secretKey: account.api_secret,
       wsApiKey: account.ws_api_key,
-      privateKey: account.private_key_pem
+      privateKey: account.private_key
     };
     
   } catch (error) {
