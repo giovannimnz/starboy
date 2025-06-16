@@ -9,16 +9,24 @@ let pool = null;
 // Configuração do banco de dados
 const dbConfig = {
   host: process.env.DB_HOST || 'localhost',
+  port: process.env.DB_PORT || 3306,
   user: process.env.DB_USER || 'root',
   password: process.env.DB_PASSWORD || '',
   database: process.env.DB_NAME || 'starboy',
-  waitForConnections: true,
-  connectionLimit: 10,
+  connectionLimit: 20,
   queueLimit: 0,
-  acquireTimeout: 60000,
-  timeout: 60000,
-  reconnect: true,
-  charset: 'utf8mb4'
+  // REMOVER estas configurações que geram warning:
+  // acquireTimeout: 60000,  // ❌ REMOVER
+  // timeout: 60000,         // ❌ REMOVER  
+  // reconnect: true,        // ❌ REMOVER
+  
+  // CORREÇÃO: Usar configurações corretas do MySQL2
+  acquireTimeout: 60000,    // ✅ Tempo para adquirir conexão
+  waitForConnections: true, // ✅ Aguardar conexões disponíveis
+  reconnect: true,          // ✅ Reconectar automaticamente
+  idleTimeout: 300000,      // ✅ 5 minutos de timeout para conexões inativas
+  enableKeepAlive: true,    // ✅ Manter conexões vivas
+  keepAliveInitialDelay: 0  // ✅ Delay inicial do keep-alive
 };
 
 /**
@@ -1242,4 +1250,4 @@ module.exports = {
   getCorretoraPorId
 };
 
-  
+

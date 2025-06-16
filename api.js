@@ -727,8 +727,8 @@ async function getPositionDetails(symbol, accountId) {
  */
 async function getAllOpenPositions(accountId) {
   try {
-    // CORREÇÃO: Especificar método explicitamente
-    const data = await makeAuthenticatedRequest('/v2/positionRisk', 'GET', {}, accountId);
+    // CORREÇÃO: Ordem correta dos parâmetros: method, endpoint, params, accountId
+    const data = await makeAuthenticatedRequest('GET', '/v2/positionRisk', {}, accountId);
     
     // Filtrar apenas posições com quantidade diferente de zero
     const openPositions = data.filter(position => {
@@ -744,8 +744,11 @@ async function getAllOpenPositions(accountId) {
       lado: parseFloat(position.positionAmt) > 0 ? 'BUY' : 'SELL',
       pnlNaoRealizado: parseFloat(position.unRealizedProfit),
       margem: parseFloat(position.isolatedMargin),
-      alavancagem: parseInt(position.leverage)
+      alavancagem: parseInt(position.leverage),
+      simboloStatus: position.positionSide || 'BOTH',
+      update_time: position.updateTime
     }));
+    
   } catch (error) {
     console.error(`[API] Erro ao obter posições abertas:`, error.message);
     throw error;
