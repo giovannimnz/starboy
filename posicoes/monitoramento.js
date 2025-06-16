@@ -340,7 +340,6 @@ async function initializeMonitoring(accountId) {
 
     console.log(`[MONITOR] ✅ Sistema de monitoramento inicializado com sucesso para conta ${accountId}!`);
     console.log(`[MONITOR] 📊 Jobs agendados: ${Object.keys(accountJobs).length}`);
-    console.log(`[MONITOR] 💡 Use Ctrl+C para encerrar graciosamente`);
     
     scheduledJobs[accountId] = accountJobs;
     
