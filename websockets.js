@@ -1177,96 +1177,109 @@ function stopPriceMonitoring(symbol, accountId) {
  * @returns {Promise<boolean>} - true se iniciado com sucesso
  */
 async function startUserDataStream(db, accountId) {
-  try {
-    // CORREÇÃO: Validar accountId
-    if (!accountId || typeof accountId !== 'number') {
-      throw new Error(`ID da conta inválido: ${accountId} (tipo: ${typeof accountId})`);
+  const accountState = getAccountConnectionState(accountId, true); // Garante que o estado exista
+
+  if (!accountState.apiKey || !accountState.apiUrl) {
+    console.error(`[WEBSOCKET] API Key ou API URL não configuradas para UserDataStream da conta ${accountId}.`);
+    await loadCredentialsFromDatabase(accountId); // Tenta carregar novamente
+    if (!accountState.apiKey || !accountState.apiUrl) {
+      throw new Error(`Credenciais REST incompletas para UserDataStream da conta ${accountId} mesmo após recarregar.`);
     }
-
-    console.log(`[WEBSOCKETS] Iniciando stream de dados do usuário para conta ${accountId}...`);
-    
-    // Carregar credenciais se não estiverem em cache
-    if (!accountCredentialsCache.has(accountId)) {
-      await loadCredentialsFromDatabase(accountId); // CORREÇÃO: Passar accountId diretamente
-    }
-    
-    const credentials = accountCredentialsCache.get(accountId);
-    if (!credentials) {
-      throw new Error(`Credenciais não encontradas para conta ${accountId}`);
-    }
-    
-    // Obter listenKey
-    const listenKeyUrl = credentials.apiUrl ? 
-      `${credentials.apiUrl}/v1/listenKey` : 
-      `https://fapi.binance.com/fapi/v1/listenKey`;
-    
-    console.log(`[WEBSOCKET] Obtendo listenKey via: ${listenKeyUrl} para conta ${accountId}`);
-    
-    const timestamp = Date.now();
-    const headers = {
-      'X-MBX-APIKEY': credentials.apiKey
-    };
-
-    const response = await axios.post(listenKeyUrl, {}, { headers });
-    const listenKey = response.data.listenKey;
-    
-    console.log(`[WEBSOCKET] ListenKey obtido com sucesso para conta ${accountId}: ${listenKey.substring(0, 10)}...`);
-
-    // Determinar URL do WebSocket
-    const wsUrl = credentials.wsUrl ? 
-      `${credentials.wsUrl}/ws/${listenKey}` : 
-      `wss://fstream.binance.com/ws/${listenKey}`;
-    
-    console.log(`[WEBSOCKETS] Conectando UserDataStream para conta ${accountId}: ${wsUrl}`);
-
-    // Criar conexão WebSocket
-    const ws = new WebSocket(wsUrl);
-    
-    // Armazenar no estado da conta
-    let accountState = getAccountConnectionState(accountId);
-    if (!accountState) {
-      accountConnections.set(accountId, {
-        ...credentials,
-        userDataStream: ws,
-        listenKey: listenKey,
-        isAuthenticated: false,
-        wsApi: null,
-        requestCallbacks: new Map(),
-        messageQueue: []
-      });
-    } else {
-      accountState.userDataStream = ws;
-      accountState.listenKey = listenKey;
-    }
-
-    // Configurar handlers
-    ws.on('open', () => {
-      console.log(`[WEBSOCKET] UserDataStream conectado para conta ${accountId}`);
-    });
-
-    ws.on('message', async (data) => {
-      try {
-        const message = JSON.parse(data.toString());
-        await handleUserDataMessage(message, db, accountId);
-      } catch (parseError) {
-        console.error(`[WEBSOCKET] Erro ao processar mensagem UserDataStream para conta ${accountId}:`, parseError.message);
-      }
-    });
-
-    ws.on('error', (error) => {
-      console.error(`[WEBSOCKET] Erro no UserDataStream para conta ${accountId}:`, error.message);
-    });
-
-    ws.on('close', () => {
-      console.log(`[WEBSOCKET] UserDataStream fechado para conta ${accountId}`);
-    });
-
-    return true;
-
-  } catch (error) {
-    console.error(`[WEBSOCKETS] Erro ao iniciar stream de dados do usuário para conta ${accountId}:`, error.message);
-    throw error;
   }
+
+  if (accountState.userDataStream && accountState.userDataStream.readyState === WebSocket.OPEN) {
+    console.log(`[WEBSOCKET] UserDataStream já está ativo para conta ${accountId}`);
+    return;
+  }
+
+  console.log(`[WEBSOCKETS] Iniciando stream de dados do usuário para conta ${accountId}...`);
+  const listenKey = await getListenKey(accountId, accountState.apiKey, accountState.apiUrl);
+  if (!listenKey) {
+    throw new Error(`Falha ao obter ListenKey para conta ${accountId}`);
+  }
+  console.log(`[WEBSOCKET] ListenKey obtido com sucesso para conta ${accountId}: ${listenKey.substring(0,10)}...`);
+
+  const wsUrl = accountState.wsUrl || getDefaultWsUrl(accountId); // wsUrl deve ser o base wss://fstream.binance.com
+  if (!wsUrl) {
+    throw new Error(`URL base do WebSocket (wsUrl) não definida para conta ${accountId}`);
+  }
+  
+  const userDataEndpoint = `${wsUrl}/ws/${listenKey}`;
+  console.log(`[WEBSOCKETS] Conectando UserDataStream para conta ${accountId}: ${userDataEndpoint}`);
+  
+  const ws = new WebSocket(userDataEndpoint);
+  accountState.userDataStream = ws;
+  accountState.listenKey = listenKey; // Armazenar o listenKey
+  accountState.lastUserDataStreamKeepAlive = Date.now();
+
+
+  ws.on('open', () => {
+    console.log(`[WEBSOCKET] UserDataStream conectado para conta ${accountId}`);
+    // Iniciar keep-alive para o UserDataStream
+    if (accountState.userDataKeepAliveInterval) {
+      clearInterval(accountState.userDataKeepAliveInterval);
+    }
+    accountState.userDataKeepAliveInterval = setInterval(async () => {
+      if (ws.readyState === WebSocket.OPEN) {
+        try {
+          await keepAliveListenKey(accountId, accountState.apiKey, accountState.apiUrl, accountState.listenKey);
+          accountState.lastUserDataStreamKeepAlive = Date.now();
+        } catch (kaError) {
+          console.error(`[WEBSOCKET] Erro ao renovar listenKey para conta ${accountId}: ${kaError.message}`);
+          // Considerar fechar e reiniciar o stream se o keep-alive falhar consistentemente
+        }
+      } else {
+        clearInterval(accountState.userDataKeepAliveInterval);
+        accountState.userDataKeepAliveInterval = null;
+      }
+    }, 20 * 60 * 1000); // A cada 20 minutos
+  });
+
+  ws.on('message', async (data) => { // Adicionado async
+    // >>> CHAMAR A FUNÇÃO DEFINIDA <<<
+    try {
+        await handleUserDataMessage(data, accountId, db);
+    } catch (e) {
+        // Este catch é um fallback, o handleUserDataMessage já tem seu próprio try-catch
+        console.error(`[WEBSOCKET] Erro CRÍTICO no handler de mensagem UserDataStream para conta ${accountId}: ${e.message}`);
+    }
+  });
+
+  ws.on('ping', () => {
+    // console.log(`[WEBSOCKET] Ping recebido no UserDataStream para conta ${accountId}, respondendo com pong.`);
+    ws.pong();
+  });
+  
+  ws.on('pong', () => {
+    // console.log(`[WEBSOCKET] Pong recebido no UserDataStream para conta ${accountId}.`);
+    accountState.lastUserDataStreamKeepAlive = Date.now(); // Considerar pong como um sinal de vida
+  });
+
+  ws.on('error', (error) => {
+    console.error(`[WEBSOCKET] Erro no UserDataStream para conta ${accountId}: ${error.message}`);
+    if (accountState.userDataStream === ws) {
+        accountState.userDataStream = null;
+    }
+    if (accountState.userDataKeepAliveInterval) {
+        clearInterval(accountState.userDataKeepAliveInterval);
+        accountState.userDataKeepAliveInterval = null;
+    }
+    // Considerar uma tentativa de reconexão com backoff
+  });
+
+  ws.on('close', (code, reason) => {
+    const reasonStr = reason ? reason.toString() : 'N/A';
+    console.log(`[WEBSOCKET] UserDataStream fechado para conta ${accountId}. Code: ${code}, Reason: ${reasonStr}`);
+    if (accountState.userDataStream === ws) {
+        accountState.userDataStream = null;
+    }
+    if (accountState.userDataKeepAliveInterval) {
+        clearInterval(accountState.userDataKeepAliveInterval);
+        accountState.userDataKeepAliveInterval = null;
+    }
+    // Se não for um fechamento intencional (ex: via stopUserDataStream), pode tentar reconectar.
+    // Evitar reconexão se isShuttingDown for true.
+  });
 }
 
 /**
@@ -1314,6 +1327,62 @@ function setMonitoringCallbacks(callbackHandlers, accountId) {
 function getHandlers(accountId) {
   const accountState = getAccountConnectionState(accountId);
   return accountState ? accountState.handlers : {};
+}
+
+async function handleUserDataMessage(jsonData, accountId, db) {
+  const accountState = getAccountConnectionState(accountId);
+  if (!accountState || !accountState.monitoringCallbacks) {
+    console.error(`[WEBSOCKET] Callbacks de monitoramento não encontrados para conta ${accountId} em handleUserDataMessage.`);
+    return;
+  }
+
+  const { handleOrderUpdate, handleAccountUpdate } = accountState.monitoringCallbacks;
+
+  try {
+    const message = JSON.parse(jsonData.toString());
+    // console.log(`[WEBSOCKET] UserDataStream (Conta ${accountId}) Raw Message:`, JSON.stringify(message).substring(0, 500));
+
+    if (message.e) { // 'e' é o campo de tipo de evento da Binance
+      switch (message.e) {
+        case 'ORDER_TRADE_UPDATE':
+          if (handleOrderUpdate && typeof handleOrderUpdate === 'function') {
+            // console.log(`[WEBSOCKET] UserDataStream (Conta ${accountId}) Chamando handleOrderUpdate para evento ORDER_TRADE_UPDATE.`);
+            await handleOrderUpdate(message, db); // db é passado aqui
+          } else {
+            console.warn(`[WEBSOCKET] handleOrderUpdate não definido ou não é uma função para conta ${accountId}`);
+          }
+          break;
+        case 'ACCOUNT_UPDATE':
+          if (handleAccountUpdate && typeof handleAccountUpdate === 'function') {
+            // console.log(`[WEBSOCKET] UserDataStream (Conta ${accountId}) Chamando handleAccountUpdate para evento ACCOUNT_UPDATE.`);
+            await handleAccountUpdate(message, db); // db é passado aqui
+          } else {
+            console.warn(`[WEBSOCKET] handleAccountUpdate não definido ou não é uma função para conta ${accountId}`);
+          }
+          break;
+        case 'listenKeyExpired':
+          console.log(`[WEBSOCKET] UserDataStream (Conta ${accountId}) ListenKey expirou. Tentando renovar...`);
+          // Parar o stream atual e reiniciar para obter um novo listenKey
+          // A instância 'db' é necessária para startUserDataStream se ele a utiliza para obter credenciais ou algo similar.
+          // Se startUserDataStream não precisa de 'db' diretamente para renovar, você pode omiti-lo na chamada de renovação.
+          // No entanto, a assinatura original de startUserDataStream(db, accountId) sugere que 'db' pode ser necessário.
+          await stopUserDataStream(accountId); 
+          await startUserDataStream(db, accountId); // db é passado aqui para a renovação
+          break;
+        // Adicionar outros tipos de evento conforme necessário
+        // case 'MARGIN_CALL':
+        // case 'ACCOUNT_CONFIG_UPDATE': // Para Binance Futures, pode ser 'ACCOUNT_CONFIG_UPDATE'
+        // case 'BALANCE_UPDATE': // Algumas corretoras enviam isso, Binance usa ACCOUNT_UPDATE para saldos
+        default:
+          // console.log(`[WEBSOCKET] UserDataStream (Conta ${accountId}) Evento não tratado: ${message.e}`, message);
+          break;
+      }
+    } else {
+      // console.log(`[WEBSOCKET] UserDataStream (Conta ${accountId}) Mensagem sem tipo de evento 'e':`, message);
+    }
+  } catch (error) {
+    console.error(`[WEBSOCKET] Erro ao processar mensagem UserDataStream para conta ${accountId}: ${error.message}. Dados:`, jsonData.toString().substring(0, 500));
+  }
 }
 
 /**
