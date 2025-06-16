@@ -94,7 +94,7 @@ async function placeOrderViaWebSocket(orderParams) {
  * @param {number} [accountId=1] - ID da conta
  * @returns {Promise<Object>} Resposta da API
  */
-async function placeLimitMakerOrderViaWebSocket(symbol, quantity, side, price, accountId) {
+async function placeLimitMakerOrderViaWebSocket(symbol, quantity, side, price, accountId = 1) {
     // Verificar se WebSocket API está conectado
     if (!websockets.isWebSocketApiConnected(accountId)) {
         await websockets.startWebSocketApi(accountId);
@@ -112,13 +112,13 @@ async function placeLimitMakerOrderViaWebSocket(symbol, quantity, side, price, a
         if (!quantity || isNaN(parseFloat(quantity)) || parseFloat(quantity) <= 0) throw new Error(`Quantidade inválida: ${quantity}`);
         if (!price || isNaN(parseFloat(price)) || parseFloat(price) <= 0) throw new Error(`Preço inválido: ${price}`);
         
-        // Converter para string se for número
+        // CORREÇÃO: Converter para string conforme documentação (DECIMAL parameters as JSON strings)
         const quantityStr = typeof quantity === 'number' ? quantity.toString() : quantity;
         const priceStr = typeof price === 'number' ? price.toString() : price;
         
         console.log(`[WS-API] Enviando ordem LIMIT MAKER via WebSocket: ${symbol} ${side} ${quantityStr} @ ${priceStr}`);
         
-        // Criar parâmetros da ordem
+        // CORREÇÃO: Criar parâmetros da ordem conforme documentação
         const orderParams = {
             symbol,
             side,
@@ -127,6 +127,7 @@ async function placeLimitMakerOrderViaWebSocket(symbol, quantity, side, price, a
             price: priceStr,
             timeInForce: 'GTX', // GTX garante que seja uma ordem "post-only"
             newOrderRespType: 'RESULT'
+            // CORREÇÃO: Não incluir apiKey, timestamp, signature aqui - será adicionado em createSignedRequest
         };
         
         // Criar requisição assinada para ordem

@@ -253,158 +253,119 @@ async function loadCredentialsFromDatabase(accountId) {
 }
 
 /**
- * Cria uma assinatura usando Ed25519 conforme documentação Binance
- * @param {string} payload - Dados a serem assinados
+ * Cria assinatura Ed25519 conforme documentação Binance
+ * @param {string} payload - Payload para assinar
  * @param {number} accountId - ID da conta
- * @returns {string} Assinatura em formato base64
+ * @returns {string} - Assinatura em base64
  */
 function createEd25519Signature(payload, accountId) {
-    try {
-        // Validar accountId
-        if (!accountId || typeof accountId !== 'number') {
-            throw new Error(`ID da conta inválido: ${accountId} (tipo: ${typeof accountId})`);
-        }
-
-        // Obter estado da conta
-        const accountState = getAccountConnectionState(accountId);
-        if (!accountState) {
-            throw new Error(`Estado da conta ${accountId} não encontrado. Carregue as credenciais primeiro.`);
-        }
-
-        // Obter chave privada específica da conta
-        let privateKey = accountState.privateKey;
-        
-        if (!privateKey) {
-            throw new Error(`Chave privada Ed25519 não está disponível para conta ${accountId}`);
-        }
-        
-        console.log(`[WS-API] Gerando assinatura Ed25519 para conta ${accountId}`);
-        console.log(`[WS-API] Payload: ${payload}`);
-        
-        try {
-            // CORREÇÃO PRINCIPAL: Usar @noble/ed25519 que é mais compatível
-            if (ed25519Noble) {
-                console.log(`[WS-API] Usando @noble/ed25519 para conta ${accountId}`);
-                
-                // Determinar formato da chave privada
-                let privateKeyBytes;
-                
-                if (privateKey.includes('-----BEGIN PRIVATE KEY-----')) {
-                    // Chave no formato PEM - extrair bytes
-                    const pemContent = privateKey
-                        .replace('-----BEGIN PRIVATE KEY-----', '')
-                        .replace('-----END PRIVATE KEY-----', '')
-                        .replace(/\s/g, '');
-                    
-                    const derBuffer = Buffer.from(pemContent, 'base64');
-                    
-                    // Para Ed25519, a chave privada está nos últimos 32 bytes do DER
-                    privateKeyBytes = derBuffer.slice(-32);
-                } else {
-                    // Chave em formato raw - tentar diferentes decodificações
-                    if (privateKey.startsWith('0x')) {
-                        privateKeyBytes = Buffer.from(privateKey.slice(2), 'hex');
-                    } else if (privateKey.length === 64) {
-                        // Provavelmente hex
-                        privateKeyBytes = Buffer.from(privateKey, 'hex');
-                    } else {
-                        // Provavelmente base64
-                        privateKeyBytes = Buffer.from(privateKey, 'base64');
-                    }
-                }
-                
-                if (privateKeyBytes.length !== 32) {
-                    throw new Error(`Chave privada tem tamanho incorreto: ${privateKeyBytes.length} bytes (esperado: 32)`);
-                }
-                
-                // Converter payload para bytes ASCII conforme documentação
-                const messageBytes = Buffer.from(payload, 'ascii');
-                
-                // Assinar usando @noble/ed25519
-                const signature = ed25519Noble.sign(messageBytes, privateKeyBytes);
-                const signatureBase64 = Buffer.from(signature).toString('base64');
-                
-                console.log(`[WS-API] ✅ Assinatura Ed25519 criada com @noble/ed25519 para conta ${accountId}`);
-                console.log(`[WS-API] Assinatura: ${signatureBase64.substring(0, 20)}...`);
-                
-                return signatureBase64;
-                
-            } else if (tweetnacl) {
-                console.log(`[WS-API] Usando tweetnacl como fallback para conta ${accountId}`);
-                
-                // Preparar chave privada para tweetnacl
-                let privateKeyBytes;
-                
-                if (privateKey.includes('-----BEGIN PRIVATE KEY-----')) {
-                    // Extrair de PEM
-                    const pemContent = privateKey
-                        .replace('-----BEGIN PRIVATE KEY-----', '')
-                        .replace('-----END PRIVATE KEY-----', '')
-                        .replace(/\s/g, '');
-                    
-                    const derBuffer = Buffer.from(pemContent, 'base64');
-                    privateKeyBytes = derBuffer.slice(-32);
-                } else {
-                    // Raw key
-                    if (privateKey.startsWith('0x')) {
-                        privateKeyBytes = Buffer.from(privateKey.slice(2), 'hex');
-                    } else if (privateKey.length === 64) {
-                        privateKeyBytes = Buffer.from(privateKey, 'hex');
-                    } else {
-                        privateKeyBytes = Buffer.from(privateKey, 'base64');
-                    }
-                }
-                
-                if (privateKeyBytes.length !== 32) {
-                    throw new Error(`Chave privada tem tamanho incorreto: ${privateKeyBytes.length} bytes`);
-                }
-                
-                // tweetnacl precisa da chave completa (64 bytes)
-                const keyPair = tweetnacl.sign.keyPair.fromSeed(privateKeyBytes);
-                const messageBytes = Buffer.from(payload, 'ascii');
-                
-                const signature = tweetnacl.sign.detached(messageBytes, keyPair.secretKey);
-                const signatureBase64 = Buffer.from(signature).toString('base64');
-                
-                console.log(`[WS-API] ✅ Assinatura Ed25519 criada com tweetnacl para conta ${accountId}`);
-                return signatureBase64;
-                
-            } else {
-                throw new Error('Nenhuma biblioteca Ed25519 disponível');
-            }
-            
-        } catch (signError) {
-            console.error(`[WS-API] Erro específico ao assinar com Ed25519 para conta ${accountId}:`, signError.message);
-            throw signError;
-        }
-        
-    } catch (error) {
-        console.error(`[WS-API] Erro ao criar assinatura Ed25519 para conta ${accountId}:`, error.message);
-        throw error;
+  try {
+    const accountState = getAccountConnectionState(accountId);
+    if (!accountState || !accountState.privateKey) {
+      throw new Error(`Chave privada Ed25519 não encontrada para conta ${accountId}`);
     }
+
+    console.log(`[WS-API] Gerando assinatura Ed25519 para conta ${accountId}`);
+    console.log(`[WS-API] Payload: ${payload}`);
+
+    let signature;
+
+    // CORREÇÃO CRÍTICA: Tentar usar @noble/ed25519 via dynamic import
+    try {
+      // Usar dynamic import para ES modules
+      const ed25519Module = require('@noble/ed25519');
+      if (ed25519Module && ed25519Module.sign) {
+        console.log(`[WS-API] Usando @noble/ed25519 para conta ${accountId}`);
+        
+        // Converter chave privada de base64 para bytes
+        const privateKeyBytes = Buffer.from(accountState.privateKey, 'base64');
+        
+        // Assinar o payload
+        const signatureBytes = ed25519Module.sign(payload, privateKeyBytes);
+        signature = Buffer.from(signatureBytes).toString('base64');
+        
+        console.log(`[WS-API] ✅ Assinatura Ed25519 criada com @noble/ed25519 para conta ${accountId}`);
+      } else {
+        throw new Error('@noble/ed25519 não disponível');
+      }
+    } catch (nobleError) {
+      console.log(`[WS-API] @noble/ed25519 não disponível: ${nobleError.message}`);
+      
+      // FALLBACK: Usar tweetnacl conforme documentação
+      const nacl = require('tweetnacl');
+      console.log(`[WS-API] Usando tweetnacl como fallback para conta ${accountId}`);
+      
+      // Converter chave privada de base64 para Uint8Array
+      const privateKeyBytes = Buffer.from(accountState.privateKey, 'base64');
+      
+      // CORREÇÃO: Usar nacl.sign.detached para Ed25519
+      const signatureBytes = nacl.sign.detached(Buffer.from(payload, 'utf8'), privateKeyBytes);
+      signature = Buffer.from(signatureBytes).toString('base64');
+      
+      console.log(`[WS-API] ✅ Assinatura Ed25519 criada com tweetnacl para conta ${accountId}`);
+    }
+
+    return signature;
+  } catch (error) {
+    console.error(`[WS-API] Erro ao criar assinatura Ed25519 para conta ${accountId}:`, error);
+    throw error;
+  }
 }
 
 /**
- * Cria um buffer DER para chave privada Ed25519 a partir de chave raw
- * @param {Buffer} rawKey - Chave privada raw de 32 bytes
- * @returns {Buffer} - Chave no formato DER
+ * Cria uma requisição assinada para a API WebSocket conforme documentação Binance
+ * @param {string} method - Método da API
+ * @param {Object} params - Parâmetros da requisição
+ * @param {number} accountId - ID da conta
+ * @returns {Object} - Requisição pronta para envio
  */
-function createEd25519DERFromRaw(rawKey) {
-    // Ed25519 private key DER structure:
-    // SEQUENCE {
-    //   INTEGER 0
-    //   SEQUENCE {
-    //     OBJECT IDENTIFIER 1.3.101.112 (Ed25519)
-    //   }
-    //   OCTET STRING {
-    //     OCTET STRING (32-byte private key)
-    //   }
-    // }
-    
-    const ed25519OID = Buffer.from('302a300506032b657004200420', 'hex');
-    const derKey = Buffer.concat([ed25519OID, rawKey]);
-    
-    return derKey;
+function createSignedRequest(method, params = {}, accountId) {
+  const accountState = getAccountConnectionState(accountId);
+  if (!accountState) {
+    throw new Error(`Estado da conexão não encontrado para conta ${accountId}. Chame loadCredentialsFromDatabase primeiro.`);
+  }
+  
+  // Criar um ID único para a requisição
+  const requestId = uuidv4();
+  
+  // Para métodos que não exigem autenticação
+  if (method === 'ping' || method === 'pong' || method === 'session.status') {
+    return {
+      id: requestId,
+      method,
+      params: params || {}
+    };
+  }
+  
+  // CORREÇÃO CRÍTICA: Para métodos que exigem autenticação
+  const requestParams = {
+    ...params,
+    apiKey: accountState.wsApiKey || accountState.apiKey, // Usar wsApiKey se disponível
+    timestamp: Date.now()
+  };
+  
+  // CORREÇÃO: Criar payload para assinatura conforme documentação Binance
+  // Formato: param=value&param=value (ordenado alfabeticamente, sem signature)
+  const sortedParams = Object.keys(requestParams)
+    .filter(key => key !== 'signature') // Excluir signature do payload
+    .sort() // Ordenação alfabética
+    .map(key => `${key}=${requestParams[key]}`) // CORREÇÃO: Formato simples sem encodeURIComponent
+    .join('&');
+  
+  console.log(`[WS-API] Payload para assinatura: ${sortedParams}`);
+  
+  // CORREÇÃO: Assinar com Ed25519 conforme documentação
+  const signature = createEd25519Signature(sortedParams, accountId);
+  
+  // Adicionar assinatura aos parâmetros
+  requestParams.signature = signature;
+  
+  // Retornar objeto de requisição completo conforme formato da documentação
+  return {
+    id: requestId,
+    method,
+    params: requestParams
+  };
 }
 
 /**
@@ -935,58 +896,63 @@ async function sendWebSocketApiRequest(request, timeout = 30000, accountId) {
 }
 
 /**
- * Cria uma requisição assinada para a API WebSocket conforme documentação Binance
- * @param {string} method - Método da API
- * @param {Object} params - Parâmetros da requisição
+ * Cria assinatura Ed25519 conforme documentação Binance
+ * @param {string} payload - Payload para assinar
  * @param {number} accountId - ID da conta
- * @returns {Object} - Requisição pronta para envio
+ * @returns {string} - Assinatura em base64
  */
-function createSignedRequest(method, params = {}, accountId) {
-  const accountState = getAccountConnectionState(accountId);
-  if (!accountState) {
-    throw new Error(`Estado da conexão não encontrado para conta ${accountId}. Chame loadCredentialsFromDatabase primeiro.`);
+function createEd25519Signature(payload, accountId) {
+  try {
+    const accountState = getAccountConnectionState(accountId);
+    if (!accountState || !accountState.privateKey) {
+      throw new Error(`Chave privada Ed25519 não encontrada para conta ${accountId}`);
+    }
+
+    console.log(`[WS-API] Gerando assinatura Ed25519 para conta ${accountId}`);
+    console.log(`[WS-API] Payload: ${payload}`);
+
+    let signature;
+
+    // CORREÇÃO CRÍTICA: Tentar usar @noble/ed25519 via dynamic import
+    try {
+      // Usar dynamic import para ES modules
+      const ed25519Module = require('@noble/ed25519');
+      if (ed25519Module && ed25519Module.sign) {
+        console.log(`[WS-API] Usando @noble/ed25519 para conta ${accountId}`);
+        
+        // Converter chave privada de base64 para bytes
+        const privateKeyBytes = Buffer.from(accountState.privateKey, 'base64');
+        
+        // Assinar o payload
+        const signatureBytes = ed25519Module.sign(payload, privateKeyBytes);
+        signature = Buffer.from(signatureBytes).toString('base64');
+        
+        console.log(`[WS-API] ✅ Assinatura Ed25519 criada com @noble/ed25519 para conta ${accountId}`);
+      } else {
+        throw new Error('@noble/ed25519 não disponível');
+      }
+    } catch (nobleError) {
+      console.log(`[WS-API] @noble/ed25519 não disponível: ${nobleError.message}`);
+      
+      // FALLBACK: Usar tweetnacl conforme documentação
+      const nacl = require('tweetnacl');
+      console.log(`[WS-API] Usando tweetnacl como fallback para conta ${accountId}`);
+      
+      // Converter chave privada de base64 para Uint8Array
+      const privateKeyBytes = Buffer.from(accountState.privateKey, 'base64');
+      
+      // CORREÇÃO: Usar nacl.sign.detached para Ed25519
+      const signatureBytes = nacl.sign.detached(Buffer.from(payload, 'utf8'), privateKeyBytes);
+      signature = Buffer.from(signatureBytes).toString('base64');
+      
+      console.log(`[WS-API] ✅ Assinatura Ed25519 criada com tweetnacl para conta ${accountId}`);
+    }
+
+    return signature;
+  } catch (error) {
+    console.error(`[WS-API] Erro ao criar assinatura Ed25519 para conta ${accountId}:`, error);
+    throw error;
   }
-  
-  // Criar um ID único para a requisição
-  const requestId = uuidv4();
-  
-  // Para métodos que não exigem autenticação
-  if (method === 'ping' || method === 'pong' || method === 'session.status') {
-    return {
-      id: requestId,
-      method,
-      params: params || {}
-    };
-  }
-  
-  // CORREÇÃO: Para métodos que exigem autenticação, seguir formato da documentação
-  const requestParams = {
-    ...params,
-    apiKey: accountState.wsApiKey, // CORREÇÃO: Usar wsApiKey para WebSocket API
-    timestamp: Date.now()
-  };
-  
-  // CORREÇÃO: Ordenar parâmetros alfabeticamente conforme documentação
-  const sortedParams = Object.keys(requestParams)
-    .filter(key => key !== 'signature') // Excluir signature do payload
-    .sort() // Ordenação alfabética
-    .map(key => `${key}=${requestParams[key]}`) // CORREÇÃO: Formato simples sem encodeURIComponent
-    .join('&');
-  
-  console.log(`[WS-API] Payload para assinatura: ${sortedParams}`);
-  
-  // CORREÇÃO: Assinar com Ed25519 conforme documentação
-  const signature = createEd25519Signature(sortedParams, accountId);
-  
-  // Adicionar assinatura aos parâmetros
-  requestParams.signature = signature;
-  
-  // Retornar objeto de requisição completo conforme formato da documentação
-  return {
-    id: requestId,
-    method,
-    params: requestParams
-  };
 }
 
 /**
@@ -1542,83 +1508,67 @@ function reset(accountId) {
  */
 async function authenticateWebSocketApi(ws, accountId) {
   try {
-    console.log(`[WS-API] Iniciando autenticação session.logon para conta ${accountId}...`);
-    
     const accountState = getAccountConnectionState(accountId);
     if (!accountState || !accountState.wsApiKey || !accountState.privateKey) {
-      throw new Error(`Credenciais WebSocket API incompletas para conta ${accountId}`);
+      throw new Error(`Credenciais WebSocket incompletas para conta ${accountId}`);
     }
-    
-    // Implementar session.logon conforme documentação exata
+
+    console.log(`[WS-API] Iniciando autenticação session.logon para conta ${accountId}...`);
+
+    // CORREÇÃO: Criar payload para assinatura conforme documentação
     const timestamp = Date.now();
-    const params = {
+    const authParams = {
       apiKey: accountState.wsApiKey,
       timestamp: timestamp
     };
-    
-    // CORREÇÃO: Ordenar parâmetros alfabeticamente conforme documentação
-    const sortedKeys = Object.keys(params).sort();
-    const payload = sortedKeys.map(key => `${key}=${params[key]}`).join('&');
-    
+
+    // CORREÇÃO: Criar payload conforme formato da documentação
+    const payload = `apiKey=${authParams.apiKey}&timestamp=${authParams.timestamp}`;
     console.log(`[WS-API] Payload para assinatura: ${payload}`);
-    
-    // Assinar com Ed25519
+
+    // Criar assinatura Ed25519
     const signature = createEd25519Signature(payload, accountId);
-    params.signature = signature;
-    
-    // Criar requisição de autenticação conforme formato da documentação
+
+    // Criar requisição de autenticação
     const authRequest = {
-      id: `auth-${Date.now()}`,
+      id: `auth-${timestamp}`,
       method: 'session.logon',
-      params: params
+      params: {
+        apiKey: authParams.apiKey,
+        timestamp: authParams.timestamp,
+        signature: signature
+      }
     };
-    
-    //console.log(`[WS-API] Enviando session.logon para conta ${accountId}:`, JSON.stringify(authRequest, null, 2));
-    
-    // Enviar requisição de autenticação
-    const response = await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
+
+    return new Promise((resolve, reject) => {
+      // Configurar callback para resposta de autenticação
+      const timeoutId = setTimeout(() => {
+        delete accountState.requestCallbacks[authRequest.id];
         reject(new Error('Timeout na autenticação WebSocket API'));
-      }, 10000);
-      
-      const messageHandler = (data) => {
-        try {
-          const message = JSON.parse(data.toString());
-          console.log(`[WS-API] Resposta recebida para autenticação:`, JSON.stringify(message, null, 2));
-          
-          if (message.id === authRequest.id) {
-            clearTimeout(timeout);
-            ws.removeListener('message', messageHandler);
-            
-            if (message.status === 200) {
-              console.log(`[WS-API] ✅ Autenticação bem-sucedida para conta ${accountId}`);
-              console.log(`[WS-API] API Key autenticada: ${message.result.apiKey.substring(0, 8)}...`);
-              resolve(true);
-            } else {
-              console.error(`[WS-API] Erro na autenticação para conta ${accountId}:`, message.error);
-              resolve(false); // CORREÇÃO: Não rejeitar, apenas retornar false
-            }
-          }
-        } catch (parseError) {
-          // Ignorar mensagens que não são JSON válido
+      }, 30000);
+
+      accountState.requestCallbacks[authRequest.id] = (response) => {
+        clearTimeout(timeoutId);
+        
+        if (response.status === 200 && response.result) {
+          console.log(`[WS-API] ✅ Autenticação bem-sucedida para conta ${accountId}`);
+          console.log(`[WS-API] API Key autenticada: ${response.result.apiKey.substring(0, 8)}...`);
+          accountState.wsApiAuthenticated = true;
+          resolve(true);
+        } else {
+          console.error(`[WS-API] Falha na autenticação para conta ${accountId}:`, response.error);
+          reject(new Error(`Falha na autenticação: ${response.error?.msg || 'Erro desconhecido'}`));
         }
       };
-      
-      ws.on('message', messageHandler);
+
+      // Enviar requisição de autenticação
       ws.send(JSON.stringify(authRequest));
+      console.log(`[WS-API] Requisição de autenticação enviada para conta ${accountId}`);
     });
-    
-    if (response) {
-      // Marcar como autenticado
-      accountState.wsApiAuthenticated = true;
-      accountState.isAuthenticated = true;
-    }
-    
-    return response;
-    
+
   } catch (error) {
-    console.error(`[WS-API] Erro na autenticação para conta ${accountId}:`, error.message);
-    return false;
+    console.error(`[WS-API] Erro na autenticação para conta ${accountId}:`, error);
+    throw error;
   }
 }
 
