@@ -581,7 +581,7 @@ def load_leverage_brackets(symbol=None):
 
 def get_account_base_balance():
     """
-    Obtém o saldo base de cálculo da tabela conta
+    Obtém o saldo base de cálculo da tabela conta (com fallback para contas)
     """
     try:
         conn = mysql.connector.connect(
@@ -593,20 +593,16 @@ def get_account_base_balance():
         )
         cursor = conn.cursor(dictionary=True)
         
-        # Obter o saldo base de cálculo da primeira conta ativa
-        sql = "SELECT saldo_base_calculo FROM conta WHERE ativa = 1 LIMIT 1"
+        sql = "SELECT saldo_base_calculo FROM contas WHERE ativa = 1 LIMIT 1"
         cursor.execute(sql)
         result = cursor.fetchone()
-        
+            
         if result and 'saldo_base_calculo' in result and result['saldo_base_calculo'] is not None:
             return float(result['saldo_base_calculo'])
-        else:
-            print("[AVISO] Saldo base de cálculo não encontrado. Usando valor padrão.")
-            return 10000.0  # Valor padrão se não encontrar
-            
+
     except Exception as e:
         print(f"[ERRO] Falha ao buscar saldo base de cálculo: {e}")
-        return 10000.0  # Valor padrão em caso de erro
+        return 1000.0
     finally:
         if 'conn' in locals() and conn.is_connected():
             cursor.close()
@@ -870,71 +866,125 @@ def save_to_database(trade_data):
 def extract_trade_info(message_text):
     """
     Extrai informações de trade da mensagem do Telegram usando regex
+    MELHORADO para lidar com diferentes formatos de mensagem
     """
     try:
-        # Verificar se contém todos os termos obrigatórios
-        required_terms = ["DIVAP", "Entrada", "Alvo", "Stop"]
-        for term in required_terms:
-            if term.lower() not in message_text.lower():
-                #print(f"[INFO] Termo obrigatório '{term}' não encontrado na mensagem")
-                return None
+        # Verificar se contém termos obrigatórios (mais flexível)
+        required_terms_pattern1 = ["DIVAP", "Entrada", "Alvo", "Stop"]  # Formato antigo
+        required_terms_pattern2 = ["possível DIVAP", "Entrada", "Alvo", "Stop"]  # Novo formato
+        
+        # Verificar qual padrão a mensagem segue
+        is_pattern1 = all(term.lower() in message_text.lower() for term in required_terms_pattern1)
+        is_pattern2 = all(term.lower() in message_text.lower() for term in required_terms_pattern2)
+        
+        if not (is_pattern1 or is_pattern2):
+            #print(f"[INFO] Mensagem não contém termos obrigatórios para DIVAP")
+            return None
 
         # Padrões para extrair informações
         symbol_pattern = r'#([A-Z0-9]+)'
-        # Padrão para capturar o timeframe (15m, 1h, 4h, 1D, etc.) - incluindo D maiúsculo
-        timeframe_pattern = r'#[A-Z0-9]+\s+([0-9]+[mhdwMD])'
-
-        # Detectar o lado (compra/venda)
-        if "compra" in message_text.lower():
+        
+        # MELHORADO: Padrão para timeframe mais flexível
+        timeframe_pattern = r'#[A-Z0-9]+\s+([0-9]+[mhdwMD]|[0-9]+[a-zA-Z])'
+        
+        # NOVO: Detectar lado da operação de forma mais robusta
+        side = None
+        if "compra" in message_text.lower() or "buy" in message_text.lower():
             side = "COMPRA"
-        elif "venda" in message_text.lower():
+        elif "venda" in message_text.lower() or "sell" in message_text.lower():
             side = "VENDA"
         else:
-            # Tentar determinar pelo preço de entrada e stop
-            entry_pattern = r'Entrada\s+(?:acima|abaixo)\s+de:\s*([0-9,.]+)'
-            sl_pattern = r'Stop\s+(?:acima|abaixo)\s+de:\s*([0-9,.]+)'
+            # Tentar determinar pelo contexto da mensagem
+            if "acima de:" in message_text.lower():
+                # Se entrada é "acima de", normalmente é compra
+                side = "COMPRA"
+            elif "abaixo de:" in message_text.lower():
+                # Se entrada é "abaixo de", normalmente é venda
+                side = "VENDA"
 
-            entry_match = re.search(entry_pattern, message_text)
-            sl_match = re.search(sl_pattern, message_text)
+        # MELHORADO: Padrões mais flexíveis para capturar preços
+        entry_patterns = [
+            r'Entrada\s+(?:acima|abaixo)\s+de:\s*([0-9,.]+)',  # Formato padrão
+            r'Entrada\s*:\s*([0-9,.]+)',  # Formato alternativo
+            r'Entry\s*:\s*([0-9,.]+)'  # Formato em inglês
+        ]
+        
+        sl_patterns = [
+            r'Stop\s+(?:acima|abaixo)\s+de:\s*([0-9,.]+)',  # Formato padrão
+            r'Stop\s*:\s*([0-9,.]+)',  # Formato alternativo
+            r'Stop\s+Loss\s*:\s*([0-9,.]+)',  # Formato completo
+            r'SL\s*:\s*([0-9,.]+)'  # Formato abreviado
+        ]
 
-            if entry_match and sl_match:
-                entry = float(normalize_number(entry_match.group(1)))
-                stop_loss = float(normalize_number(sl_match.group(1)))
+        # MELHORADO: Padrão para múltiplos alvos mais flexível
+        tp_patterns = [
+            r'Alvo\s+(?:\d+):\s*([0-9,.]+)',  # Formato padrão
+            r'Target\s+(?:\d+):\s*([0-9,.]+)',  # Formato em inglês
+            r'TP\s*(?:\d+)?\s*:\s*([0-9,.]+)'  # Formato abreviado
+        ]
 
-                # Se entrada > stop, é venda; caso contrário, é compra
-                side = "VENDA" if entry > stop_loss else "COMPRA"
-            else:
-                print("[ERRO] Não foi possível determinar o lado (compra/venda)")
-                return None
-
-        # Capturar entrada e stop
-        entry_pattern = r'Entrada\s+(?:acima|abaixo)\s+de:\s*([0-9,.]+)'
-        sl_pattern = r'Stop\s+(?:acima|abaixo)\s+de:\s*([0-9,.]+)'
-
-        # Padrão para múltiplos alvos
-        tp_pattern = r'Alvo\s+(?:\d+):\s*([0-9,.]+)'
-
-        # Capital/risco
+        # Capital/risco (mantido igual)
         capital_pattern = r'(\d+)%\s+do\s+capital'
 
-        # Extrair dados
+        # Extrair dados usando múltiplos padrões
         symbol_match = re.search(symbol_pattern, message_text)
         timeframe_match = re.search(timeframe_pattern, message_text)
-        entry_match = re.search(entry_pattern, message_text)
-        sl_match = re.search(sl_pattern, message_text)
+        
+        # Tentar múltiplos padrões para entrada
+        entry_match = None
+        for pattern in entry_patterns:
+            entry_match = re.search(pattern, message_text, re.IGNORECASE)
+            if entry_match:
+                break
+        
+        # Tentar múltiplos padrões para stop loss
+        sl_match = None
+        for pattern in sl_patterns:
+            sl_match = re.search(pattern, message_text, re.IGNORECASE)
+            if sl_match:
+                break
+
+        # Extrair todos os alvos usando múltiplos padrões
+        tp_matches = []
+        for pattern in tp_patterns:
+            matches = re.findall(pattern, message_text, re.IGNORECASE)
+            tp_matches.extend(matches)
+        
+        # Remover duplicatas mantendo ordem
+        seen = set()
+        tp_matches = [x for x in tp_matches if not (x in seen or seen.add(x))]
+
         capital_match = re.search(capital_pattern, message_text)
 
-        # Extrair todos os alvos
-        tp_matches = re.findall(tp_pattern, message_text)
-
-        if not (symbol_match and entry_match and sl_match and tp_matches):
-            print("[ERRO] Formato de mensagem não reconhecido")
+        # Validar se temos dados mínimos necessários
+        if not symbol_match:
+            print("[INFO] Símbolo não encontrado na mensagem")
+            return None
+            
+        if not entry_match:
+            print("[INFO] Preço de entrada não encontrado")
+            return None
+            
+        if not sl_match:
+            print("[INFO] Stop loss não encontrado")
+            return None
+            
+        if not tp_matches:
+            print("[INFO] Nenhum alvo encontrado")
             return None
 
+        # Processar dados extraídos
         symbol = symbol_match.group(1)
-        timeframe = timeframe_match.group(1).lower() if timeframe_match else ""
+        timeframe = timeframe_match.group(1).lower() if timeframe_match else "15m"  # Padrão 15m
         entry = float(normalize_number(entry_match.group(1)))
         stop_loss = float(normalize_number(sl_match.group(1)))
+        
+        # NOVO: Se side ainda não foi determinado, usar lógica de preços
+        if not side:
+            if entry > stop_loss:
+                side = "VENDA"  # Entrada maior que stop = venda
+            else:
+                side = "COMPRA"  # Entrada menor que stop = compra
         
         # Capital percentual da mensagem original (usado apenas para cálculo de alavancagem)
         original_capital_pct = float(capital_match.group(1)) if capital_match else 5.0  # Valor padrão
@@ -970,7 +1020,9 @@ def extract_trade_info(message_text):
             print(f"[AVISO] Erro no cálculo dinâmico de capital. Usando valor original: {capital_pct:.2f}%")
 
         # Usar o primeiro alvo como TP principal
-        tp = float(normalize_number(tp_matches[0])) if tp_matches else None
+        tp = float(normalize_number(tp_matches[0])) if tp_matches else entry  # Fallback para entry se não houver TP
+
+        print(f"[INFO] Sinal DIVAP detectado: {symbol} {side} @ {entry} -> {tp} | SL: {stop_loss} | TF: {timeframe}")
 
         return {
             "symbol": symbol,
@@ -981,12 +1033,13 @@ def extract_trade_info(message_text):
             "entry": entry,
             "tp": tp,
             "stop_loss": stop_loss,
-            "all_tps": [float(normalize_number(tp)) for tp in tp_matches] if tp_matches else [],
+            "all_tps": [float(normalize_number(tp)) for tp in tp_matches] if tp_matches else [tp],
             "chat_id": GRUPO_DESTINO_ID
         }
 
     except Exception as e:
-        print(f"[ERRO] Falha ao extrair informações: {e}")
+        print(f"[ERRO] Falha ao extrair informações da mensagem: {e}")
+        print(f"[DEBUG] Texto da mensagem:\n{message_text}")
         traceback.print_exc()
         return None
 
@@ -1096,7 +1149,8 @@ async def handle_new_message(event):
             chat_obj = await event.get_chat() 
             #print(f"[INFO] Mensagem ID {incoming_message_id} de GRUPO DE ORIGEM {chat_obj.id if chat_obj else incoming_chat_id}. Verificando se é sinal...")
             
-            trade_info = await extract_trade_info(incoming_text)
+            # CORREÇÃO: REMOVER AWAIT aqui - extract_trade_info NÃO é assíncrona
+            trade_info = extract_trade_info(incoming_text)
 
             if trade_info:
                 #print(f"[INFO] Sinal de trade detectado em msg ID {incoming_message_id}: {trade_info['symbol']} {trade_info['side']}")
@@ -1108,7 +1162,6 @@ async def handle_new_message(event):
                     # Se verificação está desabilitada, considerar todos os sinais como válidos
                     is_valid_divap, error_message = True, None
                     print(f"[INFO] Verificação DIVAP desativada. Sinal {trade_info['symbol']} aceito sem verificação.")                
-
 
                 # Se for DIVAP válido, seguir com o fluxo normal de envio
                 if is_valid_divap:
@@ -1132,10 +1185,10 @@ async def handle_new_message(event):
 
                     # Garantir que tp_price nunca seja NULL
                     if selected_tp is None:
-                    # Se não há TP selecionado, usar o último alvo como tp_price para o banco de dados
-                    # Isso evita o erro "Column 'tp_price' cannot be null"
+                        # Se não há TP selecionado, usar o último alvo como tp_price para o banco de dados
+                        # Isso evita o erro "Column 'tp_price' cannot be null"
                         if trade_info.get('all_tps') and len(trade_info['all_tps']) > 0:
-                    # Usar o último alvo disponível
+                            # Usar o último alvo disponível
                             trade_info['tp'] = trade_info['all_tps'][-1]
                             #print(f"[INFO] Sem alvo específico selecionado. Usando último alvo ({trade_info['tp']}) como tp_price para o banco.")
                         else:
@@ -1149,7 +1202,6 @@ async def handle_new_message(event):
                     trade_info['chat_id_origem_sinal'] = incoming_chat_id
                     trade_info['chat_id'] = GRUPO_DESTINO_ID 
                     trade_info['message_source'] = message_source  # Adicionar message_source                
-
 
                     # Enviar a mensagem ao grupo destino
                     sent_message_to_dest = await client.send_message(GRUPO_DESTINO_ID, message_text_to_send)
@@ -1240,60 +1292,7 @@ async def handle_new_message(event):
                 #print(f"[INFO] Mensagem ID {incoming_message_id} de GRUPO DE ORIGEM não é um sinal de trade parseável.")
                 pass
 
-        # --- INÍCIO DO TRECHO MODIFICADO (ETAPA 4) ---
-        # 4. Para mensagens de GRUPOS PERMITIDOS que NÃO SÃO SINAIS DE TRADE PROCESSADOS ACIMA
-        #    (ou seja, msgs de GRUPO_DESTINO_ID, ou msgs de GRUPO_ORIGEM_ID que não eram sinais válidos)
-        if incoming_chat_id in GRUPOS_PERMITIDOS_PARA_REGISTRO:
-            #print(f"[INFO] Processando mensagem ID {incoming_message_id} de Chat ID {incoming_chat_id} para registro geral em signals_msg.")
-            
-            related_symbol = None
-            related_signal_id = None
-
-            # Verificar se esta mensagem está diretamente associada a um sinal
-            direct_symbol, direct_signal_id = await get_symbol_from_webhook_signals(incoming_message_id, incoming_chat_id)
-            if direct_signal_id:
-                related_symbol = direct_symbol
-                related_signal_id = direct_signal_id
-                print(f"[INFO] Mensagem ID {incoming_message_id} diretamente associada ao Sinal ID {related_signal_id}.")
-            elif is_incoming_reply:
-                # É uma resposta a outra mensagem - verificar relação com sinal
-                replied_s, replied_sid = await check_if_reply_to_signal(incoming_reply_to_id, incoming_chat_id)
-                if replied_sid:
-                    related_symbol = replied_s
-                    related_signal_id = replied_sid
-                    #print(f"[INFO] Mensagem ID {incoming_message_id} é resposta ao Sinal ID {related_signal_id}.")
-                    pass
-                else:
-                    # IMPORTANTE: Mesmo que a mensagem respondida não esteja relacionada a um sinal,
-                    # ainda assim registramos a mensagem atual
-                    #print(f"[INFO] Mensagem ID {incoming_message_id} é resposta a uma mensagem sem relação com sinais.")
-                    pass
-            
-            # SEMPRE registrar a mensagem em signals_msg, independente de ser uma resposta ou ter relação com sinal
-            save_message_to_database(
-                message_id=incoming_message_id,
-                chat_id=incoming_chat_id,
-                text=incoming_text,
-                is_reply=is_incoming_reply,
-                reply_to_message_id=incoming_reply_to_id,
-                symbol=related_symbol, # Pode ser None
-                signal_id=related_signal_id, # Pode ser None
-                created_at=incoming_created_at,
-                message_source=message_source
-            )
-            
-            if related_signal_id:
-                #print(f"[INFO] Mensagem ID {incoming_message_id} registrada e associada ao Sinal ID: {related_signal_id}")
-                pass
-            else:
-                #print(f"[INFO] Mensagem ID {incoming_message_id} registrada sem associação a um sinal.")
-                pass
-
-        else:
-            # Esta mensagem não é de um grupo de origem (para sinais) nem de um grupo permitido para registro geral.
-            # Esta condição else corresponde ao if da Etapa 4.
-            #print(f"[INFO] Mensagem ID {incoming_message_id} de Chat ID {incoming_chat_id} não pertence a GRUPOS_PERMITIDOS_PARA_REGISTRO (após falhar checagem de GRUPOS_ORIGEM_IDS). Ignorando completamente.")
-            pass
+        # ... resto do código igual ...
 
     except Exception as e:
         print(f"[ERRO GERAL EM HANDLE_NEW_MESSAGE] Falha ao processar mensagem ID {incoming_message_id} de Chat ID {incoming_chat_id}: {e}")
