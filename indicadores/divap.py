@@ -262,7 +262,7 @@ def update_leverage_brackets_database():
         cursor.close()
         conn.close()
         
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ✅ Atualização EFICIENTE concluída:")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ✅ Atualização concluída:")
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS]   - Símbolos processados: {processed_symbols}")
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS]   - Inserções: {inserts}")
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS]   - Atualizações: {updates}")
