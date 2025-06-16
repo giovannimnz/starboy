@@ -26,12 +26,29 @@ let lastCacheTime = 0;
  * @returns {Promise<Object>} - Credenciais da conta
  */
 async function loadCredentialsFromDatabase(accountId) {
-  // CORREÇÃO CRÍTICA: Validação mais robusta
+  // CORREÇÃO CRÍTICA: Melhor validação e conversão
   if (!accountId) {
     throw new Error(`AccountId é obrigatório: ${accountId} (tipo: ${typeof accountId})`);
   }
   
-  const numericAccountId = typeof accountId === 'string' ? parseInt(accountId) : accountId;
+  // CORREÇÃO: Se receber um objeto, tentar extrair o ID
+  let numericAccountId;
+  
+  if (typeof accountId === 'object' && accountId !== null) {
+    // Se for um objeto, tentar extrair o ID
+    if (accountId.id) {
+      numericAccountId = accountId.id;
+    } else if (accountId.accountId) {
+      numericAccountId = accountId.accountId;
+    } else {
+      console.error('[API] Objeto recebido como accountId:', JSON.stringify(accountId));
+      throw new Error(`AccountId é um objeto inválido: ${JSON.stringify(accountId)}`);
+    }
+  } else if (typeof accountId === 'string') {
+    numericAccountId = parseInt(accountId);
+  } else {
+    numericAccountId = accountId;
+  }
   
   if (isNaN(numericAccountId) || numericAccountId <= 0) {
     throw new Error(`AccountId deve ser um número válido: ${accountId} (convertido: ${numericAccountId})`);

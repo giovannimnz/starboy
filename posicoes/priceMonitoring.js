@@ -4,12 +4,16 @@ const websockets = require('../websockets');
 
 // Cache de preços por símbolo
 const latestPrices = new Map();
+const priceCache = new Map();
 
 // Mapa para armazenar últimas atualizações de log de preço
 const lastPriceLogTime = {};
 
 // Intervalo para log de preços (ms)
 const PRICE_LOG_INTERVAL = 60000; // 1 minuto
+
+// CORREÇÃO CRÍTICA: Adicionar constante que estava faltando
+const MAX_EMPTY_CHECKS = 10; // Número máximo de verificações vazias antes de fechar WebSocket
 
 // Contador para verificar quando fechar websockets sem atividade
 const websocketEmptyCheckCounter = {};
@@ -21,6 +25,11 @@ const websocketEmptyCheckCounter = {};
  */
 async function startPriceMonitoring(accountId) {
   try {
+    // CORREÇÃO: Validar accountId
+    if (!accountId || typeof accountId !== 'number') {
+      throw new Error(`AccountId inválido em startPriceMonitoring: ${accountId} (tipo: ${typeof accountId})`);
+    }
+
     const db = await getDatabaseInstance(accountId);
     if (!db) {
       console.error(`[PRICE] Não foi possível conectar ao banco para conta ${accountId}`);
@@ -39,6 +48,7 @@ async function startPriceMonitoring(accountId) {
       SELECT simbolo
       FROM posicoes
       WHERE status = 'OPEN' AND conta_id = ?
+      GROUP BY simbolo
     `, [accountId]);
 
     // Obter sinais em AGUARDANDO_ACIONAMENTO ou PENDING
@@ -48,7 +58,7 @@ async function startPriceMonitoring(accountId) {
       WHERE (status = 'AGUARDANDO_ACIONAMENTO' OR status = 'PENDING') AND conta_id = ?
     `, [accountId]);
 
-    //console.log(`[PRICE] Encontrados ${pendingSignals.length} sinais pendentes para monitoramento (conta ${accountId})`);
+    console.log(`[PRICE] Encontrados ${pendingSignals.length} sinais pendentes para monitoramento (conta ${accountId})`);
 
     const symbols = new Set();
 
@@ -66,6 +76,7 @@ async function startPriceMonitoring(accountId) {
       await websockets.ensurePriceWebsocketExists(symbol, accountId);
     }
 
+    console.log(`[PRICE] Monitoramento iniciado para ${symbols.size} símbolos (conta ${accountId}): ${Array.from(symbols).join(', ')}`);
     return symbols.size;
   } catch (error) {
     console.error(`[PRICE] Erro ao iniciar monitoramento de preços para conta ${accountId}:`, error);
@@ -77,120 +88,56 @@ async function startPriceMonitoring(accountId) {
  * Função para obter preço atual via REST API
  * @param {string} symbol - Símbolo do par
  * @param {number} accountId - ID da conta
- * @returns {Promise<number|null>} - Preço atual ou null se falhar
+ * @returns {Promise<number>} - Preço atual
  */
 async function getCurrentPrice(symbol, accountId) {
   try {
-    // Obter credenciais da conta específica
-    const api = require('../api');
-    const credentials = await api.loadCredentialsFromDatabase({ accountId });
-    
-    if (!credentials || !credentials.apiUrl) {
-      console.error(`[PRICE] Credenciais não encontradas para conta ${accountId}`);
-      return null;
-    }
-    
-    // Construir URL completa
-    const url = `${credentials.apiUrl}/v1/ticker/price?symbol=${symbol}`;
-    console.log(`[PRICE] Obtendo preço atual via REST API: ${url}`);
-    
-    const response = await axios.get(url);
-    if (response.data && response.data.price) {
-      const price = parseFloat(response.data.price);
-      console.log(`[PRICE] Preço atual de ${symbol} obtido via REST API: ${price}`);
-      return price;
-    }
-    
-    console.error(`[PRICE] Resposta da API sem preço:`, response.data);
-    return null;
-  } catch (error) {
-    console.error(`[PRICE] Erro ao obter preço atual para ${symbol}:`, error);
-    return null;
-  }
-}
-
-/**
- * Obtém preço usando WebSocket cache com fallback para REST API
- * @param {string} symbol - Símbolo do par
- * @param {number} accountId - ID da conta
- * @param {number} maxAgeMs - Idade máxima do preço em cache (ms)
- * @returns {Promise<number|null>} - Preço atual
- */
-async function getWebSocketPrice(symbol, accountId, maxAgeMs = 5000) {
-  try {
-    // Se não temos o símbolo no cache, iniciar websocket
-    if (!latestPrices.has(symbol)) {
-      await websockets.ensurePriceWebsocketExists(symbol, accountId);
-      
-      // Aguardar um momento para o websocket conectar
-      await new Promise(resolve => setTimeout(resolve, 1000));
+    // CORREÇÃO: Validar accountId
+    if (!accountId || typeof accountId !== 'number') {
+      throw new Error(`AccountId inválido em getCurrentPrice: ${accountId} (tipo: ${typeof accountId})`);
     }
 
-    // Verificar se temos uma atualização recente no cache
-    const priceEntry = latestPrices.get(symbol);
-    const now = Date.now();
-    
-    if (priceEntry && (now - priceEntry.timestamp) < maxAgeMs) {
-      return priceEntry.price;
-    }
-
-    // Se o preço for muito antigo, tentar obter via REST
-    console.log(`[PRICE] Preço de ${symbol} não disponível via WebSocket (ou antigo)`);
-    
-    const restPrice = await getCurrentPrice(symbol, accountId);
-    
-    // Atualizar cache com o preço da REST API
-    if (restPrice) {
-      updatePriceCache(symbol, restPrice);
-      return restPrice;
-    }
-    
-    // Se ainda temos algum preço em cache, retorná-lo como último recurso
-    if (priceEntry) {
-      console.warn(`[PRICE] Usando preço antigo para ${symbol}: ${priceEntry.price}`);
-      return priceEntry.price;
-    }
-    
-    return null;
+    const { getPrice } = require('../api');
+    return await getPrice(symbol, accountId);
   } catch (error) {
     console.error(`[PRICE] Erro ao obter preço para ${symbol}:`, error);
-    return null;
+    throw error;
   }
 }
 
 /**
  * Atualiza cache de preços
- * @param {string} symbol - Símbolo do par
- * @param {number|Object} priceData - Preço ou dados do BookTicker
+ * @param {string} symbol - Símbolo
+ * @param {number} price - Preço
  */
-function updatePriceCache(symbol, priceData) {
+function updatePriceCache(symbol, price) {
   try {
-    let price;
-    
-    if (typeof priceData === 'number') {
-      price = priceData;
-    } else if (priceData && (priceData.bidPrice || priceData.b)) {
-      // BookTicker data
-      const bid = parseFloat(priceData.bidPrice || priceData.b);
-      const ask = parseFloat(priceData.askPrice || priceData.a);
-      
-      if (!isNaN(bid) && !isNaN(ask) && bid > 0 && ask > 0) {
-        price = (bid + ask) / 2;
-      } else {
-        return;
-      }
-    } else {
-      return;
-    }
-    
-    latestPrices.set(symbol, {
-      price: price,
+    priceCache.set(symbol, {
+      price: parseFloat(price),
       timestamp: Date.now()
     });
     
-    console.log(`[PRICE] ${symbol}: ${price}`);
+    latestPrices.set(symbol, parseFloat(price));
   } catch (error) {
     console.error(`[PRICE] Erro ao atualizar cache para ${symbol}:`, error);
+  }
+}
+
+/**
+ * Atualiza preços das posições abertas
+ * @param {Object} db - Conexão com banco
+ * @param {string} symbol - Símbolo
+ * @param {number} currentPrice - Preço atual
+ */
+async function updatePositionPrices(db, symbol, currentPrice) {
+  try {
+    await db.query(`
+      UPDATE posicoes 
+      SET preco_corrente = ?, data_hora_ultima_atualizacao = NOW()
+      WHERE simbolo = ? AND status = 'OPEN'
+    `, [currentPrice, symbol]);
+  } catch (error) {
+    console.error(`[PRICE] Erro ao atualizar preços das posições para ${symbol}:`, error);
   }
 }
 
@@ -203,6 +150,17 @@ function updatePriceCache(symbol, priceData) {
  */
 async function onPriceUpdate(symbol, currentPrice, db, accountId) {
   try {
+    // CORREÇÃO: Validar parâmetros
+    if (!symbol || !currentPrice || !db || !accountId) {
+      console.error(`[PRICE] Parâmetros inválidos em onPriceUpdate: symbol=${symbol}, currentPrice=${currentPrice}, db=${!!db}, accountId=${accountId}`);
+      return;
+    }
+
+    if (typeof accountId !== 'number') {
+      console.error(`[PRICE] AccountId deve ser número em onPriceUpdate: ${accountId} (tipo: ${typeof accountId})`);
+      return;
+    }
+
     // Atualizar cache de preços
     updatePriceCache(symbol, currentPrice);
     
@@ -291,6 +249,57 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
 }
 
 /**
+ * Verifica e fecha websockets sem atividade
+ * @param {Object} db - Conexão com banco
+ * @param {string} symbol - Símbolo a verificar
+ * @param {number} accountId - ID da conta
+ */
+async function checkAndCloseWebsocket(db, symbol, accountId) {
+  try {
+    // CORREÇÃO: Validar accountId
+    if (!accountId || typeof accountId !== 'number') {
+      console.error(`[PRICE] AccountId inválido em checkAndCloseWebsocket: ${accountId}`);
+      return;
+    }
+
+    // Verificar se ainda há atividade para este símbolo
+    const [pendingSignals] = await db.query(
+      `SELECT COUNT(*) as count FROM webhook_signals 
+       WHERE symbol = ? AND conta_id = ? AND status IN ('PENDING', 'AGUARDANDO_ACIONAMENTO')`,
+      [symbol, accountId]
+    );
+    
+    const [openPositions] = await db.query(
+      `SELECT COUNT(*) as count FROM posicoes 
+       WHERE simbolo = ? AND conta_id = ? AND status = 'OPEN'`,
+      [symbol, accountId]
+    );
+    
+    const [pendingOrders] = await db.query(
+      `SELECT COUNT(*) as count FROM ordens
+       WHERE simbolo = ? AND conta_id = ? AND status = 'NEW'`,
+      [symbol, accountId]
+    );
+
+    const totalActivity = 
+      (pendingSignals[0]?.count || 0) + 
+      (openPositions[0]?.count || 0) + 
+      (pendingOrders[0]?.count || 0);
+
+    if (totalActivity === 0) {
+      console.log(`[PRICE] Fechando websocket de ${symbol} para conta ${accountId} - sem atividade restante`);
+      const websockets = require('../websockets');
+      websockets.removePriceWebsocket(symbol, accountId);
+      latestPrices.delete(symbol);
+      delete lastPriceLogTime[symbol];
+      delete websocketEmptyCheckCounter[symbol];
+    }
+  } catch (error) {
+    console.error(`[PRICE] Erro ao verificar atividade para ${symbol} (conta ${accountId}):`, error);
+  }
+}
+
+/**
  * Obtém preço do cache
  * @param {string} symbol - Símbolo
  * @returns {number|null} - Preço ou null se não encontrado
@@ -303,95 +312,11 @@ function getPriceFromCache(symbol) {
   return null;
 }
 
-/**
- * Atualiza preços das posições no banco
- * @param {Object} db - Conexão com banco
- * @param {string} symbol - Símbolo do par
- * @param {number} currentPrice - Preço atual
- */
-async function updatePositionPrices(db, symbol, currentPrice) {
-  try {
-    // Buscar posições abertas para o símbolo
-    const [positions] = await db.query(
-      'SELECT * FROM posicoes WHERE simbolo = ? AND status = "OPEN"',
-      [symbol]
-    );
-
-    if (positions.length === 0) {
-      return;
-    }
-
-    // Para cada posição, atualizar o preço corrente
-    for (const position of positions) {
-      const now = new Date();
-      const formattedDate = now.toISOString().replace('T', ' ').substring(0, 19);
-      
-      try {
-        await db.query(
-          `UPDATE posicoes 
-           SET preco_corrente = ?, data_hora_ultima_atualizacao = ?
-           WHERE id = ?`,
-          [currentPrice, formattedDate, position.id]
-        );
-      } catch (updateError) {
-        console.error(`[PRICE] Erro ao atualizar preço da posição ${position.id}:`, updateError);
-      }
-    }
-  } catch (error) {
-    console.error(`[PRICE] Erro ao atualizar preços das posições para ${symbol}:`, error);
-  }
-}
-
-/**
- * Verifica e fecha websockets sem atividade
- * @param {Object} db - Conexão com banco
- * @param {string} symbol - Símbolo a verificar
- */
-async function checkAndCloseWebsocket(db, symbol) {
-  try {
-    // Verificar se ainda há atividade para este símbolo
-    const [pendingSignals] = await db.query(
-      `SELECT COUNT(*) as count FROM webhook_signals 
-       WHERE symbol = ? AND status IN ('PENDING', 'AGUARDANDO_ACIONAMENTO')`,
-      [symbol]
-    );
-    
-    const [openPositions] = await db.query(
-      `SELECT COUNT(*) as count FROM posicoes 
-       WHERE simbolo = ? AND status = 'OPEN'`,
-      [symbol]
-    );
-    
-    const [pendingOrders] = await db.query(
-      `SELECT COUNT(*) as count FROM ordens
-       WHERE simbolo = ? AND status = 'NEW'`,
-      [symbol]
-    );
-
-    const totalActivity = 
-      (pendingSignals[0]?.count || 0) + 
-      (openPositions[0]?.count || 0) + 
-      (pendingOrders[0]?.count || 0);
-
-    if (totalActivity === 0) {
-      console.log(`[PRICE] Fechando websocket de ${symbol} - sem atividade restante`);
-      websockets.stopPriceMonitoring(symbol);
-      latestPrices.delete(symbol);
-      delete lastPriceLogTime[symbol];
-      delete websocketEmptyCheckCounter[symbol];
-    }
-  } catch (error) {
-    console.error(`[PRICE] Erro ao verificar atividade para ${symbol}:`, error);
-  }
-}
-
 module.exports = {
   startPriceMonitoring,
-  getCurrentPrice,
-  getWebSocketPrice,
-  updatePriceCache,
   onPriceUpdate,
-  updatePositionPrices,
-  checkAndCloseWebsocket,
-  getPriceFromCache
+  updatePriceCache,
+  getPriceFromCache,
+  getCurrentPrice,
+  checkAndCloseWebsocket
 };
