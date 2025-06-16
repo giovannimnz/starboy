@@ -120,7 +120,7 @@ def update_leverage_brackets_database():
             print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ❌ Resposta inválida da API Binance")
             return False
         
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ✅ Dados obtidos da Binance: {len(brackets_data)} símbolos")
+        #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ✅ Dados obtidos da Binance: {len(brackets_data)} símbolos")
         
         # === FASE 2: CONECTAR AO BANCO ===
         conn = get_database_connection()
@@ -238,7 +238,8 @@ def update_leverage_brackets_database():
             
             # Log de progresso a cada 100 símbolos
             if processed_symbols % 100 == 0:
-                print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] Processados {processed_symbols}/{len(brackets_data)} símbolos...")
+                #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] Processados {processed_symbols}/{len(brackets_data)} símbolos...")
+                pass
         
         # === FASE 5: DELETAR símbolos que não existem mais na Binance ===
         current_symbols = set(current_brackets.keys())
@@ -263,7 +264,7 @@ def update_leverage_brackets_database():
         cursor.close()
         conn.close()
         
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ✅ Atualização concluída:")
+        #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ✅ Atualização concluída:")
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS]   - Inserções: {inserts}")
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS]   - Atualizações: {updates}")
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS]   - Remoções de brackets: {deletes}")
@@ -291,7 +292,8 @@ def update_leverage_brackets():
     try:
         success = update_leverage_brackets_database()
         if success:
-            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ✅ Atualização de brackets bem-sucedida")
+            #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ✅ Atualização de brackets bem-sucedida")
+            pass
         else:
             print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ❌ Falha na atualização de brackets")
     except Exception as e:
@@ -1651,7 +1653,7 @@ def test_database_connection():
     Testa se a conexão com o banco está funcionando
     """
     try:
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] Testando conexão com banco...")
+        #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] Testando conexão com banco...")
         
         conn = get_database_connection()
         if conn:
@@ -1696,7 +1698,7 @@ def initialize_bracket_scheduler():
     """
     try:
         # Testar credenciais e banco antes de começar
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] Executando testes iniciais...")
+        #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] Executando testes iniciais...")
         
         binance_ok = test_binance_credentials()
         db_ok = test_database_connection()
@@ -1710,7 +1712,7 @@ def initialize_bracket_scheduler():
             return
         
         # Atualizar brackets na inicialização
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] Executando atualização inicial de brackets...")
+        #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] Executando atualização inicial de brackets...")
         update_leverage_brackets()
         
         # Iniciar scheduler em thread separada
