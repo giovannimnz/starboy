@@ -3,7 +3,7 @@ Script para testar a atualização eficiente de brackets
 """
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.abspath(../indicadores/__file__)))
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from divap import update_leverage_brackets_database, get_database_connection
 
