@@ -557,91 +557,120 @@ async function closeListenKey(listenKey, accountId) {
  */
 async function startWebSocketApi(accountId) {
   try {
-    // ... (validações e carregamento de credenciais) ...
-    // CORREÇÃO: Obter accountState após carregar credenciais
-    await loadCredentialsFromDatabase(accountId); // Garante que as credenciais e URLs estão no estado
-    let accountState = getAccountConnectionState(accountId); // Agora accountState terá as URLs corretas
+    await loadCredentialsFromDatabase(accountId);
+    let accountState = getAccountConnectionState(accountId);
 
     if (!accountState || !accountState.wsApiKey || !accountState.wsApiUrl) {
       console.error(`[WS-API] Credenciais ou URL da WebSocket API não encontradas para conta ${accountId}`);
       return false;
     }
-    
-    const endpoint = accountState.wsApiUrl; // Usar a URL carregada das credenciais
-    // ... (lógica de conexão com new WebSocket(endpoint)) ...
 
-    // Dentro de ws.on('open')
-    ws.on('open', async () => {
-      clearTimeout(connectionTimeout);
-      console.log(`[WS-API] ✅ Conexão WebSocket API estabelecida para conta ${accountId}`);
-      accountState.lastPongTime = Date.now(); // Inicializar lastPongTime
-
-      try {
-        const authenticated = await authenticateWebSocketApi(ws, accountId);
-        if (authenticated) {
-          console.log(`[WS-API] Autenticação bem-sucedida para conta ${accountId}. Iniciando keep-alive.`);
-          
-          // Limpar qualquer pingInterval anterior para esta conta
-          if (accountState.pingInterval) clearInterval(accountState.pingInterval);
-
-          // Ping enviado PELO CLIENTE para verificar a saúde da conexão e se o servidor responde pong
-          accountState.pingInterval = setInterval(() => {
-            if (ws.readyState !== WebSocket.OPEN) {
-              console.warn(`[WS-API] Conexão não está aberta para enviar ping (Conta ${accountId}). Limpando intervalo.`);
-              clearInterval(accountState.pingInterval);
-              accountState.pingInterval = null;
-              return;
-            }
-
-            // Verifica se o SERVIDOR respondeu aos NOSSOS pings
-            // A Binance desconecta se NÓS não respondermos aos pings DELES em 10 min.
-            // Este intervalo aqui é mais para o cliente detectar uma conexão morta.
-            if (Date.now() - accountState.lastPongTime > 7 * 60 * 1000) { // 7 minutos sem pong do servidor
-              console.warn(`[WS-API] Nenhum pong recebido do SERVIDOR para conta ${accountId} em 7 minutos (em resposta aos pings do cliente). Considerar conexão instável ou fechar.`);
-              // Poderia ws.terminate(); aqui se desejado, mas o servidor já deve cuidar disso se ele não receber nossos pongs.
-            }
-            
-            const clientPingId = `client-ping-${Date.now()}-${accountId}`;
-            // console.log(`[WS-API] Cliente enviando ping (ID: ${clientPingId}) para servidor (Conta ${accountId})`);
-            ws.send(JSON.stringify({ id: clientPingId, method: 'ping' }));
-
-          }, 3 * 60 * 1000); // Cliente envia ping a cada 3 minutos
-
-          resolve(true); // Resolva a promessa de startWebSocketApi
-        } else {
-          console.error(`[WS-API] Falha na autenticação para conta ${accountId}. Conexão será fechada.`);
-          ws.close();
-          resolve(false);
-        }
-      } catch (authError) {
-        console.error(`[WS-API] Erro durante a autenticação para conta ${accountId}:`, authError.message);
-        ws.close();
-        resolve(false);
+    if (accountState.wsApiConnection && accountState.wsApiConnection.readyState === WebSocket.OPEN) {
+      console.log(`[WS-API] Conexão WebSocket API já está ativa para conta ${accountId}`);
+      if (accountState.wsApiAuthenticated) {
+        return true;
       }
-    
+      try {
+        console.log(`[WS-API] Tentando re-autenticar conexão existente para conta ${accountId}...`);
+        const authenticated = await authenticateWebSocketApi(accountState.wsApiConnection, accountId);
+        return authenticated;
+      } catch (authError) {
+        console.error(`[WS-API] Erro ao re-autenticar conexão existente para conta ${accountId}: ${authError.message}`);
+        cleanupWebSocketApi(accountId);
+        return false;
+      }
+    }
 
-      ws.on('message', (data) => {
+    console.log(`[WS-API] Iniciando WebSocket API para conta ${accountId}...`);
+    const endpoint = accountState.wsApiUrl;
+    console.log(`[WS-API] Conectando ao endpoint oficial: ${endpoint} para conta ${accountId}`);
+
+    return new Promise((resolve, reject) => {
+      const wsInstance = new WebSocket(endpoint);
+
+      const connectionTimeout = setTimeout(() => {
+        if (wsInstance.readyState !== WebSocket.OPEN && wsInstance.readyState !== WebSocket.CLOSING && wsInstance.readyState !== WebSocket.CLOSED) {
+          console.error(`[WS-API] Timeout ao conectar WebSocket API para conta ${accountId}. Estado: ${wsInstance.readyState}`);
+          wsInstance.terminate();
+          cleanupWebSocketApi(accountId);
+          reject(new Error(`Timeout ao conectar WebSocket API para conta ${accountId}`));
+        }
+      }, 30000);
+
+      wsInstance.on('open', async () => {
+        clearTimeout(connectionTimeout);
+        console.log(`[WS-API] ✅ Conexão WebSocket API estabelecida para conta ${accountId}`);
+        
+        accountState.wsApiConnection = wsInstance;
+        accountState.lastPongTime = Date.now();
+
         try {
-          const message = JSON.parse(data.toString());
-          handleWebSocketApiMessage(message, accountId);
-        } catch (parseError) {
-          console.error(`[WS-API] Erro ao processar mensagem para conta ${accountId}:`, parseError.message);
+          const authenticated = await authenticateWebSocketApi(wsInstance, accountId);
+          if (authenticated) {
+            console.log(`[WS-API] Autenticação bem-sucedida para conta ${accountId}. Iniciando keep-alive.`);
+            
+            if (accountState.pingInterval) clearInterval(accountState.pingInterval);
+            accountState.pingInterval = setInterval(() => {
+              const currentWsConn = accountState.wsApiConnection; // Usar a conexão do estado
+              if (currentWsConn && currentWsConn.readyState === WebSocket.OPEN) {
+                // Verifica se o SERVIDOR respondeu aos NOSSOS pings
+                if (Date.now() - accountState.lastPongTime > 7 * 60 * 1000) {
+                  console.warn(`[WS-API] Nenhum pong recebido do SERVIDOR para conta ${accountId} em 7 minutos. Conexão pode estar instável.`);
+                }
+                const clientPingId = `client-ping-${Date.now()}-${accountId}`;
+                // console.log(`[WS-API] Cliente enviando ping (ID: ${clientPingId}) para servidor (Conta ${accountId})`);
+                currentWsConn.send(JSON.stringify({ id: clientPingId, method: 'ping' }));
+              } else {
+                console.warn(`[WS-API] Conexão não está aberta para enviar ping (Conta ${accountId}). Limpando intervalo.`);
+                if (accountState.pingInterval) clearInterval(accountState.pingInterval);
+                accountState.pingInterval = null;
+              }
+            }, 3 * 60 * 1000);
+            resolve(true);
+          } else {
+            console.error(`[WS-API] Falha na autenticação para conta ${accountId}. Conexão será fechada.`);
+            wsInstance.close();
+            // cleanupWebSocketApi(accountId); // O 'close' handler já chama cleanup
+            resolve(false);
+          }
+        } catch (authError) {
+          console.error(`[WS-API] Erro durante a autenticação para conta ${accountId}:`, authError.message);
+          wsInstance.close();
+          // cleanupWebSocketApi(accountId); // O 'close' handler já chama cleanup
+          reject(authError);
         }
       });
 
-      ws.on('close', () => {
-        console.log(`[WS-API] Conexão WebSocket API fechada para conta ${accountId}`);
-        if (accountState) {
-          accountState.wsApiConnection = null;
-          accountState.wsApi = null;
-          accountState.isAuthenticated = false;
-          accountState.wsApiAuthenticated = false;
+      wsInstance.on('message', (data) => {
+        try {
+          const message = JSON.parse(data.toString());
+          handleWebSocketApiMessage(message, accountId);
+        } catch (e) {
+          console.error('[WS-API] Erro ao parsear mensagem JSON:', e, data.toString());
         }
+      });
+
+      wsInstance.on('error', (error) => {
+        clearTimeout(connectionTimeout);
+        console.error(`[WS-API] Erro na conexão WebSocket API para conta ${accountId}: ${error.message}`);
+        // cleanupWebSocketApi(accountId); // O 'close' handler (que geralmente segue 'error') chama cleanup
+        reject(error);
+      });
+
+      wsInstance.on('close', (code, reason) => {
+        clearTimeout(connectionTimeout);
+        console.log(`[WS-API] Conexão WebSocket API fechada para conta ${accountId}. Code: ${code}, Reason: ${reason ? reason.toString() : 'N/A'}`);
+        cleanupWebSocketApi(accountId); // Limpar estado ao fechar
+        // Não rejeitar aqui se 'open' já resolveu ou 'error' já rejeitou.
+        // Se a promessa ainda estiver pendente (ex: timeout não ocorreu, mas fechou antes de 'open'),
+        // pode ser necessário rejeitar aqui também, mas geralmente 'error' cobriria isso.
+        // Se a promessa já foi resolvida/rejeitada, esta é apenas uma notificação de fechamento.
       });
     });
 
   } catch (error) {
-    console.error(`[WS-API] Erro ao iniciar WebSocket API para conta ${accountId}:`, error.message);
+    console.error(`[WS-API] Erro GERAL ao iniciar WebSocket API para conta ${accountId}:`, error.message);
+    cleanupWebSocketApi(accountId);
     return false;
   }
 }
@@ -718,22 +747,49 @@ function handleWebSocketApiMessage(message, accountId) {
 function cleanupWebSocketApi(accountId) {
   const accountState = getAccountConnectionState(accountId);
   if (!accountState) return;
-  
+
   if (accountState.pingInterval) {
     clearInterval(accountState.pingInterval);
     accountState.pingInterval = null;
   }
-  
+
+  const wsConn = accountState.wsApiConnection; // Pegar referência
+  if (wsConn) {
+    // Remover todos os listeners para evitar chamadas em um objeto que está sendo limpo
+    wsConn.removeAllListeners('open');
+    wsConn.removeAllListeners('message');
+    wsConn.removeAllListeners('error');
+    wsConn.removeAllListeners('close');
+    wsConn.removeAllListeners('ping');
+    wsConn.removeAllListeners('pong');
+
+    if (typeof wsConn.terminate === 'function' && 
+        (wsConn.readyState === WebSocket.OPEN || wsConn.readyState === WebSocket.CONNECTING)) {
+      try {
+        // console.log(`[WS-API] Terminando wsApiConnection para conta ${accountId}. Estado: ${wsConn.readyState}`);
+        wsConn.terminate();
+      } catch (e) {
+        console.warn(`[WS-API] Erro menor ao terminar wsApiConnection para conta ${accountId}: ${e.message}`);
+      }
+    }
+  }
   accountState.wsApiConnection = null;
   accountState.wsApiAuthenticated = false;
   
-  // Rejeitar todas as promessas pendentes
-  for (const [id, { reject, timer }] of accountState.requestCallbacks.entries()) {
-    if (timer) clearTimeout(timer);
-    reject({ error: 'Connection closed', id });
+  if (accountState.requestCallbacks) {
+    for (const [id, callbackEntry] of accountState.requestCallbacks.entries()) {
+      if (callbackEntry && callbackEntry.timer) clearTimeout(callbackEntry.timer);
+      if (callbackEntry && typeof callbackEntry.reject === 'function') {
+        // Não logar erro aqui, apenas rejeitar a promessa se existir
+        callbackEntry.reject({ error: 'WebSocket connection closed or cleaned up', id });
+      } else if (typeof callbackEntry === 'function') {
+        // Para o callback de autenticação, não há reject explícito aqui,
+        // o timeout ou erro de conexão já teria tratado.
+      }
+    }
+    accountState.requestCallbacks.clear();
   }
-  
-  accountState.requestCallbacks.clear();
+  // console.log(`[WS-API] Estado da WebSocket API limpo para conta ${accountId}`);
 }
 
 /**

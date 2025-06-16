@@ -4,8 +4,8 @@ require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 const schedule = require('node-schedule');
 const { getDatabaseInstance } = require('../db/conexao');
 const { verifyAndFixEnvironmentConsistency } = require('../api');
-const websockets = require('../websockets');
-const websocketApi = require('../websocketApi');
+const websockets = require('../websockets'); // Mantenha esta importação
+const websocketApi = require('../websocketApi'); // Mantenha esta importação
 
 // Módulos separados
 const { initializeTelegramBot } = require('./telegramBot');
@@ -31,7 +31,7 @@ async function syncAccountBalance(accountId) {
   }
 
   try {
-    const websocketApi = require('../websocketApi');
+    // const websocketApi = require('../websocketApi'); // Já importado no topo
     const result = await websocketApi.syncAccountBalanceViaWebSocket(accountId);
     
     if (result && result.success) {
@@ -157,8 +157,10 @@ async function initializeMonitoring(accountId) {
     // === ETAPA 6: Verificar status da sessão ===
     console.log(`🔍 ETAPA 6: Verificando status da sessão WebSocket para conta ${accountId}...`);
     try {
-      const sessionStatus = await websocketApi.getSessionStatus(accountId);
-      console.log('📊 Status da sessão:', sessionStatus ? 'ATIVA' : 'INATIVA');
+      // CORREÇÃO: Chamar a função correta de websockets.js
+      const sessionStatusResponse = await websockets.checkSessionStatus(accountId);
+      const isActive = sessionStatusResponse && sessionStatusResponse.result && sessionStatusResponse.result.apiKey !== null;
+      console.log('📊 Status da sessão:', isActive ? 'ATIVA' : 'INATIVA');
     } catch (sessionError) {
       console.warn('⚠️ Erro ao verificar status da sessão:', sessionError.message);
     }
@@ -167,15 +169,17 @@ async function initializeMonitoring(accountId) {
     console.log(`🔧 ETAPA 7: Configurando handlers WebSocket API para conta ${accountId}...`);
     
     try {
-      await websocketApi.initializeWebSocketApiHandlers(accountId);
+      // CORREÇÃO: Chamar a função correta de websocketApi.js
+      await websocketApi.initializeHandlers(accountId);
       console.log(`[MONITOR] WebSocket API handlers configurados para conta ${accountId}`);
     } catch (wsError) {
       console.error(`[MONITOR] ⚠️ Erro ao inicializar WebSocket API handlers para conta ${accountId}, continuando com REST API fallback: ${wsError.message}`);
       
       // Se o erro for de chave Ed25519, oferecer solução
-      if (wsError.message.includes('Ed25519') || wsError.message.includes('private key')) {
-        console.log('\n🔧 SOLUÇÃO: Execute o comando abaixo para configurar a chave Ed25519:');
-        console.log('node utils/configurarChavePEMAutomatico.js');
+      if (wsError.message.includes('Ed25519') || wsError.message.includes('private key') || wsError.message.includes('ws_api_secret')) {
+        console.log('\n🔧 SOLUÇÃO: Verifique se a chave Ed25519 (ws_api_secret) está configurada corretamente no banco para a conta.');
+        console.log('Pode ser necessário gerar uma nova chave na Binance e atualizar o campo `ws_api_secret` na tabela `contas`.');
+        console.log('Exemplo de comando para configurar (se tiver o utilitário): node utils/configurarChavePEMAutomatico.js');
         console.log('');
       }
     }
@@ -183,7 +187,7 @@ async function initializeMonitoring(accountId) {
     // === ETAPA 8: Configurar handlers com accountId ===
     console.log(`🔄 ETAPA 8: Configurando handlers para conta ${accountId}...`);
     
-    const handlers = {
+    const accountSpecificHandlers = { // Renomeado para evitar conflito com a variável global 'handlers'
       handleOrderUpdate: async (msg, db) => {
         try {
           await handleOrderUpdate(msg, db, accountId);
@@ -210,7 +214,7 @@ async function initializeMonitoring(accountId) {
     
     // CORREÇÃO: Configurar callbacks com accountId
     try {
-      websockets.setMonitoringCallbacks(handlers, accountId);
+      websockets.setMonitoringCallbacks(accountSpecificHandlers, accountId);
       console.log(`[MONITOR] ✅ Callbacks do WebSocket configurados para conta ${accountId}`);
     } catch (callbackError) {
       console.error(`[MONITOR] ⚠️ Erro ao configurar callbacks do WebSocket para conta ${accountId}:`, callbackError.message);
@@ -293,18 +297,20 @@ async function initializeMonitoring(accountId) {
     console.log(`🔧 ETAPA 14: Diagnóstico detalhado do WebSocket para conta ${accountId}...`);
     
     console.log('🔍 Estado atual das conexões:');
-    const allConnections = websockets.getAllAccountConnections();
+    const allConnectionsAfterInit = websockets.getAllAccountConnections(); // Renomeado para evitar conflito
     
-    if (allConnections.has(accountId)) {
-      const conn = allConnections.get(accountId);
+    if (allConnectionsAfterInit.has(accountId)) {
+      const conn = allConnectionsAfterInit.get(accountId);
       console.log(`  - accountId: ${accountId}`);
       console.log(`  - apiKey: ${conn.apiKey ? 'Configurada' : 'Não configurada'}`);
       console.log(`  - secretKey: ${conn.secretKey ? 'Configurada' : 'Não configurada'}`);
       console.log(`  - wsApiKey: ${conn.wsApiKey ? 'Configurada' : 'Não configurada'}`);
-      console.log(`  - privateKey: ${conn.privateKey ? 'Configurada' : 'Não configurada'}`);
-      console.log(`  - isAuthenticated: ${conn.isAuthenticated}`);
-      console.log(`  - wsApiAuthenticated: ${conn.wsApiAuthenticated}`);
+      console.log(`  - privateKey (Ed25519): ${conn.privateKey ? 'Configurada' : 'Não configurada'}`); // privateKey é a Ed25519
+      console.log(`  - isAuthenticated (REST API): ${conn.isAuthenticated}`); // Este isAuthenticated é mais genérico
+      console.log(`  - wsApiAuthenticated (WS API): ${conn.wsApiAuthenticated}`);
       console.log(`  - requestCallbacks: ${conn.requestCallbacks ? conn.requestCallbacks.size : 'N/A'}`);
+      console.log(`  - wsApiConnection state: ${conn.wsApiConnection ? conn.wsApiConnection.readyState : 'N/A'}`);
+      console.log(`  - userDataStream state: ${conn.userDataStream ? conn.userDataStream.readyState : 'N/A'}`);
     }
 
     // === ETAPA 15: Agendar jobs específicos da conta ===
@@ -350,8 +356,9 @@ async function initializeMonitoring(accountId) {
       'AccountId inválido',
       'Não foi possível conectar ao banco de dados',
       'Impossível inicializar estado da conta',
-      'Credenciais API REST incompletas', // Adicionar erros que impedem a operação básica
-      'Credenciais não encontradas para conta'
+      'Credenciais API REST incompletas', 
+      'Credenciais não encontradas para conta',
+      'Chave privada Ed25519 (ws_api_secret) não encontrada' // Adicionado erro crítico
     ];
     
     const isCriticalError = criticalErrors.some(criticalError => 
@@ -360,9 +367,6 @@ async function initializeMonitoring(accountId) {
     
     if (isCriticalError) {
       console.log(`[MONITOR] ⚠️ Erro crítico detectado durante a inicialização da conta ${accountId}: ${error.message}`);
-      // Não chamar gracefulShutdown aqui. Relançar o erro fará com que o processo filho
-      // (monitoramento.js) termine com um código de erro. O app.js (processo pai)
-      // detectará essa saída e decidirá se deve reiniciar a instância.
       throw error; 
     } else {
       console.log(`[MONITOR] ⚠️ Erro não-crítico durante inicialização - tentando operar com funcionalidades limitadas para conta ${accountId}`);
@@ -373,7 +377,7 @@ async function initializeMonitoring(accountId) {
           if (isShuttingDown) return;
           try {
             await checkNewTrades(accountId);
-          } catch (jobError) { // Renomear para evitar conflito com 'error' do catch externo
+          } catch (jobError) { 
             console.error(`[MONITOR] ⚠️ Erro na verificação básica (modo limitado) para conta ${accountId}:`, jobError);
           }
         });
@@ -382,39 +386,35 @@ async function initializeMonitoring(accountId) {
         scheduledJobs[accountId] = limitedJobs;
         return limitedJobs;
         
-      } catch (jobSetupError) { // Renomear para evitar conflito
+      } catch (jobSetupError) { 
         console.error(`[MONITOR] ❌ Impossível criar jobs mesmo em modo limitado para conta ${accountId}:`, jobSetupError.message);
-        // Mesmo aqui, relançar o erro para que o app.js possa lidar.
         throw jobSetupError;
       }
     }
   }
 }
 
-let accountId = null;
+let currentAccountId = null; // Renomeado para evitar conflito com a variável global 'accountId'
 
 if (require.main === module) {
-  // Só executar validação se for o script principal
-  accountId = process.argv.includes('--account') 
+  currentAccountId = process.argv.includes('--account') 
     ? parseInt(process.argv[process.argv.indexOf('--account') + 1])
     : null;
 
-  // CORREÇÃO: Validar accountId obrigatório APENAS quando executado diretamente
-  if (!accountId || isNaN(accountId) || accountId <= 0) {
+  if (!currentAccountId || isNaN(currentAccountId) || currentAccountId <= 0) {
     console.error('[MONITOR] ❌ AccountId é obrigatório e deve ser um número válido');
     console.error('[MONITOR] 📝 Uso: node posicoes/monitoramento.js --account <ID>');
     console.error('[MONITOR] 📝 Exemplo: node posicoes/monitoramento.js --account 2');
     process.exit(1);
   }
 
-  console.log(`[MONITOR] Iniciando sistema de monitoramento para conta ID: ${accountId}`);
+  console.log(`[MONITOR] Iniciando sistema de monitoramento para conta ID: ${currentAccountId}`);
 
-  // Auto-inicialização quando executado diretamente
   (async () => {
     try {
-      await initializeMonitoring(accountId);
+      await initializeMonitoring(currentAccountId);
     } catch (error) {
-      console.error(`[MONITOR] Erro crítico na inicialização para conta ${accountId}:`, error);
+      console.error(`[MONITOR] Erro crítico na inicialização para conta ${currentAccountId}:`, error);
       process.exit(1);
     }
   })();
@@ -422,17 +422,15 @@ if (require.main === module) {
 
 /**
  * Configura handlers de sinal do sistema (DEVE SER CHAMADA APENAS UMA VEZ POR PROCESSO)
- * @param {number} accountId - ID da conta para logging, mas os handlers são para o processo.
+ * @param {number} accountIdForLog - ID da conta para logging, mas os handlers são para o processo.
  */
-function setupSignalHandlers(accountIdForLog) { // Renomeado para clareza
+function setupSignalHandlers(accountIdForLog) { 
   if (signalHandlersInstalled) {
-    // console.log(`[MONITOR] Signal handlers já estão instalados (conta ${accountIdForLog})`); // Log opcional
     return;
   }
   
   console.log(`[MONITOR] 🛡️ Instalando signal handlers para graceful shutdown (processo para conta ${accountIdForLog})...`);
   
-  // Handlers que DEVEM chamar gracefulShutdown
   process.once('SIGINT', async () => {
     console.log(`\n[MONITOR] 📡 SIGINT (Ctrl+C) recebido para conta ${accountIdForLog} - iniciando graceful shutdown...`);
     await gracefulShutdown(accountIdForLog);
@@ -448,23 +446,15 @@ function setupSignalHandlers(accountIdForLog) { // Renomeado para clareza
     await gracefulShutdown(accountIdForLog);
   });
   
-  // Handlers que NÃO DEVEM chamar gracefulShutdown, apenas logar.
-  // O Node.js geralmente encerra o processo em 'uncaughtException'.
-  // O app.js (gerenciador de processos) deve lidar com a reinicialização.
-  process.on('uncaughtException', (error) => { // Usar .on para pegar todos, se ocorrerem múltiplos antes do exit
+  process.on('uncaughtException', (error) => { 
     console.error(`\n[MONITOR] 💥 Erro não tratado (uncaughtException) no processo da conta ${accountIdForLog}:`, error);
     console.error(`[MONITOR] O processo para a conta ${accountIdForLog} provavelmente será encerrado devido a este erro.`);
-    // Não chamar gracefulShutdown. Deixar o processo morrer.
-    // Se o app.js estiver gerenciando, ele tentará reiniciar.
-    // process.exit(1); // O Node.js geralmente faz isso por padrão para uncaughtException.
-                      // Adicionar explicitamente se quiser garantir.
   });
   
-  process.on('unhandledRejection', (reason, promise) => { // Usar .on
+  process.on('unhandledRejection', (reason, promise) => { 
     console.error(`\n[MONITOR] 🚫 Promise rejeitada não tratada no processo da conta ${accountIdForLog}:`, reason);
     console.error('[MONITOR] Promise problematica:', promise);
     console.error(`[MONITOR] O processo para a conta ${accountIdForLog} pode estar instável, mas continuará tentando executar.`);
-    // Não chamar gracefulShutdown.
   });
   
   signalHandlersInstalled = true;
@@ -473,107 +463,77 @@ function setupSignalHandlers(accountIdForLog) { // Renomeado para clareza
 
 /**
  * Implementa graceful shutdown para uma conta específica
- * @param {number} accountId - ID da conta
+ * @param {number} accountIdToShutdown - ID da conta (renomeado para evitar conflito)
  */
-async function gracefulShutdown(accountId) {
+async function gracefulShutdown(accountIdToShutdown) {
   if (isShuttingDown) {
-    console.log(`[MONITOR] Shutdown para conta ${accountId} já em andamento...`);
+    console.log(`[MONITOR] Shutdown para conta ${accountIdToShutdown} já em andamento...`);
     return;
   }
   
-  isShuttingDown = true; // Marcar o shutdown para esta instância específica
-  console.log(`\n[MONITOR] 🛑 === INICIANDO GRACEFUL SHUTDOWN PARA CONTA ${accountId} ===`);
+  isShuttingDown = true; 
+  console.log(`\n[MONITOR] 🛑 === INICIANDO GRACEFUL SHUTDOWN PARA CONTA ${accountIdToShutdown} ===`);
   
   try {
-    // ... (PASSO 1 a PASSO 5 - mesma lógica de antes) ...
-    // PASSO 1: Cancelar jobs agendados
-    console.log(`[MONITOR] 📅 1/6 - Cancelando jobs agendados para conta ${accountId}...`);
-    if (scheduledJobs[accountId]) {
+    console.log(`[MONITOR] 📅 1/6 - Cancelando jobs agendados para conta ${accountIdToShutdown}...`);
+    if (scheduledJobs[accountIdToShutdown]) {
       let jobsCancelados = 0;
-      for (const [jobName, job] of Object.entries(scheduledJobs[accountId])) {
+      for (const [jobName, job] of Object.entries(scheduledJobs[accountIdToShutdown])) {
         if (job && typeof job.cancel === 'function') {
           job.cancel();
           jobsCancelados++;
-          console.log(`[MONITOR]   ✅ Job '${jobName}' (conta ${accountId}) cancelado`);
+          console.log(`[MONITOR]   ✅ Job '${jobName}' (conta ${accountIdToShutdown}) cancelado`);
         }
       }
-      delete scheduledJobs[accountId];
-      console.log(`[MONITOR]   📊 Total de jobs cancelados para conta ${accountId}: ${jobsCancelados}`);
+      delete scheduledJobs[accountIdToShutdown];
+      console.log(`[MONITOR]   📊 Total de jobs cancelados para conta ${accountIdToShutdown}: ${jobsCancelados}`);
     } else {
-      console.log(`[MONITOR]   ℹ️ Nenhum job agendado encontrado para conta ${accountId}`);
+      console.log(`[MONITOR]   ℹ️ Nenhum job agendado encontrado para conta ${accountIdToShutdown}`);
     }
     
-    // PASSO 2: Fechar WebSockets
-    console.log(`[MONITOR] 🔌 2/6 - Fechando WebSockets para conta ${accountId}...`);
+    console.log(`[MONITOR] 🔌 2/6 - Fechando WebSockets para conta ${accountIdToShutdown}...`);
     try {
-      // A função reset em websockets.js deve ser específica para a conta
-      websockets.reset(accountId); 
-      console.log(`[MONITOR]   ✅ WebSockets para conta ${accountId} fechados/resetados`);
+      websockets.reset(accountIdToShutdown); 
+      console.log(`[MONITOR]   ✅ WebSockets para conta ${accountIdToShutdown} fechados/resetados`);
     } catch (wsError) {
-      console.error(`[MONITOR]   ⚠️ Erro ao fechar WebSockets para conta ${accountId}: ${wsError.message}`);
+      console.error(`[MONITOR]   ⚠️ Erro ao fechar WebSockets para conta ${accountIdToShutdown}: ${wsError.message}`);
     }
     
-    // PASSO 3: Limpar handlers (se houver handlers específicos da conta armazenados aqui)
-    console.log(`[MONITOR] 🧹 3/6 - Limpando handlers para conta ${accountId}...`);
-    if (handlers[accountId]) { // Assumindo que 'handlers' é um objeto que pode ter uma chave por accountId
-      delete handlers[accountId];
-      console.log(`[MONITOR]   ✅ Handlers para conta ${accountId} removidos`);
-    } else {
-      // Se handlers é global para o módulo, não limpar aqui, ou apenas limpar os callbacks da conta.
-      // A lógica atual em websockets.js já limpa os callbacks no accountState.
-      console.log(`[MONITOR]   ℹ️ Nenhum handler específico para limpar no monitor para conta ${accountId}`);
-    }
+    console.log(`[MONITOR] 🧹 3/6 - Limpando handlers para conta ${accountIdToShutdown}...`);
+    // A lógica de limpeza de handlers/callbacks já está em websockets.reset()
+    // e na limpeza do accountState. Não é necessário limpar 'handlers' global aqui.
+    console.log(`[MONITOR]   ℹ️ Handlers são limpos durante o reset dos websockets para conta ${accountIdToShutdown}`);
     
-    // PASSO 4: Parar monitoramento de preços (se for por conta)
-    console.log(`[MONITOR] 📈 4/6 - Parando monitoramento de preços para conta ${accountId}...`);
-    try {
-      // Se startPriceMonitoring retorna algo para parar, ou se há uma função stopPriceMonitoring global
-      // que precisa ser chamada. A lógica atual em websockets.js já lida com o fechamento
-      // dos websockets de preço individuais em websockets.reset(accountId).
-      console.log(`[MONITOR]   ✅ Monitoramento de preços para conta ${accountId} parado (via reset de websockets)`);
-    } catch (priceError) {
-      console.error(`[MONITOR]   ⚠️ Erro ao parar monitoramento de preços para conta ${accountId}: ${priceError.message}`);
-    }
+    console.log(`[MONITOR] 📈 4/6 - Parando monitoramento de preços para conta ${accountIdToShutdown}...`);
+    // Esta lógica também é coberta por websockets.reset(accountIdToShutdown)
+    console.log(`[MONITOR]   ✅ Monitoramento de preços para conta ${accountIdToShutdown} parado (via reset de websockets)`);
     
-    // PASSO 5: Aguardar finalização de operações pendentes
-    console.log(`[MONITOR] ⏱️ 5/6 - Aguardando finalização de operações pendentes para conta ${accountId}...`);
-    await new Promise(resolve => setTimeout(resolve, 2000)); // Pequena pausa genérica
-    console.log(`[MONITOR]   ✅ Aguarde concluído para conta ${accountId}`);
+    console.log(`[MONITOR] ⏱️ 5/6 - Aguardando finalização de operações pendentes para conta ${accountIdToShutdown}...`);
+    await new Promise(resolve => setTimeout(resolve, 2000)); 
+    console.log(`[MONITOR]   ✅ Aguarde concluído para conta ${accountIdToShutdown}`);
     
-    // PASSO 6: Fechar pool do banco (por último)
-    // Esta parte é delicada se múltiplos processos de monitoramento compartilham o mesmo pool.
-    // Idealmente, o pool é gerenciado pelo processo principal (app.js) ou cada processo filho
-    // tem seu próprio pool ou apenas usa a instância do pool.
-    // Se cada monitoramento.js tem seu "próprio" pool (mesmo que seja uma referência ao global),
-    // o closePool pode ser chamado.
-    console.log(`[MONITOR] 🗃️ 6/6 - Fechando pool do banco de dados (se aplicável ao processo da conta ${accountId})...`);
+    console.log(`[MONITOR] 🗃️ 6/6 - Fechando pool do banco de dados (se aplicável ao processo da conta ${accountIdToShutdown})...`);
     try {
       const { closePool, getPool } = require('../db/conexao');
-      // Só fechar se o pool existir e não houver outras contas ativas usando-o (lógica complexa)
-      // Por simplicidade, vamos assumir que cada processo filho pode tentar fechar sua "visão" do pool.
-      // Se o pool for compartilhado, o primeiro a fechar fecha para todos.
-      // Uma melhor abordagem seria o app.js gerenciar o fechamento do pool.
-      if (getPool()) { // Verifica se o pool foi inicializado
+      if (getPool()) { 
           await closePool();
-          console.log(`[MONITOR]   ✅ Pool do banco fechado (solicitado por conta ${accountId})`);
+          console.log(`[MONITOR]   ✅ Pool do banco fechado (solicitado por conta ${accountIdToShutdown})`);
       } else {
           console.log(`[MONITOR]   ℹ️ Pool do banco já estava fechado ou não foi inicializado por este processo.`);
       }
     } catch (dbError) {
-      console.error(`[MONITOR]   ⚠️ Erro ao fechar pool do banco (solicitado por conta ${accountId}): ${dbError.message}`);
+      console.error(`[MONITOR]   ⚠️ Erro ao fechar pool do banco (solicitado por conta ${accountIdToShutdown}): ${dbError.message}`);
     }
     
-    console.log(`[MONITOR] ✅ === GRACEFUL SHUTDOWN PARA CONTA ${accountId} CONCLUÍDO ===`);
+    console.log(`[MONITOR] ✅ === GRACEFUL SHUTDOWN PARA CONTA ${accountIdToShutdown} CONCLUÍDO ===`);
     
   } catch (error) {
-    console.error(`[MONITOR] ❌ Erro durante graceful shutdown para conta ${accountId}:`, error.message);
+    console.error(`[MONITOR] ❌ Erro durante graceful shutdown para conta ${accountIdToShutdown}:`, error.message);
   } finally {
-    console.log(`[MONITOR] 🚪 Processo para conta ${accountId} encerrando em 1 segundo...`);
+    console.log(`[MONITOR] 🚪 Processo para conta ${accountIdToShutdown} encerrando em 1 segundo...`);
     
-    // Este process.exit(0) garante que o app.js veja uma saída limpa
-    // quando o shutdown é iniciado por SIGINT/SIGTERM.
     setTimeout(() => {
-      console.log(`[MONITOR] 🚨 PROCESSO PARA CONTA ${accountId} SAINDO AGORA!`);
+      console.log(`[MONITOR] 🚨 PROCESSO PARA CONTA ${accountIdToShutdown} SAINDO AGORA!`);
       process.exit(0); 
     }, 1000);
   }
