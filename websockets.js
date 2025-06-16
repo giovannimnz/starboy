@@ -1573,6 +1573,29 @@ async function authenticateWebSocketApi(ws, accountId) {
 }
 
 /**
+ * Cria um buffer DER para chave privada Ed25519 a partir de chave raw
+ * @param {Buffer} rawKey - Chave privada raw de 32 bytes
+ * @returns {Buffer} - Chave no formato DER
+ */
+function createEd25519DERFromRaw(rawKey) {
+    // Ed25519 private key DER structure:
+    // SEQUENCE {
+    //   INTEGER 0
+    //   SEQUENCE {
+    //     OBJECT IDENTIFIER 1.3.101.112 (Ed25519)
+    //   }
+    //   OCTET STRING {
+    //     OCTET STRING (32-byte private key)
+    //   }
+    // }
+    
+    const ed25519OID = Buffer.from('302a300506032b657004200420', 'hex');
+    const derKey = Buffer.concat([ed25519OID, rawKey]);
+    
+    return derKey;
+}
+
+/**
  * Limpa completamente todas as conexões para uma conta
  * @param {number} accountId - ID da conta
  */
