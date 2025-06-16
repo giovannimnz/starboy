@@ -1147,10 +1147,10 @@ async function syncAccountBalanceViaWebSocket(accountId) {
             throw new Error(`Falha ao obter informações da conta ${accountId}: ${accountInfo?.error || 'Erro desconhecido'}`);
         }
         
-        // Obter saldo_base_calculo atual
+        // CORREÇÃO: Usar tabela 'contas' em vez de 'conta'
         const [currentAccount] = await db.query(
-            'SELECT saldo, saldo_base_calculo FROM conta WHERE id = ?',
-            [accountId] // CORREÇÃO: usar accountId específico
+            'SELECT saldo, saldo_base_calculo FROM contas WHERE id = ?',
+            [accountId]
         );
         
         if (currentAccount.length === 0) {
@@ -1171,17 +1171,17 @@ async function syncAccountBalanceViaWebSocket(accountId) {
             console.log(`[WS-API] Atualizando saldo_base_calculo da conta ${accountId}: ${previousBaseCalculo.toFixed(2)} → ${newBaseCalculo.toFixed(2)} USDT`);
         }
         
-        // CORREÇÃO: Atualizar conta específica no banco
+        // CORREÇÃO: Atualizar tabela 'contas' em vez de 'conta'
         await db.query(
-            'UPDATE conta SET saldo = ?, saldo_base_calculo = ?, ultima_atualizacao = ? WHERE id = ?',
-            [realSaldo, newBaseCalculo, currentDateTime, accountId] // accountId específico
+            'UPDATE contas SET saldo = ?, saldo_base_calculo = ?, ultima_atualizacao = ? WHERE id = ?',
+            [realSaldo, newBaseCalculo, currentDateTime, accountId]
         );
         
         console.log(`[WS-API] ✅ Saldo da conta ${accountId} sincronizado: ${realSaldo.toFixed(2)} USDT`);
         
         return {
             success: true,
-            accountId: accountId, // CORREÇÃO: Incluir accountId na resposta
+            accountId: accountId,
             saldo: realSaldo,
             saldo_base_calculo: newBaseCalculo,
             previousSaldo: previousSaldo,

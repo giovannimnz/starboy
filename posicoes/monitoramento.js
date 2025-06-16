@@ -11,7 +11,7 @@ const websocketApi = require('../websocketApi');
 const { initializeTelegramBot } = require('./telegramBot');
 const { startPriceMonitoring, onPriceUpdate } = require('./priceMonitoring');
 const { checkNewTrades, forceProcessPendingSignals } = require('./signalProcessor');
-const { syncOpenPositionsWithExchange: syncPositionsWithExchange, logOpenPositionsAndOrders } = require('./positionSync');
+const { syncPositionsWithExchange, logOpenPositionsAndOrders } = require('./positionSync');
 const { handleOrderUpdate, handleAccountUpdate } = require('./orderHandlers');
 
 // Variáveis globais
