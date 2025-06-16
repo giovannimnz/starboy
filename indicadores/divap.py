@@ -9,8 +9,7 @@ from datetime import datetime
 from telethon import TelegramClient, events
 from dotenv import load_dotenv
 import pathlib
-from senhas import pers_api_hash, pers_api_id, API_KEY, API_SECRET, API_URL  # NOVO: Importar credenciais Binance
-import sys
+from senhas import pers_api_hash, pers_api_id, API_KEY, API_SECRET, API_URL
 import os
 from pathlib import Path
 import logging
