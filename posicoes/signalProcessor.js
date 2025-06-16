@@ -9,6 +9,17 @@ const { executeLimitMakerEntry } = require('./limitMakerEntry');
 // Conjunto para controlar sinais em processamento
 const processingSignals = new Set();
 
+// Função utilitária simples para formatar mensagens de erro
+function formatErrorMessage(error) {
+  if (error instanceof Error) {
+    return error.message.substring(0, 255);
+  }
+  if (typeof error === 'string') {
+    return error.substring(0, 255);
+  }
+  return 'Erro desconhecido'.substring(0, 255);
+}
+
 /**
  * Processa um sinal de entrada
  * @param {Object} db - Conexão com banco
@@ -126,7 +137,7 @@ async function processSignal(db, signal, currentPrice, accountId) {
       try {
         await db.query(
           `UPDATE webhook_signals SET status = 'ERROR', error_message = ? WHERE id = ?`,
-          [String(error.message).substring(0, 250), signal.id]
+          [errorMessage, signal.id] // Usar errorMessage formatado
         );
       } catch (updateError) {
         console.error(`[SIGNAL] Erro ao atualizar status para ERROR:`, updateError);

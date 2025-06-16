@@ -105,6 +105,7 @@ async function executeLimitMakerEntry(db, signal, currentPrice, accountId) {
 
         await connection.beginTransaction();
         
+        console.log(`[LIMIT_ENTRY_DEBUG] Antes de api.getPrecision - accountId: ${accountId}, tipo: ${typeof accountId}`);
         precisionInfo = await getPrecision(signal.symbol, numericAccountId);
         quantityPrecision = precisionInfo.quantityPrecision;
         pricePrecision = precisionInfo.pricePrecision;
@@ -834,6 +835,7 @@ async function getAvailableBalance(accountId) {
     }
     
     try {
+        console.log(`[LIMIT_ENTRY_DEBUG] executeLimitMakerEntry - accountId: ${accountId}, tipo: ${typeof accountId}, symbol: ${symbol}`); // Log no início
         const db = await getDatabaseInstance(accountId);
         if (!db) {
             throw new Error(`Falha ao obter instância do banco de dados para conta ${accountId}`);

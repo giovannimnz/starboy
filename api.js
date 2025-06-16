@@ -273,20 +273,19 @@ async function getMaxLeverage(symbol, accountId) {
  * @returns {Promise<number>} - Alavancagem atual
  */
 async function getCurrentLeverage(symbol, accountId) {
+  const endpoint = '/fapi/v2/positionRisk';
+  const params = { symbol: symbol.toUpperCase() };
   try {
-    // CORREÇÃO: Validar accountId
-    if (!accountId) {
-      throw new Error(`AccountId é obrigatório para getCurrentLeverage: ${accountId} (tipo: ${typeof accountId})`);
+    // GARANTIR QUE O MÉTODO SEJA PASSADO COMO STRING
+    const response = await makeAuthenticatedRequest(accountId, 'GET', endpoint, params);
+    if (response && response.length > 0) {
+      const position = response.find(p => p.symbol === symbol.toUpperCase());
+      return position ? parseInt(position.leverage) : null;
     }
-    
-    const response = await makeAuthenticatedRequest('/v2/positionRisk', {}, 'GET', accountId);
-    const position = response.find(p => p.symbol === symbol);
-    
-    return position ? parseInt(position.leverage) : null;
-    
+    return null;
   } catch (error) {
-    console.error(`[API] Erro ao obter alavancagem atual para ${symbol}:`, error.message);
-    throw error;
+    console.error(`[API] Erro ao obter alavancagem atual para ${symbol}: ${error.message}`);
+    throw error; // Re-throw para que o chamador possa tratar
   }
 }
 
@@ -708,13 +707,22 @@ async function getTickSize(symbol, accountId) {
  * @returns {Promise<Object>} - Informações de precisão
  */
 async function getPrecision(symbol, accountId) {
+  console.log(`[API_GETPRECISION_DEBUG] getPrecision - symbol: ${symbol}, accountId: ${accountId}, tipo accountId: ${typeof accountId}`); // Log no início
+  if (typeof accountId !== 'number' || isNaN(accountId)) {
+    const errorMsg = `AccountId deve ser um número válido: ${String(accountId)} (convertido: ${typeof accountId})`;
+    console.error(`[API] Erro ao obter precisão para ${symbol}: ${errorMsg}`);
+    throw new Error(errorMsg);
+  }
+  // Certifique-se de que loadCredentialsFromDatabase é chamado com accountId numérico
+  console.log(`[API_GETPRECISION_DEBUG] Antes de loadCredentialsFromDatabase - accountId: ${accountId}, tipo: ${typeof accountId}`);
+  await loadCredentialsFromDatabase(accountId); // Garante que as credenciais estão carregadas para a conta correta
+
   try {
-    const credentials = await loadCredentialsFromDatabase({ accountId });
-    const response = await axios.get(`${credentials.apiUrl}/v1/exchangeInfo`);
+    const response = await makeAuthenticatedRequest('/v1/exchangeInfo', { symbol }, 'GET', accountId);
+    const symbolInfo = response.symbols.find(s => s.symbol === symbol);
     
-    const symbolInfo = response.data.symbols.find(s => s.symbol === symbol);
     if (!symbolInfo) {
-      throw new Error(`Símbolo ${symbol} não encontrado`);
+      throw new Error(`Símbolo ${symbol} não encontrado na resposta da API`);
     }
     
     return {
@@ -1614,21 +1622,73 @@ async function calculateRequiredMargin(symbol, notionalValue, leverage, exchange
 }
 
 /**
- * Função auxiliar para debugar parâmetros
- * @param {*} accountId - Parâmetro a ser analisado
- * @param {string} functionName - Nome da função que chamou
+ * Obtém um listenKey da Binance Futures API.
+ * @param {number} accountId - ID da conta.
+ * @returns {Promise<string|null>} O listenKey ou null em caso de erro.
  */
-function debugAccountIdParameter(accountId, functionName) {
-  console.log(`[API DEBUG] ${functionName} recebeu:`);
-  console.log(`- Valor: ${accountId}`);
-  console.log(`- Tipo: ${typeof accountId}`);
-  console.log(`- É Array: ${Array.isArray(accountId)}`);
-  console.log(`- É null: ${accountId === null}`);
-  console.log(`- É undefined: ${accountId === undefined}`);
+async function getListenKey(accountId) {
+  const accountState = accountConnections.get(accountId); // Assumindo que accountConnections está acessível ou é passado
+  if (!accountState || !accountState.apiKey || !accountState.apiUrl) {
+    console.error(`[API] API Key ou API URL não configuradas para getListenKey da conta ${accountId}.`);
+    // Tentar carregar credenciais se não estiverem no estado
+    const creds = await loadCredentialsFromDatabase(accountId); // loadCredentialsFromDatabase já atualiza accountConnections
+    if (!creds || !accountState.apiKey || !accountState.apiUrl) {
+        throw new Error(`Credenciais REST incompletas para getListenKey da conta ${accountId}.`);
+    }
+  }
   
-  if (typeof accountId === 'object' && accountId !== null) {
-    console.log(`- Chaves do objeto: ${Object.keys(accountId).join(', ')}`);
-    console.log(`- JSON: ${JSON.stringify(accountId)}`);
+  const endpoint = '/fapi/v1/listenKey';
+  const url = `${accountState.apiUrl}${endpoint}`;
+  console.log(`[API] Obtendo listenKey via: ${url} para conta ${accountId}`);
+
+  try {
+    const response = await makeAuthenticatedRequest(accountId, 'POST', endpoint, {});
+    if (response && response.listenKey) {
+      return response.listenKey;
+    } else {
+      console.error(`[API] Falha ao obter ListenKey para conta ${accountId}. Resposta:`, response);
+      return null;
+    }
+  } catch (error) {
+    console.error(`[API] Erro ao fazer requisição para obter ListenKey para conta ${accountId}: ${error.message}`);
+    return null;
+  }
+}
+
+/**
+ * Mantém o listenKey ativo (keep-alive).
+ * @param {number} accountId - ID da conta.
+ * @param {string} listenKeyToKeepAlive - O listenKey a ser mantido ativo.
+ * @returns {Promise<boolean>} True se bem-sucedido, false caso contrário.
+ */
+async function keepAliveListenKey(accountId, listenKeyToKeepAlive) {
+  const accountState = accountConnections.get(accountId);
+  if (!accountState || !accountState.apiKey || !accountState.apiUrl) {
+    console.error(`[API] API Key ou API URL não configuradas para keepAliveListenKey da conta ${accountId}.`);
+    // Tentar carregar credenciais se não estiverem no estado
+     const creds = await loadCredentialsFromDatabase(accountId);
+     if (!creds || !accountState.apiKey || !accountState.apiUrl) {
+        throw new Error(`Credenciais REST incompletas para keepAliveListenKey da conta ${accountId}.`);
+    }
+  }
+
+  const endpoint = '/fapi/v1/listenKey';
+  const url = `${accountState.apiUrl}${endpoint}`;
+  // console.log(`[API] Mantendo listenKey ativo via: ${url} para conta ${accountId}`);
+
+  try {
+    const response = await makeAuthenticatedRequest(accountId, 'PUT', endpoint, { listenKey: listenKeyToKeepAlive });
+    // A Binance retorna {} em sucesso para PUT /fapi/v1/listenKey
+    if (response && typeof response === 'object' && Object.keys(response).length === 0) {
+      // console.log(`[API] ListenKey para conta ${accountId} mantido ativo com sucesso.`);
+      return true;
+    } else {
+      console.error(`[API] Falha ao manter ListenKey ativo para conta ${accountId}. Resposta:`, response);
+      return false;
+    }
+  } catch (error) {
+    console.error(`[API] Erro ao fazer requisição para manter ListenKey ativo para conta ${accountId}: ${error.message}`);
+    return false;
   }
 }
 
@@ -1673,5 +1733,7 @@ module.exports = {
   calculateRequiredMargin,
   cancelPendingEntry,
   loadCredentialsFromDatabase,
-  verifyAndFixEnvironmentConsistency
+  verifyAndFixEnvironmentConsistency,
+  getListenKey, // EXPORTAR
+  keepAliveListenKey // EXPORTAR
 };

@@ -1,13 +1,11 @@
 const WebSocket = require('ws');
-const axios = require('axios');
-const path = require('path');
-const { v4: uuidv4 } = require('uuid');
-const fs = require('fs');
-const { getDatabaseInstance } = require('./db/conexao');
-const crypto = require('crypto'); // Manter esta importação
-const mysql = require('mysql2/promise');
-
-require('dotenv').config({ path: path.join(__dirname, '.env') });
+// Remova axios se não for mais usado diretamente aqui para listenKey
+// const axios = require('axios'); 
+const { EventEmitter } = require('events');
+const crypto = require('crypto');
+const nacl = require('tweetnacl');
+const { getDatabaseInstance } = require('./db/conexao'); // Adicionado para passar db para handleUserDataMessage
+const api = require('./api'); // Importar o módulo api
 
 // Variáveis para as bibliotecas Ed25519
 let nobleEd25519SignFunction = null;
@@ -477,7 +475,7 @@ async function createListenKey(accountId) {
  * @param {string} listenKey - ListenKey a ser prolongado
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Resposta da API
- */
+ 
 async function keepAliveListenKey(listenKey, accountId) {
   try {
     const accountState = getAccountConnectionState(accountId);
@@ -498,6 +496,7 @@ async function keepAliveListenKey(listenKey, accountId) {
     throw error;
   }
 }
+*/
 
 /**
  * Inicia o processo de manter o listenKey ativo
@@ -1177,15 +1176,10 @@ function stopPriceMonitoring(symbol, accountId) {
  * @returns {Promise<boolean>} - true se iniciado com sucesso
  */
 async function startUserDataStream(db, accountId) {
-  const accountState = getAccountConnectionState(accountId, true); // Garante que o estado exista
+  const accountState = getAccountConnectionState(accountId, true); 
 
-  if (!accountState.apiKey || !accountState.apiUrl) {
-    console.error(`[WEBSOCKET] API Key ou API URL não configuradas para UserDataStream da conta ${accountId}.`);
-    await loadCredentialsFromDatabase(accountId); // Tenta carregar novamente
-    if (!accountState.apiKey || !accountState.apiUrl) {
-      throw new Error(`Credenciais REST incompletas para UserDataStream da conta ${accountId} mesmo após recarregar.`);
-    }
-  }
+  // A validação de apiKey e apiUrl agora é feita dentro de api.getListenKey
+  // if (!accountState.apiKey || !accountState.apiUrl) { ... }
 
   if (accountState.userDataStream && accountState.userDataStream.readyState === WebSocket.OPEN) {
     console.log(`[WEBSOCKET] UserDataStream já está ativo para conta ${accountId}`);
@@ -1193,13 +1187,22 @@ async function startUserDataStream(db, accountId) {
   }
 
   console.log(`[WEBSOCKETS] Iniciando stream de dados do usuário para conta ${accountId}...`);
-  const listenKey = await getListenKey(accountId, accountState.apiKey, accountState.apiUrl);
+  
+  let listenKey;
+  try {
+    listenKey = await api.getListenKey(accountId); // Usar api.getListenKey
+  } catch (e) {
+    console.error(`[WEBSOCKETS] Erro crítico ao obter listenKey para conta ${accountId}: ${e.message}`);
+    throw e; // Re-throw para que monitoramento.js possa pegar
+  }
+
   if (!listenKey) {
+    // A mensagem de erro já foi logada por api.getListenKey
     throw new Error(`Falha ao obter ListenKey para conta ${accountId}`);
   }
-  console.log(`[WEBSOCKET] ListenKey obtido com sucesso para conta ${accountId}: ${listenKey.substring(0,10)}...`);
+  // console.log(`[WEBSOCKET] ListenKey obtido com sucesso para conta ${accountId}: ${listenKey.substring(0,10)}...`); // Log já em api.getListenKey
 
-  const wsUrl = accountState.wsUrl || getDefaultWsUrl(accountId); // wsUrl deve ser o base wss://fstream.binance.com
+  const wsUrl = accountState.wsUrl || getDefaultWsUrl(accountId); 
   if (!wsUrl) {
     throw new Error(`URL base do WebSocket (wsUrl) não definida para conta ${accountId}`);
   }
@@ -1209,9 +1212,8 @@ async function startUserDataStream(db, accountId) {
   
   const ws = new WebSocket(userDataEndpoint);
   accountState.userDataStream = ws;
-  accountState.listenKey = listenKey; // Armazenar o listenKey
+  accountState.listenKey = listenKey; 
   accountState.lastUserDataStreamKeepAlive = Date.now();
-
 
   ws.on('open', () => {
     console.log(`[WEBSOCKET] UserDataStream conectado para conta ${accountId}`);
@@ -1220,16 +1222,15 @@ async function startUserDataStream(db, accountId) {
       clearInterval(accountState.userDataKeepAliveInterval);
     }
     accountState.userDataKeepAliveInterval = setInterval(async () => {
-      if (ws.readyState === WebSocket.OPEN) {
+      if (ws.readyState === WebSocket.OPEN && accountState.listenKey) { // Checar se listenKey existe
         try {
-          await keepAliveListenKey(accountId, accountState.apiKey, accountState.apiUrl, accountState.listenKey);
+          await api.keepAliveListenKey(accountId, accountState.listenKey); // Usar api.keepAliveListenKey
           accountState.lastUserDataStreamKeepAlive = Date.now();
         } catch (kaError) {
           console.error(`[WEBSOCKET] Erro ao renovar listenKey para conta ${accountId}: ${kaError.message}`);
-          // Considerar fechar e reiniciar o stream se o keep-alive falhar consistentemente
         }
       } else {
-        clearInterval(accountState.userDataKeepAliveInterval);
+        if(accountState.userDataKeepAliveInterval) clearInterval(accountState.userDataKeepAliveInterval);
         accountState.userDataKeepAliveInterval = null;
       }
     }, 20 * 60 * 1000); // A cada 20 minutos
@@ -1241,7 +1242,7 @@ async function startUserDataStream(db, accountId) {
         await handleUserDataMessage(data, accountId, db);
     } catch (e) {
         // Este catch é um fallback, o handleUserDataMessage já tem seu próprio try-catch
-        console.error(`[WEBSOCKET] Erro CRÍTICO no handler de mensagem UserDataStream para conta ${accountId}: ${e.message}`);
+        console.error(`[WEBSOCKETS] Erro CRÍTICO no handler de mensagem UserDataStream para conta ${accountId}: ${e.message}`);
     }
   });
 
@@ -1302,7 +1303,7 @@ function restartUserDataStream(db, accountId) {
     try {
       await startUserDataStream(db, accountId);
     } catch (error) {
-      console.error(`[WEBSOCKET] Erro ao reiniciar stream de dados do usuário para conta ${accountId}:`, error);
+      console.error(`[WEBSOCKETS] Erro ao reiniciar stream de dados do usuário para conta ${accountId}:`, error);
     }
   }, 5000); // Tentar reconectar após 5 segundos
 }
@@ -1332,7 +1333,7 @@ function getHandlers(accountId) {
 async function handleUserDataMessage(jsonData, accountId, db) {
   const accountState = getAccountConnectionState(accountId);
   if (!accountState || !accountState.monitoringCallbacks) {
-    console.error(`[WEBSOCKET] Callbacks de monitoramento não encontrados para conta ${accountId} em handleUserDataMessage.`);
+    console.error(`[WEBSOCKETS] Callbacks de monitoramento não encontrados para conta ${accountId} em handleUserDataMessage.`);
     return;
   }
 
@@ -1340,28 +1341,28 @@ async function handleUserDataMessage(jsonData, accountId, db) {
 
   try {
     const message = JSON.parse(jsonData.toString());
-    // console.log(`[WEBSOCKET] UserDataStream (Conta ${accountId}) Raw Message:`, JSON.stringify(message).substring(0, 500));
+    // console.log(`[WEBSOCKETS] UserDataStream (Conta ${accountId}) Raw Message:`, JSON.stringify(message).substring(0, 500));
 
     if (message.e) { // 'e' é o campo de tipo de evento da Binance
       switch (message.e) {
         case 'ORDER_TRADE_UPDATE':
           if (handleOrderUpdate && typeof handleOrderUpdate === 'function') {
-            // console.log(`[WEBSOCKET] UserDataStream (Conta ${accountId}) Chamando handleOrderUpdate para evento ORDER_TRADE_UPDATE.`);
+            // console.log(`[WEBSOCKETS] UserDataStream (Conta ${accountId}) Chamando handleOrderUpdate para evento ORDER_TRADE_UPDATE.`);
             await handleOrderUpdate(message, db); // db é passado aqui
           } else {
-            console.warn(`[WEBSOCKET] handleOrderUpdate não definido ou não é uma função para conta ${accountId}`);
+            console.warn(`[WEBSOCKETS] handleOrderUpdate não definido ou não é uma função para conta ${accountId}`);
           }
           break;
         case 'ACCOUNT_UPDATE':
           if (handleAccountUpdate && typeof handleAccountUpdate === 'function') {
-            // console.log(`[WEBSOCKET] UserDataStream (Conta ${accountId}) Chamando handleAccountUpdate para evento ACCOUNT_UPDATE.`);
+            // console.log(`[WEBSOCKETS] UserDataStream (Conta ${accountId}) Chamando handleAccountUpdate para evento ACCOUNT_UPDATE.`);
             await handleAccountUpdate(message, db); // db é passado aqui
           } else {
-            console.warn(`[WEBSOCKET] handleAccountUpdate não definido ou não é uma função para conta ${accountId}`);
+            console.warn(`[WEBSOCKETS] handleAccountUpdate não definido ou não é uma função para conta ${accountId}`);
           }
           break;
         case 'listenKeyExpired':
-          console.log(`[WEBSOCKET] UserDataStream (Conta ${accountId}) ListenKey expirou. Tentando renovar...`);
+          console.log(`[WEBSOCKETS] UserDataStream (Conta ${accountId}) ListenKey expirou. Tentando renovar...`);
           // Parar o stream atual e reiniciar para obter um novo listenKey
           // A instância 'db' é necessária para startUserDataStream se ele a utiliza para obter credenciais ou algo similar.
           // Se startUserDataStream não precisa de 'db' diretamente para renovar, você pode omiti-lo na chamada de renovação.
@@ -1374,14 +1375,14 @@ async function handleUserDataMessage(jsonData, accountId, db) {
         // case 'ACCOUNT_CONFIG_UPDATE': // Para Binance Futures, pode ser 'ACCOUNT_CONFIG_UPDATE'
         // case 'BALANCE_UPDATE': // Algumas corretoras enviam isso, Binance usa ACCOUNT_UPDATE para saldos
         default:
-          // console.log(`[WEBSOCKET] UserDataStream (Conta ${accountId}) Evento não tratado: ${message.e}`, message);
+          // console.log(`[WEBSOCKETS] UserDataStream (Conta ${accountId}) Evento não tratado: ${message.e}`, message);
           break;
       }
     } else {
-      // console.log(`[WEBSOCKET] UserDataStream (Conta ${accountId}) Mensagem sem tipo de evento 'e':`, message);
+      // console.log(`[WEBSOCKETS] UserDataStream (Conta ${accountId}) Mensagem sem tipo de evento 'e':`, message);
     }
   } catch (error) {
-    console.error(`[WEBSOCKET] Erro ao processar mensagem UserDataStream para conta ${accountId}: ${error.message}. Dados:`, jsonData.toString().substring(0, 500));
+    console.error(`[WEBSOCKETS] Erro ao processar mensagem UserDataStream para conta ${accountId}: ${error.message}. Dados:`, jsonData.toString().substring(0, 500));
   }
 }
 
@@ -1771,10 +1772,10 @@ function forceCleanupAccount(accountId) {
       accountConnections.delete(accountId);
     }
     
-    console.log(`[WEBSOCKET] ✅ Limpeza completa concluída para conta ${accountId}`);
+    console.log(`[WEBSOCKETS] ✅ Limpeza completa concluída para conta ${accountId}`);
     
   } catch (error) {
-    console.error(`[WEBSOCKET] ❌ Erro durante limpeza da conta ${accountId}:`, error.message);
+    console.error(`[WEBSOCKETS] ❌ Erro durante limpeza da conta ${accountId}:`, error.message);
   }
 }
 
