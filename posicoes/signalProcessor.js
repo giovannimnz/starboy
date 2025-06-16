@@ -462,23 +462,23 @@ async function processSignalTrigger(signal, accountId) {
       throw new Error(`Não foi possível conectar ao banco para conta ${accountId}`);
     }
     
-    // CORREÇÃO: Obter preço atual do cache em vez de API
-    const priceCache = require('./priceMonitoring').getPriceFromCache;
+    // CORREÇÃO CRÍTICA: Obter preço atual via API diretamente
+    // Não usar cache pois pode não estar disponível
     let currentPrice;
     
-    if (priceCache && typeof priceCache === 'function') {
-      currentPrice = priceCache(signal.symbol);
-    }
-    
-    // Fallback para API se não tiver no cache
-    if (!currentPrice) {
+    try {
       const { getPrice } = require('../api');
       currentPrice = await getPrice(signal.symbol, accountId);
+    } catch (priceError) {
+      console.error(`[SIGNAL_TRIGGER] Erro ao obter preço via API para ${signal.symbol}:`, priceError.message);
+      throw new Error(`Falha ao obter preço para ${signal.symbol}: ${priceError.message}`);
     }
     
     if (!currentPrice || currentPrice <= 0) {
       throw new Error(`Preço inválido para ${signal.symbol}: ${currentPrice}`);
     }
+    
+    console.log(`[SIGNAL_TRIGGER] Preço atual obtido para ${signal.symbol}: ${currentPrice}`);
     
     // Processar sinal
     return await processSignal(db, signal, currentPrice, accountId);

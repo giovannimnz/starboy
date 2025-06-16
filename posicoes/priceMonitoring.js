@@ -1,7 +1,6 @@
 const axios = require('axios');
 const { getDatabaseInstance } = require('../db/conexao');
 const websockets = require('../websockets');
-const { processSignalTrigger } = require('./signalProcessor');
 
 // Cache de preços por símbolo
 const latestPrices = new Map();
@@ -273,14 +272,15 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
       websocketEmptyCheckCounter[symbol] = 0;
     }
 
-    // CORREÇÃO CRÍTICA: Importar função do signalProcessor
-    const { processSignalTrigger } = require('./signalProcessor');
+    // CORREÇÃO CRÍTICA: Processar sinais diretamente com processSignal
+    const { processSignal } = require('./signalProcessor');
 
     // Processar sinais pendentes
     for (const signal of pendingSignals) {
       try {
-        // CORREÇÃO: Chamar com parâmetros corretos (signal, accountId)
-        await processSignalTrigger(signal, accountId);
+        // CORREÇÃO: Chamar processSignal diretamente com currentPrice já disponível
+        console.log(`[PRICE] Processando sinal ${signal.id} para ${signal.symbol} com preço ${currentPrice}`);
+        await processSignal(db, signal, currentPrice, accountId);
       } catch (signalError) {
         console.error(`[PRICE] Erro ao processar sinal ${signal.id}:`, signalError);
       }
