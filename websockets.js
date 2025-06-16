@@ -605,7 +605,7 @@ async function startWebSocketApi(accountId) {
 function handleWebSocketApiMessage(message, accountId) {
     try {
         // Log da mensagem para debug
-        console.log(`[WS-API] Mensagem recebida para conta ${accountId}:`, JSON.stringify(message, null, 2));
+        //console.log(`[WS-API] Mensagem recebida para conta ${accountId}:`, JSON.stringify(message, null, 2));
         
         const accountState = getAccountConnectionState(accountId);
         if (!accountState) {

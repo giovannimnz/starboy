@@ -1022,7 +1022,7 @@ async function getAccountInformationV2(params = {}, accountId) {
         // CORREÇÃO: Usar método correto da documentação Binance
         const request = websockets.createSignedRequest('v2/account.status', params, accountId);
         
-        console.log(`[WS-API] Consultando informações da conta ${accountId} via WebSocket API V2`);
+        //console.log(`[WS-API] Consultando informações da conta ${accountId} via WebSocket API V2`);
         
         // Enviar requisição e aguardar resposta
         const response = await websockets.sendWebSocketApiRequest(request, 30000, accountId);
