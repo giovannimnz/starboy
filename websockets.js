@@ -1492,6 +1492,92 @@ async function authenticateWebSocketApi(ws, accountId) { // Tornar async
 }
 
 /**
+ * Envia uma requisição via WebSocket API
+ * @param {Object} request - Objeto de requisição, idealmente já processado por createSignedRequest se necessitar assinatura.
+ * @param {number} timeout - Tempo limite em ms
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Resposta da API
+ */
+async function sendWebSocketApiRequest(request, timeout = 30000, accountId) {
+  const accountState = getAccountConnectionState(accountId);
+
+  if (!accountState) {
+    // Tentar carregar credenciais e estado se não existir
+    try {
+      await loadCredentialsFromDatabase(accountId);
+      // Após carregar, accountState deve existir
+      const newState = getAccountConnectionState(accountId);
+      if (!newState) {
+        return Promise.reject(new Error(`[WS-API] Estado da conta ${accountId} não pôde ser inicializado.`));
+      }
+      // Continuar com newState, mas a lógica abaixo já pega o accountState atualizado
+    } catch (loadErr) {
+      return Promise.reject(new Error(`[WS-API] Falha ao carregar credenciais para conta ${accountId} antes de enviar requisição: ${loadErr.message}`));
+    }
+  }
+  
+  // Re-obter accountState caso tenha sido criado/atualizado acima
+  const currentAccountState = getAccountConnectionState(accountId);
+  if (!currentAccountState) {
+      return Promise.reject(new Error(`[WS-API] Estado da conta ${accountId} não encontrado após tentativa de carga.`));
+  }
+
+
+  // Verificar conexão WebSocket
+  if (!currentAccountState.wsApiConnection || currentAccountState.wsApiConnection.readyState !== WebSocket.OPEN) {
+    console.log(`[WS-API] Conexão WebSocket API não está aberta para conta ${accountId}. Tentando estabelecer...`);
+    try {
+      const connected = await startWebSocketApi(accountId); // startWebSocketApi já atualiza currentAccountState.wsApiConnection
+      if (!connected || !currentAccountState.wsApiConnection || currentAccountState.wsApiConnection.readyState !== WebSocket.OPEN) {
+        throw new Error('Falha ao estabelecer conexão WebSocket API.');
+      }
+      // Pequena pausa para garantir estabilidade após abertura, se necessário
+      // await new Promise(resolve => setTimeout(resolve, 200));
+      console.log(`[WS-API] Conexão WebSocket API restabelecida para conta ${accountId}.`);
+    } catch (connError) {
+      console.error(`[WS-API] Erro ao tentar (re)estabelecer conexão WebSocket API para conta ${accountId}: ${connError.message}`);
+      return Promise.reject(new Error(`[WS-API] WebSocket API não conectado para conta ${accountId}: ${connError.message}`));
+    }
+  }
+
+  // Garantir que temos um ID para a requisição.
+  // Se a requisição veio de createSignedRequest, ela já terá um ID.
+  const requestId = request.id || uuidv4();
+  request.id = requestId; // Assegura que o objeto request tenha o ID que será usado no callback
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (currentAccountState.requestCallbacks.has(requestId)) {
+        currentAccountState.requestCallbacks.delete(requestId);
+        console.error(`[WS-API] Timeout para requisição ID ${requestId} (Conta: ${accountId}, Método: ${request.method})`);
+        reject({ error: `Timeout para requisição ${requestId}`, id: requestId, method: request.method });
+      }
+    }, timeout);
+
+    currentAccountState.requestCallbacks.set(requestId, { resolve, reject, timer });
+
+    try {
+      const requestString = JSON.stringify(request);
+      // console.log(`[WS-API] Enviando para conta ${accountId} (ID: ${requestId}): ${requestString}`); // Log verboso
+      if (currentAccountState.wsApiConnection.readyState === WebSocket.OPEN) {
+        currentAccountState.wsApiConnection.send(requestString);
+      } else {
+        // Limpar callback e timer se a conexão fechou antes do send
+        clearTimeout(timer);
+        currentAccountState.requestCallbacks.delete(requestId);
+        console.error(`[WS-API] Conexão fechou antes de enviar req ID ${requestId} (Conta: ${accountId})`);
+        reject(new Error(`WebSocket API connection closed before sending request ${requestId} for account ${accountId}.`));
+      }
+    } catch (error) {
+      clearTimeout(timer);
+      currentAccountState.requestCallbacks.delete(requestId);
+      console.error(`[WS-API] Erro ao enviar requisição ID ${requestId} (Conta: ${accountId}):`, error);
+      reject({ error: `Erro ao enviar requisição: ${error.message}`, id: requestId, method: request.method });
+    }
+  });
+}
+
+/**
  * Cria um buffer DER para chave privada Ed25519 a partir de chave raw
  * @param {Buffer} rawKey - Chave privada raw de 32 bytes
  * @returns {Buffer} - Chave no formato DER
