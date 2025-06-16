@@ -111,16 +111,39 @@ function getPriceWebsockets(accountId, create = false) {
  */
 async function loadCredentialsFromDatabase(accountId) {
   try {
-    console.log(`[WEBSOCKETS] Carregando credenciais do banco para conta ${accountId}...`);
-    
-    const { getDatabaseInstance } = require('./db/conexao');
-    const db = await getDatabaseInstance();
-    
-    if (!db) {
-      throw new Error(`Falha ao conectar ao banco de dados para conta ${accountId}`);
+    // CORREÇÃO CRÍTICA: Validação mais robusta
+    if (!accountId || typeof accountId !== 'number') {
+      throw new Error(`ID da conta inválido: ${accountId} (tipo: ${typeof accountId})`);
     }
 
-    // CORREÇÃO CRÍTICA: Query ajustada para colunas que realmente existem
+    // Verificar cache
+    const cachedCreds = accountCredentialsCache.get(accountId);
+    if (cachedCreds && (Date.now() - cachedCreds.timestamp) < 300000) { // 5 minutos
+      console.log(`[WEBSOCKETS] Usando credenciais em cache para conta ${accountId}`);
+      
+      // CORREÇÃO: Garantir que o estado da conta existe e está atualizado
+      let accountState = getAccountConnectionState(accountId, true);
+      accountState.apiKey = cachedCreds.apiKey;
+      accountState.secretKey = cachedCreds.secretKey;
+      accountState.wsApiKey = cachedCreds.wsApiKey;
+      accountState.wsApiSecret = cachedCreds.wsApiSecret;
+      accountState.privateKey = cachedCreds.privateKey;
+      accountState.apiUrl = cachedCreds.apiUrl;
+      accountState.wsApiUrl = cachedCreds.wsApiUrl;
+      accountState.wsUrl = cachedCreds.wsUrl;
+      accountState.environment = cachedCreds.environment;
+      
+      return cachedCreds;
+    }
+
+    console.log(`[WEBSOCKETS] Carregando credenciais do banco para conta ${accountId}...`);
+    
+    const db = await getDatabaseInstance();
+    if (!db) {
+      throw new Error(`Não foi possível conectar ao banco para conta ${accountId}`);
+    }
+
+    // CORREÇÃO CRÍTICA: Query adaptada para nova estrutura das tabelas
     const [rows] = await db.query(`
       SELECT 
         c.id,
@@ -132,9 +155,10 @@ async function loadCredentialsFromDatabase(accountId) {
         c.private_key,
         c.ativa,
         c.id_corretora,
-        cor.api_url,
-        cor.ws_url,
-        cor.futures_ws_api_url as ws_api_url,
+        cor.spot_rest_api_url,
+        cor.futures_rest_api_url,
+        cor.futures_ws_market_url,
+        cor.futures_ws_api_url,
         cor.ambiente,
         cor.corretora
       FROM contas c
@@ -148,13 +172,22 @@ async function loadCredentialsFromDatabase(accountId) {
 
     const account = rows[0];
     
-    // CORREÇÃO: Usar dados da tabela corretoras se disponível
-    let apiUrl = account.api_url || 'https://fapi.binance.com';
-    let wsUrl = account.ws_url || 'wss://fstream.binance.com';
-    let wsApiUrl = account.ws_api_url || 'wss://ws-fapi.binance.com/ws-fapi/v1';
+    // CORREÇÃO: Usar dados da tabela corretoras com nomes corretos
+    let apiUrl = account.futures_rest_api_url || 'https://fapi.binance.com/fapi';
+    let wsUrl = account.futures_ws_market_url || 'wss://fstream.binance.com';
+    let wsApiUrl = account.futures_ws_api_url || 'wss://ws-fapi.binance.com/ws-fapi/v1';
     
-    // Determinar ambiente baseado nas URLs
-    let environment = 'prd';
+    // Garantir que URLs são para futures e estão corretas
+    if (!apiUrl.includes('/fapi')) {
+      if (apiUrl.endsWith('/')) {
+        apiUrl = apiUrl + 'fapi';
+      } else {
+        apiUrl = apiUrl + '/fapi';
+      }
+    }
+    
+    // Determinar ambiente baseado nas URLs ou campo ambiente
+    let environment = account.ambiente || 'prd';
     if (apiUrl.includes('testnet') || wsUrl.includes('testnet') || wsApiUrl.includes('testnet')) {
       environment = 'testnet';
     }
@@ -164,15 +197,17 @@ async function loadCredentialsFromDatabase(accountId) {
       accountName: account.nome,
       apiKey: account.api_key,
       secretKey: account.api_secret,
-      wsApiKey: account.ws_api_key || account.api_key, // Fallback
+      wsApiKey: account.ws_api_key || account.api_key, // Fallback para API key normal
       wsApiSecret: account.ws_api_secret,
       privateKey: account.private_key,
       apiUrl: apiUrl,
       wsUrl: wsUrl,
       wsApiUrl: wsApiUrl,
+      wssMarketUrl: wsUrl, // Alias para compatibilidade
       environment: environment,
       broker: account.corretora || 'binance',
-      brokerId: account.id_corretora || 1
+      brokerId: account.id_corretora || 1,
+      timestamp: Date.now()
     };
 
     // Validar credenciais essenciais
@@ -193,6 +228,7 @@ async function loadCredentialsFromDatabase(accountId) {
     accountState.apiUrl = credentials.apiUrl;
     accountState.wsApiUrl = credentials.wsApiUrl;
     accountState.wsUrl = credentials.wsUrl;
+    accountState.wssMarketUrl = credentials.wssMarketUrl;
     accountState.environment = credentials.environment;
 
     console.log(`[WEBSOCKETS] Credenciais carregadas para conta ${accountId} (${account.nome}):`);
@@ -202,6 +238,9 @@ async function loadCredentialsFromDatabase(accountId) {
     console.log(`- Private Key: ${credentials.privateKey ? '✅ Encontrada' : '❌ Não encontrada'}`);
     console.log(`- Ambiente: ${credentials.environment}`);
     console.log(`- Corretora: ${credentials.broker} (ID: ${credentials.brokerId})`);
+    console.log(`- API URL: ${credentials.apiUrl}`);
+    console.log(`- WS URL: ${credentials.wsUrl}`);
+    console.log(`- WS API URL: ${credentials.wsApiUrl}`);
     
     console.log(`[WEBSOCKETS] Inicializando estado da conexão para conta ${accountId}...`);
     

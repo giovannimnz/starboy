@@ -41,10 +41,21 @@ async function loadCredentialsFromDatabase(accountId) {
     const { getDatabaseInstance } = require('./db/conexao');
     const db = await getDatabaseInstance();
     
+    // CORREÇÃO CRÍTICA: Query adaptada para nova estrutura
     const [rows] = await db.query(`
-      SELECT api_key, secret_key, ws_api_key, private_key_pem 
-      FROM contas 
-      WHERE id = ? AND ativa = 1
+      SELECT 
+        c.api_key, 
+        c.api_secret, 
+        c.ws_api_key, 
+        c.private_key,
+        cor.futures_rest_api_url,
+        cor.futures_ws_market_url,
+        cor.futures_ws_api_url,
+        cor.ambiente,
+        cor.corretora
+      FROM contas c
+      LEFT JOIN corretoras cor ON c.id_corretora = cor.id
+      WHERE c.id = ? AND c.ativa = 1
     `, [numericAccountId]);
     
     if (!rows || rows.length === 0) {
@@ -55,9 +66,14 @@ async function loadCredentialsFromDatabase(accountId) {
     
     return {
       apiKey: account.api_key,
-      secretKey: account.secret_key,
+      secretKey: account.api_secret,
       wsApiKey: account.ws_api_key,
-      privateKey: account.private_key_pem
+      privateKey: account.private_key,
+      baseUrl: account.futures_rest_api_url || 'https://fapi.binance.com',
+      wsUrl: account.futures_ws_market_url || 'wss://fstream.binance.com',
+      wsApiUrl: account.futures_ws_api_url || 'wss://ws-fapi.binance.com/ws-fapi/v1',
+      environment: account.ambiente || 'prd',
+      broker: account.corretora || 'binance'
     };
     
   } catch (error) {
@@ -595,13 +611,13 @@ async function getTickSize(symbol, accountId) {
       throw new Error(`Credenciais não encontradas para conta ${accountId}`);
     }
     
-    // CORREÇÃO: Usar a URL base das credenciais em vez de variável indefinida
+    // CORREÇÃO: Usar a URL base das credenciais
     const baseUrl = credentials.baseUrl || 'https://fapi.binance.com';
-    const apiUrl = `${baseUrl}/fapi`;
+    const apiUrl = `${baseUrl}/v1/exchangeInfo?symbol=${symbol}`;
     
-    console.log(`[API] Fazendo requisição para: ${apiUrl}/v1/exchangeInfo?symbol=${symbol}`);
+    console.log(`[API] Fazendo requisição para: ${apiUrl}`);
     
-    const response = await axios.get(`${apiUrl}/v1/exchangeInfo?symbol=${symbol}`, {
+    const response = await axios.get(apiUrl, {
       timeout: 10000,
       headers: {
         'User-Agent': 'StarBoy-Trading-Bot/1.0'
