@@ -26,9 +26,6 @@ let lastCacheTime = 0;
  * @returns {Promise<Object>} - Credenciais da conta
  */
 async function loadCredentialsFromDatabase(accountId) {
-  // ADICIONAR ESTA LINHA PARA DEBUG:
-  debugAccountIdParameter(accountId, 'loadCredentialsFromDatabase');
-  
   // CORREÇÃO CRÍTICA: Melhor validação e conversão
   if (!accountId) {
     throw new Error(`AccountId é obrigatório: ${accountId} (tipo: ${typeof accountId})`);
@@ -61,12 +58,13 @@ async function loadCredentialsFromDatabase(accountId) {
     const { getDatabaseInstance } = require('./db/conexao');
     const db = await getDatabaseInstance();
     
-    // CORREÇÃO CRÍTICA: Query adaptada para nova estrutura
+    // CORREÇÃO CRÍTICA: Usar nomes corretos das colunas conforme sua estrutura
     const [rows] = await db.query(`
       SELECT 
         c.api_key, 
         c.api_secret, 
         c.ws_api_key, 
+        c.ws_api_secret,
         c.private_key,
         cor.futures_rest_api_url,
         cor.futures_ws_market_url,
@@ -86,8 +84,9 @@ async function loadCredentialsFromDatabase(accountId) {
     
     return {
       apiKey: account.api_key,
-      secretKey: account.api_secret,
+      secretKey: account.api_secret, // CORREÇÃO: Era 'secret_key', agora é 'api_secret'
       wsApiKey: account.ws_api_key,
+      wsApiSecret: account.ws_api_secret,
       privateKey: account.private_key,
       baseUrl: account.futures_rest_api_url || 'https://fapi.binance.com',
       wsUrl: account.futures_ws_market_url || 'wss://fstream.binance.com',
