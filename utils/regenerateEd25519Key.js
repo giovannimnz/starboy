@@ -24,7 +24,7 @@ async function regenerateEd25519Key() {
     // Conectar ao banco
     const connection = await mysql.createConnection({
       host: 'atius.com.br',
-      user: 'starboy',
+      user: 'ubuntu',
       password: 'Bkfigt!546',
       database: 'starboy'
     });
