@@ -315,9 +315,7 @@ def test_database_connection():
     """
     Testa se a conexão com o banco está funcionando
     """
-    try:
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] Testando conexão com banco...")
-        
+    try:        
         conn = get_database_connection()
         if conn:
             cursor = conn.cursor()
@@ -326,7 +324,6 @@ def test_database_connection():
             cursor.close()
             conn.close()
             
-            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] ✅ Banco OK - {count} registros na tabela alavancagem")
             return True
         else:
             print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] ❌ Falha na conexão com banco")
@@ -364,7 +361,6 @@ def initialize_bracket_scheduler():
     """
     try:
         # Testar credenciais e banco antes de começar
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] Executando testes iniciais...")
         
         binance_ok = test_binance_credentials()
         db_ok = test_database_connection()
@@ -1626,14 +1622,11 @@ def test_binance_credentials():
     Testa se as credenciais da Binance estão funcionando
     """
     try:
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] Testando credenciais Binance...")
-        
         # Testar com endpoint simples
         result = make_binance_request('/v1/exchangeInfo')
         
         if result and 'symbols' in result:
             symbol_count = len(result['symbols'])
-            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] ✅ Credenciais OK - {symbol_count} símbolos disponíveis")
             return True
         else:
             print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] ❌ Falha no teste de credenciais")
@@ -1659,7 +1652,6 @@ def test_database_connection():
             cursor.close()
             conn.close()
             
-            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] ✅ Banco OK - {count} registros na tabela alavancagem")
             return True
         else:
             print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] ❌ Falha na conexão com banco")
