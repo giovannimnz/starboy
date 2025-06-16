@@ -15,18 +15,13 @@ const dbConfig = {
   database: process.env.DB_NAME || 'starboy',
   connectionLimit: 20,
   queueLimit: 0,
-  // REMOVER estas configurações que geram warning:
-  // acquireTimeout: 60000,  // ❌ REMOVER
-  // timeout: 60000,         // ❌ REMOVER  
-  // reconnect: true,        // ❌ REMOVER
-  
-  // CORREÇÃO: Usar configurações corretas do MySQL2
-  acquireTimeout: 60000,    // ✅ Tempo para adquirir conexão
-  waitForConnections: true, // ✅ Aguardar conexões disponíveis
-  reconnect: true,          // ✅ Reconectar automaticamente
-  idleTimeout: 300000,      // ✅ 5 minutos de timeout para conexões inativas
-  enableKeepAlive: true,    // ✅ Manter conexões vivas
-  keepAliveInitialDelay: 0  // ✅ Delay inicial do keep-alive
+  // CORREÇÃO: Usar apenas configurações válidas do MySQL2
+  waitForConnections: true,   // ✅ Aguardar conexões disponíveis
+  reconnect: true,           // ✅ Reconectar automaticamente  
+  idleTimeout: 300000,       // ✅ 5 minutos de timeout para conexões inativas
+  enableKeepAlive: true,     // ✅ Manter conexões vivas
+  keepAliveInitialDelay: 0,  // ✅ Delay inicial do keep-alive
+  charset: 'utf8mb4'         // ✅ Charset correto
 };
 
 /**
@@ -98,6 +93,11 @@ async function getDatabaseInstance(accountId = null) {
     // Se accountId for fornecido, apenas loggar para debug
     if (accountId && accountId !== 1) {
       console.log(`[DB] Solicitação de conexão para conta ${accountId}`);
+    }
+    
+    // CORREÇÃO: Verificar se está em processo de shutdown
+    if (process.env.SHUTTING_DOWN === 'true') {
+      throw new Error('Sistema em processo de shutdown');
     }
     
     // Garantir que o pool está inicializado
@@ -306,16 +306,21 @@ async function checkAndAddColumns() {
 async function closePool() {
   if (pool) {
     console.log('[DB] Fechando pool de conexões...');
-    await pool.end();
-    pool = null;
-    console.log('[DB] Pool de conexões fechado');
+    try {
+      await pool.end();
+      pool = null;
+      console.log('[DB] Pool de conexões fechado');
+    } catch (error) {
+      console.error('[DB] Erro ao fechar pool:', error.message);
+    }
   }
 }
 
+
 // Fechar pool graciosamente ao encerrar aplicação
-process.on('SIGINT', closePool);
-process.on('SIGTERM', closePool);
-process.on('exit', closePool);
+//process.on('SIGINT', closePool);
+//process.on('SIGTERM', closePool);
+//process.on('exit', closePool);
 
 // Obter todas as ordens por símbolo
 async function getAllOrdersBySymbol(db, symbol) {

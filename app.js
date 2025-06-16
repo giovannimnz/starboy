@@ -4,6 +4,7 @@ const { initializeDatabase, getDatabaseInstance } = require('./db/conexao');
 const readline = require('readline');
 const { spawn } = require('child_process');
 const { initPool, formatDateForMySQL } = require('./db/conexao');
+const { gracefulShutdown } = require('./posicoes/monitoramento');
 
 
 // Mapear contas ativas para seus processos

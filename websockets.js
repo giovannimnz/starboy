@@ -1594,6 +1594,57 @@ async function authenticateWebSocketApi(ws, accountId) {
   }
 }
 
+/**
+ * Limpa completamente todas as conexões para uma conta
+ * @param {number} accountId - ID da conta
+ */
+function forceCleanupAccount(accountId) {
+  console.log(`[WEBSOCKET] 🧹 Limpeza completa para conta ${accountId}...`);
+  
+  try {
+    // Limpar WebSocket API
+    cleanupWebSocketApi(accountId);
+    
+    // Limpar WebSockets de preço
+    const priceWebsockets = getPriceWebsockets(accountId);
+    if (priceWebsockets) {
+      for (const [symbol, ws] of priceWebsockets.entries()) {
+        if (ws && ws.readyState !== WebSocket.CLOSED) {
+          ws.close(1000, 'Graceful shutdown');
+        }
+      }
+      priceWebsockets.clear();
+    }
+    
+    // Limpar userDataWebSocket
+    const accountState = getAccountConnectionState(accountId);
+    if (accountState) {
+      if (accountState.userDataWebSocket && accountState.userDataWebSocket.readyState !== WebSocket.CLOSED) {
+        accountState.userDataWebSocket.close(1000, 'Graceful shutdown');
+      }
+      
+      // Limpar keepalive do listenKey
+      if (accountState.listenKeyKeepAliveInterval) {
+        clearInterval(accountState.listenKeyKeepAliveInterval);
+        accountState.listenKeyKeepAliveInterval = null;
+      }
+      
+      // Remover estado da conta
+      accountConnections.delete(accountId);
+    }
+    
+    console.log(`[WEBSOCKET] ✅ Limpeza completa concluída para conta ${accountId}`);
+    
+  } catch (error) {
+    console.error(`[WEBSOCKET] ❌ Erro durante limpeza da conta ${accountId}:`, error.message);
+  }
+}
+
+// Atualizar função reset para usar o novo cleanup
+function reset(accountId) {
+  forceCleanupAccount(accountId);
+}
+
 module.exports = {
   startUserDataStream,
   setupBookDepthWebsocket,
@@ -1619,4 +1670,6 @@ module.exports = {
   handleWebSocketApiMessage,
   createEd25519Signature,
   createEd25519DERFromRaw,
+  forceCleanupAccount,
+  reset,
 };
