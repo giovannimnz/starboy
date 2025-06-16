@@ -573,7 +573,7 @@ async function loadCredentialsFromDatabase(accountId) {
       apiKey: account.api_key,
       secretKey: account.api_secret,
       wsApiKey: account.ws_api_key,
-      wsApiSecret: account.ws_api_secret
+      wsApiSecret: account.ws_api_secreto
     };
     
   } catch (error) {
