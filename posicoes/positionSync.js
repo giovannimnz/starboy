@@ -20,6 +20,9 @@ async function syncPositionsWithExchange(accountId) {
       throw new Error(`Falha ao conectar ao banco para conta ${accountId}`);
     }
 
+    // CORREÇÃO CRÍTICA: Log de debug antes da chamada
+    console.log(`[SYNC] Chamando getAllOpenPositions com accountId: ${accountId} (tipo: ${typeof accountId})`);
+    
     // CORREÇÃO CRÍTICA: Chamar getAllOpenPositions apenas com accountId (número)
     const exchangePositions = await getAllOpenPositions(accountId);
     

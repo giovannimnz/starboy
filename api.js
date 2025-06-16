@@ -26,6 +26,9 @@ let lastCacheTime = 0;
  * @returns {Promise<Object>} - Credenciais da conta
  */
 async function loadCredentialsFromDatabase(accountId) {
+  // ADICIONAR ESTA LINHA PARA DEBUG:
+  debugAccountIdParameter(accountId, 'loadCredentialsFromDatabase');
+  
   // CORREÇÃO CRÍTICA: Melhor validação e conversão
   if (!accountId) {
     throw new Error(`AccountId é obrigatório: ${accountId} (tipo: ${typeof accountId})`);
@@ -145,87 +148,82 @@ function createSignature(queryString, secretKey) {
 
 
 /**
- * Faz uma requisição autenticada para a API da Binance
- * @param {string} method - Método HTTP (GET, POST, PUT, DELETE)
- * @param {string} endpoint - Endpoint da API (ex: /v1/account)
- * @param {Object} params - Parâmetros da requisição
+ * Faz uma requisição autenticada à API
+ * @param {string} endpoint - Endpoint da API
+ * @param {string} method - Método HTTP (GET, POST, etc.)
+ * @param {Object|null} data - Dados para enviar (opcional)
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Resposta da API
  */
-async function makeAuthenticatedRequest(method, endpoint, params = {}, accountId) {
-  // CORREÇÃO: Validar method como string
-  if (!method || typeof method !== 'string') {
-    throw new Error(`Método HTTP inválido: ${method} (tipo: ${typeof method})`);
-  }
-  
-  // CORREÇÃO: Garantir que method seja string antes de chamar toUpperCase
-  const httpMethod = String(method).toUpperCase();
-  
-  // CORREÇÃO: Validar accountId
-  if (!accountId || typeof accountId !== 'number') {
-    throw new Error(`AccountId é obrigatório: ${accountId} (tipo: ${typeof accountId})`);
-  }
-
+async function makeAuthenticatedRequest(endpoint, method = 'GET', data = null, accountId) {
   try {
-    const credentials = await loadCredentialsFromDatabase({ accountId, forceRefresh: false });
-    
-    if (!credentials || !credentials.apiKey || !credentials.secretKey) {
-      throw new Error(`Credenciais não encontradas ou inválidas para conta ${accountId}`);
+    // CORREÇÃO CRÍTICA: Validar accountId primeiro
+    if (!accountId || typeof accountId !== 'number') {
+      console.error('[API] makeAuthenticatedRequest recebeu parâmetros inválidos:', {
+        endpoint,
+        method,
+        data: data ? 'presente' : 'null',
+        accountId,
+        accountIdType: typeof accountId
+      });
+      throw new Error(`AccountId deve ser um número válido para makeAuthenticatedRequest: ${accountId} (tipo: ${typeof accountId})`);
     }
 
-    console.log(`[API] DEBUG - Validando credenciais para requisição ${endpoint}:`);
-    console.log(`- accountId: ${accountId}`);
-    console.log(`- credentials existe: ${credentials ? 'SIM' : 'NÃO'}`);
-    console.log(`- apiKey existe: ${credentials.apiKey ? 'SIM' : 'NÃO'}`);
-    console.log(`- secretKey existe: ${credentials.secretKey ? 'SIM' : 'NÃO'}`);
-    console.log(`- secretKey tipo: ${typeof credentials.secretKey}`);
-    console.log(`- secretKey length: ${credentials.secretKey ? credentials.secretKey.length : 'N/A'}`);
+    console.log(`[API] Fazendo requisição autenticada: ${method} ${endpoint} para conta ${accountId}`);
+    
+    // CORREÇÃO: Chamar loadCredentialsFromDatabase apenas com accountId
+    const credentials = await loadCredentialsFromDatabase(accountId);
+    
+    if (!credentials || !credentials.apiKey || !credentials.secretKey) {
+      throw new Error(`Credenciais incompletas para conta ${accountId}`);
+    }
 
-    // Preparar parâmetros com timestamp
+    const baseUrl = credentials.baseUrl || 'https://fapi.binance.com';
     const timestamp = Date.now();
-    const allParams = { ...params, timestamp };
+    
+    // Preparar parâmetros
+    let params = {
+      timestamp: timestamp,
+      recvWindow: 5000
+    };
 
-    // Criar query string para assinatura
-    const queryString = Object.keys(allParams)
+    // Adicionar dados se fornecidos
+    if (data && typeof data === 'object') {
+      params = { ...params, ...data };
+    }
+
+    // Criar query string
+    const queryString = Object.keys(params)
       .sort()
-      .map(key => `${key}=${allParams[key]}`)
+      .map(key => `${key}=${encodeURIComponent(params[key])}`)
       .join('&');
 
-    console.log(`[API] Criando assinatura para: ${queryString}`);
-
-    // Criar assinatura HMAC
+    // Criar assinatura
     const signature = crypto
       .createHmac('sha256', credentials.secretKey)
       .update(queryString)
       .digest('hex');
 
-    // Adicionar assinatura aos parâmetros
-    allParams.signature = signature;
+    const finalQueryString = `${queryString}&signature=${signature}`;
+    const url = `${baseUrl}/fapi${endpoint}?${finalQueryString}`;
 
-    // Construir URL completa
-    const baseUrl = credentials.baseUrl || 'https://fapi.binance.com';
-    const fullUrl = `${baseUrl}${endpoint}`;
-    
-    // Configurar requisição
+    console.log(`[API] URL da requisição: ${method} ${url.split('?')[0]}`);
+
+    // Fazer a requisição
     const config = {
-      method: httpMethod, // CORREÇÃO: Usar httpMethod validado
-      url: fullUrl,
+      method: method,
+      url: url,
       headers: {
         'X-MBX-APIKEY': credentials.apiKey,
-        'Content-Type': 'application/json'
-      }
+        'Content-Type': 'application/json',
+        'User-Agent': 'StarBoy-Trading-Bot/1.0'
+      },
+      timeout: 10000
     };
 
-    // CORREÇÃO: Adicionar parâmetros conforme método HTTP
-    if (httpMethod === 'GET' || httpMethod === 'DELETE') {
-      config.params = allParams;
-    } else {
-      config.data = allParams;
-    }
-
-    console.log(`[API] Fazendo requisição ${httpMethod} para: ${fullUrl}`);
-
     const response = await axios(config);
+    
+    console.log(`[API] ✅ Requisição ${method} ${endpoint} bem-sucedida para conta ${accountId}`);
     return response.data;
 
   } catch (error) {
@@ -233,10 +231,10 @@ async function makeAuthenticatedRequest(method, endpoint, params = {}, accountId
     
     if (error.response) {
       console.error(`[API] Status: ${error.response.status}`);
-      console.error(`[API] Data:`, error.response.data);
+      console.error(`[API] Dados: ${JSON.stringify(error.response.data)}`);
     }
     
-    throw error;
+    throw new Error(`Falha na requisição ${method} ${endpoint}: ${error.message}`);
   }
 }
 
@@ -827,36 +825,56 @@ async function getPositionDetails(symbol, accountId) {
 }
 
 /**
- * Obtém todas as posições abertas do usuário
+ * Obtém todas as posições abertas
  * @param {number} accountId - ID da conta
- * @returns {Promise<Array>} Array de posições abertas
+ * @returns {Promise<Array>} - Lista de posições
  */
 async function getAllOpenPositions(accountId) {
   try {
-    // CORREÇÃO: Ordem correta dos parâmetros: method, endpoint, params, accountId
-    const data = await makeAuthenticatedRequest('GET', '/v2/positionRisk', {}, accountId);
+    // CORREÇÃO CRÍTICA: Validar que recebemos apenas o accountId como número
+    if (!accountId || typeof accountId !== 'number') {
+      console.error('[API] getAllOpenPositions recebeu parâmetro inválido:', {
+        accountId,
+        type: typeof accountId,
+        isArray: Array.isArray(accountId),
+        keys: typeof accountId === 'object' ? Object.keys(accountId) : 'N/A'
+      });
+      throw new Error(`AccountId deve ser um número válido: ${accountId} (tipo: ${typeof accountId})`);
+    }
+
+    console.log(`[API] Obtendo posições abertas para conta ${accountId}...`);
     
+    // CORREÇÃO: Passar parâmetros na ordem correta para makeAuthenticatedRequest
+    // makeAuthenticatedRequest(endpoint, method, data, accountId)
+    const response = await makeAuthenticatedRequest('/v2/positionRisk', 'GET', null, accountId);
+    
+    if (!response || !Array.isArray(response)) {
+      console.warn(`[API] Resposta inválida de posições para conta ${accountId}:`, response);
+      return [];
+    }
+
     // Filtrar apenas posições com quantidade diferente de zero
-    const openPositions = data.filter(position => {
+    const openPositions = response.filter(position => {
       const positionAmt = parseFloat(position.positionAmt);
-      return Math.abs(positionAmt) > 0;
+      return positionAmt !== 0;
     });
+
+    console.log(`[API] ✅ ${openPositions.length} posições abertas encontradas para conta ${accountId}`);
 
     return openPositions.map(position => ({
       simbolo: position.symbol,
-      quantidade: parseFloat(position.positionAmt),
+      quantidade: Math.abs(parseFloat(position.positionAmt)),
+      lado: parseFloat(position.positionAmt) > 0 ? 'BUY' : 'SELL',
       precoEntrada: parseFloat(position.entryPrice),
       precoAtual: parseFloat(position.markPrice),
-      lado: parseFloat(position.positionAmt) > 0 ? 'BUY' : 'SELL',
       pnlNaoRealizado: parseFloat(position.unRealizedProfit),
-      margem: parseFloat(position.isolatedMargin),
       alavancagem: parseInt(position.leverage),
-      simboloStatus: position.positionSide || 'BOTH',
-      update_time: position.updateTime
+      margem: parseFloat(position.isolatedMargin),
+      tipoMargem: position.marginType
     }));
-    
+
   } catch (error) {
-    console.error(`[API] Erro ao obter posições abertas:`, error.message);
+    console.error(`[API] Erro ao obter posições abertas para conta ${accountId}:`, error.message);
     throw error;
   }
 }
@@ -1597,6 +1615,25 @@ async function calculateRequiredMargin(symbol, notionalValue, leverage, exchange
   } catch (error) {
     console.error(`[API] Erro ao calcular margem necessária para ${symbol}:`, error.message);
     throw error;
+  }
+}
+
+/**
+ * Função auxiliar para debugar parâmetros
+ * @param {*} accountId - Parâmetro a ser analisado
+ * @param {string} functionName - Nome da função que chamou
+ */
+function debugAccountIdParameter(accountId, functionName) {
+  console.log(`[API DEBUG] ${functionName} recebeu:`);
+  console.log(`- Valor: ${accountId}`);
+  console.log(`- Tipo: ${typeof accountId}`);
+  console.log(`- É Array: ${Array.isArray(accountId)}`);
+  console.log(`- É null: ${accountId === null}`);
+  console.log(`- É undefined: ${accountId === undefined}`);
+  
+  if (typeof accountId === 'object' && accountId !== null) {
+    console.log(`- Chaves do objeto: ${Object.keys(accountId).join(', ')}`);
+    console.log(`- JSON: ${JSON.stringify(accountId)}`);
   }
 }
 
