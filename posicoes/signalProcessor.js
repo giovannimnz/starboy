@@ -292,6 +292,5 @@ async function processSignalTrigger(signal, accountId) {
 module.exports = {
   processSignal,
   checkNewTrades,
-  forceProcessPendingSignals,
   processSignalTrigger
 };
