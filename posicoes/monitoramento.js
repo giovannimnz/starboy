@@ -78,17 +78,8 @@ async function initializeMonitoring(accountId) {
     }
     console.log(`✅ Banco de dados conectado com sucesso para conta ${accountId}\n`);
     
-    // === ETAPA 2: Atualizar dados de alavancagem ===
-    console.log(`🔧 ETAPA 2: Atualizando brackets de alavancagem para conta ${accountId}...`);
-    try {
-      await updateLeverageBracketsInDatabase('binance', accountId);
-      console.log('[MONITOR] Atualização de brackets de alavancagem concluída com sucesso.');
-    } catch (bracketError) {
-      console.error('[MONITOR] Erro ao atualizar brackets de alavancagem, mas continuando inicialização:', bracketError.message);
-    }
-    
-    // === ETAPA 3: Verificar consistência de ambiente ===
-    console.log(`🔍 ETAPA 3: Verificando consistência de ambiente para conta ${accountId}...`);
+    // === ETAPA 2: Verificar consistência de ambiente ===
+    console.log(`🔍 ETAPA 2: Verificando consistência de ambiente para conta ${accountId}...`);
     try {
       await verifyAndFixEnvironmentConsistency(accountId);
       console.log('[MONITOR] Verificação de consistência de ambiente concluída.');
@@ -96,8 +87,8 @@ async function initializeMonitoring(accountId) {
       console.error('[MONITOR] Erro ao verificar consistência de ambiente, mas continuando:', envError.message);
     }
 
-    // === ETAPA 4: Carregar credenciais WebSocket ===
-    console.log(`🔑 ETAPA 4: Carregando credenciais da conta ${accountId}...`);
+    // === ETAPA 3: Carregar credenciais WebSocket ===
+    console.log(`🔑 ETAPA 3: Carregando credenciais da conta ${accountId}...`);
     try {
       const credentials = await websockets.loadCredentialsFromDatabase(accountId);
       console.log('✅ Credenciais carregadas com sucesso');
@@ -113,8 +104,8 @@ async function initializeMonitoring(accountId) {
       throw credError;
     }
     
-    // === ETAPA 5: Verificar estado da conta ===
-    console.log(`🔗 ETAPA 5: Verificando estado da conexão da conta ${accountId}...`);
+    // === ETAPA 4: Verificar estado da conta ===
+    console.log(`🔗 ETAPA 4: Verificando estado da conexão da conta ${accountId}...`);
     
     let accountState = websockets.getAccountConnectionState(accountId);
     
@@ -147,8 +138,8 @@ async function initializeMonitoring(accountId) {
     console.log(`- Authenticated: ${accountState.isAuthenticated || accountState.wsApiAuthenticated || false}`);
     console.log();
 
-    // === ETAPA 6: Inicializar WebSocket API ===
-    console.log(`🔧 ETAPA 6: Inicializando WebSocket API para conta ${accountId}...`);
+    // === ETAPA 5: Inicializar WebSocket API ===
+    console.log(`🔧 ETAPA 5: Inicializando WebSocket API para conta ${accountId}...`);
     
     try {
       console.log(`📞 Chamando websockets.startWebSocketApi(${accountId})...`);
@@ -164,8 +155,8 @@ async function initializeMonitoring(accountId) {
     }
     console.log();
 
-    // === ETAPA 7: Verificar status da sessão ===
-    console.log(`🔍 ETAPA 7: Verificando status da sessão WebSocket para conta ${accountId}...`);
+    // === ETAPA 6: Verificar status da sessão ===
+    console.log(`🔍 ETAPA 6: Verificando status da sessão WebSocket para conta ${accountId}...`);
     try {
       const sessionStatus = await websockets.checkSessionStatus(accountId);
       console.log('📊 Status da sessão:', JSON.stringify(sessionStatus, null, 2));
@@ -174,8 +165,8 @@ async function initializeMonitoring(accountId) {
     }
     console.log();
 
-    // === ETAPA 8: Inicializar handlers WebSocket API ===
-    console.log(`🎯 ETAPA 8: Inicializando handlers WebSocket API para conta ${accountId}...`);
+    // === ETAPA 7: Inicializar handlers WebSocket API ===
+    console.log(`🎯 ETAPA 7: Inicializando handlers WebSocket API para conta ${accountId}...`);
     
     try {
       console.log(`📞 Chamando websocketApi.initializeHandlers(${accountId})...`);
@@ -192,8 +183,8 @@ async function initializeMonitoring(accountId) {
       }
     }
     
-    // === ETAPA 9: Configurar handlers com accountId ===
-    console.log(`🔄 ETAPA 9: Configurando handlers para conta ${accountId}...`);
+    // === ETAPA 8: Configurar handlers com accountId ===
+    console.log(`🔄 ETAPA 8: Configurando handlers para conta ${accountId}...`);
     
     const handlers = {
       handleOrderUpdate: async (msg, db) => {
@@ -228,8 +219,8 @@ async function initializeMonitoring(accountId) {
       console.error(`[MONITOR] Erro ao configurar callbacks do WebSocket para conta ${accountId}:`, callbackError.message);
     }
     
-    // === ETAPA 10: Iniciar UserDataStream ===
-    console.log(`🌐 ETAPA 10: Iniciando UserDataStream para conta ${accountId}...`);
+    // === ETAPA 9: Iniciar UserDataStream ===
+    console.log(`🌐 ETAPA 9: Iniciando UserDataStream para conta ${accountId}...`);
     
     try {
       await websockets.startUserDataStream(db, accountId);
@@ -238,8 +229,8 @@ async function initializeMonitoring(accountId) {
       console.error(`[MONITOR] Erro ao iniciar UserDataStream para conta ${accountId}, mas continuando: ${userDataError.message}`);
     }
 
-    // === ETAPA 11: Limpeza e preparação de sinais ===
-    console.log(`🧹 ETAPA 11: Limpando sinais com erro para conta ${accountId}...`);
+    // === ETAPA 10: Limpeza e preparação de sinais ===
+    console.log(`🧹 ETAPA 10: Limpando sinais com erro para conta ${accountId}...`);
     
     try {
       await db.query(`
@@ -272,8 +263,8 @@ async function initializeMonitoring(accountId) {
       console.error(`[MONITOR] Erro ao resetar sinais em processamento para conta ${accountId}:`, resetError.message);
     }
 
-    // === ETAPA 12: Verificar sinais pendentes ===
-    console.log(`📋 ETAPA 12: Verificando sinais pendentes para conta ${accountId}...`);
+    // === ETAPA 11: Verificar sinais pendentes ===
+    console.log(`📋 ETAPA 11: Verificando sinais pendentes para conta ${accountId}...`);
     
     try {
       await checkNewTrades(accountId);
@@ -281,8 +272,8 @@ async function initializeMonitoring(accountId) {
       console.error(`[MONITOR] Erro ao verificar sinais pendentes para conta ${accountId}:`, signalCheckError.message);
     }
 
-    // === ETAPA 13: Iniciar monitoramento de preços ===
-    console.log(`📈 ETAPA 13: Iniciando monitoramento de preços para conta ${accountId}...`);
+    // === ETAPA 12: Iniciar monitoramento de preços ===
+    console.log(`📈 ETAPA 12: Iniciando monitoramento de preços para conta ${accountId}...`);
     
     try {
       const symbolsCount = await startPriceMonitoring(accountId);
@@ -291,8 +282,8 @@ async function initializeMonitoring(accountId) {
       console.error(`[MONITOR] Erro ao iniciar monitoramento de preços para conta ${accountId}, mas continuando:`, priceError.message);
     }
 
-    // === ETAPA 14: Sincronizar posições ===
-    console.log(`🔄 ETAPA 14: Sincronizando posições para conta ${accountId}...`);
+    // === ETAPA 13: Sincronizar posições ===
+    console.log(`🔄 ETAPA 13: Sincronizando posições para conta ${accountId}...`);
     
     try {
       await syncPositionsWithExchange(accountId);
@@ -301,8 +292,8 @@ async function initializeMonitoring(accountId) {
       console.error(`[MONITOR] Erro ao sincronizar posições para conta ${accountId}, mas continuando:`, syncError.message);
     }
 
-    // === ETAPA 15: Diagnóstico detalhado ===
-    console.log(`🔧 ETAPA 15: Diagnóstico detalhado do WebSocket para conta ${accountId}...`);
+    // === ETAPA 14: Diagnóstico detalhado ===
+    console.log(`🔧 ETAPA 14: Diagnóstico detalhado do WebSocket para conta ${accountId}...`);
     
     console.log('🔍 Estado atual das conexões:');
     console.log(`- WebSocket API conectado: ${websockets.isWebSocketApiConnected(accountId)}`);
@@ -321,8 +312,8 @@ async function initializeMonitoring(accountId) {
       console.log(`  - requestCallbacks: ${conn.requestCallbacks ? conn.requestCallbacks.size : 'N/A'}`);
     }
 
-    // === ETAPA 16: Agendar jobs específicos da conta ===
-    console.log(`⏰ ETAPA 16: Agendando jobs para conta ${accountId}...`);
+    // === ETAPA 15: Agendar jobs específicos da conta ===
+    console.log(`⏰ ETAPA 15: Agendando jobs para conta ${accountId}...`);
     
     const accountJobs = {};
     

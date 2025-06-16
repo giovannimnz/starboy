@@ -9,21 +9,314 @@ from datetime import datetime
 from telethon import TelegramClient, events
 from dotenv import load_dotenv
 import pathlib
-from senhas import pers_api_hash, pers_api_id
+from senhas import pers_api_hash, pers_api_id, API_KEY, API_SECRET, API_URL  # NOVO: Importar credenciais Binance
 import sys
 import os
 from pathlib import Path
 import logging
+import schedule
+import time
+import threading
+import requests
+import hmac
+import hashlib
+import json
+from urllib.parse import urlencode
 
-logging.getLogger('telethon').setLevel(logging.WARNING)
+# CONFIGURAÇÃO DO BANCO DE DADOS
+DB_CONFIG = {
+    'host': os.getenv('DB_HOST', 'atius.com.br'),
+    'port': int(os.getenv('DB_PORT', 3306)),
+    'user': os.getenv('DB_USER', 'atius_starboy'),
+    'password': os.getenv('DB_PASSWORD', 'Mt@301114'),
+    'database': os.getenv('DB_NAME', 'starboy'),
+    'charset': 'utf8mb4',
+    'autocommit': True
+}
+
+def get_database_connection():
+    """
+    Obtém conexão com o banco de dados MySQL
+    """
+    try:
+        conn = mysql.connector.connect(**DB_CONFIG)
+        return conn
+    except mysql.connector.Error as e:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [DB] Erro ao conectar: {e}")
+        return None
+
+def create_binance_signature(query_string, secret):
+    """
+    Cria assinatura HMAC-SHA256 para API Binance
+    """
+    return hmac.new(
+        secret.encode('utf-8'),
+        query_string.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
+
+def make_binance_request(endpoint, params=None):
+    """
+    Faz requisição autenticada para API Binance
+    """
+    try:
+        if params is None:
+            params = {}
+        
+        # Adicionar timestamp
+        timestamp = int(time.time() * 1000)
+        params['timestamp'] = timestamp
+        
+        # Criar query string
+        query_string = urlencode(params)
+        
+        # Criar assinatura
+        signature = create_binance_signature(query_string, API_SECRET)
+        
+        # URL completa
+        url = f"{API_URL}{endpoint}?{query_string}&signature={signature}"
+        
+        # Headers
+        headers = {
+            'X-MBX-APIKEY': API_KEY,
+            'Content-Type': 'application/json'
+        }
+        
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BINANCE] Fazendo requisição: {endpoint}")
+        
+        # Fazer requisição
+        response = requests.get(url, headers=headers, timeout=30)
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BINANCE] Erro HTTP {response.status_code}: {response.text}")
+            return None
+            
+    except requests.exceptions.Timeout:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BINANCE] Timeout na requisição")
+        return None
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BINANCE] Erro na requisição: {e}")
+        return None
+
+def update_leverage_brackets_database():
+    """
+    Atualiza os brackets de alavancagem no banco de dados
+    Equivalente à função updateLeverageBracketsInDatabase do Node.js
+    """
+    try:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] Iniciando atualização de brackets de alavancagem...")
+        
+        # 1. Fazer requisição para API Binance
+        brackets_data = make_binance_request('/v1/leverageBracket')
+        
+        if not brackets_data or not isinstance(brackets_data, list):
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ❌ Resposta inválida da API Binance")
+            return False
+        
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ✅ Dados obtidos da Binance: {len(brackets_data)} símbolos")
+        
+        # 2. Conectar ao banco de dados
+        conn = get_database_connection()
+        if not conn:
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ❌ Erro ao conectar ao banco de dados")
+            return False
+        
+        cursor = conn.cursor()
+        processed_symbols = 0
+        processed_brackets = 0
+        
+        # 3. Processar cada símbolo
+        for symbol_data in brackets_data:
+            symbol = symbol_data.get('symbol')
+            leverage_brackets = symbol_data.get('brackets', [])
+            
+            if not symbol or not isinstance(leverage_brackets, list):
+                print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ⚠️ Brackets inválidos para símbolo {symbol}")
+                continue
+            
+            # 4. Atualizar brackets para este símbolo
+            for bracket in leverage_brackets:
+                try:
+                    bracket_id = bracket.get('bracket')
+                    initial_leverage = bracket.get('initialLeverage')
+                    notional_cap = bracket.get('notionalCap')
+                    notional_floor = bracket.get('notionalFloor')
+                    maint_margin_ratio = bracket.get('maintMarginRatio')
+                    cum = bracket.get('cum', 0)
+                    
+                    # SQL igual ao Node.js
+                    sql = """
+                        INSERT INTO alavancagem 
+                        (symbol, corretora, bracket, initial_leverage, notional_cap, notional_floor, maint_margin_ratio, cum, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                        ON DUPLICATE KEY UPDATE
+                        initial_leverage = VALUES(initial_leverage),
+                        notional_cap = VALUES(notional_cap),
+                        notional_floor = VALUES(notional_floor),
+                        maint_margin_ratio = VALUES(maint_margin_ratio),
+                        cum = VALUES(cum),
+                        updated_at = NOW()
+                    """
+                    
+                    values = (symbol, 'binance', bracket_id, initial_leverage, notional_cap, notional_floor, maint_margin_ratio, cum)
+                    
+                    cursor.execute(sql, values)
+                    processed_brackets += 1
+                    
+                except Exception as bracket_error:
+                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ⚠️ Erro ao processar bracket {bracket_id} para {symbol}: {bracket_error}")
+                    continue
+            
+            processed_symbols += 1
+            
+            # Log de progresso a cada 100 símbolos
+            if processed_symbols % 100 == 0:
+                print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] Processados {processed_symbols}/{len(brackets_data)} símbolos...")
+        
+        # 5. Confirmar transações e fechar conexão
+        conn.commit()
+        cursor.close()
+        conn.close()
+        
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ✅ Atualização concluída:")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS]   - Símbolos processados: {processed_symbols}")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS]   - Brackets atualizados: {processed_brackets}")
+        
+        return True
+        
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ❌ Erro crítico na atualização: {e}")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] Stack trace: {traceback.format_exc()}")
+        return False
+
+# ATUALIZAR função existente para usar a nova implementação
+def update_leverage_brackets():
+    """
+    Função wrapper para manter compatibilidade com o scheduler
+    """
+    try:
+        success = update_leverage_brackets_database()
+        if success:
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ✅ Atualização de brackets bem-sucedida")
+        else:
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ❌ Falha na atualização de brackets")
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ❌ Erro na atualização de brackets: {e}")
+
+# NOVA FUNÇÃO: Testar credenciais Binance
+def test_binance_credentials():
+    """
+    Testa se as credenciais da Binance estão funcionando
+    """
+    try:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] Testando credenciais Binance...")
+        
+        # Testar com endpoint simples
+        result = make_binance_request('/v1/exchangeInfo')
+        
+        if result and 'symbols' in result:
+            symbol_count = len(result['symbols'])
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] ✅ Credenciais OK - {symbol_count} símbolos disponíveis")
+            return True
+        else:
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] ❌ Falha no teste de credenciais")
+            return False
+            
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] ❌ Erro no teste: {e}")
+        return False
+
+# NOVA FUNÇÃO: Testar conexão com banco
+def test_database_connection():
+    """
+    Testa se a conexão com o banco está funcionando
+    """
+    try:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] Testando conexão com banco...")
+        
+        conn = get_database_connection()
+        if conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM alavancagem")
+            count = cursor.fetchone()[0]
+            cursor.close()
+            conn.close()
+            
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] ✅ Banco OK - {count} registros na tabela alavancagem")
+            return True
+        else:
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] ❌ Falha na conexão com banco")
+            return False
+            
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] ❌ Erro no teste do banco: {e}")
+        return False
+
+# ATUALIZAR função run_scheduler
+def run_scheduler():
+    """
+    Executa o scheduler em uma thread separada
+    """
+    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [SCHEDULER] Iniciando scheduler de brackets...")
+    
+    # Agendar 4 vezes ao dia: 00:00, 06:00, 12:00, 18:00
+    schedule.every().day.at("00:00").do(update_leverage_brackets)
+    schedule.every().day.at("06:00").do(update_leverage_brackets)
+    schedule.every().day.at("12:00").do(update_leverage_brackets)
+    schedule.every().day.at("18:00").do(update_leverage_brackets)
+    
+    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [SCHEDULER] ✅ Jobs agendados: 4x ao dia (00:00, 06:00, 12:00, 18:00)")
+    
+    while not shutdown_event.is_set():
+        try:
+            schedule.run_pending()
+            time.sleep(60)  # Verificar a cada minuto
+        except Exception as e:
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [SCHEDULER] Erro no scheduler: {e}")
+            time.sleep(60)
+
+# ATUALIZAR função initialize_bracket_scheduler
+def initialize_bracket_scheduler():
+    """
+    Inicializa o scheduler em uma thread separada
+    """
+    try:
+        # Testar credenciais e banco antes de começar
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] Executando testes iniciais...")
+        
+        binance_ok = test_binance_credentials()
+        db_ok = test_database_connection()
+        
+        if not binance_ok:
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] ❌ Credenciais Binance inválidas - continuando sem scheduler")
+            return
+            
+        if not db_ok:
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] ❌ Banco inacessível - continuando sem scheduler")
+            return
+        
+        # Atualizar brackets na inicialização
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] Executando atualização inicial de brackets...")
+        update_leverage_brackets()
+        
+        # Iniciar scheduler em thread separada
+        scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+        scheduler_thread.start()
+        
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] ✅ Scheduler de brackets inicializado em thread separada")
+        
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] ❌ Erro ao inicializar scheduler: {e}")
 
 # Chaveamento para ativar/desativar verificação DIVAP
 ENABLE_DIVAP_VERIFICATION = False  # True = verificação ativada, False = todos os sinais passam sem verificar
 
 # Parâmetros para cálculo de capital alocado baseado em risco
 PREJUIZO_MAXIMO_PERCENTUAL_DO_CAPITAL_TOTAL = 4.90  # 4.90% do capital total
-TAXA_ENTRADA_LIMIT = 0.02  # 0.02% do valor nocional da posição
-TAXA_SAIDA_MARKET = 0.05  # 0.05% do valor nocional da posição
+TAXA_ENTRADA = 0.02  # 0.02% do valor nocional da posição
+TAXA_SAIDA = 0.05  # 0.05% do valor nocional da posição
 
 # Adicionar o diretório backtest ao path para permitir a importação
 sys.path.append(str(Path(__file__).parent / 'backtest'))
@@ -79,6 +372,13 @@ async def shutdown(client):
                 print("[INFO] Conexões do analisador DIVAP fechadas")
             except Exception as e:
                 print(f"[ERRO] Erro ao fechar conexões do analisador DIVAP: {e}")
+
+        # NOVO: Limpar jobs do scheduler
+        try:
+            schedule.clear()
+            print("[INFO] Jobs do scheduler limpos")
+        except Exception as e:
+            print(f"[ERRO] Erro ao limpar jobs do scheduler: {e}")
 
         # Aguardar um pouco para garantir que todas as tarefas sejam encerradas
         await asyncio.sleep(1)
@@ -492,287 +792,7 @@ def save_to_database(trade_data):
                 cursor.close()
             conn.close()
 
-def find_additional_databases():
-    """
-    Encontra todos os bancos de dados adicionais configurados no arquivo .env
-    """
-    additional_dbs = []
-    
-    # Procurar por DB_NAME_2, DB_NAME_3, etc. no arquivo .env
-    i = 2
-    while True:
-        db_name_key = f"DB_NAME_{i}"
-        db_name = os.getenv(db_name_key)
-        
-        if db_name:
-            additional_dbs.append(db_name)
-            i += 1
-        else:
-            break
-    
-    return additional_dbs
-
-def save_to_additional_database(trade_data, db_name, tp_prices):
-    """
-    Salva os dados de trade em um banco de dados adicional
-    """
-    conn = None
-    cursor = None
-    
-    try:
-        # Conectar ao banco de dados adicional
-        conn = mysql.connector.connect(
-            host=DB_HOST,
-            port=int(DB_PORT),
-            user=DB_USER,
-            password=DB_PASSWORD,
-            database=db_name
-        )
-        cursor = conn.cursor()
-        
-        # Verificar se a tabela webhook_signals existe no banco adicional
-        cursor.execute(f"SHOW TABLES LIKE 'webhook_signals'")
-        if not cursor.fetchone():
-            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Tabela webhook_signals não encontrada no banco {db_name}. Pulando...")
-            return
-        
-        # Verificar as colunas disponíveis na tabela do banco adicional
-        cursor.execute(f"DESCRIBE webhook_signals")
-        columns = {row[0].lower(): row for row in cursor.fetchall()}
-        
-        # Construir a consulta SQL dinamicamente com base nas colunas disponíveis
-        available_columns = []
-        values = []
-        value_placeholders = []
-        
-        # Mapeamento de campos de trade_data para colunas da tabela
-        field_mappings = {
-            'symbol': 'symbol',
-            'side': 'side',
-            'leverage': 'leverage',
-            'capital_pct': 'capital_pct',
-            'entry': 'entry_price',
-            'tp': 'tp_price',
-            'stop_loss': 'sl_price',
-            'chat_id': 'chat_id',
-            'timeframe': 'timeframe',
-            'message_id': 'message_id',
-            'id_mensagem_origem_sinal': 'message_id_orig',
-            'message_source': 'message_source'
-        }
-        
-        # Adicionar colunas básicas
-        for field, column in field_mappings.items():
-            if column.lower() in columns:
-                available_columns.append(column)
-                value_placeholders.append('%s')
-                
-                # Valores especiais
-                if field == 'message_source':
-                    values.append(trade_data.get(field))
-                else:
-                    values.append(trade_data.get(field))
-        
-        # Adicionar status sempre como "PENDING"
-        if 'status' in columns:
-            available_columns.append('status')
-            value_placeholders.append('%s')
-            values.append('PENDING')
-        
-        # Adicionar colunas de TP1 a TP5 se disponíveis
-        for i in range(5):
-            tp_column = f'tp{i+1}_price'
-            if tp_column in columns:
-                available_columns.append(tp_column)
-                value_placeholders.append('%s')
-                values.append(tp_prices[i] if i < len(tp_prices) else None)
-        
-        # Construir e executar a consulta SQL
-        if available_columns:
-            sql = f"""
-                  INSERT INTO webhook_signals
-                  ({', '.join(available_columns)})
-                  VALUES ({', '.join(value_placeholders)})
-                  """
-            
-            cursor.execute(sql, tuple(values))
-            additional_id = cursor.lastrowid
-            conn.commit()
-            
-            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Operation also saved to additional database {db_name} (ID: {additional_id})")
-        
-    except mysql.connector.Error as db_err:
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Error saving to additional database {db_name}: {db_err}")
-    
-    except Exception as e:
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Generic error while saving to additional database {db_name}: {e}")
-    
-    finally:
-        if conn and conn.is_connected():
-            if cursor:
-                cursor.close()
-            conn.close()
-    """
-    Saves trade operation information to the MySQL database and returns the signal ID.
-    """
-    conn = None
-    cursor = None
-    try:
-        conn = mysql.connector.connect(
-            host=DB_HOST,
-            port=int(DB_PORT),
-            user=DB_USER,
-            password=DB_PASSWORD,
-            database=DB_NAME
-        )
-        cursor = conn.cursor()
-
-        # Prepare TP1 to TP5 values
-        tp_prices = [None] # Initialize a list with 5 None values by default
-        
-        all_tps = trade_data.get('all_tps', []) # Get all TPs from trade_data, default to empty list
-        for i in range(min(5, len(all_tps))): # Fill with available values, up to 5
-            tp_prices[i] = all_tps[i]
-            
-        # SQL query including the new columns tp1_price to tp5_price and message_source
-        sql = """
-              INSERT INTO webhook_signals
-              (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price,
-               chat_id, status, timeframe, message_id, message_id_orig,
-               tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, message_source,
-               divap_confirmado, cancelado_checker, error_message)
-              VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-              """
-
-        values = (
-            trade_data["symbol"],
-            trade_data["side"],
-            trade_data["leverage"],
-            trade_data["capital_pct"],
-            trade_data["entry"],
-            trade_data["tp"],  # Selected target for tp_price (main TP)
-            trade_data["stop_loss"],
-            trade_data["chat_id"],
-            trade_data.get("status", "PENDING"),  # Status agora vem do trade_data ou é PENDING por padrão
-            trade_data.get("timeframe", ""),
-            trade_data.get("message_id"),
-            trade_data.get("id_mensagem_origem_sinal"),
-            tp_prices[0],  # tp1_price
-            tp_prices[1],  # tp2_price
-            tp_prices[2],  # tp3_price
-            tp_prices[3],  # tp4_price
-            tp_prices[4],  # tp5_price
-            trade_data.get("message_source"),
-            trade_data.get("divap_confirmado", None),
-            trade_data.get("cancelado_checker", None),
-            trade_data.get("error_message", None)
-        )
-
-        cursor.execute(sql, values)
-        signal_id = cursor.lastrowid # Get the ID of the inserted row
-        conn.commit()
-
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Operation saved to database: {trade_data['symbol']} (ID: {signal_id})")
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] TPs saved: TP1={tp_prices[0]}, TP2={tp_prices[1]}, TP3={tp_prices[2]}, TP4={tp_prices[3]}, TP5={tp_prices[4]}")
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Message source: {trade_data.get('message_source')}")
-        return signal_id
-
-    except mysql.connector.Error as db_err:
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Database error while saving: {db_err}")
-        
-        # Fallback logic for "Unknown column" errors
-        if "Unknown column" in str(db_err):
-            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Attempting fallback due to unknown column(s)...")
-            
-            sql_fallback = None
-            values_fallback = None
-
-            try:
-                # Case 1: 'timeframe' column is missing
-                if "Unknown column 'timeframe'" in str(db_err):
-                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Fallback: 'timeframe' column missing. Saving with TPs.")
-                    sql_fallback = """
-                        INSERT INTO webhook_signals
-                        (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price, 
-                         chat_id, status, message_id, message_id_orig,
-                         tp1_price, tp2_price, tp3_price, tp4_price, tp5_price) 
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """
-                    # tp_prices is already defined from the main try block
-                    values_fallback = (
-                        trade_data["symbol"], trade_data["side"], trade_data["leverage"],
-                        trade_data["capital_pct"], trade_data["entry"], trade_data["tp"],
-                        trade_data["stop_loss"], trade_data["chat_id"], "PENDING",
-                        trade_data.get("message_id"), trade_data.get("id_mensagem_origem_sinal"),
-                        tp_prices[0], tp_prices[1], tp_prices[2], tp_prices[3], tp_prices[4]
-                    )
-                
-                # Case 2: One of 'tpX_price' columns is missing
-                elif any(f"Unknown column 'tp{i}_price'" in str(db_err) for i in range(1, 6)):
-                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Fallback: TP1-TP5 column(s) missing. Saving with timeframe (if available).")
-                    sql_fallback = """
-                        INSERT INTO webhook_signals
-                        (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price, 
-                         chat_id, status, timeframe, message_id, message_id_orig) 
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """
-                    values_fallback = (
-                        trade_data["symbol"], trade_data["side"], trade_data["leverage"],
-                        trade_data["capital_pct"], trade_data["entry"], trade_data["tp"],
-                        trade_data["stop_loss"], trade_data["chat_id"], "PENDING",
-                        trade_data.get("timeframe", ""), trade_data.get("message_id"),
-                        trade_data.get("id_mensagem_origem_sinal")
-                    )
-                
-                # Case 3: Other "Unknown column" error (e.g. 'message_id_orig' or other combinations)
-                # This attempts a more basic insert without timeframe and without individual TPs.
-                else:
-                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Fallback: Other unknown column. Basic insert attempt.")
-                    sql_fallback = """
-                        INSERT INTO webhook_signals
-                        (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price, 
-                         chat_id, status, message_id, message_id_orig) 
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """
-                    values_fallback = (
-                        trade_data["symbol"], trade_data["side"], trade_data["leverage"],
-                        trade_data["capital_pct"], trade_data["entry"], trade_data["tp"],
-                        trade_data["stop_loss"], trade_data["chat_id"], "PENDING",
-                        trade_data.get("message_id"), trade_data.get("id_mensagem_origem_sinal")
-                    )
-
-                if sql_fallback and values_fallback:
-                    if cursor is None and conn: # Recreate cursor if it was not created or closed due to severe error
-                        cursor = conn.cursor()
-                    elif cursor is None and conn is None:
-                        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] DB connection not established, fallback cannot proceed.")
-                        return None
-
-                    cursor.execute(sql_fallback, values_fallback)
-                    signal_id_fallback = cursor.lastrowid
-                    conn.commit()
-                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Operation saved with fallback (ID: {signal_id_fallback})")
-                    return signal_id_fallback
-                else: # Should not happen if "Unknown column" was in db_err string
-                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Fallback logic did not determine a query for error: {db_err}")
-
-            except Exception as e2:
-                print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Error during fallback attempt: {e2}")
-        
-        return None # Return None if the main try failed and fallback was not successful or not applicable
-
-    except Exception as e_generic:
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Generic error while saving to database: {e_generic}")
-        return None
-
-    finally:
-        if conn and conn.is_connected():
-            if cursor:
-                cursor.close()
-            conn.close()
-
-# Função para extrair informações da mensagem do Telegram
-async def extract_trade_info(message_text):
+def extract_trade_info(message_text):
     """
     Extrai informações de trade da mensagem do Telegram usando regex
     """
@@ -849,8 +869,8 @@ async def extract_trade_info(message_text):
 
         # Cálculo do percentual de capital dinâmico baseado em risco
         # Converter taxas para decimal
-        taxa_entrada_decimal = TAXA_ENTRADA_LIMIT / 100  # 0.02% -> 0.0002
-        taxa_saida_decimal = TAXA_SAIDA_MARKET / 100     # 0.05% -> 0.0005
+        taxa_entrada_decimal = TAXA_ENTRADA / 100  # 0.02% -> 0.0002
+        taxa_saida_decimal = TAXA_SAIDA / 100     # 0.05% -> 0.0005
         prejuizo_maximo_decimal = PREJUIZO_MAXIMO_PERCENTUAL_DO_CAPITAL_TOTAL / 100  # 4.90% -> 0.0490
         
         # Aplicar a fórmula: capital_pct = (Prejuízo Máximo / (L * (P + taxas))) * 100
@@ -1014,9 +1034,7 @@ async def handle_new_message(event):
                     is_valid_divap, error_message = True, None
                     print(f"[INFO] Verificação DIVAP desativada. Sinal {trade_info['symbol']} aceito sem verificação.")                
 
-                # NOVO: Verificar se é realmente um padrão DIVAP válido
-                is_valid_divap, error_message = await verify_divap_pattern(trade_info)
-                
+
                 # Se for DIVAP válido, seguir com o fluxo normal de envio
                 if is_valid_divap:
                     selected_tp = None
@@ -1056,6 +1074,7 @@ async def handle_new_message(event):
                     trade_info['chat_id_origem_sinal'] = incoming_chat_id
                     trade_info['chat_id'] = GRUPO_DESTINO_ID 
                     trade_info['message_source'] = message_source  # Adicionar message_source                
+
 
                     # Enviar a mensagem ao grupo destino
                     sent_message_to_dest = await client.send_message(GRUPO_DESTINO_ID, message_text_to_send)
@@ -1461,6 +1480,20 @@ def format_trade_message(trade_info, selected_tp):
         message_text += f"ALVO: {selected_tp}\n\n"
         
     message_text += f"STOP LOSS: {trade_info['stop_loss']}"
+
+    # Adicionar informações de DIVAP se disponíveis
+    if 'divap_info' in trade_info:
+        divap_info = trade_info['divap_info']
+        if isinstance(divap_info, dict):
+            if divap_info.get('bull_div_any'):
+                message_text += "\nDIVERGÊNCIA: ALTISTA"
+            elif divap_info.get('bear_div_any'):
+                message_text += "\nDIVERGÊNCIA: BAIXISTA"
+            else:
+                message_text += "\nDIVERGÊNCIA: NÃO DETECTADA"
+        else:
+            message_text += "\nDIVERGÊNCIA: DADOS INVÁLIDOS"
+
     return message_text
 
 # Após a definição das constantes globais
@@ -1494,17 +1527,141 @@ def initialize_divap_analyzer():
             return False
     return True
 
+# NOVA FUNÇÃO: Atualizar brackets de alavancagem
+def update_leverage_brackets():
+    """
+    Função wrapper para manter compatibilidade com o scheduler
+    """
+    try:
+        success = update_leverage_brackets_database()
+        if success:
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ✅ Atualização de brackets bem-sucedida")
+        else:
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ❌ Falha na atualização de brackets")
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ❌ Erro na atualização de brackets: {e}")
+
+# NOVA FUNÇÃO: Testar credenciais Binance
+def test_binance_credentials():
+    """
+    Testa se as credenciais da Binance estão funcionando
+    """
+    try:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] Testando credenciais Binance...")
+        
+        # Testar com endpoint simples
+        result = make_binance_request('/v1/exchangeInfo')
+        
+        if result and 'symbols' in result:
+            symbol_count = len(result['symbols'])
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] ✅ Credenciais OK - {symbol_count} símbolos disponíveis")
+            return True
+        else:
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] ❌ Falha no teste de credenciais")
+            return False
+            
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] ❌ Erro no teste: {e}")
+        return False
+
+# NOVA FUNÇÃO: Testar conexão com banco
+def test_database_connection():
+    """
+    Testa se a conexão com o banco está funcionando
+    """
+    try:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] Testando conexão com banco...")
+        
+        conn = get_database_connection()
+        if conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM alavancagem")
+            count = cursor.fetchone()[0]
+            cursor.close()
+            conn.close()
+            
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] ✅ Banco OK - {count} registros na tabela alavancagem")
+            return True
+        else:
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] ❌ Falha na conexão com banco")
+            return False
+            
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] ❌ Erro no teste do banco: {e}")
+        return False
+
+# ATUALIZAR função run_scheduler
+def run_scheduler():
+    """
+    Executa o scheduler em uma thread separada
+    """
+    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [SCHEDULER] Iniciando scheduler de brackets...")
+    
+    # Agendar 4 vezes ao dia: 00:00, 06:00, 12:00, 18:00
+    schedule.every().day.at("00:00").do(update_leverage_brackets)
+    schedule.every().day.at("06:00").do(update_leverage_brackets)
+    schedule.every().day.at("12:00").do(update_leverage_brackets)
+    schedule.every().day.at("18:00").do(update_leverage_brackets)
+    
+    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [SCHEDULER] ✅ Jobs agendados: 4x ao dia (00:00, 06:00, 12:00, 18:00)")
+    
+    while not shutdown_event.is_set():
+        try:
+            schedule.run_pending()
+            time.sleep(60)  # Verificar a cada minuto
+        except Exception as e:
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [SCHEDULER] Erro no scheduler: {e}")
+            time.sleep(60)
+
+# ATUALIZAR função initialize_bracket_scheduler
+def initialize_bracket_scheduler():
+    """
+    Inicializa o scheduler em uma thread separada
+    """
+    try:
+        # Testar credenciais e banco antes de começar
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] Executando testes iniciais...")
+        
+        binance_ok = test_binance_credentials()
+        db_ok = test_database_connection()
+        
+        if not binance_ok:
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] ❌ Credenciais Binance inválidas - continuando sem scheduler")
+            return
+            
+        if not db_ok:
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] ❌ Banco inacessível - continuando sem scheduler")
+            return
+        
+        # Atualizar brackets na inicialização
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] Executando atualização inicial de brackets...")
+        update_leverage_brackets()
+        
+        # Iniciar scheduler em thread separada
+        scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+        scheduler_thread.start()
+        
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] ✅ Scheduler de brackets inicializado em thread separada")
+        
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] ❌ Erro ao inicializar scheduler: {e}")
+
+# Função principal para iniciar o cliente
 async def main():
     """
     Função principal para iniciar o cliente
     """
     print("[INFO] Iniciando monitoramento do Telegram...")
 
+    # NOVO: Inicializar scheduler de brackets
+    initialize_bracket_scheduler()
+
     # Inicializar o analisador DIVAP
     initialize_divap_analyzer()
 
     # Iniciar o cliente
     await client.start()
+
     #print("[INFO] Cliente Telethon conectado")
 
     # Configurar tratamento de sinais para Windows e Unix
