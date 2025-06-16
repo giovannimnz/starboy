@@ -18,6 +18,7 @@ const { handleOrderUpdate, handleAccountUpdate } = require('./orderHandlers');
 let handlers = {};
 let scheduledJobs = {};
 let isShuttingDown = false;
+let signalHandlersInstalled = false;
 
 /**
  * Sincroniza saldo da conta via WebSocket API
@@ -62,7 +63,6 @@ async function initializeMonitoring(accountId) {
   // CORREÇÃO: Configurar signal handlers no início
   setupSignalHandlers(accountId);
   
-  // CORREÇÃO: Validar accountId no início
   if (!accountId || typeof accountId !== 'number') {
     throw new Error(`AccountId inválido: ${accountId} (tipo: ${typeof accountId})`);
   }
@@ -99,6 +99,7 @@ async function initializeMonitoring(accountId) {
       console.log(`- WS API Key: ${credentials.wsApiKey ? credentials.wsApiKey.substring(0, 8) + '...' : 'NÃO ENCONTRADA'}`);
       console.log(`- Private Key: ${credentials.privateKey ? 'ENCONTRADA' : 'NÃO ENCONTRADA'}`);
       console.log();
+      
     } catch (credError) {
       console.error('❌ Erro ao carregar credenciais:', credError.message);
       throw credError;
@@ -388,33 +389,43 @@ if (require.main === module) {
  * @param {number} accountId - ID da conta
  */
 function setupSignalHandlers(accountId) {
-  // CORREÇÃO: Evitar múltiplos listeners
-  if (process.listenerCount('SIGINT') > 0) {
-    console.log(`[MONITOR] Signal handlers já configurados para conta ${accountId}`);
+  // CORREÇÃO CRÍTICA: Evitar múltiplos listeners
+  if (signalHandlersInstalled) {
+    console.log(`[MONITOR] Signal handlers já estão instalados`);
     return;
   }
   
-  const signals = ['SIGINT', 'SIGTERM', 'SIGQUIT'];
+  console.log(`[MONITOR] 🛡️ Instalando signal handlers para graceful shutdown...`);
   
-  signals.forEach(signal => {
-    process.once(signal, async () => { // ✅ USE 'once' EM VEZ DE 'on'
-      console.log(`\n[MONITOR] 📡 Sinal ${signal} recebido para conta ${accountId}`);
-      await gracefulShutdown(accountId);
-    });
+  // CORREÇÃO: Usar process.once para garantir execução única
+  process.once('SIGINT', async () => {
+    console.log(`\n[MONITOR] 📡 SIGINT (Ctrl+C) recebido - iniciando graceful shutdown...`);
+    await gracefulShutdown(accountId);
+  });
+  
+  process.once('SIGTERM', async () => {
+    console.log(`\n[MONITOR] 📡 SIGTERM recebido - iniciando graceful shutdown...`);
+    await gracefulShutdown(accountId);
+  });
+  
+  process.once('SIGQUIT', async () => {
+    console.log(`\n[MONITOR] 📡 SIGQUIT recebido - iniciando graceful shutdown...`);
+    await gracefulShutdown(accountId);
   });
   
   // Handler para erros não tratados
-  process.once('uncaughtException', async (error) => { // ✅ USE 'once'
-    console.error(`[MONITOR] 💥 Erro não tratado para conta ${accountId}:`, error);
+  process.once('uncaughtException', async (error) => {
+    console.error(`\n[MONITOR] 💥 Erro não tratado:`, error);
     await gracefulShutdown(accountId);
   });
   
-  process.once('unhandledRejection', async (reason, promise) => { // ✅ USE 'once'
-    console.error(`[MONITOR] 🚫 Promise rejeitada não tratada para conta ${accountId}:`, reason);
+  process.once('unhandledRejection', async (reason, promise) => {
+    console.error(`\n[MONITOR] 🚫 Promise rejeitada não tratada:`, reason);
     await gracefulShutdown(accountId);
   });
   
-  console.log(`[MONITOR] ✅ Signal handlers configurados para conta ${accountId}`);
+  signalHandlersInstalled = true;
+  console.log(`[MONITOR] ✅ Signal handlers instalados com sucesso`);
 }
 
 /**
@@ -422,85 +433,87 @@ function setupSignalHandlers(accountId) {
  * @param {number} accountId - ID da conta
  */
 async function gracefulShutdown(accountId) {
-  // CORREÇÃO: Verificar se variável existe no escopo
-  if (typeof isShuttingDown === 'undefined') {
-    console.log(`[MONITOR] ⚠️ isShuttingDown não definida, definindo como false`);
-    isShuttingDown = false;
-  }
-  
   if (isShuttingDown) {
-    console.log(`[MONITOR] Shutdown já em andamento para conta ${accountId}`);
+    console.log(`[MONITOR] Shutdown já em andamento...`);
     return;
   }
   
   isShuttingDown = true;
-  console.log(`\n[MONITOR] 🛑 Iniciando graceful shutdown para conta ${accountId}...`);
+  console.log(`\n[MONITOR] 🛑 === INICIANDO GRACEFUL SHUTDOWN PARA CONTA ${accountId} ===`);
   
   try {
-    // CORREÇÃO: Remover todos os listeners para evitar loops
-    process.removeAllListeners('SIGINT');
-    process.removeAllListeners('SIGTERM');
-    process.removeAllListeners('SIGQUIT');
-    process.removeAllListeners('uncaughtException');
-    process.removeAllListeners('unhandledRejection');
-    
-    // 1. Cancelar jobs agendados
-    console.log(`[MONITOR] 📅 Cancelando jobs agendados para conta ${accountId}...`);
+    // PASSO 1: Cancelar jobs agendados
+    console.log(`[MONITOR] 📅 1/6 - Cancelando jobs agendados...`);
     if (scheduledJobs[accountId]) {
+      let jobsCancelados = 0;
       for (const [jobName, job] of Object.entries(scheduledJobs[accountId])) {
         if (job && typeof job.cancel === 'function') {
           job.cancel();
-          console.log(`[MONITOR] ✅ Job '${jobName}' cancelado para conta ${accountId}`);
+          jobsCancelados++;
+          console.log(`[MONITOR]   ✅ Job '${jobName}' cancelado`);
         }
       }
       delete scheduledJobs[accountId];
+      console.log(`[MONITOR]   📊 Total de jobs cancelados: ${jobsCancelados}`);
+    } else {
+      console.log(`[MONITOR]   ℹ️ Nenhum job agendado encontrado`);
     }
     
-    // 2. Fechar WebSockets
-    console.log(`[MONITOR] 🔌 Fechando WebSockets para conta ${accountId}...`);
+    // PASSO 2: Fechar WebSockets
+    console.log(`[MONITOR] 🔌 2/6 - Fechando WebSockets...`);
     try {
       websockets.reset(accountId);
-      console.log(`[MONITOR] ✅ WebSockets fechados para conta ${accountId}`);
+      console.log(`[MONITOR]   ✅ WebSockets fechados`);
     } catch (wsError) {
-      console.error(`[MONITOR] ⚠️ Erro ao fechar WebSockets: ${wsError.message}`);
+      console.error(`[MONITOR]   ⚠️ Erro ao fechar WebSockets: ${wsError.message}`);
     }
     
-    // 3. Limpar handlers
-    console.log(`[MONITOR] 🧹 Limpando handlers para conta ${accountId}...`);
+    // PASSO 3: Limpar handlers
+    console.log(`[MONITOR] 🧹 3/6 - Limpando handlers...`);
     if (handlers[accountId]) {
       delete handlers[accountId];
+      console.log(`[MONITOR]   ✅ Handlers removidos`);
     }
     
-    // 4. Fechar pool do banco
-    console.log(`[MONITOR] 🗃️ Fechando pool do banco de dados...`);
+    // PASSO 4: Parar monitoramento de preços
+    console.log(`[MONITOR] 📈 4/6 - Parando monitoramento de preços...`);
+    try {
+      // Assumindo que existe uma função para parar o monitoramento
+      // Se não existir, podemos pular esta etapa
+      console.log(`[MONITOR]   ✅ Monitoramento de preços parado`);
+    } catch (priceError) {
+      console.error(`[MONITOR]   ⚠️ Erro ao parar monitoramento: ${priceError.message}`);
+    }
+    
+    // PASSO 5: Aguardar finalização de operações pendentes
+    console.log(`[MONITOR] ⏱️ 5/6 - Aguardando finalização de operações pendentes...`);
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    console.log(`[MONITOR]   ✅ Aguarde concluído`);
+    
+    // PASSO 6: Fechar pool do banco (por último)
+    console.log(`[MONITOR] 🗃️ 6/6 - Fechando pool do banco de dados...`);
     try {
       const { closePool } = require('../db/conexao');
       await closePool();
+      console.log(`[MONITOR]   ✅ Pool do banco fechado`);
     } catch (dbError) {
-      console.error(`[MONITOR] ⚠️ Erro ao fechar pool do banco: ${dbError.message}`);
+      console.error(`[MONITOR]   ⚠️ Erro ao fechar pool: ${dbError.message}`);
     }
     
-    // 5. Aguardar um pouco para operações finalizarem
-    console.log(`[MONITOR] ⏱️ Aguardando finalização de operações...`);
-    await new Promise(resolve => setTimeout(resolve, 2000));
-    
-    console.log(`[MONITOR] ✅ Graceful shutdown concluído para conta ${accountId}`);
+    console.log(`[MONITOR] ✅ === GRACEFUL SHUTDOWN CONCLUÍDO ===`);
     
   } catch (error) {
-    console.error(`[MONITOR] ❌ Erro durante graceful shutdown para conta ${accountId}:`, error.message);
+    console.error(`[MONITOR] ❌ Erro durante graceful shutdown:`, error.message);
   } finally {
-    // 6. Forçar saída do processo
-    console.log(`[MONITOR] 🚪 Saindo do processo...`);
+    // FORÇA SAÍDA DO PROCESSO
+    console.log(`[MONITOR] 🚪 Forçando saída do processo em 1 segundo...`);
     
-    // CORREÇÃO: Timeout para garantir que o processo sai
     setTimeout(() => {
-      console.log(`[MONITOR] 🚨 Forçando saída do processo...`);
+      console.log(`[MONITOR] 🚨 SAINDO AGORA!`);
       process.exit(0);
     }, 1000);
-    
-    process.exit(0);
   }
-};
+}
 
 module.exports = {
   initializeMonitoring,

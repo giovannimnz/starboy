@@ -8,22 +8,25 @@ let pool = null;
 
 // Configuração do banco de dados
 const dbConfig = {
-  host: process.env.DB_HOST || 'localhost',
+  host: process.env.DB_HOST || 'atius.com.br',
   port: process.env.DB_PORT || 3306,
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
+  user: process.env.DB_USER || 'atius_starboy',
+  password: process.env.DB_PASSWORD || 'Mt@301114',
   database: process.env.DB_NAME || 'starboy',
   connectionLimit: 20,
   queueLimit: 0,
-  // CORREÇÃO: Usar apenas configurações válidas do MySQL2
-  waitForConnections: true,   // ✅ Aguardar conexões disponíveis
-  reconnect: true,           // ✅ Reconectar automaticamente  
-  idleTimeout: 300000,       // ✅ 5 minutos de timeout para conexões inativas
-  enableKeepAlive: true,     // ✅ Manter conexões vivas
-  keepAliveInitialDelay: 0,  // ✅ Delay inicial do keep-alive
-  charset: 'utf8mb4'         // ✅ Charset correto
+  waitForConnections: true,
+  reconnect: true,
+  idleTimeout: 300000,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 0,
+  charset: 'utf8mb4'
 };
 
+/**
+ * Inicializa o pool de conexões MySQL
+ * @returns {Promise<mysql.Pool>} - Pool de conexões
+ */
 /**
  * Inicializa o pool de conexões MySQL
  * @returns {Promise<mysql.Pool>} - Pool de conexões
@@ -38,10 +41,8 @@ async function initPool() {
     console.log('[DB] Inicializando pool de conexões MySQL...');
     console.log(`[DB] Conectando a: ${dbConfig.host}:3306/${dbConfig.database}`);
     
-    // Criar pool de conexões
     pool = mysql.createPool(dbConfig);
     
-    // Testar conexão
     const connection = await pool.getConnection();
     console.log('[DB] ✅ Pool de conexões MySQL inicializado com sucesso');
     connection.release();
@@ -50,11 +51,10 @@ async function initPool() {
   } catch (error) {
     console.error('[DB] ❌ Erro ao inicializar pool de conexões:', error.message);
     
-    // Tentar criar database se não existir
     if (error.code === 'ER_BAD_DB_ERROR') {
       console.log('[DB] Database não existe, tentando criar...');
       await createDatabaseIfNotExists();
-      return await initPool(); // Tentar novamente
+      return await initPool();
     }
     
     throw error;
@@ -90,7 +90,6 @@ async function createDatabaseIfNotExists() {
  */
 async function getDatabaseInstance(accountId = null) {
   try {
-    // Se accountId for fornecido, apenas loggar para debug
     if (accountId && accountId !== 1) {
       console.log(`[DB] Solicitação de conexão para conta ${accountId}`);
     }
@@ -100,13 +99,11 @@ async function getDatabaseInstance(accountId = null) {
       throw new Error('Sistema em processo de shutdown');
     }
     
-    // Garantir que o pool está inicializado
     if (!pool) {
       console.log('[DB] Pool não inicializado, inicializando agora...');
       await initPool();
     }
     
-    // Testar se o pool ainda está ativo
     if (pool && pool.pool && pool.pool.destroyed) {
       console.log('[DB] Pool foi destruído, reinicializando...');
       pool = null;
