@@ -4,8 +4,9 @@ const { initializeDatabase, getDatabaseInstance } = require('./db/conexao');
 const readline = require('readline');
 const { spawn } = require('child_process');
 const { initPool, formatDateForMySQL } = require('./db/conexao');
-const { gracefulShutdown } = require('./posicoes/monitoramento');
 
+// CORREÇÃO: REMOVER esta linha que causa conflito
+// const { gracefulShutdown } = require('./posicoes/monitoramento');
 
 // Mapear contas ativas para seus processos
 const activeInstances = new Map();
@@ -19,9 +20,7 @@ const rl = readline.createInterface({
 // Função auxiliar para fazer perguntas
 function pergunta(texto) {
   return new Promise((resolve) => {
-    rl.question(texto, (resposta) => {
-      resolve(resposta);
-    });
+    rl.question(texto, resolve);
   });
 }
 
@@ -51,7 +50,6 @@ function formatUptime(seconds) {
  */
 async function startInstance(accountId) {
   try {
-    // CORREÇÃO: Validar accountId
     if (!accountId || typeof accountId !== 'number') {
       throw new Error(`AccountId inválido: ${accountId} (tipo: ${typeof accountId})`);
     }
@@ -75,7 +73,7 @@ async function startInstance(accountId) {
     const monitorProcess = spawn('node', [
       'posicoes/monitoramento.js', 
       '--account', 
-      accountId.toString() // CORREÇÃO: Garantir que accountId seja passado
+      accountId.toString()
     ], {
       detached: true,
       stdio: 'inherit'
@@ -86,7 +84,7 @@ async function startInstance(accountId) {
       process: monitorProcess,
       startTime: new Date(),
       accountName: accounts[0].nome,
-      accountId: accountId // CORREÇÃO: Incluir accountId
+      accountId: accountId
     });
     
     // Configurar handlers para o processo
@@ -122,25 +120,22 @@ async function stopInstance(accountId) {
     }
 
     const instance = activeInstances.get(accountId);
+    console.log(`[APP] Parando conta ${accountId} (${instance.accountName})...`);
     
-    console.log(`[APP] Encerrando processo para conta ${accountId} (${instance.accountName})...`);
-    
-    // Enviar sinal SIGTERM para encerramento gracioso
+    // Enviar SIGTERM para encerramento gracioso
     instance.process.kill('SIGTERM');
     
-    // Aguardar um momento para o processo encerrar
-    await new Promise(resolve => setTimeout(resolve, 3000));
-    
-    // Se ainda estiver rodando, forçar encerramento
-    if (!instance.process.killed) {
-      console.log(`[APP] Forçando encerramento do processo da conta ${accountId}...`);
-      instance.process.kill('SIGKILL');
-    }
-    
-    activeInstances.delete(accountId);
-    console.log(`[APP] Sinal enviado para encerrar processo da conta ${accountId}`);
+    // Aguardar um pouco e depois forçar se necessário
+    setTimeout(() => {
+      if (activeInstances.has(accountId)) {
+        console.log(`[APP] Forçando encerramento da conta ${accountId}...`);
+        instance.process.kill('SIGKILL');
+        activeInstances.delete(accountId);
+      }
+    }, 5000);
     
     return true;
+    
   } catch (error) {
     console.error(`[APP] Erro ao parar instância para conta ${accountId}:`, error.message);
     return false;
@@ -160,7 +155,6 @@ async function startAllInstances() {
     
     let successCount = 0;
     for (const account of accounts) {
-      // CORREÇÃO: Passar account.id específico
       const success = await startInstance(account.id);
       if (success) successCount++;
     }
@@ -180,29 +174,19 @@ async function startAllInstances() {
  */
 async function restartInstance(accountId) {
   try {
-    // CORREÇÃO: Validar accountId
-    if (!accountId || typeof accountId !== 'number') {
-      throw new Error(`AccountId inválido: ${accountId} (tipo: ${typeof accountId})`);
-    }
-
     console.log(`[APP] Reiniciando conta ${accountId}...`);
     
-    // Se já estiver em execução, parar primeiro
-    if (activeInstances.has(accountId)) {
-      const stopped = await stopInstance(accountId);
-      if (!stopped) {
-        console.error(`[APP] Não foi possível parar a conta ${accountId} para reinício`);
-        return false;
-      }
-      
-      // Aguardar um momento para o processo encerrar completamente
-      await new Promise(resolve => setTimeout(resolve, 2000));
-    }
+    // Parar primeiro
+    await stopInstance(accountId);
     
-    // CORREÇÃO: Iniciar a instância passando accountId
+    // Aguardar um pouco
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    // Iniciar novamente
     return await startInstance(accountId);
+    
   } catch (error) {
-    console.error(`[APP] Erro ao reiniciar instância para conta ${accountId}:`, error.message);
+    console.error(`[APP] Erro ao reiniciar conta ${accountId}:`, error.message);
     return false;
   }
 }
@@ -215,14 +199,14 @@ function listActiveInstances() {
   const instances = [];
   
   for (const [accountId, instance] of activeInstances.entries()) {
-    const uptime = Math.floor((Date.now() - instance.startTime) / 1000);
+    const uptimeSeconds = Math.floor((Date.now() - instance.startTime.getTime()) / 1000);
     
     instances.push({
-      accountId,
+      accountId: accountId,
       name: instance.accountName,
       startTime: instance.startTime,
-      uptimeSeconds: uptime,
-      uptimeFormatted: formatUptime(uptime)
+      uptime: uptimeSeconds,
+      uptimeFormatted: formatUptime(uptimeSeconds)
     });
   }
   
@@ -267,9 +251,11 @@ async function showMenu() {
       return;
     default:
       console.log('Opção inválida!');
+      break;
   }
   
-  await pergunta('\nPressione ENTER para voltar ao menu...');
+  // Aguardar antes de mostrar o menu novamente
+  await pergunta('\nPressione Enter para continuar...');
   await showMenu();
 }
 
@@ -447,22 +433,15 @@ async function mostrarMonitorLogs() {
 
 // Encerrar todas as instâncias e sair
 async function encerrar() {
-  console.log('\nEncerrando todas as instâncias ativas...');
+  console.log('\nEncerrando todas as instâncias...');
   
-  // Obter IDs de todas as instâncias ativas
-  const instanceIds = [...activeInstances.keys()];
+  const instancias = Array.from(activeInstances.keys());
   
-  if (instanceIds.length === 0) {
-    console.log('Não há instâncias ativas para encerrar.');
-  } else {
-    // Parar cada instância
-    for (const id of instanceIds) {
-      console.log(`Encerrando instância para conta ${id}...`);
-      await stopInstance(id);
-    }
+  for (const accountId of instancias) {
+    await stopInstance(accountId);
   }
   
-  console.log('Encerrando aplicação...');
+  console.log('Saindo...');
   rl.close();
   process.exit(0);
 }
@@ -483,10 +462,7 @@ async function init() {
   try {
     console.log('Inicializando banco de dados...');
     
-    // CORREÇÃO: Garantir que o pool seja inicializado primeiro
-    await initPool(); // ✅ AGORA DENTRO DA FUNÇÃO ASYNC
-    
-    // Depois inicializar tabelas
+    await initPool();
     await initializeDatabase();
     
     // Verificar opções de linha de comando

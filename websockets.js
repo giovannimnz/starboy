@@ -769,7 +769,7 @@ async function authenticateWebSocketApi(ws, accountId) {
       params: params
     };
     
-    console.log(`[WS-API] Enviando session.logon para conta ${accountId}...`);
+    //console.log(`[WS-API] Enviando session.logon para conta ${accountId}...`);
     
     // Enviar requisição de autenticação
     const response = await new Promise((resolve, reject) => {
@@ -1545,7 +1545,7 @@ async function authenticateWebSocketApi(ws, accountId) {
       params: params
     };
     
-    console.log(`[WS-API] Enviando session.logon para conta ${accountId}:`, JSON.stringify(authRequest, null, 2));
+    //console.log(`[WS-API] Enviando session.logon para conta ${accountId}:`, JSON.stringify(authRequest, null, 2));
     
     // Enviar requisição de autenticação
     const response = await new Promise((resolve, reject) => {

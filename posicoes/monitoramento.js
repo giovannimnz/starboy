@@ -60,7 +60,6 @@ async function syncAccountBalance(accountId) {
  * @returns {Promise<Object>} - Jobs agendados
  */
 async function initializeMonitoring(accountId) {
-  // CORREÇÃO: Configurar signal handlers no início
   setupSignalHandlers(accountId);
   
   if (!accountId || typeof accountId !== 'number') {
@@ -105,7 +104,6 @@ async function initializeMonitoring(accountId) {
       throw credError;
     }
     
-    // === ETAPA 4: Verificar estado da conta ===
     console.log(`🔗 ETAPA 4: Verificando estado da conexão da conta ${accountId}...`);
     
     let accountState = websockets.getAccountConnectionState(accountId);
@@ -314,14 +312,14 @@ async function initializeMonitoring(accountId) {
     }
 
     // === ETAPA 15: Agendar jobs específicos da conta ===
-    console.log(`⏰ ETAPA 15: Agendando jobs para conta ${accountId}...`);
+    console.log(`⏰ ETAPA FINAL: Agendando jobs para conta ${accountId}...`);
     
     const accountJobs = {};
     
     // Job principal: verificar sinais pendentes a cada 15 segundos
     console.log(`[MONITOR] Agendando verificação de sinais a cada 15 segundos para conta ${accountId}`);
     accountJobs.checkNewTrades = schedule.scheduleJob('*/15 * * * * *', async () => {
-      if (isShuttingDown) return; // NOVO: Verificar se está encerrando
+      if (isShuttingDown) return;
       try {
         await checkNewTrades(accountId);
       } catch (error) {
@@ -332,7 +330,7 @@ async function initializeMonitoring(accountId) {
     // Job de sincronização de saldo a cada 5 minutos
     console.log(`[MONITOR] Agendando sincronização de saldo a cada 5 minutos para conta ${accountId}`);
     accountJobs.syncBalance = schedule.scheduleJob('*/5 * * * *', async () => {
-      if (isShuttingDown) return; // NOVO: Verificar se está encerrando
+      if (isShuttingDown) return;
       try {
         await syncAccountBalance(accountId);
       } catch (error) {
@@ -340,8 +338,8 @@ async function initializeMonitoring(accountId) {
       }
     });
 
-    console.log(`[MONITOR] Sistema de monitoramento inicializado com sucesso para conta ${accountId}!`);
-    console.log(`[MONITOR] Jobs agendados: ${Object.keys(accountJobs).length}`);
+    console.log(`[MONITOR] ✅ Sistema de monitoramento inicializado com sucesso para conta ${accountId}!`);
+    console.log(`[MONITOR] 📊 Jobs agendados: ${Object.keys(accountJobs).length}`);
     console.log(`[MONITOR] 💡 Use Ctrl+C para encerrar graciosamente`);
     
     scheduledJobs[accountId] = accountJobs;
@@ -349,31 +347,33 @@ async function initializeMonitoring(accountId) {
     return accountJobs;
     
   } catch (error) {
-    console.error(`[MONITOR] Erro CRÍTICO na configuração inicial para conta ${accountId}: ${error.message}`);
+    console.error(`[MONITOR] ❌ Erro CRÍTICO na configuração inicial para conta ${accountId}: ${error.message}`);
     console.error('[MONITOR] Stack trace:', error.stack);
     
-    //await gracefulShutdown(accountId);
-    //throw error;
+    await gracefulShutdown(accountId);
+    throw error;
   }
 }
 
-// Verifica se está sendo executado como script principal
-const accountId = process.argv.includes('--account') 
-  ? parseInt(process.argv[process.argv.indexOf('--account') + 1])
-  : null;
+let accountId = null;
 
-// CORREÇÃO: Validar accountId obrigatório
-if (!accountId || isNaN(accountId) || accountId <= 0) {
-  console.error('[MONITOR] ❌ AccountId é obrigatório e deve ser um número válido');
-  console.error('[MONITOR] 📝 Uso: node posicoes/monitoramento.js --account <ID>');
-  console.error('[MONITOR] 📝 Exemplo: node posicoes/monitoramento.js --account 2');
-  process.exit(1);
-}
-
-console.log(`[MONITOR] Iniciando sistema de monitoramento para conta ID: ${accountId}`);
-
-// Auto-inicialização quando executado diretamente
 if (require.main === module) {
+  // Só executar validação se for o script principal
+  accountId = process.argv.includes('--account') 
+    ? parseInt(process.argv[process.argv.indexOf('--account') + 1])
+    : null;
+
+  // CORREÇÃO: Validar accountId obrigatório APENAS quando executado diretamente
+  if (!accountId || isNaN(accountId) || accountId <= 0) {
+    console.error('[MONITOR] ❌ AccountId é obrigatório e deve ser um número válido');
+    console.error('[MONITOR] 📝 Uso: node posicoes/monitoramento.js --account <ID>');
+    console.error('[MONITOR] 📝 Exemplo: node posicoes/monitoramento.js --account 2');
+    process.exit(1);
+  }
+
+  console.log(`[MONITOR] Iniciando sistema de monitoramento para conta ID: ${accountId}`);
+
+  // Auto-inicialização quando executado diretamente
   (async () => {
     try {
       await initializeMonitoring(accountId);
@@ -389,7 +389,6 @@ if (require.main === module) {
  * @param {number} accountId - ID da conta
  */
 function setupSignalHandlers(accountId) {
-  // CORREÇÃO CRÍTICA: Evitar múltiplos listeners
   if (signalHandlersInstalled) {
     console.log(`[MONITOR] Signal handlers já estão instalados`);
     return;
@@ -397,7 +396,6 @@ function setupSignalHandlers(accountId) {
   
   console.log(`[MONITOR] 🛡️ Instalando signal handlers para graceful shutdown...`);
   
-  // CORREÇÃO: Usar process.once para garantir execução única
   process.once('SIGINT', async () => {
     console.log(`\n[MONITOR] 📡 SIGINT (Ctrl+C) recebido - iniciando graceful shutdown...`);
     await gracefulShutdown(accountId);
@@ -413,7 +411,6 @@ function setupSignalHandlers(accountId) {
     await gracefulShutdown(accountId);
   });
   
-  // Handler para erros não tratados
   process.once('uncaughtException', async (error) => {
     console.error(`\n[MONITOR] 💥 Erro não tratado:`, error);
     await gracefulShutdown(accountId);
@@ -478,8 +475,6 @@ async function gracefulShutdown(accountId) {
     // PASSO 4: Parar monitoramento de preços
     console.log(`[MONITOR] 📈 4/6 - Parando monitoramento de preços...`);
     try {
-      // Assumindo que existe uma função para parar o monitoramento
-      // Se não existir, podemos pular esta etapa
       console.log(`[MONITOR]   ✅ Monitoramento de preços parado`);
     } catch (priceError) {
       console.error(`[MONITOR]   ⚠️ Erro ao parar monitoramento: ${priceError.message}`);
@@ -505,7 +500,6 @@ async function gracefulShutdown(accountId) {
   } catch (error) {
     console.error(`[MONITOR] ❌ Erro durante graceful shutdown:`, error.message);
   } finally {
-    // FORÇA SAÍDA DO PROCESSO
     console.log(`[MONITOR] 🚪 Forçando saída do processo em 1 segundo...`);
     
     setTimeout(() => {
