@@ -65,7 +65,6 @@ async function loadCredentialsFromDatabase(accountId) {
         c.api_secret, 
         c.ws_api_key, 
         c.ws_api_secret,
-        c.private_key,
         cor.futures_rest_api_url,
         cor.futures_ws_market_url,
         cor.futures_ws_api_url,
@@ -87,7 +86,6 @@ async function loadCredentialsFromDatabase(accountId) {
       secretKey: account.api_secret, // CORREÇÃO: Era 'secret_key', agora é 'api_secret'
       wsApiKey: account.ws_api_key,
       wsApiSecret: account.ws_api_secret,
-      privateKey: account.private_key,
       baseUrl: account.futures_rest_api_url || 'https://fapi.binance.com',
       wsUrl: account.futures_ws_market_url || 'wss://fstream.binance.com',
       wsApiUrl: account.futures_ws_api_url || 'wss://ws-fapi.binance.com/ws-fapi/v1',
@@ -560,7 +558,7 @@ async function loadCredentialsFromDatabase(accountId) {
     const db = await getDatabaseInstance();
     
     const [rows] = await db.query(`
-      SELECT api_key, api_secret, ws_api_key, private_key 
+      SELECT api_key, api_secret, ws_api_key, ws_api_secret 
       FROM contas 
       WHERE id = ? AND ativa = 1
     `, [numericAccountId]);
@@ -575,7 +573,7 @@ async function loadCredentialsFromDatabase(accountId) {
       apiKey: account.api_key,
       secretKey: account.api_secret,
       wsApiKey: account.ws_api_key,
-      privateKey: account.private_key
+      wsApiSecret: account.ws_api_secret
     };
     
   } catch (error) {
