@@ -1537,7 +1537,7 @@ async function authenticateWebSocketApi(ws, accountId) {
         }
       });
 
-      console.log(`[WS-API] Enviando requisição de autenticação (ID: ${authRequest.id}):`, JSON.stringify(authRequest, null, 2));
+      //console.log(`[WS-API] Enviando requisição de autenticação (ID: ${authRequest.id}):`, JSON.stringify(authRequest, null, 2));
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(authRequest));
       } else {
