@@ -1069,13 +1069,11 @@ async function closePosition(symbol, side, accountId) {
  * @returns {Promise<number>} - Preço atual
  */
 async function getPrice(symbol, accountId) {
-  try {
-    const credentials = await loadCredentialsFromDatabase({ accountId });
-    const response = await axios.get(`${credentials.apiUrl}/v1/ticker/price?symbol=${symbol}`);
-    return parseFloat(response.data.price);
-  } catch (error) {
-    console.error(`[API] Erro ao obter preço de ${symbol}:`, error.message);
-    throw error;
+  console.log(`[API_GETPRICE_DEBUG] getPrice - symbol: ${symbol}, accountId: ${accountId}, tipo accountId: ${typeof accountId}`); // Log no início da função
+  if (typeof accountId !== 'number' || isNaN(accountId)) {
+    const errorMsg = `AccountId deve ser um número válido: ${String(accountId)} (tipo: ${typeof accountId})`;
+    console.error(`[API] Erro ao obter preço de ${symbol}: ${errorMsg}`);
+    throw new Error(errorMsg);
   }
 }
 

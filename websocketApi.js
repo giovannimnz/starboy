@@ -996,62 +996,78 @@ async function getMultipleOrderStatusViaWebSocket(symbol, orderIds) {
  * @param {number} accountId - ID da conta (obrigatório)
  * @returns {Promise<Object>} Resposta completa da API com informações da conta
  */
-async function getAccountInformationV2(params = {}, accountId) {
-    // Validar accountId explicitamente
-    if (!accountId || typeof accountId !== 'number') {
-        throw new Error(`ID da conta inválido: ${accountId} (tipo: ${typeof accountId})`);
-    }
+async function getAccountInformationV2(accountId) {
+  try {
+    // console.log(`[WS-API] Obtendo informações da conta ${accountId} via WebSocket API V2...`);
+    const response = await sendWebSocketApiRequest(accountId, 'account.status', {}); // Timeout padrão de 10s
 
-    console.log(`[WS-API] Obtendo informações da conta ${accountId} via WebSocket API V2...`);
+    if (response && response.result) {
+      // console.log(`[WS-API] Informações da conta ${accountId} recebidas com sucesso.`);
+      return response.result;
+    } else if (response && response.error) {
+      console.error(`[WS-API] Erro da API ao obter informações da conta ${accountId}: ${response.error.code} - ${response.error.msg}`);
+      return { error: { message: `API Error: ${response.error.code} - ${response.error.msg}`, code: response.error.code } };
+    } else {
+      console.error(`[WS-API] Resposta inesperada ou vazia de account.status para conta ${accountId}:`, response);
+      return { error: { message: 'Resposta inesperada ou vazia de account.status' } };
+    }
+  } catch (error) { // Captura erros de sendWebSocketApiRequest (ex: timeout, falha de conexão)
+    console.error(`[WS-API] Falha na comunicação ao obter saldo da conta ${accountId}: ${error.message || error}`);
+    return { error: { message: `Falha na comunicação: ${error.message || 'Erro interno em sendWebSocketApiRequest'}` } };
+  }
+}
 
-    // Verificar se WebSocket API está conectado e autenticado
-    if (!websockets.isWebSocketApiConnected(accountId) || !websockets.isWebSocketApiAuthenticated(accountId)) {
-        try {
-            console.log(`[WS-API] Conectando e autenticando WebSocket API para conta ${accountId}...`);
-            const connected = await websockets.startWebSocketApi(accountId);
-            
-            if (!connected) {
-                throw new Error(`[WS-API] Falha na conexão/autenticação WebSocket API para conta ${accountId}`);
-            }
-        } catch (connError) {
-            console.error(`[WS-API] Erro ao conectar WebSocket API para conta ${accountId}:`, connError.message);
-            throw new Error(`Falha ao conectar WebSocket API: ${connError.message}`);
-        }
+async function syncAccountBalanceViaWebSocket(accountId) {
+  if (!accountId || typeof accountId !== 'number') {
+    console.error('[WS-API] AccountId inválido para syncAccountBalanceViaWebSocket:', accountId);
+    return { success: false, error: 'AccountId inválido' };
+  }
+  // console.log(`[WS-API] Sincronizando saldo da conta ${accountId} via WebSocket...`);
+
+  try {
+    const accountInfoResult = await getAccountInfoV2(accountId);
+
+    if (accountInfoResult && !accountInfoResult.error && accountInfoResult.balances) {
+      const usdtBalanceData = accountInfoResult.balances.find(b => b.asset === 'USDT');
+      const currentAvailableBalance = parseFloat(usdtBalanceData?.availableBalance || 0);
+      // Você pode querer usar 'balance' em vez de 'availableBalance' dependendo da sua necessidade
+      // const currentTotalBalance = parseFloat(usdtBalanceData?.balance || 0);
+
+
+      const db = await getDatabaseInstance(accountId);
+      const [rows] = await db.query('SELECT saldo_base_calculo FROM contas WHERE id = ?', [accountId]);
+      const previousBaseCalculo = rows.length > 0 ? parseFloat(rows[0].saldo_base_calculo) : 0;
+
+      // Atualizar saldo e saldo_base_calculo. Decida qual valor usar para 'saldo'.
+      // Aqui, estou usando currentAvailableBalance para ambos como exemplo.
+      await db.query('UPDATE contas SET saldo = ?, saldo_base_calculo = ?, ultima_atualizacao = NOW() WHERE id = ?', [
+        currentAvailableBalance,
+        currentAvailableBalance, 
+        accountId
+      ]);
+      
+      console.log(`[WS-API] Saldo da conta ${accountId} sincronizado com sucesso via WebSocket: ${currentAvailableBalance} USDT`);
+      return {
+        success: true,
+        saldo: currentAvailableBalance, 
+        saldo_base_calculo: currentAvailableBalance,
+        previousBaseCalculo: previousBaseCalculo,
+      };
+    } else {
+      const errorMessage = accountInfoResult?.error?.message || 'Falha ao obter informações da conta';
+      const errorCode = accountInfoResult?.error?.code;
+      console.error(`[WS-API] Não foi possível sincronizar saldo para conta ${accountId}: ${errorMessage} (Code: ${errorCode || 'N/A'})`);
+      // Se o erro for 1008, pode ser necessário reautenticar ou reiniciar a conexão WS API.
+      if (errorCode === 1008 || (errorMessage && errorMessage.includes('disconnected'))) { // Exemplo de checagem
+         console.warn(`[WS-API] Conexão WS API para conta ${accountId} pode ter sido fechada (Policy Violation ou desconectada). Tentando garantir conexão na próxima vez.`);
+         // A lógica de ensureWebSocketApiConnection em sendWebSocketApiRequest tentará reconectar.
+      }
+      return { success: false, error: `Não foi possível sincronizar saldo: ${errorMessage}` };
     }
-    
-    try {
-        // CORREÇÃO: Usar método correto da documentação Binance
-        const request = websockets.createSignedRequest('v2/account.status', params, accountId);
-        
-        //console.log(`[WS-API] Consultando informações da conta ${accountId} via WebSocket API V2`);
-        
-        // Enviar requisição e aguardar resposta
-        const response = await websockets.sendWebSocketApiRequest(request, 30000, accountId);
-        
-        // Verificar resposta conforme formato da documentação
-        if (response.status === 200 && response.result) {
-            console.log(`[WS-API] ✅ Informações da conta ${accountId} obtidas com sucesso via WebSocket API V2`);
-            
-            // Log detalhado dos valores importantes
-            if (response.result.totalWalletBalance) {
-                console.log(`[WS-API] Saldo Total: ${response.result.totalWalletBalance}`);
-                console.log(`[WS-API] Disponível: ${response.result.availableBalance || 'N/A'}`);
-            }
-            
-            return response;
-        } else {
-            throw new Error(`Resposta inválida da WebSocket API: ${JSON.stringify(response)}`);
-        }
-    } catch (error) {
-        const errorMessage = error.error?.msg || error.message || 'Erro desconhecido';
-        console.error(`[WS-API] Erro ao obter informações da conta ${accountId} via WebSocket API V2: ${errorMessage}`);
-        
-        if (error.error?.code) {
-            console.error(`[WS-API] Código de erro: ${error.error.code}, Mensagem: ${error.error.msg}`);
-        }
-        
-        throw error;
-    }
+  } catch (error) { 
+    console.error(`[WS-API] Erro GERAL ao sincronizar saldo da conta ${accountId} via WebSocket: ${error.message}`);
+    return { success: false, error: `Erro geral na sincronização: ${error.message || 'Erro desconhecido'}` };
+  }
 }
 
 /**
