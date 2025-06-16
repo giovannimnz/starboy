@@ -452,10 +452,10 @@ function setupSignalHandlers(accountId) {
     await gracefulShutdown(accountId);
   });
   
-  process.once('uncaughtException', async (error) => {
-    console.error(`\n[MONITOR] 💥 Erro não tratado:`, error);
-    await gracefulShutdown(accountId);
-  });
+  //process.once('uncaughtException', async (error) => {
+  //  console.error(`\n[MONITOR] 💥 Erro não tratado:`, error);
+  //  await gracefulShutdown(accountId);
+  //});
   
   process.once('unhandledRejection', async (reason, promise) => {
     console.error(`\n[MONITOR] 🚫 Promise rejeitada não tratada:`, reason);
