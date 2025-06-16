@@ -102,13 +102,13 @@ def make_binance_request(endpoint, params=None):
 
 def update_leverage_brackets_database():
     """
-    Atualiza os brackets de alavancagem no banco de dados
-    Equivalente à função updateLeverageBracketsInDatabase do Node.js
+    Versão mais eficiente - compara e atualiza apenas diferenças
+    Atualiza os brackets de alavancagem no banco de dados de forma otimizada
     """
     try:
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] Iniciando atualização de brackets de alavancagem...")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] Iniciando atualização eficiente de brackets...")
         
-        # 1. Fazer requisição para API Binance
+        # === FASE 1: OBTER DADOS DA BINANCE ===
         brackets_data = make_binance_request('/v1/leverageBracket')
         
         if not brackets_data or not isinstance(brackets_data, list):
@@ -117,57 +117,122 @@ def update_leverage_brackets_database():
         
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ✅ Dados obtidos da Binance: {len(brackets_data)} símbolos")
         
-        # 2. Conectar ao banco de dados
+        # === FASE 2: CONECTAR AO BANCO ===
         conn = get_database_connection()
         if not conn:
             print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ❌ Erro ao conectar ao banco de dados")
             return False
         
-        cursor = conn.cursor()
-        processed_symbols = 0
-        processed_brackets = 0
+        cursor = conn.cursor(dictionary=True)
         
-        # 3. Processar cada símbolo
+        # === FASE 3: OBTER DADOS ATUAIS DO BANCO ===
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] 📊 Carregando dados atuais do banco...")
+        
+        cursor.execute("""
+            SELECT symbol, bracket, initial_leverage, notional_cap, notional_floor, 
+                   maint_margin_ratio, cum 
+            FROM alavancagem 
+            WHERE corretora = 'binance'
+            ORDER BY symbol, bracket
+        """)
+        
+        current_data = cursor.fetchall()
+        current_brackets = {}
+        
+        # Organizar dados atuais por símbolo e bracket
+        for row in current_data:
+            symbol = row['symbol']
+            if symbol not in current_brackets:
+                current_brackets[symbol] = {}
+            current_brackets[symbol][row['bracket']] = row
+        
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] 📊 Dados do banco: {len(current_brackets)} símbolos, {len(current_data)} brackets")
+        
+        # === FASE 4: PROCESSAR DIFERENÇAS ===
+        binance_symbols = set()
+        updates = 0
+        inserts = 0
+        deletes = 0
+        processed_symbols = 0
+        
         for symbol_data in brackets_data:
             symbol = symbol_data.get('symbol')
-            leverage_brackets = symbol_data.get('brackets', [])
-            
-            if not symbol or not isinstance(leverage_brackets, list):
-                print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ⚠️ Brackets inválidos para símbolo {symbol}")
+            if not symbol:
                 continue
+                
+            binance_symbols.add(symbol)
+            binance_brackets = {}
             
-            # 4. Atualizar brackets para este símbolo
-            for bracket in leverage_brackets:
-                try:
-                    bracket_id = bracket.get('bracket')
-                    initial_leverage = bracket.get('initialLeverage')
-                    notional_cap = bracket.get('notionalCap')
-                    notional_floor = bracket.get('notionalFloor')
-                    maint_margin_ratio = bracket.get('maintMarginRatio')
-                    cum = bracket.get('cum', 0)
+            # Criar estrutura dos brackets da Binance
+            for bracket in symbol_data.get('brackets', []):
+                bracket_id = bracket.get('bracket')
+                if bracket_id is not None:
+                    binance_brackets[bracket_id] = bracket
+            
+            # Comparar com dados do banco
+            current_symbol_brackets = current_brackets.get(symbol, {})
+            
+            # INSERIR/ATUALIZAR brackets novos ou modificados
+            for bracket_id, bracket_data in binance_brackets.items():
+                current_bracket = current_symbol_brackets.get(bracket_id)
+                
+                values = (
+                    symbol, 'binance', bracket_id,
+                    bracket_data.get('initialLeverage'),
+                    bracket_data.get('notionalCap'),
+                    bracket_data.get('notionalFloor'),
+                    bracket_data.get('maintMarginRatio'),
+                    bracket_data.get('cum', 0)
+                )
+                
+                if not current_bracket:
+                    # INSERIR novo bracket
+                    try:
+                        cursor.execute("""
+                            INSERT INTO alavancagem 
+                            (symbol, corretora, bracket, initial_leverage, notional_cap, 
+                             notional_floor, maint_margin_ratio, cum, updated_at)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                        """, values)
+                        inserts += 1
+                    except Exception as e:
+                        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ⚠️ Erro ao inserir bracket {bracket_id} para {symbol}: {e}")
+                        continue
+                else:
+                    # Verificar se precisa ATUALIZAR
+                    needs_update = (
+                        current_bracket['initial_leverage'] != bracket_data.get('initialLeverage') or
+                        abs(float(current_bracket['notional_cap']) - float(bracket_data.get('notionalCap', 0))) > 0.01 or
+                        abs(float(current_bracket['notional_floor']) - float(bracket_data.get('notionalFloor', 0))) > 0.01 or
+                        abs(float(current_bracket['maint_margin_ratio']) - float(bracket_data.get('maintMarginRatio', 0))) > 0.000001 or
+                        abs(float(current_bracket['cum']) - float(bracket_data.get('cum', 0))) > 0.01
+                    )
                     
-                    # SQL igual ao Node.js
-                    sql = """
-                        INSERT INTO alavancagem 
-                        (symbol, corretora, bracket, initial_leverage, notional_cap, notional_floor, maint_margin_ratio, cum, updated_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
-                        ON DUPLICATE KEY UPDATE
-                        initial_leverage = VALUES(initial_leverage),
-                        notional_cap = VALUES(notional_cap),
-                        notional_floor = VALUES(notional_floor),
-                        maint_margin_ratio = VALUES(maint_margin_ratio),
-                        cum = VALUES(cum),
-                        updated_at = NOW()
-                    """
-                    
-                    values = (symbol, 'binance', bracket_id, initial_leverage, notional_cap, notional_floor, maint_margin_ratio, cum)
-                    
-                    cursor.execute(sql, values)
-                    processed_brackets += 1
-                    
-                except Exception as bracket_error:
-                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ⚠️ Erro ao processar bracket {bracket_id} para {symbol}: {bracket_error}")
-                    continue
+                    if needs_update:
+                        try:
+                            cursor.execute("""
+                                UPDATE alavancagem 
+                                SET initial_leverage = %s, notional_cap = %s, notional_floor = %s,
+                                    maint_margin_ratio = %s, cum = %s, updated_at = NOW()
+                                WHERE symbol = %s AND corretora = %s AND bracket = %s
+                            """, values[3:] + (symbol, 'binance', bracket_id))
+                            updates += 1
+                        except Exception as e:
+                            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ⚠️ Erro ao atualizar bracket {bracket_id} para {symbol}: {e}")
+                            continue
+            
+            # DELETAR brackets que não existem mais na Binance para este símbolo
+            for bracket_id in current_symbol_brackets.keys():
+                if bracket_id not in binance_brackets:
+                    try:
+                        cursor.execute("""
+                            DELETE FROM alavancagem 
+                            WHERE symbol = %s AND corretora = %s AND bracket = %s
+                        """, (symbol, 'binance', bracket_id))
+                        deletes += 1
+                    except Exception as e:
+                        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ⚠️ Erro ao deletar bracket {bracket_id} para {symbol}: {e}")
+                        continue
             
             processed_symbols += 1
             
@@ -175,19 +240,47 @@ def update_leverage_brackets_database():
             if processed_symbols % 100 == 0:
                 print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] Processados {processed_symbols}/{len(brackets_data)} símbolos...")
         
-        # 5. Confirmar transações e fechar conexão
+        # === FASE 5: DELETAR símbolos que não existem mais na Binance ===
+        current_symbols = set(current_brackets.keys())
+        obsolete_symbols = current_symbols - binance_symbols
+        
+        symbols_deleted = 0
+        for obsolete_symbol in obsolete_symbols:
+            try:
+                cursor.execute("""
+                    DELETE FROM alavancagem 
+                    WHERE symbol = %s AND corretora = %s
+                """, (obsolete_symbol, 'binance'))
+                symbol_deletes = cursor.rowcount
+                deletes += symbol_deletes
+                symbols_deleted += 1
+            except Exception as e:
+                print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ⚠️ Erro ao deletar símbolo obsoleto {obsolete_symbol}: {e}")
+                continue
+        
+        # === FASE 6: CONFIRMAR MUDANÇAS ===
         conn.commit()
         cursor.close()
         conn.close()
         
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ✅ Atualização concluída:")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ✅ Atualização EFICIENTE concluída:")
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS]   - Símbolos processados: {processed_symbols}")
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS]   - Brackets atualizados: {processed_brackets}")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS]   - Inserções: {inserts}")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS]   - Atualizações: {updates}")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS]   - Remoções de brackets: {deletes}")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS]   - Símbolos obsoletos removidos: {symbols_deleted}")
+        
+        # Mostrar estatísticas finais
+        total_changes = inserts + updates + deletes + symbols_deleted
+        if total_changes == 0:
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] 🎯 Nenhuma mudança detectada - dados já estão atualizados!")
+        else:
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] 🎯 Total de mudanças aplicadas: {total_changes}")
         
         return True
         
     except Exception as e:
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ❌ Erro crítico na atualização: {e}")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ❌ Erro crítico na atualização eficiente: {e}")
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] Stack trace: {traceback.format_exc()}")
         return False
 
