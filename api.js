@@ -21,112 +21,47 @@ const CACHE_TTL = 60 * 60 * 1000;
 let lastCacheTime = 0;
 
 /**
- * Carrega credenciais do banco de dados para uma conta específica
- * @param {Object} options - Opções de carregamento
- * @returns {Promise<Object>} - Objeto com as credenciais
+ * Carrega credenciais da conta a partir do banco de dados
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Credenciais da conta
  */
-async function loadCredentialsFromDatabase(options = {}) {
+async function loadCredentialsFromDatabase(accountId) {
+  // CORREÇÃO CRÍTICA: Validação mais robusta
+  if (!accountId) {
+    throw new Error(`AccountId é obrigatório: ${accountId} (tipo: ${typeof accountId})`);
+  }
+  
+  const numericAccountId = typeof accountId === 'string' ? parseInt(accountId) : accountId;
+  
+  if (isNaN(numericAccountId) || numericAccountId <= 0) {
+    throw new Error(`AccountId deve ser um número válido: ${accountId} (convertido: ${numericAccountId})`);
+  }
+  
   try {
-    const { accountId, forceRefresh = false } = options;
-    
-    // Validar accountId
-    if (!accountId || typeof accountId !== 'number') {
-      throw new Error(`ID da conta inválido: ${accountId} (tipo: ${typeof accountId})`);
-    }
-    
-    //console.log(`[API] Carregando credenciais para conta ID: ${accountId}`);
-    
-    // Usar cache se disponível e não forçar atualização
-    if (!forceRefresh && accountCredentials.has(accountId) && 
-        (Date.now() - lastCacheTime < CACHE_TTL)) {
-      const cached = accountCredentials.get(accountId);
-      //console.log(`[API] Usando credenciais em cache para conta ${accountId}`);
-      console.log(`[API] Cache - API Key: ${cached.apiKey ? cached.apiKey.substring(0, 8) + '...' : 'FALTANDO'}`);
-      console.log(`[API] Cache - Secret Key: ${cached.secretKey ? 'Configurada' : 'FALTANDO'}`);
-      return cached;
-    }
-    
+    const { getDatabaseInstance } = require('./db/conexao');
     const db = await getDatabaseInstance();
     
-    // CORREÇÃO: Query simplificada para verificar colunas existentes
     const [rows] = await db.query(`
-      SELECT 
-        id,
-        nome,
-        api_key, 
-        api_secret,
-        api_url,
-        ativa
+      SELECT api_key, secret_key, ws_api_key, private_key_pem 
       FROM contas 
       WHERE id = ? AND ativa = 1
-    `, [accountId]);
+    `, [numericAccountId]);
     
     if (!rows || rows.length === 0) {
-      throw new Error(`Conta ID ${accountId} não encontrada ou não está ativa`);
+      throw new Error(`Conta ${numericAccountId} não encontrada ou não está ativa`);
     }
     
     const account = rows[0];
     
-    // CORREÇÃO: Debug detalhado dos dados do banco
-    console.log(`[API] Dados do banco para conta ${accountId}:`);
-    console.log(`- ID: ${account.id}`);
-    console.log(`- Nome: ${account.nome}`);
-    console.log(`- API Key: ${account.api_key ? account.api_key.substring(0, 8) + '...' : 'NULL'}`);
-    console.log(`- API Secret: ${account.api_secret ? 'EXISTE (' + account.api_secret.length + ' chars)' : 'NULL'}`);
-    console.log(`- API URL: ${account.api_url || 'NULL'}`);
-    
-    // CORREÇÃO: Validação rigorosa antes de criar credentials
-    if (!account.api_key) {
-      throw new Error(`API Key não encontrada para conta ${accountId}`);
-    }
-    
-    if (!account.api_secret) {
-      throw new Error(`API Secret não encontrada para conta ${accountId}`);
-    }
-    
-    // Determinar ambiente baseado na URL
-    let environment = 'prd';
-    let baseUrl = 'https://fapi.binance.com';
-    
-    if (account.api_url) {
-      if (account.api_url.includes('testnet')) {
-        environment = 'test';
-        baseUrl = 'https://testnet.binancefuture.com';
-      } else {
-        baseUrl = account.api_url;
-      }
-    }
-    
-    const credentials = {
-      accountId: account.id,
-      accountName: account.nome,
+    return {
       apiKey: account.api_key,
-      secretKey: account.api_secret, // CORREÇÃO: Garantir que não seja undefined
-      baseUrl: baseUrl,
-      environment: environment,
-      broker: 'binance'
+      secretKey: account.secret_key,
+      wsApiKey: account.ws_api_key,
+      privateKey: account.private_key_pem
     };
-
-    // CORREÇÃO: Validação final antes de retornar
-    if (!credentials.apiKey || !credentials.secretKey) {
-      console.error(`[API] ERRO: Credenciais inválidas após criação:`);
-      console.error(`- API Key: ${credentials.apiKey ? 'OK' : 'UNDEFINED'}`);
-      console.error(`- Secret Key: ${credentials.secretKey ? 'OK' : 'UNDEFINED'}`);
-      throw new Error(`Falha na validação das credenciais para conta ${accountId}`);
-    }
-
-    // Cache das credenciais
-    accountCredentials.set(accountId, credentials);
-    lastCacheTime = Date.now();
     
-    console.log(`[API] ✅ Credenciais carregadas para conta ${accountId} (${account.nome}) - ${environment}`);
-    console.log(`[API] Final - API Key: ${credentials.apiKey.substring(0, 8)}...`);
-    console.log(`[API] Final - Secret Key: Configurada (${credentials.secretKey.length} chars)`);
-    
-    return credentials;
-
   } catch (error) {
-    console.error(`[API] Erro ao carregar credenciais para conta ${accountId}:`, error.message);
+    console.error(`[API] Erro ao carregar credenciais da conta ${numericAccountId}:`, error.message);
     throw error;
   }
 }
@@ -304,18 +239,26 @@ async function getMaxLeverage(symbol, accountId) {
 }
 
 /**
- * Obtém alavancagem atual para um símbolo
+ * Obtém alavancagem atual de um símbolo
  * @param {string} symbol - Símbolo do par
  * @param {number} accountId - ID da conta
  * @returns {Promise<number>} - Alavancagem atual
  */
 async function getCurrentLeverage(symbol, accountId) {
   try {
-    const response = await makeAuthenticatedRequest('/v2/positionRisk', { symbol }, 'GET', accountId);
-    return parseInt(response[0]?.leverage || 20);
+    // CORREÇÃO: Validar accountId
+    if (!accountId) {
+      throw new Error(`AccountId é obrigatório para getCurrentLeverage: ${accountId} (tipo: ${typeof accountId})`);
+    }
+    
+    const response = await makeAuthenticatedRequest('/v2/positionRisk', {}, 'GET', accountId);
+    const position = response.find(p => p.symbol === symbol);
+    
+    return position ? parseInt(position.leverage) : null;
+    
   } catch (error) {
     console.error(`[API] Erro ao obter alavancagem atual para ${symbol}:`, error.message);
-    return 20; // Default
+    throw error;
   }
 }
 
@@ -336,7 +279,7 @@ async function getCurrentMarginType(symbol, accountId) {
 }
 
 /**
- * Altera alavancagem inicial
+ * Altera alavancagem de um símbolo
  * @param {string} symbol - Símbolo do par
  * @param {number} leverage - Nova alavancagem
  * @param {number} accountId - ID da conta
@@ -344,9 +287,21 @@ async function getCurrentMarginType(symbol, accountId) {
  */
 async function changeInitialLeverage(symbol, leverage, accountId) {
   try {
-    const response = await makeAuthenticatedRequest('/v1/leverage', { symbol, leverage }, 'POST', accountId);
-    console.log(`[API] Alavancagem alterada para ${leverage}x em ${symbol} (conta ${accountId})`);
+    // CORREÇÃO: Validar accountId
+    if (!accountId) {
+      throw new Error(`AccountId é obrigatório para changeLeverage: ${accountId} (tipo: ${typeof accountId})`);
+    }
+    
+    const params = {
+      symbol: symbol,
+      leverage: leverage
+    };
+    
+    const response = await makeAuthenticatedRequest('/v1/leverage', params, 'POST', accountId);
+    console.log(`[API] ✅ Alavancagem alterada para ${symbol}: ${leverage}x`);
+    
     return response;
+    
   } catch (error) {
     console.error(`[API] Erro ao alterar alavancagem para ${symbol}:`, error.message);
     throw error;
@@ -554,29 +509,47 @@ async function newTakeProfitOrder(accountId, symbol, side, quantity, stopPrice) 
 }
 
 /**
- * Obtém tick size para um símbolo
- * @param {string} symbol - Símbolo do par
+ * Carrega credenciais da conta a partir do banco de dados
  * @param {number} accountId - ID da conta
- * @returns {Promise<Object>} - Informações do tick size
+ * @returns {Promise<Object>} - Credenciais da conta
  */
-async function getTickSize(symbol, accountId) {
+async function loadCredentialsFromDatabase(accountId) {
+  // CORREÇÃO CRÍTICA: Validação mais robusta
+  if (!accountId) {
+    throw new Error(`AccountId é obrigatório: ${accountId} (tipo: ${typeof accountId})`);
+  }
+  
+  const numericAccountId = typeof accountId === 'string' ? parseInt(accountId) : accountId;
+  
+  if (isNaN(numericAccountId) || numericAccountId <= 0) {
+    throw new Error(`AccountId deve ser um número válido: ${accountId} (convertido: ${numericAccountId})`);
+  }
+  
   try {
-    const credentials = await loadCredentialsFromDatabase({ accountId });
-    const response = await axios.get(`${credentials.apiUrl}/v1/exchangeInfo`);
+    const { getDatabaseInstance } = require('./db/conexao');
+    const db = await getDatabaseInstance();
     
-    const symbolInfo = response.data.symbols.find(s => s.symbol === symbol);
-    if (!symbolInfo) {
-      throw new Error(`Símbolo ${symbol} não encontrado`);
+    const [rows] = await db.query(`
+      SELECT api_key, secret_key, ws_api_key, private_key_pem 
+      FROM contas 
+      WHERE id = ? AND ativa = 1
+    `, [numericAccountId]);
+    
+    if (!rows || rows.length === 0) {
+      throw new Error(`Conta ${numericAccountId} não encontrada ou não está ativa`);
     }
     
-    const priceFilter = symbolInfo.filters.find(f => f.filterType === 'PRICE_FILTER');
+    const account = rows[0];
+    
     return {
-      tickSize: priceFilter.tickSize,
-      minPrice: priceFilter.minPrice,
-      maxPrice: priceFilter.maxPrice
+      apiKey: account.api_key,
+      secretKey: account.secret_key,
+      wsApiKey: account.ws_api_key,
+      privateKey: account.private_key_pem
     };
+    
   } catch (error) {
-    console.error(`[API] Erro ao obter tick size para ${symbol}:`, error.message);
+    console.error(`[API] Erro ao carregar credenciais da conta ${numericAccountId}:`, error.message);
     throw error;
   }
 }

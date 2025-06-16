@@ -6,31 +6,96 @@ const { sendTelegramMessage, formatEntryMessage, formatErrorMessage } = require(
 const processingSignals = new Set();
 
 /**
- * Verifica se um sinal deve ser acionado baseado no preço atual
+ * Processa um sinal de entrada
+ * @param {Object} db - Conexão com banco
  * @param {Object} signal - Dados do sinal
  * @param {number} currentPrice - Preço atual
- * @param {Object} db - Conexão com banco
  * @param {number} accountId - ID da conta
  */
-async function processSignalTrigger(signal, currentPrice, db, accountId) {
-  const entryPrice = parseFloat(signal.entry_price);
-  const side = signal.side.toUpperCase();
+async function processSignal(db, signal, currentPrice, accountId) {
+  let connection;
   
-  let shouldTrigger = false;
-  
-  // Verificar condições de acionamento baseado no lado
-  if (side === 'BUY' || side === 'COMPRA') {
-    // Para compra, acionar quando preço atual <= preço de entrada
-    shouldTrigger = currentPrice <= entryPrice;
-  } else if (side === 'SELL' || side === 'VENDA') {
-    // Para venda, acionar quando preço atual >= preço de entrada
-    shouldTrigger = currentPrice >= entryPrice;
-  }
-  
-  console.log(`[PRICE_CHECK] Sinal ID ${signal.id}: ${signal.symbol} ${side} @ ${entryPrice} - Atual: ${currentPrice} - Acionar: ${shouldTrigger ? 'SIM' : 'NÃO'}`);
-  
-  if (shouldTrigger) {
-    await processSignal(db, signal, currentPrice, accountId);
+  try {
+    // CORREÇÃO CRÍTICA: Validar accountId no início
+    if (!accountId || typeof accountId !== 'number') {
+      throw new Error(`AccountId inválido em processSignal: ${accountId} (tipo: ${typeof accountId})`);
+    }
+    
+    console.log(`[SIGNAL] Processando sinal ID ${signal.id} para ${signal.symbol}: ${signal.side} a ${signal.entry_price}`);
+    
+    connection = await db.getConnection();
+    await connection.beginTransaction();
+    
+    const { id, symbol, side, leverage, entry_price, sl_price, tp_price, capital_pct } = signal;
+    
+    // Verificar se o símbolo tem alavancagem configurada
+    try {
+      console.log(`[SIGNAL] Verificando alavancagem atual para ${symbol} na conta ${accountId}...`);
+      
+      // CORREÇÃO: Garantir que accountId é passado
+      const currentLeverage = await getCurrentLeverage(symbol, accountId);
+      
+      if (!currentLeverage || currentLeverage !== leverage) {
+        console.log(`[SIGNAL] Alterando alavancagem de ${symbol} para ${leverage}x na conta ${accountId}`);
+        
+        // CORREÇÃO: Garantir que accountId é passado
+        await changeLeverage(symbol, leverage, accountId);
+        
+        console.log(`[SIGNAL] ✅ Alavancagem alterada com sucesso para ${symbol}: ${leverage}x`);
+      }
+      
+      // CORREÇÃO: Garantir que accountId é passado
+      await changeMarginType(symbol, 'ISOLATED', accountId);
+      
+    } catch (configError) {
+      console.warn(`[SIGNAL] Aviso ao configurar alavancagem/margem para ${symbol}:`, configError.message);
+    }
+
+    // CORREÇÃO: Garantir que accountId é passado para websockets
+    const websockets = require('../websockets');
+    
+    try {
+      console.log(`[SIGNAL] Iniciando websocket de preço para ${symbol} na conta ${accountId}...`);
+      websockets.ensurePriceWebsocketExists(symbol, accountId);
+    } catch (wsError) {
+      console.warn(`[SIGNAL] Aviso ao iniciar websocket para ${symbol}:`, wsError.message);
+    }
+
+    // Atualizar status no banco
+    await connection.query(
+      `UPDATE webhook_signals SET status = 'EXECUTANDO' WHERE id = ?`,
+      [id]
+    );
+    
+    await connection.commit();
+    
+    console.log(`[SIGNAL] Chamando executeLimitMakerEntry para sinal ID ${id}`);
+    
+    // CORREÇÃO CRÍTICA: Garantir que accountId é passado
+    const { executeLimitMakerEntry } = require('./limitMakerEntry');
+    const result = await executeLimitMakerEntry(db, signal, currentPrice, accountId);
+    
+    return result;
+    
+  } catch (error) {
+    console.error(`[SIGNAL] Erro na execução do sinal ${signal.id}:`, error.message);
+    
+    if (connection) {
+      try {
+        await connection.rollback();
+        console.log(`[SIGNAL] Rollback executado para sinal ${signal.id}`);
+      } catch (rollbackError) {
+        console.error(`[SIGNAL] Erro no rollback para sinal ${signal.id}:`, rollbackError.message);
+      }
+    }
+    
+    // CORREÇÃO: Não re-lançar erro para evitar shutdown desnecessário
+    return { success: false, error: error.message };
+    
+  } finally {
+    if (connection) {
+      connection.release();
+    }
   }
 }
 
@@ -168,39 +233,127 @@ async function processSignal(db, signal, currentPrice, accountId) {
 }
 
 /**
- * Verifica e processa novos sinais/trades
+ * Verifica e processa sinais pendentes
  * @param {number} accountId - ID da conta
+ * @returns {Promise<void>}
  */
 async function checkNewTrades(accountId) {
   try {
+    // CORREÇÃO CRÍTICA: Validar accountId
+    if (!accountId || typeof accountId !== 'number') {
+      throw new Error(`AccountId inválido em checkNewTrades: ${accountId} (tipo: ${typeof accountId})`);
+    }
+    
+    const { getDatabaseInstance } = require('../db/conexao');
     const db = await getDatabaseInstance(accountId);
+    
     if (!db) {
-      console.error(`[CHECK_TRADES] Não foi possível conectar ao banco para conta ${accountId}`);
+      console.error(`[CHECK_TRADES] Erro ao conectar ao banco para conta ${accountId}`);
       return;
     }
 
-    const [pendingSignals] = await db.query(`
-      SELECT * FROM webhook_signals 
-      WHERE status IN ('PENDING', 'AGUARDANDO_ACIONAMENTO') 
-      AND (conta_id = ? OR conta_id IS NULL)
+    // Buscar sinais pendentes para esta conta específica
+    const [signals] = await db.query(`
+      SELECT 
+        id, symbol, side, leverage, entry_price, sl_price, tp_price,
+        capital_pct, timeframe, created_at, timeout_at, max_lifetime_minutes,
+        conta_id
+      FROM webhook_signals 
+      WHERE status = 'PENDING' 
+        AND conta_id = ?
       ORDER BY created_at ASC
+      LIMIT 10
     `, [accountId]);
 
-    if (pendingSignals.length > 0) {
-      console.log(`[CHECK_TRADES] Processando ${pendingSignals.length} sinais pendentes para conta ${accountId}...`);
-      
-      for (const signal of pendingSignals) {
+    if (!signals || signals.length === 0) {
+      //console.log(`[CHECK_TRADES] Nenhum sinal pendente encontrado para conta ${accountId}`);
+      return;
+    }
+
+    console.log(`[CHECK_TRADES] Processando ${signals.length} sinais pendentes para conta ${accountId}...`);
+
+    for (const signal of signals) {
+      try {
+        // CORREÇÃO: Verificar se o sinal pertence à conta correta
+        if (signal.conta_id !== accountId) {
+          console.warn(`[CHECK_TRADES] Sinal ${signal.id} pertence à conta ${signal.conta_id}, pulando...`);
+          continue;
+        }
+        
+        // Verificar timeout do sinal
+        if (signal.timeout_at && new Date() > new Date(signal.timeout_at)) {
+          console.log(`[CHECK_TRADES] Sinal ${signal.id} expirado, marcando como ERROR`);
+          
+          await db.query(`
+            UPDATE webhook_signals 
+            SET status = 'ERROR', error_message = 'Sinal expirado' 
+            WHERE id = ?
+          `, [signal.id]);
+          
+          continue;
+        }
+
+        // Obter preço atual via WebSocket ou API
+        const websockets = require('../websockets');
+        let currentPrice;
+        
         try {
-          await processSignal(db, signal, accountId);
-        } catch (signalError) {
-          console.error(`[CHECK_TRADES] Erro ao processar sinal ${signal.id}:`, signalError.message);
+          // CORREÇÃO: Passar accountId para obter preço
+          currentPrice = websockets.getLatestPrice(signal.symbol, accountId);
+          
+          if (!currentPrice) {
+            console.log(`[CHECK_TRADES] Preço não disponível via WebSocket para ${signal.symbol}, usando API...`);
+            
+            const { getTickerPrice } = require('../api');
+            const ticker = await getTickerPrice(signal.symbol, accountId);
+            currentPrice = parseFloat(ticker.price);
+          }
+        } catch (priceError) {
+          console.warn(`[CHECK_TRADES] Erro ao obter preço para ${signal.symbol}:`, priceError.message);
+          continue;
+        }
+
+        if (!currentPrice || currentPrice <= 0) {
+          console.warn(`[CHECK_TRADES] Preço inválido para ${signal.symbol}: ${currentPrice}`);
+          continue;
+        }
+
+        // CORREÇÃO CRÍTICA: Passar accountId explicitamente
+        const result = await processSignal(db, signal, currentPrice, accountId);
+        
+        if (result && !result.success) {
+          console.warn(`[CHECK_TRADES] Falha ao processar sinal ${signal.id}: ${result.error}`);
+          
+          // Marcar como erro no banco
+          await db.query(`
+            UPDATE webhook_signals 
+            SET status = 'ERROR', error_message = ? 
+            WHERE id = ?
+          `, [result.error, signal.id]);
+        }
+
+      } catch (signalError) {
+        console.error(`[CHECK_TRADES] Erro ao processar sinal ${signal.id}:`, signalError.message);
+        
+        // Marcar como erro no banco
+        try {
+          await db.query(`
+            UPDATE webhook_signals 
+            SET status = 'ERROR', error_message = ? 
+            WHERE id = ?
+          `, [signalError.message, signal.id]);
+        } catch (updateError) {
+          console.error(`[CHECK_TRADES] Erro ao atualizar status do sinal ${signal.id}:`, updateError.message);
         }
       }
-    } else {
-      //console.log(`[CHECK_TRADES] Nenhum sinal pendente para conta ${accountId}`);
     }
+
   } catch (error) {
-    console.error(`[CHECK_TRADES] Erro para conta ${accountId}:`, error);
+    console.error(`[CHECK_TRADES] Erro geral ao verificar sinais para conta ${accountId}:`, error.message);
+    console.error('[CHECK_TRADES] Stack trace:', error.stack);
+    
+    // CORREÇÃO: Não relançar erro para evitar shutdown
+    return;
   }
 }
 
