@@ -11,6 +11,7 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 // Tentar importar biblioteca Ed25519 mais robusta
 let ed25519Noble = null;
 let tweetnacl = null;
+let nobleEd25519 = null;
 
 try {
     ed25519Noble = require('@noble/ed25519');
@@ -269,24 +270,69 @@ function createEd25519Signature(payload, accountId) {
     console.log(`[WS-API] Payload: ${payload}`);
 
     let signature;
+    let privateKeyBytes;
 
-    // CORREÇÃO CRÍTICA: Tentar usar @noble/ed25519 via dynamic import
+    // CORREÇÃO CRÍTICA: Tratamento robusto da chave privada
     try {
-      // Usar dynamic import para ES modules
-      const ed25519Module = require('@noble/ed25519');
-      if (ed25519Module && ed25519Module.sign) {
+      // Verificar se a chave está em formato PEM
+      if (accountState.privateKey.includes('BEGIN PRIVATE KEY') || accountState.privateKey.includes('BEGIN ED25519 PRIVATE KEY')) {
+        console.log(`[WS-API] Detectado formato PEM para conta ${accountId}`);
+        
+        // Usar crypto nativo do Node.js para PEM
+        const crypto = require('crypto');
+        const keyObject = crypto.createPrivateKey({
+          key: accountState.privateKey,
+          format: 'pem',
+          type: 'pkcs8'
+        });
+        
+        // Extrair bytes raw da chave (32 bytes para Ed25519)
+        const keyBuffer = keyObject.export({ format: 'der', type: 'pkcs8' });
+        // Os últimos 32 bytes do DER são a chave privada raw
+        privateKeyBytes = keyBuffer.slice(-32);
+        
+        console.log(`[WS-API] Chave PEM convertida para ${privateKeyBytes.length} bytes`);
+        
+      } else {
+        // Tentar como base64
+        console.log(`[WS-API] Tentando decodificar como base64 para conta ${accountId}`);
+        privateKeyBytes = Buffer.from(accountState.privateKey, 'base64');
+        console.log(`[WS-API] Chave base64 decodificada para ${privateKeyBytes.length} bytes`);
+      }
+
+      // CORREÇÃO: Validar tamanho da chave Ed25519 (deve ser 32 bytes)
+      if (privateKeyBytes.length !== 32) {
+        // Se for maior que 32, pode ser formato DER/PEM - extrair os últimos 32 bytes
+        if (privateKeyBytes.length > 32) {
+          console.log(`[WS-API] Chave tem ${privateKeyBytes.length} bytes, extraindo últimos 32 bytes`);
+          privateKeyBytes = privateKeyBytes.slice(-32);
+        } else {
+          throw new Error(`Chave privada Ed25519 deve ter 32 bytes, mas tem ${privateKeyBytes.length} bytes`);
+        }
+      }
+
+      console.log(`[WS-API] Chave privada validada: ${privateKeyBytes.length} bytes para conta ${accountId}`);
+
+    } catch (keyError) {
+      console.error(`[WS-API] Erro ao processar chave privada:`, keyError.message);
+      throw new Error(`Formato de chave privada inválido: ${keyError.message}`);
+    }
+
+    // CORREÇÃO: Tentar usar @noble/ed25519 via dynamic import
+    try {
+      // Tentar importação dinâmica para ES modules
+      const { sign } = require('@noble/ed25519');
+      
+      if (sign && typeof sign === 'function') {
         console.log(`[WS-API] Usando @noble/ed25519 para conta ${accountId}`);
         
-        // Converter chave privada de base64 para bytes
-        const privateKeyBytes = Buffer.from(accountState.privateKey, 'base64');
-        
         // Assinar o payload
-        const signatureBytes = ed25519Module.sign(payload, privateKeyBytes);
+        const signatureBytes = sign(Buffer.from(payload, 'utf8'), privateKeyBytes);
         signature = Buffer.from(signatureBytes).toString('base64');
         
         console.log(`[WS-API] ✅ Assinatura Ed25519 criada com @noble/ed25519 para conta ${accountId}`);
       } else {
-        throw new Error('@noble/ed25519 não disponível');
+        throw new Error('@noble/ed25519 sign function not available');
       }
     } catch (nobleError) {
       console.log(`[WS-API] @noble/ed25519 não disponível: ${nobleError.message}`);
@@ -295,20 +341,89 @@ function createEd25519Signature(payload, accountId) {
       const nacl = require('tweetnacl');
       console.log(`[WS-API] Usando tweetnacl como fallback para conta ${accountId}`);
       
-      // Converter chave privada de base64 para Uint8Array
-      const privateKeyBytes = Buffer.from(accountState.privateKey, 'base64');
-      
-      // CORREÇÃO: Usar nacl.sign.detached para Ed25519
-      const signatureBytes = nacl.sign.detached(Buffer.from(payload, 'utf8'), privateKeyBytes);
-      signature = Buffer.from(signatureBytes).toString('base64');
-      
-      console.log(`[WS-API] ✅ Assinatura Ed25519 criada com tweetnacl para conta ${accountId}`);
+      try {
+        // CORREÇÃO: Usar nacl.sign.detached para Ed25519
+        const payloadBytes = Buffer.from(payload, 'utf8');
+        const signatureBytes = nacl.sign.detached(payloadBytes, privateKeyBytes);
+        signature = Buffer.from(signatureBytes).toString('base64');
+        
+        console.log(`[WS-API] ✅ Assinatura Ed25519 criada com tweetnacl para conta ${accountId}`);
+      } catch (naclError) {
+        console.error(`[WS-API] Erro detalhado do tweetnacl:`, naclError.message);
+        console.error(`[WS-API] Tamanho da chave privada: ${privateKeyBytes.length} bytes`);
+        console.error(`[WS-API] Tamanho do payload: ${payloadBytes.length} bytes`);
+        
+        throw new Error(`Falha na assinatura tweetnacl: ${naclError.message}. Chave: ${privateKeyBytes.length} bytes`);
+      }
     }
 
     return signature;
   } catch (error) {
     console.error(`[WS-API] Erro ao criar assinatura Ed25519 para conta ${accountId}:`, error);
     throw error;
+  }
+}
+
+/**
+ * Extrai a chave privada raw (32 bytes) de diferentes formatos
+ * @param {string} privateKeyString - Chave privada em qualquer formato
+ * @returns {Buffer} - Chave privada raw de 32 bytes
+ */
+function extractEd25519RawKey(privateKeyString) {
+  try {
+    // Formato 1: PEM (mais comum)
+    if (privateKeyString.includes('BEGIN') && privateKeyString.includes('END')) {
+      console.log(`[WS-API] Processando chave no formato PEM`);
+      
+      const crypto = require('crypto');
+      const keyObject = crypto.createPrivateKey({
+        key: privateKeyString,
+        format: 'pem'
+      });
+      
+      // Exportar como DER e extrair os últimos 32 bytes (chave raw)
+      const derBuffer = keyObject.export({ format: 'der', type: 'pkcs8' });
+      return derBuffer.slice(-32);
+    }
+    
+    // Formato 2: Base64 raw (32 bytes)
+    const base64Decoded = Buffer.from(privateKeyString, 'base64');
+    if (base64Decoded.length === 32) {
+      console.log(`[WS-API] Chave já está no formato base64 raw (32 bytes)`);
+      return base64Decoded;
+    }
+    
+    // Formato 3: Base64 DER (extrair últimos 32 bytes)
+    if (base64Decoded.length > 32) {
+      console.log(`[WS-API] Chave base64 DER, extraindo últimos 32 bytes`);
+      return base64Decoded.slice(-32);
+    }
+    
+    // Formato 4: Hex string
+    if (/^[0-9a-fA-F]+$/.test(privateKeyString) && privateKeyString.length === 64) {
+      console.log(`[WS-API] Chave no formato hex`);
+      return Buffer.from(privateKeyString, 'hex');
+    }
+    
+    throw new Error(`Formato de chave não reconhecido. Tamanho: ${privateKeyString.length} caracteres`);
+    
+  } catch (error) {
+    console.error(`[WS-API] Erro ao extrair chave raw:`, error.message);
+    throw error;
+  }
+}
+
+async function loadNobleEd25519() {
+  if (nobleEd25519) return nobleEd25519;
+  
+  try {
+    // CORREÇÃO: Usar dynamic import para ES modules
+    nobleEd25519 = await import('@noble/ed25519');
+    console.log('[WS-API] ✅ @noble/ed25519 carregado via dynamic import');
+    return nobleEd25519;
+  } catch (error) {
+    console.log('[WS-API] ⚠️ @noble/ed25519 não disponível:', error.message);
+    return null;
   }
 }
 
@@ -1641,6 +1756,29 @@ function forceCleanupAccount(accountId) {
   }
 }
 
+/**
+ * Função para debugar formato da chave privada
+ * @param {string} privateKey - Chave privada
+ * @param {number} accountId - ID da conta
+ */
+function debugPrivateKey(privateKey, accountId) {
+  console.log(`[WS-API DEBUG] Analisando chave privada para conta ${accountId}:`);
+  console.log(`- Tamanho: ${privateKey.length} caracteres`);
+  console.log(`- Começa com: ${privateKey.substring(0, 20)}...`);
+  console.log(`- Termina com: ...${privateKey.substring(privateKey.length - 20)}`);
+  console.log(`- Contém BEGIN: ${privateKey.includes('BEGIN')}`);
+  console.log(`- Contém END: ${privateKey.includes('END')}`);
+  console.log(`- É base64 válido: ${/^[A-Za-z0-9+/]+=*$/.test(privateKey)}`);
+  console.log(`- É hex válido: ${/^[0-9a-fA-F]+$/.test(privateKey)}`);
+  
+  try {
+    const decoded = Buffer.from(privateKey, 'base64');
+    console.log(`- Base64 decodificado: ${decoded.length} bytes`);
+  } catch (e) {
+    console.log(`- Erro ao decodificar base64: ${e.message}`);
+  }
+}
+
 // Atualizar função reset para usar o novo cleanup
 function reset(accountId) {
   forceCleanupAccount(accountId);
@@ -1673,4 +1811,6 @@ module.exports = {
   createEd25519DERFromRaw,
   forceCleanupAccount,
   reset,
+  loadNobleEd25519().catch(() => {
+  console.log('[WS-API] ⚠️ Usando tweetnacl como única opção');
 };
