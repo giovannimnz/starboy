@@ -169,13 +169,17 @@ async function checkNewTrades(accountId) {
       return;
     }
 
+    // CORREÇÃO: Modificar a query para buscar ambiente e corretora da tabela 'corretoras'
     const [signals] = await db.query(
       `SELECT s.id, s.symbol, s.side, s.leverage, s.entry_price, s.sl_price, s.tp_price,
               s.capital_pct, s.timeframe, s.created_at, s.timeout_at, s.max_lifetime_minutes,
               s.status, s.error_message, s.conta_id, s.chat_id,
-              c.saldo_base_calculo, c.ambiente as conta_ambiente, c.corretora as conta_corretora
+              c.saldo_base_calculo, 
+              co.ambiente AS conta_ambiente,       -- Selecionado da tabela corretoras (alias co)
+              co.corretora AS conta_corretora_nome -- Selecionado da tabela corretoras (alias co)
        FROM webhook_signals s
        JOIN contas c ON s.conta_id = c.id
+       JOIN corretoras co ON c.corretora_id = co.id -- JOIN com a tabela corretoras
        WHERE s.status = 'PENDING' AND s.conta_id = ?
        ORDER BY s.created_at ASC`,
       [accountId]
