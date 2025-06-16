@@ -443,14 +443,14 @@ async function forceProcessPendingSignals(accountId) {
 }
 
 /**
- * NOVA FUNÇÃO: Processa trigger de sinal (se necessário)
+ * Processa trigger de sinal (chamado pelo monitoramento de preços)
  * @param {Object} signal - Dados do sinal
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Resultado do processamento
  */
 async function processSignalTrigger(signal, accountId) {
   try {
-    // CORREÇÃO: Validar accountId
+    // CORREÇÃO: Validar accountId corretamente
     if (!accountId || typeof accountId !== 'number') {
       throw new Error(`AccountId inválido em processSignalTrigger: ${accountId} (tipo: ${typeof accountId})`);
     }
@@ -462,9 +462,23 @@ async function processSignalTrigger(signal, accountId) {
       throw new Error(`Não foi possível conectar ao banco para conta ${accountId}`);
     }
     
-    // Obter preço atual
-    const { getPrice } = require('../api');
-    const currentPrice = await getPrice(signal.symbol, accountId);
+    // CORREÇÃO: Obter preço atual do cache em vez de API
+    const priceCache = require('./priceMonitoring').getPriceFromCache;
+    let currentPrice;
+    
+    if (priceCache && typeof priceCache === 'function') {
+      currentPrice = priceCache(signal.symbol);
+    }
+    
+    // Fallback para API se não tiver no cache
+    if (!currentPrice) {
+      const { getPrice } = require('../api');
+      currentPrice = await getPrice(signal.symbol, accountId);
+    }
+    
+    if (!currentPrice || currentPrice <= 0) {
+      throw new Error(`Preço inválido para ${signal.symbol}: ${currentPrice}`);
+    }
     
     // Processar sinal
     return await processSignal(db, signal, currentPrice, accountId);

@@ -214,6 +214,7 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
     const now = Date.now();
     if (!lastPriceLogTime[symbol] || (now - lastPriceLogTime[symbol] > PRICE_LOG_INTERVAL)) {
       lastPriceLogTime[symbol] = now;
+      console.log(`[PRICE] ${symbol}: ${currentPrice}`);
     }
 
     // Buscar sinais pendentes para este símbolo
@@ -254,25 +255,32 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
         pendingOrdersCount === 0) {
       
       // Incrementar contador de verificações vazias
-      websocketEmptyCheckCounter[symbol] = (websocketEmptyCheckCounter[symbol] || 0) + 1;
+      if (!websocketEmptyCheckCounter[symbol]) {
+        websocketEmptyCheckCounter[symbol] = 0;
+      }
+      websocketEmptyCheckCounter[symbol]++;
       
-      // Se não há atividade por 5 verificações consecutivas, fechar websocket
-      if (websocketEmptyCheckCounter[symbol] >= 5) {
-        console.log(`[PRICE] Fechando websocket de ${symbol} - sem atividade (conta ${accountId})`);
-        websockets.stopPriceMonitoring(symbol, accountId);
+      // Se não há atividade por muito tempo, remover WebSocket
+      if (websocketEmptyCheckCounter[symbol] >= MAX_EMPTY_CHECKS) {
+        console.log(`[PRICE] ${symbol}: Sem atividade por ${MAX_EMPTY_CHECKS} verificações. Removendo WebSocket.`);
+        const websockets = require('../websockets');
+        websockets.removePriceWebsocket(symbol, accountId);
         delete websocketEmptyCheckCounter[symbol];
-        delete lastPriceLogTime[symbol];
-        latestPrices.delete(symbol);
+        return;
       }
     } else {
       // Reset contador se há atividade
       websocketEmptyCheckCounter[symbol] = 0;
     }
 
+    // CORREÇÃO CRÍTICA: Importar função do signalProcessor
+    const { processSignalTrigger } = require('./signalProcessor');
+
     // Processar sinais pendentes
     for (const signal of pendingSignals) {
       try {
-        await processSignalTrigger(signal, currentPrice, db, accountId);
+        // CORREÇÃO: Chamar com parâmetros corretos (signal, accountId)
+        await processSignalTrigger(signal, accountId);
       } catch (signalError) {
         console.error(`[PRICE] Erro ao processar sinal ${signal.id}:`, signalError);
       }
@@ -280,6 +288,19 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
   } catch (error) {
     console.error(`[PRICE] Erro no processamento de preço para ${symbol}:`, error);
   }
+}
+
+/**
+ * Obtém preço do cache
+ * @param {string} symbol - Símbolo
+ * @returns {number|null} - Preço ou null se não encontrado
+ */
+function getPriceFromCache(symbol) {
+  const cached = priceCache.get(symbol);
+  if (cached && (Date.now() - cached.timestamp) < 30000) { // 30 segundos
+    return cached.price;
+  }
+  return null;
 }
 
 /**
@@ -371,5 +392,6 @@ module.exports = {
   updatePriceCache,
   onPriceUpdate,
   updatePositionPrices,
-  checkAndCloseWebsocket
+  checkAndCloseWebsocket,
+  getPriceFromCache
 };
