@@ -21,8 +21,18 @@ import hmac
 import hashlib
 import json
 from urllib.parse import urlencode
+import warnings
 
-# CONFIGURAÇÃO DO BANCO DE DADOS
+# Remover logs  do Telethon
+logging.basicConfig(level=logging.ERROR)  # Mostrar apenas erros críticos
+logging.getLogger('telethon').setLevel(logging.CRITICAL)  # Silenciar completamente o Telethon
+logging.getLogger('telethon.network').setLevel(logging.CRITICAL)
+logging.getLogger('telethon.client').setLevel(logging.CRITICAL)
+logging.getLogger('asyncio').setLevel(logging.ERROR)  # Reduzir logs do asyncio também
+warnings.filterwarnings("ignore", category=DeprecationWarning)
+warnings.filterwarnings("ignore", message=".*telethon.*")
+
+
 DB_CONFIG = {
     'host': os.getenv('DB_HOST', 'atius.com.br'),
     'port': int(os.getenv('DB_PORT', 3306)),
