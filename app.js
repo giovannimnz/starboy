@@ -69,14 +69,29 @@ async function startInstance(accountId) {
 
     console.log(`[APP] Iniciando monitoramento para conta ${accountId} (${accounts[0].nome})...`);
     
-    // CORREÇÃO: Iniciar em processo separado passando accountId
+    // Iniciar em processo separado passando accountId
     const monitorProcess = spawn('node', [
       'posicoes/monitoramento.js', 
       '--account', 
       accountId.toString()
     ], {
-      detached: true,
-      stdio: 'inherit'
+      detached: false, // CORREÇÃO: Não detached para melhor controle
+      stdio: ['pipe', 'pipe', 'pipe'] // CORREÇÃO: Capturar stdout/stderr
+    });
+    
+    // NOVO: Capturar e processar logs do processo filho
+    monitorProcess.stdout.on('data', (data) => {
+      const output = data.toString().trim();
+      if (output) {
+        console.log(`[CONTA-${accountId}] ${output}`);
+      }
+    });
+    
+    monitorProcess.stderr.on('data', (data) => {
+      const output = data.toString().trim();
+      if (output) {
+        console.error(`[CONTA-${accountId}] ERRO: ${output}`);
+      }
     });
     
     // Registrar o processo
@@ -84,25 +99,63 @@ async function startInstance(accountId) {
       process: monitorProcess,
       startTime: new Date(),
       accountName: accounts[0].nome,
-      accountId: accountId
+      accountId: accountId,
+      restartCount: 0 // NOVO: Contador de reinicializações
     });
     
     // Configurar handlers para o processo
     monitorProcess.on('error', (err) => {
-      console.error(`[APP] Erro ao iniciar processo para conta ${accountId}:`, err.message);
+      console.error(`[APP] ❌ Erro ao iniciar processo para conta ${accountId}:`, err.message);
       activeInstances.delete(accountId);
     });
     
     monitorProcess.on('exit', (code, signal) => {
-      console.log(`[APP] Processo para conta ${accountId} encerrado (Código: ${code}, Sinal: ${signal || 'nenhum'})`);
-      activeInstances.delete(accountId);
+      const instance = activeInstances.get(accountId);
+      
+      if (instance) {
+        console.log(`[APP] 📊 Processo para conta ${accountId} encerrado:`);
+        console.log(`  - Código de saída: ${code}`);
+        console.log(`  - Sinal: ${signal || 'nenhum'}`);
+        console.log(`  - Tempo ativo: ${formatUptime(Math.floor((Date.now() - instance.startTime.getTime()) / 1000))}`);
+        
+        // NOVO: Analisar se deve reiniciar automaticamente
+        const shouldRestart = analyzeRestartNeed(code, signal, instance);
+        
+        if (shouldRestart) {
+          console.log(`[APP] 🔄 Reinicializando conta ${accountId} automaticamente...`);
+          
+          // Incrementar contador
+          instance.restartCount++;
+          
+          // Limitar tentativas de restart
+          if (instance.restartCount > 3) {
+            console.log(`[APP] ⚠️ Muitas tentativas de restart para conta ${accountId} - parando`);
+            activeInstances.delete(accountId);
+            return;
+          }
+          
+          // Aguardar um pouco antes de reiniciar
+          setTimeout(async () => {
+            try {
+              activeInstances.delete(accountId);
+              await startInstance(accountId);
+            } catch (restartError) {
+              console.error(`[APP] ❌ Falha ao reiniciar conta ${accountId}:`, restartError.message);
+            }
+          }, 5000); // 5 segundos de delay
+          
+        } else {
+          console.log(`[APP] ✅ Encerramento normal da conta ${accountId} - não reiniciando`);
+          activeInstances.delete(accountId);
+        }
+      }
     });
     
-    console.log(`[APP] Conta ${accountId} (${accounts[0].nome}) iniciada com sucesso!`);
+    console.log(`[APP] ✅ Conta ${accountId} (${accounts[0].nome}) iniciada com sucesso!`);
     return true;
     
   } catch (error) {
-    console.error(`[APP] Erro ao iniciar instância para conta ${accountId}:`, error.message);
+    console.error(`[APP] ❌ Erro ao iniciar instância para conta ${accountId}:`, error.message);
     return false;
   }
 }
@@ -140,6 +193,40 @@ async function stopInstance(accountId) {
     console.error(`[APP] Erro ao parar instância para conta ${accountId}:`, error.message);
     return false;
   }
+}
+
+/**
+ * NOVA FUNÇÃO: Analisa se o processo deve ser reiniciado
+ * @param {number} code - Código de saída
+ * @param {string} signal - Sinal de encerramento
+ * @param {Object} instance - Instância do processo
+ * @returns {boolean} - true se deve reiniciar
+ */
+function analyzeRestartNeed(code, signal, instance) {
+  // Não reiniciar se foi encerramento gracioso (Ctrl+C, SIGTERM)
+  if (signal === 'SIGTERM' || signal === 'SIGINT' || signal === 'SIGQUIT') {
+    return false;
+  }
+  
+  // Não reiniciar se saiu com código 0 (sucesso)
+  if (code === 0) {
+    return false;
+  }
+  
+  // Não reiniciar se foi muito rápido (menos de 30 segundos)
+  const uptime = Date.now() - instance.startTime.getTime();
+  if (uptime < 30000) {
+    console.log(`[APP] ⚠️ Processo da conta ${instance.accountId} terminou muito rápido (${Math.floor(uptime/1000)}s) - não reiniciando`);
+    return false;
+  }
+  
+  // Não reiniciar se já tentou muitas vezes
+  if (instance.restartCount >= 3) {
+    return false;
+  }
+  
+  // Reiniciar em outros casos (crashes, erros não tratados, etc.)
+  return true;
 }
 
 /**
