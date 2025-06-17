@@ -2,7 +2,7 @@
 console.log('🧪 Testando correção do BookTicker...');
 
 try {
-  const limitMaker = require('./posicoes/limitMakerEntry');
+  const limitMaker = require('../posicoes/limitMakerEntry');
   console.log('✅ limitMakerEntry carregado sem erro');
   
   console.log('\n📋 Próximos passos:');

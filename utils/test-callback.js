@@ -36,7 +36,7 @@ function testCallbackCorrection() {
       }
       
       // Testar import
-      const limitMaker = require('./posicoes/limitMakerEntry');
+      const limitMaker = require('../posicoes/limitMakerEntry');
       console.log('✅ limitMakerEntry importado sem erro');
       
       return !hasProblems;

@@ -522,7 +522,7 @@ async function handlePriceUpdate(symbol, tickerData, accountId) {
  */
 function setupBookDepthWebsocket(symbol, callback, accountId) {
   const accountState = getAccountConnectionState(accountId, true);
-  const wsEndpoint = `${accountState.wsUrl}/${symbol.toLowerCase()}@bookTicker`;
+  const wsEndpoint = `${accountState.wsUrl}/ws/${symbol.toLowerCase()}@bookTicker`;
   
   const ws = new WebSocket(wsEndpoint);
   
@@ -810,7 +810,6 @@ module.exports = {
   handleWebSocketApiMessage,
   createEd25519Signature,
   forceCleanupAccount,
-  loadNobleEd25519
-,
+  loadNobleEd25519,
   getAccountConnectionState
 };
