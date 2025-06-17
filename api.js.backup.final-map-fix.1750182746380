@@ -24,44 +24,23 @@ console.log('[API] Map accountStates criado como singleton global');
  * @param {number} accountId - ID da conta
  * @param {Object} state - Estado da conta
  */
-/**
- * Define um estado de conta no Map ÚNICO
- * @param {number} accountId - ID da conta
- * @param {Object} state - Estado da conta
- */
 function setAccountState(accountId, state) {
-  console.log(`[API] setAccountState(${accountId}) - ANTES: Map tem ${accountStates.size} contas`);
-  
-  // Log das chaves existentes antes
-  const keysBefore = Array.from(accountStates.keys());
-  console.log(`[API] setAccountState(${accountId}) - Chaves antes: [${keysBefore.join(', ')}]`);
-  
+  console.log(`[API] setAccountState(${accountId}) - Definindo estado no Map único`);
   accountStates.set(accountId, state);
-  
-  // Log das chaves existentes depois
-  const keysAfter = Array.from(accountStates.keys());
-  console.log(`[API] setAccountState(${accountId}) - DEPOIS: Map tem ${accountStates.size} contas`);
-  console.log(`[API] setAccountState(${accountId}) - Chaves depois: [${keysAfter.join(', ')}]`);
   
   // Garantir sincronização global
   if (typeof global !== 'undefined') {
     if (!global.accountStates) {
       global.accountStates = accountStates;
-      console.log(`[API] setAccountState(${accountId}) - Global accountStates criado`);
     }
     global.accountStates.set(accountId, state);
-    console.log(`[API] setAccountState(${accountId}) - Estado sincronizado globalmente`);
   }
+  
+  console.log(`[API] setAccountState(${accountId}) - Estado definido. Map tem ${accountStates.size} contas`);
   
   // Verificar imediatamente se foi salvo
   const verificacao = accountStates.get(accountId);
   console.log(`[API] setAccountState(${accountId}) - Verificação imediata: ${verificacao ? 'SUCESSO' : 'FALHOU'}`);
-  
-  if (verificacao) {
-    console.log(`[API] setAccountState(${accountId}) - ✅ Estado salvo com sucesso: apiKey=${verificacao.apiKey ? 'SIM' : 'NÃO'}`);
-  } else {
-    console.error(`[API] setAccountState(${accountId}) - ❌ FALHA CRÍTICA: Estado não foi salvo!`);
-  }
 }
 
 /**
@@ -69,39 +48,27 @@ function setAccountState(accountId, state) {
  * @param {number} accountId - ID da conta
  * @returns {Object|null} - Estado da conta ou null
  */
-/**
- * Obtém um estado de conta do Map ÚNICO
- * @param {number} accountId - ID da conta
- * @returns {Object|null} - Estado da conta ou null
- */
 function getAccountState(accountId) {
-  console.log(`[API] getAccountState(${accountId}) - BUSCANDO no Map (size: ${accountStates.size})`);
+  console.log(`[API] getAccountState(${accountId}) - Buscando no Map único (size: ${accountStates.size})`);
   
   // Listar todas as chaves no Map para debug
   const keys = Array.from(accountStates.keys());
-  console.log(`[API] getAccountState(${accountId}) - Chaves disponíveis: [${keys.join(', ')}]`);
+  console.log(`[API] getAccountState(${accountId}) - Chaves no Map: [${keys.join(', ')}]`);
   
   let state = accountStates.get(accountId);
-  console.log(`[API] getAccountState(${accountId}) - Resultado direto do Map: ${state ? 'ENCONTRADO' : 'NÃO ENCONTRADO'}`);
+  console.log(`[API] getAccountState(${accountId}) - Resultado direto: ${state ? 'ENCONTRADO' : 'NÃO ENCONTRADO'}`);
   
   // Se não encontrou, tentar do global como fallback
   if (!state && typeof global !== 'undefined' && global.accountStates) {
     console.log(`[API] getAccountState(${accountId}) - Tentando global como fallback...`);
     state = global.accountStates.get(accountId);
     if (state) {
-      console.log(`[API] getAccountState(${accountId}) - ✅ Encontrado no global, sincronizando com Map local`);
+      console.log(`[API] getAccountState(${accountId}) - Encontrado no global, sincronizando com Map local`);
       accountStates.set(accountId, state);
-    } else {
-      console.log(`[API] getAccountState(${accountId}) - ❌ Não encontrado nem no global`);
     }
   }
   
-  if (state) {
-    console.log(`[API] getAccountState(${accountId}) - ✅ SUCESSO: Estado encontrado com apiKey=${state.apiKey ? 'SIM' : 'NÃO'}`);
-  } else {
-    console.log(`[API] getAccountState(${accountId}) - ❌ FALHA: Estado não encontrado em lugar nenhum`);
-  }
-  
+  console.log(`[API] getAccountState(${accountId}) - Resultado final: ${state ? 'ENCONTRADO' : 'NÃO ENCONTRADO'}`);
   return state;
 }
 
@@ -138,14 +105,14 @@ function getAccountStatesMap() {
  */
 function setAccountState(accountId, state) {
   console.log(`[API] Definindo estado para conta ${accountId} no Map global`);
-  setAccountState(accountId, state);
+  accountStates.set(accountId, state);
   
   // Garantir que está disponível globalmente também
   if (typeof global !== 'undefined') {
     if (!global.accountStates) {
       global.accountStates = accountStates;
     }
-    global.setAccountState(accountId, state);
+    global.accountStates.set(accountId, state);
   }
   
   console.log(`[API] Estado definido. Map agora tem ${accountStates.size} contas`);
@@ -157,13 +124,13 @@ function setAccountState(accountId, state) {
  * @returns {Object|null} - Estado da conta ou null
  */
 function getAccountState(accountId) {
-  let state = getAccountState(accountId);
+  let state = accountStates.get(accountId);
   
   if (!state && typeof global !== 'undefined' && global.accountStates) {
-    state = global.getAccountState(accountId);
+    state = global.accountStates.get(accountId);
     if (state) {
       console.log(`[API] Estado encontrado no global, copiando para Map local`);
-      setAccountState(accountId, state);
+      accountStates.set(accountId, state);
     }
   }
   
