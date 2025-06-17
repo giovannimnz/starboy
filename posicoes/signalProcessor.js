@@ -208,7 +208,7 @@ async function processSignal(db, signal, currentPrice, accountId) {
  * @returns {Promise<void>}
  */
 async function checkNewTrades(accountId) {
-  console.log(`[CHECK_TRADES_DEBUG] checkNewTrades - accountId: ${accountId}, tipo: ${typeof accountId}`); // Log no início da função
+  //console.log(`[CHECK_TRADES_DEBUG] checkNewTrades - accountId: ${accountId}, tipo: ${typeof accountId}`); // Log no início da função
   try {
     if (typeof accountId !== 'number' || isNaN(accountId)) {
       const errorMsg = `AccountId inválido em checkNewTrades: ${accountId} (tipo: ${typeof accountId})`;
