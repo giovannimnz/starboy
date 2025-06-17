@@ -82,21 +82,23 @@ async function initializeMonitoring(accountId) {
       console.error('[MONITOR] ⚠️ Erro ao verificar consistência de ambiente, mas continuando:', envError.message);
     }
 
-    // === ETAPA 3: Carregar credenciais WebSocket ===
+    // === ETAPA 3: Carregar credenciais ===
     console.log(`🔑 ETAPA 3: Carregando credenciais da conta ${accountId}...`);
     try {
-      // const credentials = await websockets.loadCredentialsFromDatabase(accountId); // Linha antiga
-      const credentials = await api.loadCredentialsFromDatabase(accountId); // <<< ALTERAR PARA api.loadCredentialsFromDatabase
-      if (!credentials.apiKey || !credentials.secretKey) { // Checar credenciais REST
+      // CORREÇÃO: Usar api.loadCredentialsFromDatabase
+      const credentials = await api.loadCredentialsFromDatabase(accountId);
+      
+      // CORREÇÃO: Verificar credenciais REST obrigatórias
+      if (!credentials.apiKey || !credentials.secretKey) {
         throw new Error('Credenciais API REST incompletas');
       }
-      console.log('✅ Credenciais carregadas com sucesso');
+      console.log('✅ Credenciais REST carregadas com sucesso');
       
       console.log(`📋 Detalhes das credenciais:`);
       console.log(`- API Key: ${credentials.apiKey ? credentials.apiKey.substring(0, 8) + '...' : 'NÃO ENCONTRADA'}`);
       console.log(`- Secret Key: ${credentials.secretKey ? 'ENCONTRADA' : 'NÃO ENCONTRADA'}`);
       console.log(`- WS API Key: ${credentials.wsApiKey ? credentials.wsApiKey.substring(0, 8) + '...' : 'NÃO ENCONTRADA'}`);
-      console.log(`- Private Key: ${credentials.privateKey ? 'ENCONTRADA' : 'NÃO ENCONTRADA'}`);
+      console.log(`- WS API Secret: ${credentials.wsApiSecret ? 'ENCONTRADA' : 'NÃO ENCONTRADA'}`);
       console.log();
       
     } catch (credError) {
@@ -110,54 +112,29 @@ async function initializeMonitoring(accountId) {
     let accountState = api.getAccountConnectionState(accountId);
     
     if (!accountState) {
-      console.log('⚠️ Estado da conta não existe ainda, tentando inicializar...');
+      console.log('⚠️ Estado da conta não existe, criando...');
+      accountState = api.getAccountConnectionState(accountId, true);
       
-      const allConnections = websockets.getAllAccountConnections();
-      console.log(`📊 Total de conexões no mapa: ${allConnections.size}`);
-      
-      if (allConnections.has(accountId)) {
-        console.log(`✅ Conta ${accountId} existe no mapa de conexões`);
-        accountState = allConnections.get(accountId);
-      } else {
-        console.log(`❌ Conta ${accountId} não existe no mapa de conexões`);
-        
-        console.log('🔄 Tentando forçar inicialização do estado...');
-        accountState = api.getAccountConnectionState(accountId, true);
-        
-        if (!accountState) {
-          throw new Error('Impossível inicializar estado da conta mesmo forçando');
-        }
+      if (!accountState) {
+        throw new Error('Impossível inicializar estado da conta');
       }
     }
     
-    console.log('📋 Informações do estado da conta:');
-    console.log(`- API Key: ${accountState.apiKey ? accountState.apiKey.substring(0, 8) + '...' : 'NÃO ENCONTRADA'}`);
-    console.log(`- Secret Key: ${accountState.secretKey ? 'ENCONTRADA' : 'NÃO ENCONTRADA'}`);
-    console.log(`- WS API Key: ${accountState.wsApiKey ? accountState.wsApiKey.substring(0, 8) + '...' : 'NÃO ENCONTRADA'}`);
-    console.log(`- Private Key: ${accountState.privateKey ? 'ENCONTRADA' : 'NÃO ENCONTRADA'}`);
-    console.log();
+    console.log('📋 Estado da conta verificado');
 
     // === ETAPA 5: Inicializar WebSocket API ===
     console.log(`🌐 ETAPA 5: Inicializando WebSocket API para conta ${accountId}...`);
     
     try {
-      console.log(`📞 Chamando websockets.startWebSocketApi(${accountId})...`);
       const wsConnected = await websockets.startWebSocketApi(accountId);
-      
-      if (wsConnected) {
-        console.log('✅ WebSocket API inicializado com sucesso!');
-      } else {
-        console.log('⚠️ WebSocket API não foi inicializado, mas continuando...');
-      }
+      console.log(`WebSocket API: ${wsConnected ? 'CONECTADO' : 'FALHOU'}`);
     } catch (wsInitError) {
-      console.warn('⚠️ Erro ao inicializar WebSocket API:', wsInitError.message);
+      console.warn('⚠️ WebSocket API não inicializado:', wsInitError.message);
     }
-    console.log();
 
     // === ETAPA 6: Verificar status da sessão ===
     console.log(`🔍 ETAPA 6: Verificando status da sessão WebSocket para conta ${accountId}...`);
     try {
-      // CORREÇÃO: Chamar a função correta de websockets.js
       const sessionStatusResponse = await websockets.checkSessionStatus(accountId);
       const isActive = sessionStatusResponse && sessionStatusResponse.result && sessionStatusResponse.result.apiKey !== null;
       console.log('📊 Status da sessão:', isActive ? 'ATIVA' : 'INATIVA');
@@ -165,95 +142,56 @@ async function initializeMonitoring(accountId) {
       console.warn('⚠️ Erro ao verificar status da sessão:', sessionError.message);
     }
 
-    // === ETAPA 7: Configurar handlers WebSocket API ===
-    console.log(`🔧 ETAPA 7: Configurando handlers WebSocket API para conta ${accountId}...`);
+    // === ETAPA 7: CORREÇÃO - Configurar handlers APENAS via orderHandlers.js ===
+    console.log(`🔧 ETAPA 7: Configurando handlers para conta ${accountId}...`);
     
     try {
-      // CORREÇÃO: Chamar a função correta de websocketApi.js
-      await websockets.getHandlers(accountId);
-      console.log(`[MONITOR] WebSocket API handlers configurados para conta ${accountId}`);
-    } catch (wsError) {
-      console.error(`[MONITOR] ⚠️ Erro ao inicializar WebSocket API handlers para conta ${accountId}, continuando com REST API fallback: ${wsError.message}`);
-      
-      // Se o erro for de chave Ed25519, oferecer solução
-      if (wsError.message.includes('Ed25519') || wsError.message.includes('private key') || wsError.message.includes('ws_api_secret')) {
-        console.log('\n🔧 SOLUÇÃO: Verifique se a chave Ed25519 (ws_api_secret) está configurada corretamente no banco para a conta.');
-        console.log('Pode ser necessário gerar uma nova chave na Binance e atualizar o campo `ws_api_secret` na tabela `contas`.');
-        console.log('Exemplo de comando para configurar (se tiver o utilitário): node utils/configurarChavePEMAutomatico.js');
-        console.log('');
-      }
-    }
-    
-    // === ETAPA 8: CORRIGIR - Configurar handlers com orderHandlers.js ===
-    console.log(`🔄 ETAPA 8: Configurando handlers para conta ${accountId}...`);
-    
-    // USAR o sistema orderHandlers ao invés de configurar manualmente
-    try {
+      // USAR APENAS orderHandlers - SEM configuração manual
       const handlersInitialized = await orderHandlers.initializeOrderHandlers(accountId);
       
-      if (handlersInitialized) {
-        console.log(`[MONITOR] ✅ Order handlers inicializados com sucesso para conta ${accountId}`);
-        
-        // Verificar se estão registrados
-        const handlersRegistered = orderHandlers.areHandlersRegistered(accountId);
-        console.log(`[MONITOR] Status dos handlers: ${handlersRegistered ? 'REGISTRADOS' : 'NÃO REGISTRADOS'}`);
-        
-      } else {
+      if (!handlersInitialized) {
         throw new Error('Falha ao inicializar order handlers');
       }
       
-    } catch (orderHandlerError) {
-      console.error(`[MONITOR] ❌ Erro ao configurar order handlers para conta ${accountId}:`, orderHandlerError.message);
+      console.log(`[MONITOR] ✅ Order handlers inicializados com sucesso para conta ${accountId}`);
       
-      // FALLBACK: Configurar handlers manualmente
-      console.log(`[MONITOR] 🔄 Tentando configuração manual de handlers para conta ${accountId}...`);
+      // Verificar se estão registrados
+      const handlersRegistered = orderHandlers.areHandlersRegistered(accountId);
+      console.log(`[MONITOR] Status dos handlers: ${handlersRegistered ? 'REGISTRADOS' : 'NÃO REGISTRADOS'}`);
       
-      const manualHandlers = {
-        handleOrderUpdate: async (orderMsg) => {
-          try {
-            await orderHandlers.handleOrderUpdate(orderMsg, accountId);
-          } catch (error) {
-            console.error(`[MONITOR] ⚠️ Erro em handleOrderUpdate para conta ${accountId}:`, error.message);
+      // ADICIONAR callback de preço APENAS se não foi registrado via orderHandlers
+      const currentHandlers = websockets.getHandlers(accountId);
+      if (!currentHandlers.onPriceUpdate) {
+        console.log(`[MONITOR] Adicionando callback de preço para conta ${accountId}...`);
+        websockets.setMonitoringCallbacks({
+          ...currentHandlers,
+          onPriceUpdate: async (symbol, price, db) => {
+            try {
+              await onPriceUpdate(symbol, price, db, accountId);
+            } catch (error) {
+              console.error(`[MONITOR] ⚠️ Erro em onPriceUpdate para ${symbol} conta ${accountId}:`, error.message);
+            }
           }
-        },
-        handleAccountUpdate: async (message) => {
-          try {
-            await orderHandlers.handleAccountUpdate(message, accountId);
-          } catch (error) {
-            console.error(`[MONITOR] ⚠️ Erro em handleAccountUpdate para conta ${accountId}:`, error.message);
-          }
-        },
-        onPriceUpdate: async (symbol, price, db) => {
-          try {
-            await onPriceUpdate(symbol, price, db, accountId);
-          } catch (error) {
-            console.error(`[MONITOR] ⚠️ Erro em onPriceUpdate para ${symbol} conta ${accountId}:`, error.message);
-          }
-        }
-      };
-      
-      // Configurar callbacks manualmente
-      try {
-        websockets.setMonitoringCallbacks(manualHandlers, accountId);
-        console.log(`[MONITOR] ✅ Callbacks manuais configurados para conta ${accountId}`);
-      } catch (manualCallbackError) {
-        console.error(`[MONITOR] ❌ Erro ao configurar callbacks manuais para conta ${accountId}:`, manualCallbackError.message);
-        throw manualCallbackError;
+        }, accountId);
       }
+      
+    } catch (orderHandlerError) {
+      console.error(`[MONITOR] ❌ Erro crítico ao configurar handlers para conta ${accountId}:`, orderHandlerError.message);
+      throw orderHandlerError; // Não usar fallback manual que causa conflitos
     }
 
-    // === ETAPA 9: Iniciar UserDataStream ===
-    console.log(`🌐 ETAPA 9: Iniciando UserDataStream para conta ${accountId}...`);
+    // === ETAPA 8: Iniciar UserDataStream ===
+    console.log(`🌐 ETAPA 8: Iniciando UserDataStream para conta ${accountId}...`);
     
     try {
       await websockets.startUserDataStream(db, accountId);
       console.log(`[MONITOR] ✅ UserDataStream iniciado para conta ${accountId}`);
     } catch (userDataError) {
-      console.error(`[MONITOR] ⚠️ Erro ao iniciar UserDataStream para conta ${accountId}, mas continuando: ${userDataError.message}`);
+      console.error(`[MONITOR] ⚠️ Erro ao iniciar UserDataStream para conta ${accountId}:`, userDataError.message);
     }
 
-    // === ETAPA 10: Limpeza e preparação de sinais ===
-    console.log(`🧹 ETAPA 10: Limpando sinais com erro para conta ${accountId}...`);
+    // === ETAPA 9: Limpeza e preparação de sinais ===
+    console.log(`🧹 ETAPA 9: Limpando sinais com erro para conta ${accountId}...`);
     
     try {
       await db.query(`
@@ -264,12 +202,7 @@ async function initializeMonitoring(accountId) {
           AND error_message LIKE '%not defined%'
           AND conta_id = ?
       `, [accountId]);
-    } catch (cleanError) {
-      console.error(`[MONITOR] ⚠️ Erro ao limpar sinais com erro para conta ${accountId}:`, cleanError.message);
-    }
 
-    try {
-      console.log(`[MONITOR] 🔄 Resetando sinais em processamento para conta ${accountId}...`);
       const [resetResult] = await db.query(`
         UPDATE webhook_signals 
         SET status = 'PENDING', 
@@ -280,14 +213,14 @@ async function initializeMonitoring(accountId) {
       `, [accountId]);
       
       if (resetResult.affectedRows > 0) {
-        console.log(`[MONITOR] ✅ ${resetResult.affectedRows} sinais resetados de PROCESSANDO para PENDING para conta ${accountId}`);
+        console.log(`[MONITOR] ✅ ${resetResult.affectedRows} sinais resetados para conta ${accountId}`);
       }
-    } catch (resetError) {
-      console.error(`[MONITOR] ⚠️ Erro ao resetar sinais em processamento para conta ${accountId}:`, resetError.message);
+    } catch (cleanError) {
+      console.error(`[MONITOR] ⚠️ Erro ao limpar sinais para conta ${accountId}:`, cleanError.message);
     }
 
-    // === ETAPA 11: Verificar sinais pendentes ===
-    console.log(`📋 ETAPA 11: Verificando sinais pendentes para conta ${accountId}...`);
+    // === ETAPA 10: Verificar sinais pendentes ===
+    console.log(`📋 ETAPA 10: Verificando sinais pendentes para conta ${accountId}...`);
     
     try {
       await checkNewTrades(accountId);
@@ -295,76 +228,53 @@ async function initializeMonitoring(accountId) {
       console.error(`[MONITOR] ⚠️ Erro ao verificar sinais pendentes para conta ${accountId}:`, signalCheckError.message);
     }
 
-    // === ETAPA 12: Iniciar monitoramento de preços ===
-    console.log(`📈 ETAPA 12: Iniciando monitoramento de preços para conta ${accountId}...`);
+    // === ETAPA 11: Iniciar monitoramento de preços ===
+    console.log(`📈 ETAPA 11: Iniciando monitoramento de preços para conta ${accountId}...`);
     
     try {
       const symbolsCount = await startPriceMonitoring(accountId);
       console.log(`[MONITOR] ✅ Monitoramento de preços iniciado para ${symbolsCount} símbolos da conta ${accountId}.`);
     } catch (priceError) {
-      console.error(`[MONITOR] ⚠️ Erro ao iniciar monitoramento de preços para conta ${accountId}, mas continuando:`, priceError.message);
+      console.error(`[MONITOR] ⚠️ Erro ao iniciar monitoramento de preços para conta ${accountId}:`, priceError.message);
     }
 
-    // === ETAPA 13: Sincronizar posições ===
-    console.log(`🔄 ETAPA 13: Sincronizando posições para conta ${accountId}...`);
+    // === ETAPA 12: Sincronizar posições ===
+    console.log(`🔄 ETAPA 12: Sincronizando posições para conta ${accountId}...`);
     
     try {
       await syncPositionsWithExchange(accountId);
       console.log(`[MONITOR] ✅ Sincronização de posições concluída para conta ${accountId}.`);
     } catch (syncError) {
-      console.error(`[MONITOR] ⚠️ Erro ao sincronizar posições para conta ${accountId}, mas continuando:`, syncError.message);
+      console.error(`[MONITOR] ⚠️ Erro ao sincronizar posições para conta ${accountId}:`, syncError.message);
     }
 
-    // === ETAPA 14: Diagnóstico detalhado ===
-    console.log(`🔧 ETAPA 14: Diagnóstico detalhado do WebSocket para conta ${accountId}...`);
-    
-    console.log('🔍 Estado atual das conexões:');
-    const allConnectionsAfterInit = websockets.getAllAccountConnections(); // Renomeado para evitar conflito
-    
-    if (allConnectionsAfterInit.has(accountId)) {
-      const conn = allConnectionsAfterInit.get(accountId);
-      console.log(`  - accountId: ${accountId}`);
-      console.log(`  - apiKey: ${conn.apiKey ? 'Configurada' : 'Não configurada'}`);
-      console.log(`  - secretKey: ${conn.secretKey ? 'Configurada' : 'Não configurada'}`);
-      console.log(`  - wsApiKey: ${conn.wsApiKey ? 'Configurada' : 'Não configurada'}`);
-      console.log(`  - privateKey (Ed25519): ${conn.privateKey ? 'Configurada' : 'Não configurada'}`); // privateKey é a Ed25519
-      console.log(`  - isAuthenticated (REST API): ${conn.isAuthenticated}`); // Este isAuthenticated é mais genérico
-      console.log(`  - wsApiAuthenticated (WS API): ${conn.wsApiAuthenticated}`);
-      console.log(`  - requestCallbacks: ${conn.requestCallbacks ? conn.requestCallbacks.size : 'N/A'}`);
-      console.log(`  - wsApiConnection state: ${conn.wsApiConnection ? conn.wsApiConnection.readyState : 'N/A'}`);
-      console.log(`  - userDataStream state: ${conn.userDataStream ? conn.userDataStream.readyState : 'N/A'}`);
-    }
-
-    // === ETAPA 15: Agendar jobs específicos da conta ===
-    console.log(`⏰ ETAPA FINAL: Agendando jobs para conta ${accountId}...`);
+    // === ETAPA 13: Agendar jobs ===
+    console.log(`⏰ ETAPA 13: Agendando jobs para conta ${accountId}...`);
     
     const accountJobs = {};
     
     // Job principal: verificar sinais pendentes a cada 15 segundos
-    console.log(`[MONITOR] Agendando verificação de sinais a cada 15 segundos para conta ${accountId}`);
     accountJobs.checkNewTrades = schedule.scheduleJob('*/15 * * * * *', async () => {
       if (isShuttingDown) return;
       try {
         await checkNewTrades(accountId);
       } catch (error) {
-        console.error(`[MONITOR] ⚠️ Erro na verificação periódica de sinais para conta ${accountId}:`, error);
+        console.error(`[MONITOR] ⚠️ Erro na verificação periódica de sinais para conta ${accountId}:`, error.message);
       }
     });
     
     // Job de sincronização de saldo a cada 5 minutos
-    console.log(`[MONITOR] Agendando sincronização de saldo a cada 5 minutos para conta ${accountId}`);
     accountJobs.syncBalance = schedule.scheduleJob('*/5 * * * *', async () => {
       if (isShuttingDown) return;
       try {
         await syncAccountBalance(accountId);
       } catch (error) {
-        console.error(`[MONITOR] ⚠️ Erro na sincronização periódica de saldo para conta ${accountId}:`, error);
+        console.error(`[MONITOR] ⚠️ Erro na sincronização periódica de saldo para conta ${accountId}:`, error.message);
       }
     });
 
     console.log(`[MONITOR] ✅ Sistema de monitoramento inicializado com sucesso para conta ${accountId}!`);
     console.log(`[MONITOR] 📊 Jobs agendados: ${Object.keys(accountJobs).length}`);
-    console.log(`[MONITOR] 💡 Use Ctrl+C para encerrar graciosamente (se executando standalone)`);
     
     scheduledJobs[accountId] = accountJobs;
     
@@ -372,47 +282,7 @@ async function initializeMonitoring(accountId) {
     
   } catch (error) {
     console.error(`[MONITOR] ❌ Erro CRÍTICO na configuração inicial para conta ${accountId}: ${error.message}`);
-    console.error('[MONITOR] Stack trace:', error.stack);
-    
-    const criticalErrors = [
-      'AccountId inválido',
-      'Não foi possível conectar ao banco de dados',
-      'Impossível inicializar estado da conta',
-      'Credenciais API REST incompletas', 
-      'Credenciais não encontradas para conta',
-      'Chave privada Ed25519 (ws_api_secret) não encontrada' // Adicionado erro crítico
-    ];
-    
-    const isCriticalError = criticalErrors.some(criticalError => 
-      error.message.includes(criticalError)
-    );
-    
-    if (isCriticalError) {
-      console.log(`[MONITOR] ⚠️ Erro crítico detectado durante a inicialização da conta ${accountId}: ${error.message}`);
-      throw error; 
-    } else {
-      console.log(`[MONITOR] ⚠️ Erro não-crítico durante inicialização - tentando operar com funcionalidades limitadas para conta ${accountId}`);
-      
-      const limitedJobs = {};
-      try {
-        limitedJobs.checkNewTrades = schedule.scheduleJob('*/30 * * * * *', async () => {
-          if (isShuttingDown) return;
-          try {
-            await checkNewTrades(accountId);
-          } catch (jobError) { 
-            console.error(`[MONITOR] ⚠️ Erro na verificação básica (modo limitado) para conta ${accountId}:`, jobError);
-          }
-        });
-        
-        console.log(`[MONITOR] ⚠️ Sistema operando em MODO LIMITADO para conta ${accountId}`);
-        scheduledJobs[accountId] = limitedJobs;
-        return limitedJobs;
-        
-      } catch (jobSetupError) { 
-        console.error(`[MONITOR] ❌ Impossível criar jobs mesmo em modo limitado para conta ${accountId}:`, jobSetupError.message);
-        throw jobSetupError;
-      }
-    }
+    throw error;
   }
 }
 
