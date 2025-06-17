@@ -1,6 +1,6 @@
 // Teste avançado do WebSocket API
-const websockets = require('./websockets');
-const websocketApi = require('./websocketApi');
+const websockets = require('../websockets');
+const websocketApi = require('../websocketApi');
 
 async function testAdvanced() {
   console.log('🧪 Teste avançado do WebSocket API...');

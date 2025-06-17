@@ -1,10 +1,5 @@
-const api = require('./api');
-const { getDatabaseInstance } = require('./db/conexao');
 const websockets = require('./websockets');
-
-// Função importada diretamente do websockets
-const { sendWebSocketApiRequest, getAccountConnectionState } = websockets;
-
+const { getDatabaseInstance, formatDateForMySQL } = require('./db/conexao');
 let handlers = null;
 
 /**

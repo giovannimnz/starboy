@@ -1,5 +1,5 @@
 // Teste específico para websocketApi
-const websocketApi = require('./websocketApi');
+const websocketApi = require('../websocketApi');
 
 async function testWebSocketApi() {
   console.log('🧪 Testando websocketApi...');
