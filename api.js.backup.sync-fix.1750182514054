@@ -2,65 +2,9 @@ const axios = require('axios');
 const crypto = require('crypto');
 const { getDatabaseInstance } = require('./db/conexao');
 
-
-// Map global para estados das contas - DEVE SER O MESMO EM TODO LUGAR
+// Map para armazenar estados das contas
 const accountStates = new Map();
 
-// Tornar disponível globalmente
-if (typeof global !== 'undefined') {
-  global.accountStates = accountStates;
-}
-
-/**
- * Obtém o Map de estados de forma consistente
- * @returns {Map} - Map de estados das contas
- */
-function getAccountStatesMap() {
-  // Sempre retornar a mesma referência
-  return accountStates;
-}
-
-/**
- * Define um estado de conta no Map global
- * @param {number} accountId - ID da conta
- * @param {Object} state - Estado da conta
- */
-function setAccountState(accountId, state) {
-  console.log(`[API] Definindo estado para conta ${accountId} no Map global`);
-  accountStates.set(accountId, state);
-  
-  // Garantir que está disponível globalmente também
-  if (typeof global !== 'undefined') {
-    if (!global.accountStates) {
-      global.accountStates = accountStates;
-    }
-    global.accountStates.set(accountId, state);
-  }
-  
-  console.log(`[API] Estado definido. Map agora tem ${accountStates.size} contas`);
-}
-
-/**
- * Obtém um estado de conta do Map global
- * @param {number} accountId - ID da conta
- * @returns {Object|null} - Estado da conta ou null
- */
-function getAccountState(accountId) {
-  let state = accountStates.get(accountId);
-  
-  if (!state && typeof global !== 'undefined' && global.accountStates) {
-    state = global.accountStates.get(accountId);
-    if (state) {
-      console.log(`[API] Estado encontrado no global, copiando para Map local`);
-      accountStates.set(accountId, state);
-    }
-  }
-  
-  console.log(`[API] getAccountState(${accountId}): ${state ? 'ENCONTRADO' : 'NÃO ENCONTRADO'}`);
-  return state;
-}
-
-// Map para armazenar estados das contas
 // Mapa global para armazenar estados das conexões de cada conta
 const accountConnections = new Map();
 
@@ -263,14 +207,6 @@ async function loadCredentialsFromDatabase(accountId) {
  * @param {Object} params - Parâmetros da requisição
  * @returns {Promise<Object>} - Resposta da API
  */
-/**
- * Faz uma requisição autenticada para a API da Binance
- * @param {number} accountId - ID da conta
- * @param {string} method - Método HTTP (GET, POST, etc.)
- * @param {string} endpoint - Endpoint da API
- * @param {Object} params - Parâmetros da requisição
- * @returns {Promise<Object>} - Resposta da API
- */
 async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}) {
   try {
     console.log(`[API] makeAuthenticatedRequest chamado: accountId=${accountId}, method=${method}, endpoint=${endpoint}`);
@@ -280,22 +216,37 @@ async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}
       throw new Error(`AccountId deve ser um número válido: ${accountId} (tipo: ${typeof accountId})`);
     }
     
-    // CORREÇÃO: Usar função helper para obter estado
-    let accountState = getAccountState(accountId);
+    // CORREÇÃO: Tentar obter estado de múltiplas formas
+    let accountState = null;
     
-    // Se não encontrou, tentar recarregar
+    // Método 1: Tentar do Map global
+    if (typeof accountStates !== 'undefined' && accountStates && accountStates.has) {
+      accountState = accountStates.get(accountId);
+      console.log(`[API] Tentativa 1 - accountStates.get(${accountId}): ${accountState ? 'ENCONTRADO' : 'NÃO ENCONTRADO'}`);
+    }
+    
+    // Método 2: Se não encontrou, tentar recarregar
     if (!accountState) {
       console.log(`[API] Estado não encontrado, recarregando credenciais...`);
       try {
         await loadCredentialsFromDatabase(accountId);
-        accountState = getAccountState(accountId);
+        if (typeof accountStates !== 'undefined' && accountStates && accountStates.has) {
+          accountState = accountStates.get(accountId);
+          console.log(`[API] Tentativa 2 - após loadCredentials: ${accountState ? 'ENCONTRADO' : 'NÃO ENCONTRADO'}`);
+        }
       } catch (loadError) {
         console.error(`[API] Erro ao recarregar credenciais: ${loadError.message}`);
       }
     }
     
+    // Método 3: Se ainda não encontrou, usar cache global (se existir)
+    if (!accountState && typeof global !== 'undefined' && global.accountStates) {
+      accountState = global.accountStates.get(accountId);
+      console.log(`[API] Tentativa 3 - global.accountStates: ${accountState ? 'ENCONTRADO' : 'NÃO ENCONTRADO'}`);
+    }
+    
     if (!accountState) {
-      throw new Error(`Estado da conta ${accountId} não encontrado mesmo após recarregamento`);
+      throw new Error(`Estado da conta ${accountId} não encontrado em nenhum local após múltiplas tentativas`);
     }
     
     const { apiKey, secretKey, apiUrl } = accountState;
@@ -304,7 +255,7 @@ async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}
       throw new Error(`Credenciais incompletas para conta ${accountId}: apiKey=${!!apiKey}, secretKey=${!!secretKey}, apiUrl=${!!apiUrl}`);
     }
     
-    console.log(`[API] ✅ Estado encontrado - usando apiKey: ${apiKey.substring(0, 8)}...`);
+    console.log(`[API] ✅ Estado encontrado - apiKey: ${apiKey.substring(0, 8)}..., apiUrl: ${apiUrl}`);
     
     // Adicionar timestamp obrigatório
     const timestamp = Date.now();
@@ -812,9 +763,6 @@ async function newLimitMakerOrder(accountId, symbol, quantity, side, price) {
 }
 
 module.exports = {
-  getAccountStatesMap,
-  setAccountState,
-  getAccountState,
   getAccountConnectionState,
   getAllAccountConnections,
   loadCredentialsFromDatabase,
