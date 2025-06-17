@@ -996,69 +996,24 @@ async function getMultipleOrderStatusViaWebSocket(symbol, orderIds) {
  * @param {number} accountId - ID da conta (obrigatório)
  * @returns {Promise<Object>} Resposta completa da API com informações da conta
  */
-/**
- * Obtém informações detalhadas da conta através da WebSocket API V2 conforme documentação
- * @param {Object} params - Parâmetros adicionais (opcional)
- * @param {number} accountId - ID da conta (obrigatório)
- * @returns {Promise<Object>} Resposta completa da API com informações da conta
- */
-async function getAccountInformationV2(params = {}, accountId) {
+async function getAccountInformationV2(accountId) {
   try {
-    console.log(`[WS-API] Obtendo informações da conta ${accountId} via WebSocket API V2...`);
-    
-    // Verificar se o accountId é válido
-    if (!accountId || typeof accountId !== 'number') {
-      throw new Error(`AccountId é obrigatório e deve ser um número: ${accountId}`);
-    }
-    
-    // Verificar se o WebSocket está conectado
-    if (!websockets.isWebSocketApiConnected(accountId)) {
-      console.log(`[WS-API] WebSocket não conectado para conta ${accountId}, tentando conectar...`);
-      await websockets.startWebSocketApi(accountId);
-      // Aguardar um pouco para a conexão estabilizar
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-    
-    // Criar requisição
-    const request = {
-      method: 'account.status',
-      params: { ...params }
-    };
-    
-    const response = await sendWebSocketApiRequest(request, 30000, accountId);
+    // console.log(`[WS-API] Obtendo informações da conta ${accountId} via WebSocket API V2...`);
+    const response = await sendWebSocketApiRequest(accountId, 'account.status', {}); // Timeout padrão de 10s
 
     if (response && response.result) {
-      console.log(`[WS-API] ✅ Informações da conta ${accountId} recebidas com sucesso.`);
-      return {
-        status: 200,
-        result: response.result
-      };
+      // console.log(`[WS-API] Informações da conta ${accountId} recebidas com sucesso.`);
+      return response.result;
     } else if (response && response.error) {
       console.error(`[WS-API] Erro da API ao obter informações da conta ${accountId}: ${response.error.code} - ${response.error.msg}`);
-      return { 
-        status: 400,
-        error: { 
-          message: `API Error: ${response.error.code} - ${response.error.msg}`, 
-          code: response.error.code 
-        } 
-      };
+      return { error: { message: `API Error: ${response.error.code} - ${response.error.msg}`, code: response.error.code } };
     } else {
       console.error(`[WS-API] Resposta inesperada ou vazia de account.status para conta ${accountId}:`, response);
-      return { 
-        status: 500,
-        error: { 
-          message: 'Resposta inesperada ou vazia de account.status' 
-        } 
-      };
+      return { error: { message: 'Resposta inesperada ou vazia de account.status' } };
     }
-  } catch (error) {
-    console.error(`[WS-API] Falha na comunicação ao obter informações da conta ${accountId}: ${error.message || error}`);
-    return { 
-      status: 500,
-      error: { 
-        message: `Falha na comunicação: ${error.message || 'Erro interno em sendWebSocketApiRequest'}` 
-      } 
-    };
+  } catch (error) { // Captura erros de sendWebSocketApiRequest (ex: timeout, falha de conexão)
+    console.error(`[WS-API] Falha na comunicação ao obter saldo da conta ${accountId}: ${error.message || error}`);
+    return { error: { message: `Falha na comunicação: ${error.message || 'Erro interno em sendWebSocketApiRequest'}` } };
   }
 }
 
