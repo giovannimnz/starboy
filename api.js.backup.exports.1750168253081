@@ -1549,62 +1549,6 @@ async function keepAliveListenKey(accountId, listenKeyToKeepAlive) {
   }
 }
 
-
-/**
- * Obtém informações da conta
- * @param {number} accountId - ID da conta
- * @returns {Promise<Object>} - Informações da conta
- */
-async function getAccountInfo(accountId) {
-  try {
-    const response = await makeAuthenticatedRequest(accountId, 'GET', '/fapi/v2/account', {});
-    return response;
-  } catch (error) {
-    console.error(`[API] Erro ao obter informações da conta ${accountId}:`, error.message);
-    throw error;
-  }
-}
-
-
-/**
- * Obtém informações de um símbolo
- * @param {string} symbol - Símbolo do ativo
- * @param {number} accountId - ID da conta
- * @returns {Promise<Object|null>} - Informações do símbolo
- */
-async function getSymbolInfo(symbol, accountId) {
-  try {
-    const response = await makeAuthenticatedRequest(accountId, 'GET', '/fapi/v1/exchangeInfo', {});
-    
-    if (response && response.symbols) {
-      const symbolInfo = response.symbols.find(s => s.symbol === symbol);
-      return symbolInfo || null;
-    }
-    
-    return null;
-  } catch (error) {
-    console.error(`[API] Erro ao obter informações do símbolo ${symbol}:`, error.message);
-    return null;
-  }
-}
-
-
-/**
- * Cria uma nova ordem
- * @param {Object} orderParams - Parâmetros da ordem
- * @param {number} accountId - ID da conta
- * @returns {Promise<Object>} - Resultado da ordem
- */
-async function createOrder(orderParams, accountId) {
-  try {
-    const response = await makeAuthenticatedRequest(accountId, 'POST', '/fapi/v1/order', orderParams);
-    return response;
-  } catch (error) {
-    console.error(`[API] Erro ao criar ordem:`, error.message);
-    throw error;
-  }
-}
-
 module.exports = {
   getPrice,
   getAccountInfo,
@@ -1623,4 +1567,4 @@ module.exports = {
   makeAuthenticatedRequest,
   getAccountConnectionState,
   getAllAccountConnections
-};;
+};
