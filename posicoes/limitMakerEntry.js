@@ -1,5 +1,4 @@
-
-// OTIMIZAÇÃO GLOBAL: Cache único por execução para evitar spam de API
+const api = require('../api');
 const globalExecutionCache = new Map();
 
 function getOrCreateExecutionCache(symbol, accountId) {
@@ -334,7 +333,7 @@ async function executeLimitMakerEntry(db, signal, currentPrice, accountId) {
             if (activeOrderId) {
                 let currentOrderDataFromExchange;
                 try {
-                    currentOrderDataFromExchange = await api.getOrderStatus(signal.symbol, orderId, numericAccountId);
+                    currentOrderDataFromExchange = await api.getOrderStatus(signal.symbol, activeOrderId, numericAccountId);
                 } catch (e) {
                     if (e.status === 400 && e.error?.code === -2013) {
                         console.log(`[LIMIT_ENTRY] Ordem ${activeOrderId} não encontrada. Possivelmente cancelada.`);
@@ -985,7 +984,8 @@ async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3000, accountI
     
     while (Date.now() - startTime < maxWaitMs) {
         try {
-            const orderStatus = await api.getOrderStatus(symbol, orderId, accountId);
+            // CORREÇÃO: ordem correta dos parâmetros (symbol, orderId, accountId)
+            const orderStatus = await api.getOrderStatus(signal.symbol, activeOrderId, numericAccountId);
             
             if (orderStatus.status === 'FILLED' || orderStatus.status === 'PARTIALLY_FILLED') {
                 console.log(`[WAIT_ORDER] ✅ Ordem ${orderId} executada: ${orderStatus.status}`);
@@ -999,6 +999,7 @@ async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3000, accountI
         }
     }
     
+    // Última tentativa
     try {
         const finalStatus = await api.getOrderStatus(symbol, orderId, accountId);
         console.log(`[WAIT_ORDER] Status final da ordem ${orderId}: ${finalStatus.status}`);
@@ -1014,6 +1015,7 @@ async function waitForOrderStatus(symbol, orderId, accountId) {
     console.log(`[LIMIT_ENTRY] Verificando status da ordem ${orderId} para ${symbol} (conta ${accountId})...`);
     
     try {
+        // CORREÇÃO: ordem correta dos parâmetros (symbol, orderId, accountId)
         const result = await api.getOrderStatus(symbol, orderId, accountId);
         
         if (result && result.status) {
@@ -1028,12 +1030,6 @@ async function waitForOrderStatus(symbol, orderId, accountId) {
         return { status: 'ERROR', executedQty: '0', avgPrice: '0' };
     }
 }
-
-
-module.exports = {
-    executeLimitMakerEntry,
-    waitForOrderStatus
-};
 
 // Função de fallback para quando BookTicker falha
 async function processWithMockData(mockDepthData, signal, accountId) {
@@ -1054,6 +1050,8 @@ async function processWithMockData(mockDepthData, signal, accountId) {
     }
     
     console.log(`[LIMIT_ENTRY] Preço de entrada calculado: ${entryPrice}`);
+
+    await waitForOrderExecution(signal.symbol, activeOrderId, EDIT_WAIT_TIMEOUT_MS, numericAccountId)
     
     // Executar ordem limit maker com preço calculado
     const orderData = {
@@ -1076,3 +1074,8 @@ async function processWithMockData(mockDepthData, signal, accountId) {
     throw error;
   }
 }
+
+module.exports = {
+    executeLimitMakerEntry,
+    waitForOrderStatus
+};

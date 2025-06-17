@@ -1012,7 +1012,7 @@ async function newLimitMakerOrder(accountId, symbol, quantity, side, price) {
 /**
  * Obtém status de uma ordem via REST API
  * @param {string} symbol - Símbolo (ex: POLUSDT)
- * @param {string} orderId - ID da ordem
+ * @param {string|number} orderId - ID da ordem
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Status da ordem
  */
@@ -1020,15 +1020,15 @@ async function getOrderStatus(symbol, orderId, accountId) {
   try {
     // VALIDAÇÃO CRÍTICA: Verificar tipos e ordem dos parâmetros
     if (!symbol || typeof symbol !== 'string') {
-      throw new Error(`Symbol inválido: ${symbol} (tipo: ${typeof symbol})`);
+      throw new Error(`Symbol deve ser uma string válida. Recebido: ${symbol} (tipo: ${typeof symbol})`);
     }
     
     if (!orderId || (typeof orderId !== 'string' && typeof orderId !== 'number')) {
-      throw new Error(`OrderId inválido: ${orderId} (tipo: ${typeof orderId})`);
+      throw new Error(`OrderId deve ser string ou number. Recebido: ${orderId} (tipo: ${typeof orderId})`);
     }
     
     if (!accountId || typeof accountId !== 'number') {
-      throw new Error(`AccountId inválido: ${accountId} (tipo: ${typeof accountId})`);
+      throw new Error(`AccountId deve ser um número. Recebido: ${accountId} (tipo: ${typeof accountId})`);
     }
     
     console.log(`[API] Obtendo status da ordem ${orderId} para ${symbol} (conta ${accountId})...`);
