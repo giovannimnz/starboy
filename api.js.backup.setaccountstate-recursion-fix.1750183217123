@@ -26,50 +26,63 @@ console.log('[API] Map accountStates criado como singleton global (versão sem r
  * @param {number} accountId - ID da conta
  * @param {Object} state - Estado da conta
  */
-/**
- * Define um estado de conta no Map ÚNICO - VERSÃO SEM RECURSÃO
- * @param {number} accountId - ID da conta
- * @param {Object} state - Estado da conta
- */
 function setAccountState(accountId, state) {
-  console.log(`[API] setAccountState(${accountId}) - Salvando no Map global`);
+  console.log(`[API] setAccountState(${accountId}) - ANTES: Map tem ${accountStates.size} contas`);
   
-  // Salvar DIRETAMENTE no Map - SEM CHAMADAS RECURSIVAS
+  // Log das chaves existentes antes
+  const keysBefore = Array.from(accountStates.keys());
+  console.log(`[API] setAccountState(${accountId}) - Chaves antes: [${keysBefore.join(', ')}]`);
+  
+  // SALVAR NO MAP PRINCIPAL
   accountStates.set(accountId, state);
   
-  console.log(`[API] setAccountState(${accountId}) - ✅ Salvo com sucesso`);
-  console.log(`[API] setAccountState(${accountId}) - Map agora tem ${accountStates.size} entradas`);
+  // Log das chaves existentes depois
+  const keysAfter = Array.from(accountStates.keys());
+  console.log(`[API] setAccountState(${accountId}) - DEPOIS: Map tem ${accountStates.size} contas`);
+  console.log(`[API] setAccountState(${accountId}) - Chaves depois: [${keysAfter.join(', ')}]`);
   
-  return true;
+  // Verificar imediatamente se foi salvo
+  const verificacao = accountStates.get(accountId);
+  console.log(`[API] setAccountState(${accountId}) - Verificação imediata: ${verificacao ? 'SUCESSO' : 'FALHOU'}`);
+  
+  if (verificacao) {
+    console.log(`[API] setAccountState(${accountId}) - ✅ Estado salvo com sucesso: apiKey=${verificacao.apiKey ? 'SIM' : 'NÃO'}`);
+  } else {
+    console.error(`[API] setAccountState(${accountId}) - ❌ FALHA CRÍTICA: Estado não foi salvo!`);
+  }
+  
+  return verificacao !== null;
 }
 
-/**
- * Obtém um estado de conta do Map ÚNICO - VERSÃO SEM RECURSÃO
- * @param {number} accountId - ID da conta
- * @returns {Object|null} - Estado da conta ou null
- */
 /**
  * Obtém um estado de conta do Map ÚNICO - VERSÃO SEM RECURSÃO
  * @param {number} accountId - ID da conta
  * @returns {Object|null} - Estado da conta ou null
  */
 function getAccountState(accountId) {
-  console.log(`[API] getAccountState(${accountId}) - Buscando no Map`);
+  console.log(`[API] getAccountState(${accountId}) - BUSCANDO (Map size: ${accountStates.size})`);
   
+  // Listar todas as chaves para debug
+  const keys = Array.from(accountStates.keys());
+  console.log(`[API] getAccountState(${accountId}) - Chaves disponíveis: [${keys.join(', ')}]`);
+  
+  // Buscar diretamente no Map principal
   const state = accountStates.get(accountId);
-  console.log(`[API] getAccountState(${accountId}) - ${state ? 'ENCONTRADO' : 'NÃO ENCONTRADO'}`);
   
-  return state || null;
+  console.log(`[API] getAccountState(${accountId}) - Resultado: ${state ? 'ENCONTRADO' : 'NÃO ENCONTRADO'}`);
+  
+  if (state) {
+    console.log(`[API] getAccountState(${accountId}) - ✅ Estado válido com apiKey: ${state.apiKey ? 'SIM' : 'NÃO'}`);
+  }
+  
+  return state;
 }
 
 /**
  * Lista todos os estados para debug - SEM RECURSÃO
  */
-/**
- * Lista todos os estados para debug - SEM RECURSÃO
- */
 function debugAccountStates() {
-  console.log(`[API] DEBUG - Map tem ${accountStates.size} entradas`);
+  console.log(`[API] DEBUG - accountStates Map tem ${accountStates.size} entradas:`);
   
   if (accountStates.size === 0) {
     console.log(`[API] DEBUG - Map está vazio!`);
@@ -77,7 +90,7 @@ function debugAccountStates() {
   }
   
   for (const [id, state] of accountStates.entries()) {
-    console.log(`[API] DEBUG - Conta ${id}: apiKey=${state.apiKey ? 'SIM' : 'NÃO'}`);
+    console.log(`[API] DEBUG - Conta ${id}: apiKey=${state.apiKey ? 'SIM' : 'NÃO'}, accountId=${state.accountId}`);
   }
 }
 
