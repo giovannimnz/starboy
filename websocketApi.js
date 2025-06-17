@@ -1,5 +1,5 @@
 const api = require('./api');
-const { getDatabaseInstance } = require('./db/conexao');
+const { getDatabaseInstance, formatDateForMySQL } = require('./db/conexao');
 const websockets = require('./websockets');
 
 // Função importada diretamente do websockets
