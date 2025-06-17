@@ -21,37 +21,22 @@ console.log('[API] Map accountStates criado como singleton global (versão sem r
  * @param {number} accountId - ID da conta
  * @param {Object} state - Estado da conta
  */
-/**
- * Define um estado de conta no Map ÚNICO
- * @param {number} accountId - ID da conta
- * @param {Object} state - Estado da conta
- */
 function setAccountState(accountId, state) {
-  console.log(`[API] setAccountState(${accountId}) - ANTES: Map tem ${accountStates.size} contas`);
+  console.log(`[API] setAccountState(${accountId}) - DEFININDO no Map único`);
   
-  // Log das chaves existentes antes
-  const keysBefore = Array.from(accountStates.keys());
-  console.log(`[API] setAccountState(${accountId}) - Chaves antes: [${keysBefore.join(', ')}]`);
-  
-  // SALVAR NO MAP PRINCIPAL
+  // Salvar diretamente no Map principal
   accountStates.set(accountId, state);
   
-  // Log das chaves existentes depois
-  const keysAfter = Array.from(accountStates.keys());
-  console.log(`[API] setAccountState(${accountId}) - DEPOIS: Map tem ${accountStates.size} contas`);
-  console.log(`[API] setAccountState(${accountId}) - Chaves depois: [${keysAfter.join(', ')}]`);
+  // Verificar se foi salvo
+  const verification = accountStates.has(accountId);
+  console.log(`[API] setAccountState(${accountId}) - Resultado: ${verification ? 'SUCESSO' : 'FALHA'}`);
+  console.log(`[API] setAccountState(${accountId}) - Map agora tem ${accountStates.size} entradas`);
   
-  // Verificar imediatamente se foi salvo
-  const verificacao = accountStates.get(accountId);
-  console.log(`[API] setAccountState(${accountId}) - Verificação imediata: ${verificacao ? 'SUCESSO' : 'FALHOU'}`);
+  // Listar todas as chaves
+  const keys = Array.from(accountStates.keys());
+  console.log(`[API] setAccountState(${accountId}) - Chaves no Map: [${keys.join(', ')}]`);
   
-  if (verificacao) {
-    console.log(`[API] setAccountState(${accountId}) - ✅ Estado salvo com sucesso: apiKey=${verificacao.apiKey ? 'SIM' : 'NÃO'}`);
-  } else {
-    console.error(`[API] setAccountState(${accountId}) - ❌ FALHA CRÍTICA: Estado não foi salvo!`);
-  }
-  
-  return verificacao !== null;
+  return verification;
 }
 
 /**
@@ -323,13 +308,7 @@ async function loadCredentialsFromDatabase(accountId) {
   }
   
   console.log(`[API] === FIM loadCredentialsFromDatabase para conta ${accountId} ===`);
-    
-    // CORREÇÃO CRÍTICA: Usar setAccountState para salvar no Map unificado
-    console.log('[API] CORREÇÃO: Salvando estado usando setAccountState...');
-    setAccountState(accountId, finalState);
-    console.log('[API] CORREÇÃO: Estado salvo via setAccountState');
-    
-    return accountState;
+  return accountState;
 }
 
 /**
