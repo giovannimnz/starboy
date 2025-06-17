@@ -565,17 +565,6 @@ function setupBookDepthWebsocket(symbol, callback, accountId) {
  * Para o monitoramento de preço
  */
 function stopPriceMonitoring(symbol, accountId) {
-  console.log(`[WEBSOCKET-DEBUG] setupBookDepthWebsocket chamado com:`);
-  console.log(`  - symbol: ${arguments[0]} (tipo: ${typeof arguments[0]})`);
-  console.log(`  - accountId: ${arguments[1]} (tipo: ${typeof arguments[1]})`);
-  console.log(`  - Total argumentos: ${arguments.length}`);
-  
-  if (!arguments[1] || typeof arguments[1] !== 'number') {
-    console.error(`[WEBSOCKET-DEBUG] ❌ ERRO: accountId inválido!`);
-    console.error(`[WEBSOCKET-DEBUG] Stack trace:`);
-    console.error(new Error().stack);
-    throw new Error(`setupBookDepthWebsocket: accountId é obrigatório (recebido: ${arguments[1]})`);
-  }
   // Validação do accountId
   if (!accountId || typeof accountId !== 'number') {
     console.error(`[WEBSOCKET] AccountId inválido para setupBookDepthWebsocket: ${accountId} (tipo: ${typeof accountId})`);

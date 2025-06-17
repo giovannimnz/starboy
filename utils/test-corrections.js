@@ -1,5 +1,5 @@
 // Teste de validação das correções
-const websocketApi = require('./websocketApi');
+const websocketApi = require('../websocketApi');
 
 async function testCorrections() {
   console.log('🧪 Testando correções...');
@@ -25,7 +25,7 @@ async function testCorrections() {
     console.log('\n=== TESTE 2: Imports ===');
     
     try {
-      const signalProcessor = require('./posicoes/signalProcessor');
+      const signalProcessor = require('../posicoes/signalProcessor');
       console.log('✅ signalProcessor carregado sem erros');
     } catch (importError) {
       console.error('❌ Erro ao importar signalProcessor:', importError.message);
@@ -33,7 +33,7 @@ async function testCorrections() {
     }
     
     try {
-      const limitMakerEntry = require('./posicoes/limitMakerEntry');
+      const limitMakerEntry = require('../posicoes/limitMakerEntry');
       console.log('✅ limitMakerEntry carregado sem erros');
     } catch (importError) {
       console.error('❌ Erro ao importar limitMakerEntry:', importError.message);

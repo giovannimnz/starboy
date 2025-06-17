@@ -4,7 +4,7 @@ async function testAccountIdFix() {
   
   try {
     console.log('\n=== TESTE 1: Verificar websockets.js ===');
-    const websockets = require('./websockets');
+    const websockets = require('../websockets');
     
     console.log('- setupBookDepthWebsocket:', typeof websockets.setupBookDepthWebsocket);
     
@@ -31,7 +31,7 @@ async function testAccountIdFix() {
     console.log('\n=== TESTE 3: Verificar limitMakerEntry.js ===');
     
     try {
-      const limitMaker = require('./posicoes/limitMakerEntry');
+      const limitMaker = require('../posicoes/limitMakerEntry');
       console.log('✅ limitMakerEntry carregado sem erros');
     } catch (error) {
       console.error('❌ Erro ao carregar limitMakerEntry:', error.message);
