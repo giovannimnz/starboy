@@ -141,7 +141,7 @@ async function executeLimitMakerEntry(db, signal, currentPrice, accountId) {
                 wsUpdateErrorCount++;
                 console.warn(`[LIMIT_ENTRY_DEPTH_WS] Dados de profundidade inválidos recebidos para ${signal.symbol}:`, depthData);
             }
-        }, accountId);
+        });
 
         // Aguardar dados do WebSocket
         const MAX_RETRY_ATTEMPTS = 30;
