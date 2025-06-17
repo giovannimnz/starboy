@@ -180,97 +180,73 @@ async function loadCredentialsFromDatabase(accountId) {
 /**
  * Faz requisição autenticada para a API
  */
-/**
- * Faz uma requisição autenticada para a API da Binance
- * @param {number} accountId - ID da conta
- * @param {string} method - Método HTTP (GET, POST, etc.)
- * @param {string} endpoint - Endpoint da API
- * @param {Object} params - Parâmetros da requisição
- * @returns {Promise<Object>} - Resposta da API
- */
-async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}) {
-  try {
-    console.log(`[API] makeAuthenticatedRequest chamado: accountId=${accountId}, method=${method}, endpoint=${endpoint}`);
-    
-    // Validar accountId
-    if (!accountId || typeof accountId !== 'number') {
-      throw new Error(`AccountId deve ser um número válido: ${accountId} (tipo: ${typeof accountId})`);
-    }
-    
-    // Obter estado da conta
-    const accountState = accountStates.get(accountId);
-    if (!accountState) {
-      throw new Error(`Estado da conta ${accountId} não encontrado`);
-    }
-    
-    const { apiKey, secretKey, apiUrl } = accountState;
-    
-    if (!apiKey || !secretKey || !apiUrl) {
+async function makeAuthenticatedRequest(accountId, method = 'GET', endpoint, data = null) {
+  console.log(`[API] makeAuthenticatedRequest chamado: accountId=${accountId}, method=${method}, endpoint=${endpoint}`);
+
+  if (!accountId || typeof accountId !== 'number') {
+    const errorMsg = `AccountId deve ser um número válido: ${accountId} (tipo: ${typeof accountId})`;
+    console.error(`[API] ${errorMsg}`);
+    throw new Error(errorMsg);
+  }
+
+  if (!endpoint || typeof endpoint !== 'string') {
+    const errorMsg = `Endpoint deve ser uma string válida: ${endpoint}`;
+    console.error(`[API] ${errorMsg}`);
+    throw new Error(errorMsg);
+  }
+
+  const accountState = getAccountConnectionState(accountId);
+  if (!accountState || !accountState.apiKey || !accountState.secretKey) {
+    console.warn(`[API] Credenciais não encontradas para conta ${accountId}. Tentando carregar...`);
+    await loadCredentialsFromDatabase(accountId);
+    const newState = getAccountConnectionState(accountId);
+    if (!newState || !newState.apiKey || !newState.secretKey) {
       throw new Error(`Credenciais incompletas para conta ${accountId}`);
     }
-    
-    // CORREÇÃO: Adicionar timestamp obrigatório
-    const timestamp = Date.now();
-    const paramsWithTimestamp = {
-      ...params,
-      timestamp: timestamp
-    };
-    
-    // Construir query string para assinatura
-    const queryString = Object.keys(paramsWithTimestamp)
-      .sort()
-      .map(key => `${key}=${encodeURIComponent(paramsWithTimestamp[key])}`)
-      .join('&');
-    
-    // CORREÇÃO: Gerar assinatura HMAC-SHA256 corretamente
-    const crypto = require('crypto');
-    const signature = crypto
-      .createHmac('sha256', secretKey)
-      .update(queryString)
-      .digest('hex');
-    
-    // Adicionar assinatura aos parâmetros
-    paramsWithTimestamp.signature = signature;
-    
-    const finalQueryString = Object.keys(paramsWithTimestamp)
-      .map(key => `${key}=${encodeURIComponent(paramsWithTimestamp[key])}`)
-      .join('&');
-    
-    // Construir URL final
-    const fullUrl = method === 'GET' 
-      ? `${apiUrl}${endpoint}?${finalQueryString}`
-      : `${apiUrl}${endpoint}`;
-    
-    console.log(`[API] Fazendo requisição: ${method} ${fullUrl.split('?')[0]}`);
-    
-    // Configurar headers
-    const headers = {
-      'X-MBX-APIKEY': apiKey,
-      'Content-Type': 'application/x-www-form-urlencoded'
-    };
-    
-    // Fazer requisição
-    const axios = require('axios');
-    let response;
-    
-    if (method === 'GET') {
-      response = await axios.get(fullUrl, { headers });
-    } else if (method === 'POST') {
-      response = await axios.post(fullUrl, finalQueryString, { headers });
-    } else if (method === 'PUT') {
-      response = await axios.put(fullUrl, finalQueryString, { headers });
-    } else if (method === 'DELETE') {
-      response = await axios.delete(fullUrl, { headers, data: finalQueryString });
-    } else {
-      throw new Error(`Método HTTP não suportado: ${method}`);
-    }
-    
+  }
+
+  const currentState = getAccountConnectionState(accountId);
+  const timestamp = Date.now();
+  const params = data ? { ...data, timestamp } : { timestamp };
+  
+  const queryString = Object.keys(params)
+    .sort()
+    .map(key => `${key}=${params[key]}`)
+    .join('&');
+  
+  const signature = crypto
+    .createHmac('sha256', currentState.secretKey)
+    .update(queryString)
+    .digest('hex');
+  
+  const finalParams = { ...params, signature };
+  const url = `${currentState.apiUrl}${endpoint}`;
+  
+  console.log(`[API] Fazendo requisição: ${method} ${url}`);
+  
+  const config = {
+    method,
+    url,
+    headers: {
+      'X-MBX-APIKEY': currentState.apiKey,
+      'Content-Type': 'application/json',
+    },
+    timeout: 10000,
+  };
+  
+  if (method === 'GET') {
+    config.params = finalParams;
+  } else {
+    config.data = finalParams;
+  }
+  
+  try {
+    const response = await axios(config);
     return response.data;
-    
   } catch (error) {
-    const errorMessage = error.response?.data?.msg || error.message;
-    console.error(`[API] Falha na requisição ${method} ${endpoint}: ${errorMessage}`);
-    throw new Error(`Falha na requisição ${method} ${endpoint}: ${errorMessage}`);
+    const errorMsg = `Falha na requisição ${method} ${endpoint}: ${error.response?.data?.msg || error.message}`;
+    console.error(`[API] ${errorMsg}`);
+    throw new Error(errorMsg);
   }
 }
 
