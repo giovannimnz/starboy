@@ -27,47 +27,6 @@ function formatErrorMessage(error) {
  * @param {number} currentPrice - Preço atual
  * @param {number} accountId - ID da conta
  */
-
-/**
- * Formata mensagem de entrada para Telegram
- */
-function formatEntryMessage(signal, quantity, averagePrice, totalValue) {
-  return `📈 ENTRADA EXECUTADA
-
-Símbolo: ${signal.symbol}
-Lado: ${signal.side}
-Quantidade: ${quantity}
-Preço Médio: ${averagePrice}
-Valor Total: ${totalValue.toFixed(2)} USDT
-Alavancagem: ${signal.leverage}x
-
-🎯 Take Profit: ${signal.tp_price}
-🛡️ Stop Loss: ${signal.sl_price}`;
-}
-
-/**
- * Formata mensagem de erro para Telegram
- */
-function formatErrorMessage(signal, errorMsg) {
-  return `🚨 ERRO NA EXECUÇÃO
-
-Símbolo: ${signal.symbol}
-Lado: ${signal.side}
-Preço Entrada: ${signal.entry_price}
-
-❌ Erro: ${errorMsg}
-
-Verifique os logs para mais detalhes.`;
-}
-
-
-/**
- * Processa um sinal de entrada
- * @param {Object} db - Conexão com banco
- * @param {Object} signal - Dados do sinal
- * @param {number} currentPrice - Preço atual
- * @param {number} accountId - ID da conta
- */
 async function processSignal(db, signal, currentPrice, accountId) {
   // Verificar se já está sendo processado
   if (processingSignals.has(signal.id)) {
@@ -147,7 +106,7 @@ async function processSignal(db, signal, currentPrice, accountId) {
         // Enviar notificação via Telegram se configurado
         if (chat_id) {
           const message = formatEntryMessage(signal, entryResult.filledQuantity, entryResult.averagePrice, entryResult.filledQuantity * entryResult.averagePrice);
-          try { await sendTelegramMessage(message, accountId); } catch (telegramError) { console.warn("[TELEGRAM] Erro ao enviar mensagem:", telegramError.message); }
+          await sendTelegramMessage(accountId, chat_id, message);
         }
         
         return entryResult;
@@ -176,7 +135,6 @@ async function processSignal(db, signal, currentPrice, accountId) {
       
       // Atualizar status para ERROR
       try {
-        const errorMessage = formatErrorMessage(error);
         await db.query(
           `UPDATE webhook_signals SET status = 'ERROR', error_message = ? WHERE id = ?`,
           [errorMessage, signal.id] // Usar errorMessage formatado
@@ -187,8 +145,8 @@ async function processSignal(db, signal, currentPrice, accountId) {
       
       // Enviar notificação de erro
       if (signal.chat_id) {
-        const errorMessage = formatErrorMessage(signal, formatErrorMessage(error));
-        await sendTelegramMessage(errorMessage, accountId);
+        const errorMessage = formatErrorMessage(signal, error.message);
+        await sendTelegramMessage(accountId, signal.chat_id, errorMessage);
       }
       
       return { success: false, error: error.message };
