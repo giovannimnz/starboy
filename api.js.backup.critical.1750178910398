@@ -583,12 +583,6 @@ async function getRecentOrders(accountId, symbol, limit = 10) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<number>} - Tick size (ex: 0.00001)
  */
-/**
- * Obtém o tick size (precisão de preço) para um símbolo
- * @param {string} symbol - Símbolo do par
- * @param {number} accountId - ID da conta
- * @returns {Promise<number>} - Tick size (ex: 0.00001)
- */
 async function getTickSize(symbol, accountId) {
   try {
     console.log(`[API] Obtendo tick size para ${symbol} (conta ${accountId})...`);
@@ -603,14 +597,8 @@ async function getTickSize(symbol, accountId) {
       
       console.log(`[API] ✅ Tick size para ${symbol}: ${tickSize} (precisão: ${precision.price})`);
       return tickSize;
-    } else if (precision && typeof precision.pricePrecision === 'number') {
-      // Fallback para campo alternativo
-      const tickSize = Math.pow(10, -precision.pricePrecision);
-      
-      console.log(`[API] ✅ Tick size para ${symbol}: ${tickSize} (pricePrecision: ${precision.pricePrecision})`);
-      return tickSize;
     } else {
-      console.warn(`[API] Não foi possível obter precisão válida para ${symbol}, usando fallback`);
+      console.error(`[API] Não foi possível obter precisão para ${symbol}`);
       // Fallback padrão para USDT pairs
       return 0.00001; // Padrão para a maioria dos pares USDT
     }
@@ -652,44 +640,6 @@ async function roundPriceToTickSize(symbol, price, accountId) {
   }
 }
 
-
-/**
- * Cria ordem limit maker
- * @param {number} accountId - ID da conta
- * @param {string} symbol - Símbolo
- * @param {string} quantity - Quantidade
- * @param {string} side - Lado (BUY/SELL)
- * @param {string} price - Preço
- * @returns {Promise<Object>} - Resultado da ordem
- */
-async function newLimitMakerOrder(accountId, symbol, quantity, side, price) {
-  try {
-    console.log(`[API] Criando ordem LIMIT MAKER: ${side} ${quantity} ${symbol} @ ${price} (conta ${accountId})`);
-    
-    const orderParams = {
-      symbol: symbol,
-      side: side,
-      type: 'LIMIT',
-      timeInForce: 'GTC',
-      quantity: quantity,
-      price: price
-    };
-    
-    const response = await makeAuthenticatedRequest(accountId, 'POST', '/v1/order', orderParams);
-    
-    if (response && response.orderId) {
-      console.log(`[API] ✅ Ordem LIMIT MAKER criada: ID ${response.orderId}`);
-      return response;
-    } else {
-      console.error(`[API] Resposta inválida ao criar ordem LIMIT MAKER:`, response);
-      throw new Error('Resposta inválida da API ao criar ordem');
-    }
-  } catch (error) {
-    console.error(`[API] Erro ao criar ordem LIMIT MAKER para ${symbol}:`, error.message);
-    throw error;
-  }
-}
-
 module.exports = {
   getAccountConnectionState,
   getAllAccountConnections,
@@ -708,5 +658,4 @@ module.exports = {
   getRecentOrders,
   getTickSize,
   roundPriceToTickSize,
-  newLimitMakerOrder,
 };
