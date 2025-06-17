@@ -565,14 +565,6 @@ function setupBookDepthWebsocket(symbol, callback, accountId) {
  * Para o monitoramento de preço
  */
 function stopPriceMonitoring(symbol, accountId) {
-  // Validação do accountId
-  if (!accountId || typeof accountId !== 'number') {
-    console.error(`[WEBSOCKET] AccountId inválido para setupBookDepthWebsocket: ${accountId} (tipo: ${typeof accountId})`);
-    throw new Error(`AccountId é obrigatório e deve ser um número, recebido: ${accountId}`);
-  }
-  
-  console.log(`[WEBSOCKET] setupBookDepthWebsocket chamado para conta ${accountId}`);
-
   const priceWebsockets = getPriceWebsockets(accountId);
   if (priceWebsockets && priceWebsockets.has(symbol)) {
     priceWebsockets.get(symbol).close();

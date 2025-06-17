@@ -131,7 +131,7 @@ async function executeLimitMakerEntry(db, signal, currentPrice, accountId) {
 
         // Integração WebSocket de profundidade
         console.log(`[LIMIT_ENTRY] Iniciando WebSocket de profundidade para ${signal.symbol}`);
-        depthWs = websockets.setupBookDepthWebsocket(signal.symbol, (depthData, accountId) => {
+        depthWs = websockets.setupBookDepthWebsocket(signal.symbol, (depthData) => {
             if (depthData.bestBid && depthData.bestAsk) {
                 currentBestBid = parseFloat(depthData.bestBid);
                 currentBestAsk = parseFloat(depthData.bestAsk);
