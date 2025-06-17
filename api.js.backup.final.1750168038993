@@ -51,7 +51,7 @@ function getAccountConnectionState(accountId, createIfMissing = false) {
 // >>> FIM: Mover estado da conexão para api.js <<<
 
 async function loadCredentialsFromDatabase(accountId) {
-  console.log(`[API] Carregando credenciais do banco para conta ${accountId} (chamado de api.js)...`);
+  // console.log(`[API] Carregando credenciais do banco para conta ${accountId} (chamado de api.js)...`);
   if (typeof accountId !== 'number' || isNaN(accountId)) {
     const errorMsg = `AccountId deve ser um número válido para carregar credenciais: ${String(accountId)} (tipo: ${typeof accountId})`;
     console.error(`[API] ${errorMsg}`);
@@ -79,7 +79,6 @@ async function loadCredentialsFromDatabase(accountId) {
   accountState.secretKey = creds.api_secret;
   accountState.wsApiKey = creds.ws_api_key;
   accountState.wsApiSecret = creds.ws_api_secret; // Chave privada Ed25519
-  accountState.privateKey = creds.ws_api_secret; // Alias para wsApiSecret
   accountState.apiUrl = creds.futures_rest_api_url;
   accountState.wsUrl = creds.futures_ws_market_url; // Para bookTicker, klines, etc.
   accountState.wsApiUrl = creds.futures_ws_api_url; // Para WebSocket API de trading
@@ -87,7 +86,7 @@ async function loadCredentialsFromDatabase(accountId) {
   accountState.corretora = creds.corretora;
   accountState.nomeConta = creds.nome_conta;
 
-  console.log(`[API] Credenciais carregadas e estado atualizado em api.js para conta ${accountId}`);
+  // console.log(`[API] Credenciais carregadas e estado atualizado em api.js para conta ${accountId}`);
   return accountState; // Retorna o estado atualizado
 }
 
@@ -1550,21 +1549,48 @@ async function keepAliveListenKey(accountId, listenKeyToKeepAlive) {
 }
 
 module.exports = {
-  getPrice,
-  getAccountInfo,
-  getAllOpenPositions,
-  getSymbolInfo,
-  getPrecision,
+  getFuturesAccountBalanceDetails,
+  getAccountConnectionState,
+  getMaxLeverage,
+  getCurrentLeverage,
+  getCurrentMarginType,
   changeInitialLeverage,
   changeMarginType,
-  createOrder,
+  newOrder,
+  newEntryOrder,
+  newLimitMakerOrder,
+  editOrder,
+  newReduceOnlyOrder,
+  newStopOrder,
+  newStopOrTpLimitOrder,
+  newTakeProfitOrder,
+  getTickSize,
+  roundPriceToTickSize,
+  getPrecision,
+  getOpenOrders,
+  getRecentOrders,
+  getOrderStatus,
+  getMultipleOrderStatus,
+  getPositionDetails,
+  getAllOpenPositions,
+  obterSaldoPosicao,
   cancelOrder,
-  getListenKey,
-  keepAliveListenKey,
-  getCurrentLeverage,
-  verifyAndFixEnvironmentConsistency,
+  transferBetweenAccounts,
+  cancelAllOpenOrders,
+  encerrarPosicao,
+  getAllLeverageBrackets,
+  setPositionMode,
+  getPositionMode,
+  closePosition,
+  getPrice,
+  updateLeverageBracketsInDatabase,
+  getLeverageBracketsFromDb,
+  getMaxLeverageFromDb,
+  getMarginInfoFromDb,
+  calculateRequiredMargin,
+  cancelPendingEntry,
   loadCredentialsFromDatabase,
-  makeAuthenticatedRequest,
-  getAccountConnectionState,
-  getAllAccountConnections
+  verifyAndFixEnvironmentConsistency,
+  getListenKey, // EXPORTAR
+  keepAliveListenKey // EXPORTAR
 };

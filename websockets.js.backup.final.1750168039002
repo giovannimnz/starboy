@@ -437,7 +437,7 @@ async function checkSessionStatus(accountId) {
     const request = await createSignedRequest('session.status', {}, accountId);
     const response = await sendWebSocketApiRequest(request, 30000, accountId);
     
-    const accountState = true);
+    const accountState = getAccountConnectionState(accountId, true);
     
     if (response && response.result) {
       accountState.wsApiAuthenticated = response.result.apiKey !== null && response.result.authorizedSince > 0;
@@ -448,7 +448,7 @@ async function checkSessionStatus(accountId) {
     return response;
   } catch (error) {
     console.error(`[WS-API] Erro ao verificar status da sessão para conta ${accountId}:`, error.message || error);
-    const accountState = true);
+    const accountState = getAccountConnectionState(accountId, true);
     accountState.wsApiAuthenticated = false;
     return { result: { apiKey: null, authorizedSince: 0, connectedSince: 0 }, error: { message: error.message || 'Erro desconhecido ao verificar status', code: error.code || -1 } };
   }
@@ -547,7 +547,7 @@ async function ensurePriceWebsocketExists(symbol, accountId) {
     priceWebsockets.delete(symbol);
   }
 
-  const accountState = true);
+  const accountState = getAccountConnectionState(accountId, true);
   if (!accountState.wsUrl) {
     await api.loadCredentialsFromDatabase(accountId);
   }
@@ -600,7 +600,7 @@ async function ensurePriceWebsocketExists(symbol, accountId) {
  */
 async function handlePriceUpdate(symbol, tickerData, accountId) {
   try {
-    const accountState = true);
+    const accountState = getAccountConnectionState(accountId, true);
     let db = accountState.dbInstance;
     
     if (!db) {
@@ -645,7 +645,7 @@ async function handlePriceUpdate(symbol, tickerData, accountId) {
  * Configura websocket para monitoramento de BookTicker
  */
 function setupBookDepthWebsocket(symbol, callback, accountId) {
-  const accountState = true);
+  const accountState = getAccountConnectionState(accountId, true);
   
   const wsEndpoint = `${accountState.wsUrl}/${symbol.toLowerCase()}@bookTicker`;
   console.log(`[WEBSOCKET] Conectando ao BookTicker em tempo real: ${wsEndpoint} (conta ${accountId})`);
@@ -743,7 +743,7 @@ function stopPriceMonitoring(symbol, accountId) {
  * Inicia stream de dados do usuário para uma conta
  */
 async function startUserDataStream(db, accountId) {
-  const accountState = true); 
+  const accountState = getAccountConnectionState(accountId, true); 
 
   if (accountState.userDataStream && accountState.userDataStream.readyState === WebSocket.OPEN) {
     console.log(`[WEBSOCKET] UserDataStream já está ativo para conta ${accountId}`);
@@ -913,7 +913,7 @@ function restartUserDataStream(db, accountId) {
 }
 
 function setMonitoringCallbacks(callbackHandlers, accountId) {
-  const accountState = true);
+  const accountState = getAccountConnectionState(accountId, true);
   accountState.monitoringCallbacks = { ...accountState.monitoringCallbacks, ...callbackHandlers };
   return accountState.monitoringCallbacks;
 }
@@ -1096,7 +1096,10 @@ function forceCleanupAccount(accountId) {
       priceWebsockets.clear();
     }
     
-    const accountState = 'Graceful shutdown');
+    const accountState = getAccountConnectionState(accountId);
+    if (accountState) {
+      if (accountState.userDataStream && accountState.userDataStream.readyState !== WebSocket.CLOSED) {
+        accountState.userDataStream.close(1000, 'Graceful shutdown');
       }
       
       if (accountState.userDataKeepAliveInterval) {
