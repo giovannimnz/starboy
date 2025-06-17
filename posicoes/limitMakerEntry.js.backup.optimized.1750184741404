@@ -1,59 +1,4 @@
 
-// OTIMIZAÇÃO GLOBAL: Cache único por execução para evitar spam de API
-const globalExecutionCache = new Map();
-
-function getOrCreateExecutionCache(symbol, accountId) {
-  const cacheKey = `${symbol}_${accountId}_${Date.now()}`;
-  
-  if (!globalExecutionCache.has(cacheKey)) {
-    globalExecutionCache.set(cacheKey, {
-      precision: null,
-      tickSize: null,
-      symbol: symbol,
-      accountId: accountId,
-      created: Date.now()
-    });
-    
-    // Auto-cleanup após 5 minutos
-    setTimeout(() => {
-      globalExecutionCache.delete(cacheKey);
-    }, 5 * 60 * 1000);
-  }
-  
-  return globalExecutionCache.get(cacheKey);
-}
-
-async function getOptimizedPrecision(symbol, accountId) {
-  const cache = getOrCreateExecutionCache(symbol, accountId);
-  
-  if (cache.precision) {
-    console.log(`[LIMIT_ENTRY] Usando precisão em cache otimizado para ${symbol}`);
-    return cache.precision;
-  }
-  
-  console.log(`[LIMIT_ENTRY] Obtendo precisão ÚNICA para ${symbol} (execução otimizada)`);
-  const { getPrecisionCached } = require('../api');
-  cache.precision = await getPrecisionCached(symbol, accountId);
-  
-  return cache.precision;
-}
-
-async function getOptimizedTickSize(symbol, accountId) {
-  const cache = getOrCreateExecutionCache(symbol, accountId);
-  
-  if (cache.tickSize) {
-    console.log(`[LIMIT_ENTRY] Usando tick size em cache otimizado para ${symbol}`);
-    return cache.tickSize;
-  }
-  
-  console.log(`[LIMIT_ENTRY] Obtendo tick size ÚNICO para ${symbol} (execução otimizada)`);
-  const precision = await getOptimizedPrecision(symbol, accountId);
-  cache.tickSize = Math.pow(10, -precision.pricePrecision);
-  
-  return cache.tickSize;
-}
-
-
 // CORREÇÃO: Cache de precisão único para toda a execução
 let cachedPrecisionInfo = null;
 let cachedSymbol = null;
@@ -335,7 +280,7 @@ async function executeLimitMakerEntry(db, signal, currentPrice, accountId) {
             if (activeOrderId) {
                 let currentOrderDataFromExchange;
                 try {
-                    currentOrderDataFromExchange = await api.getOrderStatus(signal.symbol, orderId, numericAccountId);
+                    currentOrderDataFromExchange = await websocketApi.getOrderStatusViaWebSocket(signal.symbol, activeOrderId, numericAccountId);
                 } catch (e) {
                     if (e.status === 400 && e.error?.code === -2013) {
                         console.log(`[LIMIT_ENTRY] Ordem ${activeOrderId} não encontrada. Possivelmente cancelada.`);
@@ -1023,7 +968,7 @@ async function waitForOrderStatus(symbol, orderId, accountId) {
     
     try {
         // Tentar via WebSocket API
-        const wsResult = await websocketApi.api.getOrderStatus(symbol, orderId, accountId);
+        const wsResult = await websocketApi.getOrderStatus(symbol, orderId, accountId);
         
         if (wsResult && wsResult.status) {
             console.log(`[LIMIT_ENTRY] Status da ordem ${orderId} via WebSocket: ${wsResult.status}`);
