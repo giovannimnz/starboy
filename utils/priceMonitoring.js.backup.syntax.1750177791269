@@ -12,8 +12,8 @@ const lastPriceLogTime = {};
 // Intervalo para log de preços (ms)
 const PRICE_LOG_INTERVAL = 60000; // 1 minuto
 
-// Constante para verificações vazias
-const MAX_EMPTY_CHECKS = 10;
+// CORREÇÃO CRÍTICA: Adicionar constante que estava faltando
+const MAX_EMPTY_CHECKS = 10; // Número máximo de verificações vazias antes de fechar WebSocket
 
 // Contador para verificar quando fechar websockets sem atividade
 const websocketEmptyCheckCounter = {};
@@ -25,7 +25,7 @@ const websocketEmptyCheckCounter = {};
  */
 async function startPriceMonitoring(accountId) {
   try {
-    // Validar accountId
+    // CORREÇÃO: Validar accountId
     if (!accountId || typeof accountId !== 'number') {
       throw new Error(`AccountId inválido em startPriceMonitoring: ${accountId} (tipo: ${typeof accountId})`);
     }
@@ -129,7 +129,7 @@ async function updatePositionPrices(db, symbol, currentPrice) {
  */
 async function onPriceUpdate(symbol, currentPrice, db, accountId) {
   try {
-    // Validação robusta dos parâmetros
+    // CORREÇÃO: Validação robusta dos parâmetros
     if (!symbol || typeof symbol !== 'string') {
       console.error(`[PRICE] Símbolo inválido em onPriceUpdate: ${symbol}`);
       return;
@@ -156,18 +156,29 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
       console.error(`[PRICE] Não foi possível converter preço para número válido: ${currentPrice}`);
       return;
     }
+    try {
+    // CORREÇÃO: Validar parâmetros
+    if (!symbol || !currentPrice || !db || !accountId) {
+      console.error(`[PRICE] Parâmetros inválidos em onPriceUpdate: symbol=${symbol}, currentPrice=${currentPrice}, db=${!!db}, accountId=${accountId}`);
+      return;
+    }
+
+    if (typeof accountId !== 'number') {
+      console.error(`[PRICE] AccountId deve ser número em onPriceUpdate: ${accountId} (tipo: ${typeof accountId})`);
+      return;
+    }
 
     // Atualizar cache de preços
-    updatePriceCache(symbol, validPrice);
+    updatePriceCache(symbol, currentPrice);
     
     // Atualizar preços das posições
-    await updatePositionPrices(db, symbol, validPrice);
+    await updatePositionPrices(db, symbol, currentPrice);
 
     // Log periódico de preços
     const now = Date.now();
     if (!lastPriceLogTime[symbol] || (now - lastPriceLogTime[symbol] > PRICE_LOG_INTERVAL)) {
       lastPriceLogTime[symbol] = now;
-      console.log(`[PRICE] ${symbol}: ${validPrice}`);
+      console.log(`[PRICE] ${symbol}: ${currentPrice}`);
     }
 
     // Buscar sinais pendentes para este símbolo
@@ -214,7 +225,8 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
       
       if (websocketEmptyCheckCounter[symbol] >= MAX_EMPTY_CHECKS) {
         console.log(`[PRICE] ${symbol}: Sem atividade por ${MAX_EMPTY_CHECKS} verificações. Removendo WebSocket.`);
-        websockets.stopPriceMonitoring(symbol, accountId);
+        // Agora 'websockets' se refere à instância importada no topo do arquivo
+        websockets.stopPriceMonitoring(symbol, accountId); // SUBSTITUÍDO AQUI
         delete websocketEmptyCheckCounter[symbol];
         latestPrices.delete(symbol);
         delete lastPriceLogTime[symbol];
@@ -224,17 +236,17 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
       websocketEmptyCheckCounter[symbol] = 0;
     }
 
+    // CORREÇÃO CRÍTICA: Processar sinais diretamente com processSignal
+    const { processSignal } = require('./signalProcessor');
+
     // Processar sinais pendentes
-    if (pendingSignals.length > 0) {
-      const { processSignal } = require('./signalProcessor');
-      
-      for (const signal of pendingSignals) {
-        try {
-          console.log(`[PRICE] Processando sinal ${signal.id} para ${signal.symbol} com preço ${validPrice}`);
-          await processSignal(db, signal, validPrice, accountId);
-        } catch (signalError) {
-          console.error(`[PRICE] Erro ao processar sinal ${signal.id}:`, signalError);
-        }
+    for (const signal of pendingSignals) {
+      try {
+        // CORREÇÃO: Chamar processSignal diretamente com currentPrice já disponível
+        console.log(`[PRICE] Processando sinal ${signal.id} para ${signal.symbol} com preço ${currentPrice}`);
+        await processSignal(db, signal, currentPrice, accountId);
+      } catch (signalError) {
+        console.error(`[PRICE] Erro ao processar sinal ${signal.id}:`, signalError);
       }
     }
   } catch (error) {
@@ -250,7 +262,7 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
  */
 async function checkAndCloseWebsocket(db, symbol, accountId) {
   try {
-    // Validar accountId
+    // CORREÇÃO: Validar accountId
     if (!accountId || typeof accountId !== 'number') {
       console.error(`[PRICE] AccountId inválido em checkAndCloseWebsocket: ${accountId}`);
       return;
@@ -282,7 +294,8 @@ async function checkAndCloseWebsocket(db, symbol, accountId) {
 
     if (totalActivity === 0) {
       console.log(`[PRICE] Fechando websocket de ${symbol} para conta ${accountId} - sem atividade restante`);
-      websockets.stopPriceMonitoring(symbol, accountId);
+      // const websockets = require('../websockets'); // Esta linha pode ser removida se websockets já está no topo
+      websockets.stopPriceMonitoring(symbol, accountId); // SUBSTITUÍDO AQUI
       latestPrices.delete(symbol);
       delete lastPriceLogTime[symbol];
       delete websocketEmptyCheckCounter[symbol];

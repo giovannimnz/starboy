@@ -545,70 +545,6 @@ async function getFuturesAccountBalanceDetails(accountId) {
   }
 }
 
-
-/**
- * Obtém ordens recentes para sincronização
- * @param {string} symbol - Símbolo do par
- * @param {number} accountId - ID da conta
- * @param {number} limit - Limite de ordens (padrão: 10)
- * @returns {Promise<Array>} - Lista de ordens recentes
- */
-async function getRecentOrders(symbol, accountId, limit = 10) {
-  try {
-    console.log(`[API] Obtendo ordens recentes para ${symbol} (conta ${accountId})...`);
-    
-    const params = {
-      symbol: symbol,
-      limit: limit
-    };
-    
-    const response = await makeAuthenticatedRequest(accountId, 'GET', '/v1/allOrders', params);
-    
-    if (Array.isArray(response)) {
-      console.log(`[API] ✅ ${response.length} ordens recentes obtidas para ${symbol}`);
-      return response;
-    } else {
-      console.error(`[API] Resposta inválida ao obter ordens recentes para ${symbol}:`, response);
-      return [];
-    }
-  } catch (error) {
-    console.error(`[API] Erro ao obter ordens recentes para ${symbol} (conta ${accountId}):`, error.message);
-    return [];
-  }
-}
-
-/**
- * Obtém o tick size (precisão de preço) para um símbolo
- * @param {string} symbol - Símbolo do par
- * @param {number} accountId - ID da conta
- * @returns {Promise<number>} - Tick size (ex: 0.00001)
- */
-async function getTickSize(symbol, accountId) {
-  try {
-    console.log(`[API] Obtendo tick size para ${symbol} (conta ${accountId})...`);
-    
-    // Usar a função getPrecision existente que já obtém as informações do exchangeInfo
-    const precision = await getPrecision(symbol, accountId);
-    
-    if (precision && typeof precision.price === 'number') {
-      // Calcular tick size baseado na precisão
-      // Se price precision = 7, então tick size = 0.0000001 (10^-7)
-      const tickSize = Math.pow(10, -precision.price);
-      
-      console.log(`[API] ✅ Tick size para ${symbol}: ${tickSize} (precisão: ${precision.price})`);
-      return tickSize;
-    } else {
-      console.error(`[API] Não foi possível obter precisão para ${symbol}`);
-      // Fallback padrão para USDT pairs
-      return 0.00001; // Padrão para a maioria dos pares USDT
-    }
-  } catch (error) {
-    console.error(`[API] Erro ao obter tick size para ${symbol} (conta ${accountId}):`, error.message);
-    // Fallback em caso de erro
-    return 0.00001;
-  }
-}
-
 module.exports = {
   getAccountConnectionState,
   getAllAccountConnections,
@@ -622,8 +558,7 @@ module.exports = {
   changeInitialLeverage,
   getCurrentMarginType,
   changeMarginType,
-  verifyAndFixEnvironmentConsistency,
-  getFuturesAccountBalanceDetails,
-  getRecentOrders,
-  getTickSize,
+  verifyAndFixEnvironmentConsistency
+,
+  getFuturesAccountBalanceDetails
 };

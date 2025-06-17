@@ -507,7 +507,14 @@ async function handlePriceUpdate(symbol, tickerData, accountId) {
 
     const bestBid = parseFloat(tickerData.b);
     const bestAsk = parseFloat(tickerData.a);
-    const currentPrice = (bestBid + bestAsk) / 2;
+    // CORREÇÃO: Cálculo mais robusto do currentPrice
+    let currentPrice;
+    if (!isNaN(bestBid) && !isNaN(bestAsk) && bestBid > 0 && bestAsk > 0) {
+      currentPrice = (bestBid + bestAsk) / 2;
+    } else {
+      console.warn(`[WEBSOCKETS] Preços inválidos para ${symbol}: bid=${bestBid}, ask=${bestAsk}`);
+      return; // Não processar se os preços são inválidos
+    }
 
     if (accountState.monitoringCallbacks && accountState.monitoringCallbacks.onPriceUpdate) {
       await accountState.monitoringCallbacks.onPriceUpdate(symbol, currentPrice, db, accountId);
