@@ -203,31 +203,71 @@ async function executeLimitMakerEntry(db, signal, currentPrice, accountId) {
 
         // Integração WebSocket de profundidade
         console.log(`[LIMIT_ENTRY] Iniciando WebSocket de profundidade para ${signal.symbol}`);
-        depthWs = websockets.setupBookDepthWebsocket(signal.symbol, (depthData, accountId) => {
-            if (depthData.bestBid && depthData.bestAsk) {
-                currentBestBid = parseFloat(depthData.bestBid);
-                currentBestAsk = parseFloat(depthData.bestAsk);
+        depthWs = websockets.setupBookDepthWebsocket(signal.symbol, (depthData, receivedAccountId) => {
+            // VALIDAÇÃO: Verificar se é para a conta correta
+            if (receivedAccountId && receivedAccountId !== accountId) {
+                console.warn(`[LIMIT_ENTRY_DEPTH_WS] Dados recebidos para conta diferente: esperado ${accountId}, recebido ${receivedAccountId}`);
+                return;
+            }
+            
+            if (depthData && depthData.bestBid && depthData.bestAsk) {
+                const bid = parseFloat(depthData.bestBid);
+                const ask = parseFloat(depthData.bestAsk);
+                
+                // VALIDAÇÃO ADICIONAL: Verificar spread razoável
+                const spread = ask - bid;
+                const spreadPercent = (spread / bid) * 100;
+                
+                if (spreadPercent > 5) { // Spread maior que 5% é suspeito
+                    console.warn(`[LIMIT_ENTRY_DEPTH_WS] Spread muito alto para ${signal.symbol}: ${spreadPercent.toFixed(4)}%`);
+                    wsUpdateErrorCount++;
+                    return;
+                }
+                
+                currentBestBid = bid;
+                currentBestAsk = ask;
                 lastDepthUpdateTimestamp = Date.now();
                 wsUpdateErrorCount = 0;
+                
+                console.log(`[LIMIT_ENTRY_DEPTH_WS] ✅ Dados válidos ${signal.symbol}: Bid=${bid.toFixed(7)}, Ask=${ask.toFixed(7)}, Spread=${spreadPercent.toFixed(4)}%`);
             } else {
                 wsUpdateErrorCount++;
-                console.warn(`[LIMIT_ENTRY_DEPTH_WS] Dados de profundidade inválidos recebidos para ${signal.symbol}:`, depthData);
+                console.warn(`[LIMIT_ENTRY_DEPTH_WS] Dados de profundidade inválidos para ${signal.symbol}:`, depthData);
             }
         }, accountId);
 
-        // Aguardar dados do WebSocket
-        const MAX_RETRY_ATTEMPTS = 30;
-        const RETRY_INTERVAL_MS = 500;
+        // Aguardar dados do WebSocket com fallback melhorado
+        const MAX_RETRY_ATTEMPTS = 10; // REDUZIR de 30 para 10
+        const RETRY_INTERVAL_MS = 200; // REDUZIR de 500 para 200ms
         let wsRetryCount = 0;
         let hasValidBookData = false;
+        
+        // TENTAR OBTER DADOS ATUAIS PRIMEIRO VIA REST API
+        let fallbackBid = null;
+        let fallbackAsk = null;
+        
+        try {
+            console.log(`[LIMIT_ENTRY] Obtendo dados de preço via REST API como fallback...`);
+            const currentMarketPrice = await api.getPrice(signal.symbol, numericAccountId);
+            if (currentMarketPrice && currentMarketPrice > 0) {
+                // Estimar spread de ~0.01% para criar bid/ask
+                const spread = currentMarketPrice * 0.0001;
+                fallbackBid = currentMarketPrice - spread;
+                fallbackAsk = currentMarketPrice + spread;
+                console.log(`[LIMIT_ENTRY] Dados de fallback: Bid=${fallbackBid.toFixed(7)}, Ask=${fallbackAsk.toFixed(7)}`);
+            }
+        } catch (priceError) {
+            console.warn(`[LIMIT_ENTRY] Erro ao obter preço de fallback:`, priceError.message);
+        }
 
         while (wsRetryCount < MAX_RETRY_ATTEMPTS && !hasValidBookData) {
             if (currentBestBid !== null && currentBestAsk !== null && 
                 !isNaN(currentBestBid) && !isNaN(currentBestAsk) && 
-                currentBestBid > 0 && currentBestAsk > 0) {
+                currentBestBid > 0 && currentBestAsk > 0 &&
+                currentBestBid < currentBestAsk) { // ADICIONAR validação de spread
                 
                 hasValidBookData = true;
-                console.log(`[LIMIT_ENTRY] Dados do BookTicker (WebSocket) recebidos para ${signal.symbol} após ${wsRetryCount} tentativas. Bid=${currentBestBid}, Ask=${currentBestAsk}`);
+                console.log(`[LIMIT_ENTRY] ✅ Dados do BookTicker (WebSocket) válidos para ${signal.symbol} após ${wsRetryCount} tentativas. Bid=${currentBestBid}, Ask=${currentBestAsk}`);
                 break;
             }
             
@@ -235,8 +275,18 @@ async function executeLimitMakerEntry(db, signal, currentPrice, accountId) {
             await new Promise(resolve => setTimeout(resolve, RETRY_INTERVAL_MS));
         }
         
+        // CORREÇÃO: Usar fallback se WebSocket falhar
         if (!hasValidBookData) {
-            throw new Error(`BookTicker WebSocket para ${signal.symbol} não recebeu dados válidos após ${MAX_RETRY_ATTEMPTS} tentativas.`);
+            console.warn(`[LIMIT_ENTRY] ⚠️ BookTicker WebSocket falhou após ${MAX_RETRY_ATTEMPTS} tentativas. Usando fallback REST.`);
+            
+            if (fallbackBid && fallbackAsk) {
+                currentBestBid = fallbackBid;
+                currentBestAsk = fallbackAsk;
+                hasValidBookData = true;
+                console.log(`[LIMIT_ENTRY] ✅ Usando dados de fallback REST: Bid=${currentBestBid.toFixed(7)}, Ask=${currentBestAsk.toFixed(7)}`);
+            } else {
+                throw new Error(`Não foi possível obter dados de preço válidos nem via WebSocket nem via REST API para ${signal.symbol}`);
+            }
         }
 
         // Loop principal de chasing
@@ -831,7 +881,7 @@ async function executeLimitMakerEntry(db, signal, currentPrice, accountId) {
                         await insertNewOrder(connection, tpOrderData); 
                         console.log(`[LIMIT_ENTRY_RECOVERY] TP de emergência (recuperação) criado: ${tpResponse.data.orderId}`);
                         await connection.query(`UPDATE webhook_signals SET tp_order_id = ?, status = 'EXECUTADO_COM_AVISO_RECUPERACAO', error_message = LEFT(CONCAT('Recuperação: ', ?, error_message), 250) WHERE id = ? AND position_id = ?`, 
-                                                [String(tpResponse.data.orderId), `Erro: ${originalErrorMessage}. Posição salva, SL/TP emergência tentados.`, signal.id, positionId]);
+                                                [String(tpResponse.data.orderId), `Erro: ${originalErrorMessage}. Posição salva, SL/TP emergência foram tentados.`, signal.id, positionId]);
                     } else { 
                         console.error(`[LIMIT_ENTRY_RECOVERY] Falha criar TP de emergência (recuperação). Resposta inválida:`, tpResponse); 
                     }

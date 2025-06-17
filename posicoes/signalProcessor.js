@@ -3,7 +3,7 @@ const api = require('../api');
 const websockets = require('../websockets');
 const { getDatabaseInstance } = require('../db/conexao');
 const { executeLimitMakerEntry } = require('./limitMakerEntry');
-//const { sendMessage } = require('./telegramBot');
+const { sendTelegramMessage, formatErrorMessage } = require('./telegramBot'); // ADICIONAR aqui
 //const { getConfig } = require('../utils/configManager'); // Descomente se getConfig for usado neste arquivo
 
 // Conjunto para controlar sinais em processamento

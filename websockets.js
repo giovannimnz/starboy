@@ -522,44 +522,82 @@ async function handlePriceUpdate(symbol, tickerData, accountId) {
 }
 
 /**
- * Configura websocket para BookTicker
+ * Configura websocket para BookTicker com validação robusta
  */
 function setupBookDepthWebsocket(symbol, callback, accountId) {
+  // CORREÇÃO: Validação rigorosa do accountId
+  if (!accountId || typeof accountId !== 'number') {
+    console.error(`[WEBSOCKET] ❌ ERRO: accountId inválido para setupBookDepthWebsocket: ${accountId} (tipo: ${typeof accountId})`);
+    throw new Error(`setupBookDepthWebsocket: accountId é obrigatório e deve ser um número, recebido: ${accountId}`);
+  }
+  
+  console.log(`[WEBSOCKET] Configurando BookTicker para ${symbol} (conta ${accountId})`);
+  
   const accountState = getAccountConnectionState(accountId, true);
+  
+  if (!accountState || !accountState.wsUrl) {
+    console.error(`[WEBSOCKET] Estado da conta ${accountId} ou wsUrl não encontrado`);
+    return null;
+  }
+  
   const wsEndpoint = `${accountState.wsUrl}/ws/${symbol.toLowerCase()}@bookTicker`;
+  console.log(`[WEBSOCKET] Conectando BookTicker: ${wsEndpoint}`);
   
   const ws = new WebSocket(wsEndpoint);
   
+  // CORREÇÃO: Timeout para conexão
+  const connectionTimeout = setTimeout(() => {
+    if (ws.readyState !== WebSocket.OPEN) {
+      console.error(`[WEBSOCKET] Timeout na conexão BookTicker para ${symbol}`);
+      ws.terminate();
+    }
+  }, 5000);
+  
   ws.on('open', () => {
-    console.log(`[WEBSOCKET] BookTicker conectado para ${symbol}`);
+    clearTimeout(connectionTimeout);
+    console.log(`[WEBSOCKET] ✅ BookTicker conectado para ${symbol} (conta ${accountId})`);
   });
   
   ws.on('message', (data) => {
     try {
       const tickerData = JSON.parse(data);
+      
+      // CORREÇÃO: Validação mais rigorosa dos dados
       if (tickerData && tickerData.b && tickerData.a) {
         const bestBid = parseFloat(tickerData.b);
         const bestAsk = parseFloat(tickerData.a);
         
-        if (!isNaN(bestBid) && !isNaN(bestAsk)) {
+        // VALIDAÇÃO ADICIONAL: Verificar se bid < ask e valores são positivos
+        if (!isNaN(bestBid) && !isNaN(bestAsk) && 
+            bestBid > 0 && bestAsk > 0 && bestBid < bestAsk) {
+          
+          console.log(`[WEBSOCKET] BookTicker dados válidos ${symbol}: Bid=${bestBid}, Ask=${bestAsk}`);
+          
           callback({
             bestBid, 
             bestAsk,
             timestamp: tickerData.E || Date.now()
-          });
+          }, accountId); // CORREÇÃO: Passar accountId para callback
+          
+        } else {
+          console.warn(`[WEBSOCKET] Dados BookTicker inválidos para ${symbol}: Bid=${bestBid}, Ask=${bestAsk}`);
         }
+      } else {
+        console.warn(`[WEBSOCKET] Estrutura de dados BookTicker inválida para ${symbol}:`, tickerData);
       }
     } catch (error) {
-      console.error(`[WEBSOCKET] Erro ao processar BookTicker:`, error.message);
+      console.error(`[WEBSOCKET] Erro ao processar BookTicker para ${symbol}:`, error.message);
     }
   });
   
   ws.on('error', (error) => {
-    console.error(`[WEBSOCKET] Erro na conexão BookTicker:`, error.message);
+    clearTimeout(connectionTimeout);
+    console.error(`[WEBSOCKET] Erro na conexão BookTicker para ${symbol}:`, error.message);
   });
   
-  ws.on('close', () => {
-    console.log(`[WEBSOCKET] BookTicker fechado para ${symbol}`);
+  ws.on('close', (code, reason) => {
+    clearTimeout(connectionTimeout);
+    console.log(`[WEBSOCKET] BookTicker fechado para ${symbol}. Code: ${code}, Reason: ${reason}`);
   });
   
   return ws;
