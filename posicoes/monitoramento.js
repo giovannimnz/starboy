@@ -1,20 +1,14 @@
 const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
-
 const schedule = require('node-schedule');
 const { getDatabaseInstance } = require('../db/conexao');
-const { verifyAndFixEnvironmentConsistency } = require('../api');
+const { verifyAndFixEnvironmentConsistency, getFuturesAccountBalanceDetails } = require('../api');
 const websockets = require('../websockets');
 const api = require('../api'); // Certifique-se de que api é importado
-// Mantenha esta importação
-const websocketApi = require('../websocketApi'); // Mantenha esta importação
-
-// Módulos separados
 const { initializeTelegramBot } = require('./telegramBot');
 const { startPriceMonitoring, onPriceUpdate } = require('./priceMonitoring');
-const { checkNewTrades, forceProcessPendingSignals } = require('./signalProcessor');
+const { checkNewTrades } = require('./signalProcessor');
 const { syncPositionsWithExchange, logOpenPositionsAndOrders } = require('./positionSync');
-const { handleOrderUpdate, handleAccountUpdate } = require('./orderHandlers');
+const orderHandlers = require('./orderHandlers');
 
 // Variáveis globais
 let handlers = {};
@@ -34,7 +28,7 @@ async function syncAccountBalance(accountId) {
 
   try {
     // const websocketApi = require('../websocketApi'); // Já importado no topo
-    const result = await websocketApi.syncAccountBalanceViaWebSocket(accountId);
+    const result = await getFuturesAccountBalanceDetails(accountId);
     
     if (result && result.success) {
       if (result.saldo_base_calculo > result.previousBaseCalculo) {
@@ -176,7 +170,7 @@ async function initializeMonitoring(accountId) {
     
     try {
       // CORREÇÃO: Chamar a função correta de websocketApi.js
-      await websocketApi.initializeHandlers(accountId);
+      await websockets.getHandlers(accountId);
       console.log(`[MONITOR] WebSocket API handlers configurados para conta ${accountId}`);
     } catch (wsError) {
       console.error(`[MONITOR] ⚠️ Erro ao inicializar WebSocket API handlers para conta ${accountId}, continuando com REST API fallback: ${wsError.message}`);
@@ -190,42 +184,64 @@ async function initializeMonitoring(accountId) {
       }
     }
     
-    // === ETAPA 8: Configurar handlers com accountId ===
+    // === ETAPA 8: CORRIGIR - Configurar handlers com orderHandlers.js ===
     console.log(`🔄 ETAPA 8: Configurando handlers para conta ${accountId}...`);
     
-    const accountSpecificHandlers = { // Renomeado para evitar conflito com a variável global 'handlers'
-      handleOrderUpdate: async (msg, db) => {
-        try {
-          await handleOrderUpdate(msg, db, accountId);
-        } catch (error) {
-          console.error(`[MONITOR] ⚠️ Erro em handleOrderUpdate para conta ${accountId}:`, error);
-        }
-      },
-      handleAccountUpdate: async (msg, db) => {
-        try {
-          await handleAccountUpdate(msg, db, accountId);
-        } catch (error) {
-          console.error(`[MONITOR] ⚠️ Erro em handleAccountUpdate para conta ${accountId}:`, error);
-        }
-      },
-      onPriceUpdate: async (symbol, price, db) => {
-        try {
-          await onPriceUpdate(symbol, price, db, accountId);
-        } catch (error) {
-          console.error(`[MONITOR] ⚠️ Erro em onPriceUpdate para ${symbol} conta ${accountId}:`, error);
-        }
-      },
-      getDbConnection: async () => await getDatabaseInstance()
-    };
-    
-    // CORREÇÃO: Configurar callbacks com accountId
+    // USAR o sistema orderHandlers ao invés de configurar manualmente
     try {
-      websockets.setMonitoringCallbacks(accountSpecificHandlers, accountId);
-      console.log(`[MONITOR] ✅ Callbacks do WebSocket configurados para conta ${accountId}`);
-    } catch (callbackError) {
-      console.error(`[MONITOR] ⚠️ Erro ao configurar callbacks do WebSocket para conta ${accountId}:`, callbackError.message);
+      const handlersInitialized = await orderHandlers.initializeOrderHandlers(accountId);
+      
+      if (handlersInitialized) {
+        console.log(`[MONITOR] ✅ Order handlers inicializados com sucesso para conta ${accountId}`);
+        
+        // Verificar se estão registrados
+        const handlersRegistered = orderHandlers.areHandlersRegistered(accountId);
+        console.log(`[MONITOR] Status dos handlers: ${handlersRegistered ? 'REGISTRADOS' : 'NÃO REGISTRADOS'}`);
+        
+      } else {
+        throw new Error('Falha ao inicializar order handlers');
+      }
+      
+    } catch (orderHandlerError) {
+      console.error(`[MONITOR] ❌ Erro ao configurar order handlers para conta ${accountId}:`, orderHandlerError.message);
+      
+      // FALLBACK: Configurar handlers manualmente
+      console.log(`[MONITOR] 🔄 Tentando configuração manual de handlers para conta ${accountId}...`);
+      
+      const manualHandlers = {
+        handleOrderUpdate: async (orderMsg) => {
+          try {
+            await orderHandlers.handleOrderUpdate(orderMsg, accountId);
+          } catch (error) {
+            console.error(`[MONITOR] ⚠️ Erro em handleOrderUpdate para conta ${accountId}:`, error.message);
+          }
+        },
+        handleAccountUpdate: async (message) => {
+          try {
+            await orderHandlers.handleAccountUpdate(message, accountId);
+          } catch (error) {
+            console.error(`[MONITOR] ⚠️ Erro em handleAccountUpdate para conta ${accountId}:`, error.message);
+          }
+        },
+        onPriceUpdate: async (symbol, price, db) => {
+          try {
+            await onPriceUpdate(symbol, price, db, accountId);
+          } catch (error) {
+            console.error(`[MONITOR] ⚠️ Erro em onPriceUpdate para ${symbol} conta ${accountId}:`, error.message);
+          }
+        }
+      };
+      
+      // Configurar callbacks manualmente
+      try {
+        websockets.setMonitoringCallbacks(manualHandlers, accountId);
+        console.log(`[MONITOR] ✅ Callbacks manuais configurados para conta ${accountId}`);
+      } catch (manualCallbackError) {
+        console.error(`[MONITOR] ❌ Erro ao configurar callbacks manuais para conta ${accountId}:`, manualCallbackError.message);
+        throw manualCallbackError;
+      }
     }
-    
+
     // === ETAPA 9: Iniciar UserDataStream ===
     console.log(`🌐 ETAPA 9: Iniciando UserDataStream para conta ${accountId}...`);
     
@@ -477,7 +493,7 @@ async function gracefulShutdown(accountIdToShutdown) {
     return;
   }
   
-  isShuttingDown = true; 
+  isShuttingDown = true;
   console.log(`\n[MONITOR] 🛑 === INICIANDO GRACEFUL SHUTDOWN PARA CONTA ${accountIdToShutdown} ===`);
   
   try {
@@ -506,10 +522,23 @@ async function gracefulShutdown(accountIdToShutdown) {
     }
     
     console.log(`[MONITOR] 🧹 3/6 - Limpando handlers para conta ${accountIdToShutdown}...`);
-    // A lógica de limpeza de handlers/callbacks já está em websockets.reset()
-    // e na limpeza do accountState. Não é necessário limpar 'handlers' global aqui.
-    console.log(`[MONITOR]   ℹ️ Handlers são limpos durante o reset dos websockets para conta ${accountIdToShutdown}`);
-    
+    try {
+      // CORREÇÃO: Usar orderHandlers para limpeza
+      const handlersRemoved = orderHandlers.unregisterOrderHandlers(accountIdToShutdown);
+      if (handlersRemoved) {
+        console.log(`[MONITOR]   ✅ Order handlers removidos para conta ${accountIdToShutdown}`);
+      } else {
+        console.log(`[MONITOR]   ⚠️ Falha ao remover order handlers para conta ${accountIdToShutdown}`);
+      }
+      
+      // Limpar também os websocket handlers
+      websockets.setMonitoringCallbacks({}, accountIdToShutdown);
+      console.log(`[MONITOR]   ✅ WebSocket handlers limpos para conta ${accountIdToShutdown}`);
+      
+    } catch (handlerCleanupError) {
+      console.error(`[MONITOR]   ⚠️ Erro ao limpar handlers para conta ${accountIdToShutdown}:`, handlerCleanupError.message);
+    }
+
     console.log(`[MONITOR] 📈 4/6 - Parando monitoramento de preços para conta ${accountIdToShutdown}...`);
     // Esta lógica também é coberta por websockets.reset(accountIdToShutdown)
     console.log(`[MONITOR]   ✅ Monitoramento de preços para conta ${accountIdToShutdown} parado (via reset de websockets)`);

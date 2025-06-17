@@ -194,16 +194,6 @@ async function syncAccountBalanceViaWebSocket(accountId) {
   }
 }
 
-module.exports = {
-  getAccountInformationV2,
-  getAccountBalance,
-  syncAccountBalanceViaWebSocket
-,
-  getOrderStatusViaWebSocket,
-  initializeHandlers
-};
-
-
 /**
  * Obtém status de ordem via WebSocket API (fallback para REST)
  * @param {string} symbol - Símbolo
@@ -228,22 +218,9 @@ async function getOrderStatusViaWebSocket(symbol, orderId, accountId) {
   }
 }
 
-
-/**
- * Inicializa handlers do WebSocket API
- * @param {number} accountId - ID da conta
- * @returns {Promise<boolean>} - Success status
- */
-async function initializeHandlers(accountId) {
-  try {
-    console.log(`[WS-API] Inicializando handlers para conta ${accountId}...`);
-    
-    // Por enquanto, apenas log de sucesso
-    console.log(`[WS-API] ✅ Handlers inicializados para conta ${accountId}`);
-    return true;
-    
-  } catch (error) {
-    console.error(`[WS-API] Erro ao inicializar handlers para conta ${accountId}:`, error.message);
-    return false;
-  }
-}
+module.exports = {
+  getAccountInformationV2,
+  getAccountBalance,
+  syncAccountBalanceViaWebSocket,
+  getOrderStatusViaWebSocket,
+  };

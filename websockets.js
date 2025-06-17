@@ -1,57 +1,8 @@
-
-// CORREÇÃO DEFINITIVA: Validação robusta de dados WebSocket
-function validateAndParseWebSocketData(data, symbol) {
-  try {
-    // Verificar se data existe e é um objeto
-    if (!data || typeof data !== 'object') {
-      console.warn(`[WEBSOCKETS] ❌ Dados inválidos para ${symbol}: não é objeto válido`);
-      return null;
-    }
-    
-    // Extrair e validar bid/ask com múltiplas tentativas
-    let bid = null;
-    let ask = null;
-    
-    // Tentar diferentes formatos de dados
-    if (data.b && data.a) {
-      bid = parseFloat(data.b);
-      ask = parseFloat(data.a);
-    } else if (data.bid && data.ask) {
-      bid = parseFloat(data.bid);
-      ask = parseFloat(data.ask);
-    } else if (data.bidPrice && data.askPrice) {
-      bid = parseFloat(data.bidPrice);
-      ask = parseFloat(data.askPrice);
-    }
-    
-    // Validação rigorosa
-    if (!bid || !ask || isNaN(bid) || isNaN(ask) || bid <= 0 || ask <= 0) {
-      console.warn(`[WEBSOCKETS] ❌ Preços inválidos para ${symbol}: bid=${bid}, ask=${ask}`);
-      return null;
-    }
-    
-    // Verificar se bid < ask (lógica básica de mercado)
-    if (bid >= ask) {
-      console.warn(`[WEBSOCKETS] ❌ Spread inválido para ${symbol}: bid(${bid}) >= ask(${ask})`);
-      return null;
-    }
-    
-    console.log(`[WEBSOCKETS] ✅ Preços válidos para ${symbol}: bid=${bid}, ask=${ask}`);
-    return { bid, ask };
-    
-  } catch (error) {
-    console.error(`[WEBSOCKETS] ❌ Erro ao validar dados para ${symbol}:`, error.message);
-    return null;
-  }
-}
-
 const WebSocket = require('ws');
 const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
 const { getDatabaseInstance } = require('./db/conexao');
 const api = require('./api');
-
-// Importar getAccountConnectionState do api.js
 const { getAccountConnectionState } = api;
 
 // Variáveis para as bibliotecas Ed25519
@@ -840,6 +791,7 @@ function forceCleanupAccount(accountId) {
   console.log(`[WEBSOCKET] Limpeza completa para conta ${accountId}...`);
   reset(accountId);
 }
+
 
 module.exports = {
   startUserDataStream,
