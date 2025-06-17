@@ -976,13 +976,33 @@ function calculateAveragePrice(fills) {
 // Função otimizada para aguardar a execução de uma ordem
 
 // Função otimizada para aguardar a execução de uma ordem
-
-// Função para aguardar execução de ordem
 async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3000, accountId) {
+    // CORREÇÃO CRÍTICA: Validar parâmetros antes de usar
+    if (!accountId || typeof accountId !== 'number') {
+        throw new Error(`AccountId inválido: ${accountId} (tipo: ${typeof accountId})`);
+    }
+    
+    if (!orderId || typeof orderId !== 'string') {
+        throw new Error(`OrderId inválido: ${orderId} (tipo: ${typeof orderId})`);
+    }
+    
     console.log(`[WAIT_ORDER] Aguardando execução da ordem ${orderId} para ${symbol} (conta ${accountId})...`);
     
     const startTime = Date.now();
     
+    // Verificação inicial imediata
+    try {
+        const orderStatus = await api.getOrderStatus(symbol, orderId, accountId);
+        
+        if (orderStatus.status === 'FILLED' || orderStatus.status === 'PARTIALLY_FILLED') {
+            console.log(`[WAIT_ORDER] ✅ Ordem ${orderId} já executada: ${orderStatus.status}`);
+            return orderStatus;
+        }
+    } catch (initialError) {
+        console.log(`[WAIT_ORDER] Erro inicial ao verificar ordem ${orderId}: ${initialError.message}`);
+    }
+    
+    // Loop de verificação com timeouts
     while (Date.now() - startTime < maxWaitMs) {
         try {
             const orderStatus = await api.getOrderStatus(symbol, orderId, accountId);
@@ -999,6 +1019,7 @@ async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3000, accountI
         }
     }
     
+    // Timeout - última tentativa
     try {
         const finalStatus = await api.getOrderStatus(symbol, orderId, accountId);
         console.log(`[WAIT_ORDER] Status final da ordem ${orderId}: ${finalStatus.status}`);
@@ -1011,9 +1032,23 @@ async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3000, accountI
 
 
 async function waitForOrderStatus(symbol, orderId, accountId) {
+    // CORREÇÃO CRÍTICA: Validar todos os parâmetros
+    if (!accountId || typeof accountId !== 'number') {
+        throw new Error(`AccountId inválido: ${accountId} (tipo: ${typeof accountId})`);
+    }
+    
+    if (!orderId || typeof orderId !== 'string') {
+        throw new Error(`OrderId inválido: ${orderId} (tipo: ${typeof orderId})`);
+    }
+    
+    if (!symbol || typeof symbol !== 'string') {
+        throw new Error(`Symbol inválido: ${symbol} (tipo: ${typeof symbol})`);
+    }
+    
     console.log(`[LIMIT_ENTRY] Verificando status da ordem ${orderId} para ${symbol} (conta ${accountId})...`);
     
     try {
+        // Usar sempre REST API para maior confiabilidade
         const result = await api.getOrderStatus(symbol, orderId, accountId);
         
         if (result && result.status) {
@@ -1028,7 +1063,6 @@ async function waitForOrderStatus(symbol, orderId, accountId) {
         return { status: 'ERROR', executedQty: '0', avgPrice: '0' };
     }
 }
-
 
 module.exports = {
     executeLimitMakerEntry,

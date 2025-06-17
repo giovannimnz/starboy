@@ -1008,14 +1008,22 @@ async function newLimitMakerOrder(accountId, symbol, quantity, side, price) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Status da ordem
  */
+
+/**
+ * Obtém status de uma ordem via REST API
+ * @param {string} symbol - Símbolo (ex: POLUSDT)
+ * @param {string} orderId - ID da ordem
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Status da ordem
+ */
 async function getOrderStatus(symbol, orderId, accountId) {
   try {
-    // VALIDAÇÃO CRÍTICA: Verificar tipos dos parâmetros
+    // VALIDAÇÃO CRÍTICA: Verificar tipos e ordem dos parâmetros
     if (!symbol || typeof symbol !== 'string') {
       throw new Error(`Symbol inválido: ${symbol} (tipo: ${typeof symbol})`);
     }
     
-    if (!orderId || typeof orderId !== 'string') {
+    if (!orderId || (typeof orderId !== 'string' && typeof orderId !== 'number')) {
       throw new Error(`OrderId inválido: ${orderId} (tipo: ${typeof orderId})`);
     }
     
@@ -1027,7 +1035,7 @@ async function getOrderStatus(symbol, orderId, accountId) {
     
     const params = {
       symbol: symbol,
-      orderId: orderId
+      orderId: String(orderId)
     };
     
     const response = await makeAuthenticatedRequest(accountId, 'GET', '/v1/order', params);
@@ -1035,7 +1043,7 @@ async function getOrderStatus(symbol, orderId, accountId) {
     return response;
     
   } catch (error) {
-    console.error(`[API] Erro ao obter status da ordem ${orderId} para ${symbol}: ${error.message}`);
+    console.error(`[API] ❌ Erro ao obter status da ordem ${orderId} para ${symbol}: ${error.message}`);
     throw error;
   }
 }
