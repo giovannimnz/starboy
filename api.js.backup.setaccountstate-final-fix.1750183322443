@@ -4,9 +4,8 @@ const { getDatabaseInstance } = require('./db/conexao');
 
 
 
-
 // ============================================================================
-// MAP GLOBAL ÚNICO PARA ESTADOS DAS CONTAS - VERSÃO FINAL SEM RECURSÃO
+// MAP GLOBAL ÚNICO PARA ESTADOS DAS CONTAS - VERSÃO SEM RECURSÃO
 // ============================================================================
 const accountStates = new Map();
 
@@ -15,42 +14,59 @@ if (typeof global !== 'undefined') {
   global.accountStates = accountStates;
 }
 
-console.log('[API] Map accountStates criado como singleton global (versão final sem recursão)');
+console.log('[API] Map accountStates criado como singleton global (versão sem recursão)');
 
 /**
- * Define um estado de conta no Map ÚNICO - VERSÃO FINAL SEM RECURSÃO
+ * Define um estado de conta no Map ÚNICO - VERSÃO SEM RECURSÃO
+ * @param {number} accountId - ID da conta
+ * @param {Object} state - Estado da conta
+ */
+/**
+ * Define um estado de conta no Map ÚNICO
+ * @param {number} accountId - ID da conta
+ * @param {Object} state - Estado da conta
+ */
+/**
+ * Define um estado de conta no Map ÚNICO - VERSÃO SEM RECURSÃO
  * @param {number} accountId - ID da conta
  * @param {Object} state - Estado da conta
  */
 function setAccountState(accountId, state) {
-  console.log(`[API] setAccountState(${accountId}) - Salvando no Map`);
+  console.log(`[API] setAccountState(${accountId}) - Salvando no Map global`);
   
-  // OPERAÇÃO DIRETA NO MAP - SEM NENHUMA CHAMADA ADICIONAL
+  // Salvar DIRETAMENTE no Map - SEM CHAMADAS RECURSIVAS
   accountStates.set(accountId, state);
   
   console.log(`[API] setAccountState(${accountId}) - ✅ Salvo com sucesso`);
+  console.log(`[API] setAccountState(${accountId}) - Map agora tem ${accountStates.size} entradas`);
   
   return true;
 }
 
 /**
- * Obtém um estado de conta do Map ÚNICO - VERSÃO FINAL SEM RECURSÃO
+ * Obtém um estado de conta do Map ÚNICO - VERSÃO SEM RECURSÃO
+ * @param {number} accountId - ID da conta
+ * @returns {Object|null} - Estado da conta ou null
+ */
+/**
+ * Obtém um estado de conta do Map ÚNICO - VERSÃO SEM RECURSÃO
  * @param {number} accountId - ID da conta
  * @returns {Object|null} - Estado da conta ou null
  */
 function getAccountState(accountId) {
-  console.log(`[API] getAccountState(${accountId}) - Buscando`);
+  console.log(`[API] getAccountState(${accountId}) - Buscando no Map`);
   
-  // OPERAÇÃO DIRETA NO MAP - SEM NENHUMA CHAMADA ADICIONAL
   const state = accountStates.get(accountId);
-  
   console.log(`[API] getAccountState(${accountId}) - ${state ? 'ENCONTRADO' : 'NÃO ENCONTRADO'}`);
   
   return state || null;
 }
 
 /**
- * Lista todos os estados para debug - VERSÃO FINAL SEM RECURSÃO
+ * Lista todos os estados para debug - SEM RECURSÃO
+ */
+/**
+ * Lista todos os estados para debug - SEM RECURSÃO
  */
 function debugAccountStates() {
   console.log(`[API] DEBUG - Map tem ${accountStates.size} entradas`);
@@ -60,7 +76,6 @@ function debugAccountStates() {
     return;
   }
   
-  // ITERAÇÃO DIRETA NO MAP - SEM NENHUMA CHAMADA ADICIONAL
   for (const [id, state] of accountStates.entries()) {
     console.log(`[API] DEBUG - Conta ${id}: apiKey=${state.apiKey ? 'SIM' : 'NÃO'}`);
   }
