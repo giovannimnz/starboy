@@ -553,7 +553,7 @@ async function getFuturesAccountBalanceDetails(accountId) {
  * @param {number} limit - Limite de ordens (padrão: 10)
  * @returns {Promise<Array>} - Lista de ordens recentes
  */
-async function getRecentOrders(accountId, symbol, limit = 10) {
+async function getRecentOrders(symbol, accountId, limit = 10) {
   try {
     console.log(`[API] Obtendo ordens recentes para ${symbol} (conta ${accountId})...`);
     
@@ -609,37 +609,6 @@ async function getTickSize(symbol, accountId) {
   }
 }
 
-
-/**
- * Arredonda preço para o tick size do símbolo
- * @param {string} symbol - Símbolo
- * @param {number} price - Preço a ser arredondado
- * @param {number} accountId - ID da conta
- * @returns {Promise<number>} - Preço arredondado
- */
-async function roundPriceToTickSize(symbol, price, accountId) {
-  try {
-    console.log(`[API] Arredondando preço ${price} para ${symbol}...`);
-    
-    const tickSize = await getTickSize(symbol, accountId);
-    
-    if (!tickSize || tickSize <= 0) {
-      console.warn(`[API] TickSize inválido para ${symbol}, usando preço original`);
-      return parseFloat(price);
-    }
-    
-    // Arredondar para o múltiplo mais próximo do tick size
-    const rounded = Math.round(price / tickSize) * tickSize;
-    
-    console.log(`[API] Preço ${price} arredondado para ${rounded} (tick size: ${tickSize})`);
-    return parseFloat(rounded.toFixed(8)); // Máximo 8 decimais
-    
-  } catch (error) {
-    console.error(`[API] Erro ao arredondar preço para ${symbol}:`, error.message);
-    return parseFloat(price); // Retorna preço original em caso de erro
-  }
-}
-
 module.exports = {
   getAccountConnectionState,
   getAllAccountConnections,
@@ -657,5 +626,4 @@ module.exports = {
   getFuturesAccountBalanceDetails,
   getRecentOrders,
   getTickSize,
-  roundPriceToTickSize,
 };
