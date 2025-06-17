@@ -460,7 +460,7 @@ async function ensurePriceWebsocketExists(symbol, accountId) {
   console.log(`[WEBSOCKET] Iniciando monitoramento de preço para ${symbol} (conta ${accountId})`);
   console.log(`[WEBSOCKET] Usando URL: ${accountState.wsUrl}`);
 
-  const wsEndpointUrl = `${accountState.wsUrl}/ws/${symbol.toLowerCase()}@ticker`;
+  const wsEndpointUrl = `${accountState.wsUrl}/ws/${symbol.toLowerCase()}@bookTicker`;
   const ws = new WebSocket(wsEndpointUrl);
 
   ws.on('open', () => {
