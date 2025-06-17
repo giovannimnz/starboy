@@ -332,14 +332,6 @@ async function loadCredentialsFromDatabase(accountId) {
  * @param {Object} params - Parâmetros da requisição
  * @returns {Promise<Object>} - Resposta da API
  */
-/**
- * Faz uma requisição autenticada para a API da Binance - VERSÃO COM ASSINATURA CORRIGIDA
- * @param {number} accountId - ID da conta
- * @param {string} method - Método HTTP (GET, POST, etc.)
- * @param {string} endpoint - Endpoint da API
- * @param {Object} params - Parâmetros da requisição
- * @returns {Promise<Object>} - Resposta da API
- */
 async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}) {
   try {
     console.log(`[API] makeAuthenticatedRequest chamado: accountId=${accountId}, method=${method}, endpoint=${endpoint}`);
@@ -349,13 +341,15 @@ async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}
       throw new Error(`AccountId deve ser um número válido: ${accountId} (tipo: ${typeof accountId})`);
     }
     
-    // Debug do Map
+    // Debug do Map antes de buscar - SEM CHAMAR FUNÇÕES RECURSIVAS
     debugAccountStates();
     
-    // Buscar estado no Map
-    const accountState = accountStates.get(accountId);
+    // Buscar estado DIRETAMENTE no Map - SEM RECURSÃO
+    let accountState = accountStates.get(accountId);
+    
     console.log(`[API] makeAuthenticatedRequest - Estado direto do Map: ${accountState ? 'ENCONTRADO' : 'NÃO ENCONTRADO'}`);
     
+    // Se não encontrou, FALHAR imediatamente - NÃO TENTAR RECARREGAR (evita recursão)
     if (!accountState) {
       throw new Error(`Estado da conta ${accountId} não encontrado no Map. Deve ser carregado primeiro via loadCredentialsFromDatabase.`);
     }
@@ -368,68 +362,37 @@ async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}
     
     console.log(`[API] ✅ Usando credenciais da conta ${accountId} - apiKey: ${apiKey.substring(0, 8)}...`);
     
-    // CORREÇÃO CRÍTICA: Timestamp deve ser em milliseconds e recente
+    // Adicionar timestamp obrigatório
     const timestamp = Date.now();
+    const paramsWithTimestamp = {
+      ...params,
+      timestamp: timestamp
+    };
     
-    // CORREÇÃO CRÍTICA: Para métodos GET, incluir parâmetros na query string
-    // Para métodos POST/PUT/DELETE, incluir no body
-    let queryString = '';
-    let bodyData = '';
+    // Construir query string para assinatura
+    const queryString = Object.keys(paramsWithTimestamp)
+      .sort()
+      .map(key => `${key}=${encodeURIComponent(paramsWithTimestamp[key])}`)
+      .join('&');
     
-    if (method === 'GET') {
-      // Para GET: todos os parâmetros vão na query string para assinatura
-      const queryParams = {
-        ...params,
-        timestamp: timestamp
-      };
-      
-      queryString = Object.keys(queryParams)
-        .sort() // IMPORTANTE: ordenar as chaves
-        .map(key => {
-          const value = queryParams[key];
-          return `${key}=${encodeURIComponent(value)}`;
-        })
-        .join('&');
-        
-    } else {
-      // Para POST/PUT/DELETE: parâmetros vão no body para assinatura
-      const bodyParams = {
-        ...params,
-        timestamp: timestamp
-      };
-      
-      queryString = Object.keys(bodyParams)
-        .sort() // IMPORTANTE: ordenar as chaves
-        .map(key => {
-          const value = bodyParams[key];
-          return `${key}=${encodeURIComponent(value)}`;
-        })
-        .join('&');
-        
-      bodyData = queryString;
-    }
-    
-    // CORREÇÃO CRÍTICA: Gerar assinatura HMAC-SHA256 correta
+    // Gerar assinatura HMAC-SHA256
     const crypto = require('crypto');
     const signature = crypto
       .createHmac('sha256', secretKey)
-      .update(queryString) // Assinar a query string ordenada
+      .update(queryString)
       .digest('hex');
     
-    console.log(`[API] Timestamp: ${timestamp}`);
-    console.log(`[API] Query string para assinatura: ${queryString.substring(0, 100)}...`);
-    console.log(`[API] Assinatura gerada: ${signature.substring(0, 16)}...`);
+    // Adicionar assinatura aos parâmetros
+    paramsWithTimestamp.signature = signature;
     
-    // Adicionar assinatura
-    const finalQueryString = queryString + `&signature=${signature}`;
+    const finalQueryString = Object.keys(paramsWithTimestamp)
+      .map(key => `${key}=${encodeURIComponent(paramsWithTimestamp[key])}`)
+      .join('&');
     
     // Construir URL final
-    let fullUrl;
-    if (method === 'GET') {
-      fullUrl = `${apiUrl}${endpoint}?${finalQueryString}`;
-    } else {
-      fullUrl = `${apiUrl}${endpoint}`;
-    }
+    const fullUrl = method === 'GET' 
+      ? `${apiUrl}${endpoint}?${finalQueryString}`
+      : `${apiUrl}${endpoint}`;
     
     console.log(`[API] Fazendo requisição: ${method} ${fullUrl.split('?')[0]}`);
     
@@ -446,14 +409,11 @@ async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}
     if (method === 'GET') {
       response = await axios.get(fullUrl, { headers });
     } else if (method === 'POST') {
-      const postData = bodyData + `&signature=${signature}`;
-      response = await axios.post(fullUrl, postData, { headers });
+      response = await axios.post(fullUrl, finalQueryString, { headers });
     } else if (method === 'PUT') {
-      const putData = bodyData + `&signature=${signature}`;
-      response = await axios.put(fullUrl, putData, { headers });
+      response = await axios.put(fullUrl, finalQueryString, { headers });
     } else if (method === 'DELETE') {
-      const deleteData = bodyData + `&signature=${signature}`;
-      response = await axios.delete(fullUrl, { headers, data: deleteData });
+      response = await axios.delete(fullUrl, { headers, data: finalQueryString });
     } else {
       throw new Error(`Método HTTP não suportado: ${method}`);
     }
