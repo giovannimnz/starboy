@@ -17,7 +17,7 @@ let isShuttingDown = false;
 let signalHandlersInstalled = false;
 
 /**
- * Sincroniza saldo da conta via WebSocket API
+ * Sincroniza saldo da conta via REST API
  * @param {number} accountId - ID da conta (obrigatório)
  * @returns {Promise<Object|null>} Resultado da sincronização
  */
@@ -27,25 +27,41 @@ async function syncAccountBalance(accountId) {
   }
 
   try {
-    // const websocketApi = require('../websocketApi'); // Já importado no topo
+    console.log(`[MONITOR] Sincronizando saldo da conta ${accountId} via REST API...`);
+    
+    // CHAMADA CORRIGIDA - getFuturesAccountBalanceDetails já usa REST API
     const result = await getFuturesAccountBalanceDetails(accountId);
     
     if (result && result.success) {
+      // CORREÇÃO: Verificar se a base de cálculo aumentou
       if (result.saldo_base_calculo > result.previousBaseCalculo) {
-        console.log(`[MONITOR] Base de cálculo aumentada para conta ${accountId}: ${result.previousBaseCalculo.toFixed(2)} → ${result.saldo_base_calculo.toFixed(2)} USDT`);
+        console.log(`[MONITOR] 📈 Base de cálculo aumentada para conta ${accountId}: ${result.previousBaseCalculo.toFixed(2)} → ${result.saldo_base_calculo.toFixed(2)} USDT`);
       }
+      
+      // CORREÇÃO: Verificar se o saldo total mudou
+      if (Math.abs(result.saldo - result.previousSaldo) > 0.01) {
+        const mudanca = result.saldo - result.previousSaldo;
+        const sinal = mudanca > 0 ? '+' : '';
+        console.log(`[MONITOR] 💰 Saldo alterado para conta ${accountId}: ${result.previousSaldo.toFixed(2)} → ${result.saldo.toFixed(2)} USDT (${sinal}${mudanca.toFixed(2)})`);
+      }
+      
+      console.log(`[MONITOR] ✅ Sincronização de saldo concluída para conta ${accountId}`);
       
       return {
         accountId: accountId,
         saldo: result.saldo,
-        saldo_base_calculo: result.saldo_base_calculo
+        saldo_disponivel: result.saldo_disponivel,
+        saldo_base_calculo: result.saldo_base_calculo,
+        success: true
       };
+      
     } else {
-      console.error(`[MONITOR] Falha ao sincronizar saldo via WebSocket API para conta ${accountId}:`, result?.error || 'Resposta inválida');
+      console.error(`[MONITOR] ❌ Falha ao sincronizar saldo para conta ${accountId}:`, result?.error || 'Resposta inválida');
       return null;
     }
+    
   } catch (error) {
-    console.error(`[MONITOR] Erro ao sincronizar saldo da conta ${accountId}: ${error.message}`);
+    console.error(`[MONITOR] ❌ Erro ao sincronizar saldo da conta ${accountId}: ${error.message}`);
     return null;
   }
 }

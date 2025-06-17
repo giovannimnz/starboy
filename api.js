@@ -810,9 +810,9 @@ async function verifyAndFixEnvironmentConsistency(accountId) {
 
 
 /**
- * Obtém detalhes do saldo da conta de futuros
+ * Obtém detalhes do saldo da conta de futuros via REST API
  * @param {number} accountId - ID da conta
- * @returns {Promise<Object>} - Detalhes do saldo
+ * @returns {Promise<Object>} - Detalhes do saldo formatados
  */
 async function getFuturesAccountBalanceDetails(accountId) {
   try {
@@ -822,19 +822,77 @@ async function getFuturesAccountBalanceDetails(accountId) {
       throw new Error(`AccountId inválido: ${accountId}`);
     }
 
-    const result = await makeAuthenticatedRequest(accountId, 'GET', '/v2/balance');
+    // CHAMADA REST API PARA /v2/balance
+    const balanceData = await makeAuthenticatedRequest(accountId, 'GET', '/v2/balance');
     
-    if (result && Array.isArray(result)) {
-      console.log(`[API] ✅ Detalhes do saldo obtidos para conta ${accountId}`);
-      return {
-        assets: result
-      };
-    } else {
+    if (!Array.isArray(balanceData)) {
       throw new Error('Resposta inválida da API de saldo');
     }
+
+    // PROCESSAR DADOS DO SALDO USDT
+    const usdtBalance = balanceData.find(asset => asset.asset === 'USDT');
+    
+    if (!usdtBalance) {
+      throw new Error('Saldo USDT não encontrado na resposta');
+    }
+
+    const saldoTotal = parseFloat(usdtBalance.balance || '0');
+    const saldoDisponivel = parseFloat(usdtBalance.availableBalance || '0');
+    const saldoUtilizado = saldoTotal - saldoDisponivel;
+
+    console.log(`[API] ✅ Saldo obtido para conta ${accountId}:`);
+    console.log(`  - Total: ${saldoTotal.toFixed(2)} USDT`);
+    console.log(`  - Disponível: ${saldoDisponivel.toFixed(2)} USDT`);
+    console.log(`  - Em uso: ${saldoUtilizado.toFixed(2)} USDT`);
+    
+    // ATUALIZAR NO BANCO DE DADOS
+    const db = await getDatabaseInstance(accountId);
+    
+    // Obter saldo anterior para comparação
+    const [previousBalance] = await db.query(
+      'SELECT saldo, saldo_base_calculo FROM contas WHERE id = ?',
+      [accountId]
+    );
+    
+    const previousSaldo = previousBalance.length > 0 ? parseFloat(previousBalance[0].saldo || '0') : 0;
+    const previousBaseCalculo = previousBalance.length > 0 ? parseFloat(previousBalance[0].saldo_base_calculo || '0') : 0;
+    
+    // Calcular nova base de cálculo (5% do saldo disponível)
+    const novaBaseCalculo = Math.max(saldoDisponivel * 0.05, previousBaseCalculo);
+    
+    // ATUALIZAR NO BANCO
+    await db.query(
+      'UPDATE contas SET saldo = ?, saldo_base_calculo = ?, ultima_atualizacao_saldo = NOW() WHERE id = ?',
+      [saldoTotal, novaBaseCalculo, accountId]
+    );
+    
+    console.log(`[API] ✅ Saldo atualizado no banco para conta ${accountId}`);
+    
+    // RETORNAR FORMATO PADRONIZADO
+    return {
+      success: true,
+      accountId: accountId,
+      saldo: saldoTotal,
+      saldo_disponivel: saldoDisponivel,
+      saldo_base_calculo: novaBaseCalculo,
+      previousSaldo: previousSaldo,
+      previousBaseCalculo: previousBaseCalculo,
+      assets: balanceData,
+      timestamp: new Date().toISOString()
+    };
+    
   } catch (error) {
-    console.error(`[API] Erro ao obter detalhes do saldo para conta ${accountId}:`, error.message);
-    throw error;
+    console.error(`[API] ❌ Erro ao obter detalhes do saldo para conta ${accountId}:`, error.message);
+    
+    return {
+      success: false,
+      accountId: accountId,
+      error: error.message,
+      saldo: 0,
+      saldo_disponivel: 0,
+      saldo_base_calculo: 0,
+      timestamp: new Date().toISOString()
+    };
   }
 }
 
