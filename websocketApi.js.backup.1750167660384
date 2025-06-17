@@ -1025,7 +1025,7 @@ async function syncAccountBalanceViaWebSocket(accountId) {
   // console.log(`[WS-API] Sincronizando saldo da conta ${accountId} via WebSocket...`);
 
   try {
-    const accountInfoResult = await getAccountInformationV2(accountId);
+    const accountInfoResult = await getAccountInfoV2(accountId);
 
     if (accountInfoResult && !accountInfoResult.error && accountInfoResult.balances) {
       const usdtBalanceData = accountInfoResult.balances.find(b => b.asset === 'USDT');

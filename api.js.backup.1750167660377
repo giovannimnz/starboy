@@ -143,7 +143,7 @@ function createSignature(queryString, secretKey) {
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Resposta da API
  */
-async function makeAuthenticatedRequest(accountId, method = 'GET', endpoint, data = null) {
+async function makeAuthenticatedRequest(endpoint, method = 'GET', data = null, accountId) {
   try {
     // CORREÇÃO CRÍTICA: Validar accountId primeiro
     if (!accountId || typeof accountId !== 'number') {
@@ -1092,7 +1092,7 @@ async function updateLeverageBracketsInDatabase(broker = 'binance', accountId) {
     console.log(`[API] Atualizando brackets de alavancagem para ${broker}...`);
     
     // CORREÇÃO: Passar método como string explícita
-    const brackets = await makeAuthenticatedRequest(accountId, 'GET', '/v1/leverageBracket', {});
+    const brackets = await makeAuthenticatedRequest('GET', '/v1/leverageBracket', {}, accountId);
     
     if (!brackets || !Array.isArray(brackets)) {
       throw new Error('Resposta inválida da API de brackets de alavancagem');

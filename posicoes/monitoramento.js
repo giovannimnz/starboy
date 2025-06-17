@@ -4,7 +4,9 @@ require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 const schedule = require('node-schedule');
 const { getDatabaseInstance } = require('../db/conexao');
 const { verifyAndFixEnvironmentConsistency } = require('../api');
-const websockets = require('../websockets'); // Mantenha esta importação
+const websockets = require('../websockets');
+const api = require('../api'); // Certifique-se de que api é importado
+// Mantenha esta importação
 const websocketApi = require('../websocketApi'); // Mantenha esta importação
 
 // Módulos separados
@@ -89,7 +91,11 @@ async function initializeMonitoring(accountId) {
     // === ETAPA 3: Carregar credenciais WebSocket ===
     console.log(`🔑 ETAPA 3: Carregando credenciais da conta ${accountId}...`);
     try {
-      const credentials = await websockets.loadCredentialsFromDatabase(accountId);
+      // const credentials = await websockets.loadCredentialsFromDatabase(accountId); // Linha antiga
+      const credentials = await api.loadCredentialsFromDatabase(accountId); // <<< ALTERAR PARA api.loadCredentialsFromDatabase
+      if (!credentials.apiKey || !credentials.secretKey) { // Checar credenciais REST
+        throw new Error('Credenciais API REST incompletas');
+      }
       console.log('✅ Credenciais carregadas com sucesso');
       
       console.log(`📋 Detalhes das credenciais:`);

@@ -1,4 +1,27 @@
-// filepath: c:\Users\muniz\Documents\GitHub\starboy\websockets.js
+const fs = require('fs');
+const path = require('path');
+
+console.log('🔧 Iniciando correções automáticas dos arquivos WebSocket...\n');
+
+// Função para fazer backup
+function createBackup(filePath) {
+  const backupPath = `${filePath}.backup.${Date.now()}`;
+  fs.copyFileSync(filePath, backupPath);
+  console.log(`📁 Backup criado: ${backupPath}`);
+}
+
+// Função para escrever arquivo com encoding correto
+function writeFile(filePath, content) {
+  fs.writeFileSync(filePath, content, 'utf8');
+  console.log(`✅ Arquivo atualizado: ${filePath}`);
+}
+
+// 1. Corrigir websockets.js
+console.log('1️⃣ Corrigindo websockets.js...');
+const websocketsPath = path.join(__dirname, 'websockets.js');
+createBackup(websocketsPath);
+
+const websocketsContent = `// filepath: c:\\Users\\muniz\\Documents\\GitHub\\starboy\\websockets.js
 const WebSocket = require('ws');
 const { EventEmitter } = require('events');
 const crypto = require('crypto');
@@ -63,12 +86,12 @@ function getPriceWebsockets(accountId, create = false) {
 async function createEd25519Signature(payload, accountId) {
   const accountState = getAccountConnectionState(accountId);
   if (!accountState || !accountState.wsApiSecret) {
-    throw new Error(`Chave privada Ed25519 (ws_api_secret no formato PEM) não encontrada para conta ${accountId}`);
+    throw new Error(\`Chave privada Ed25519 (ws_api_secret no formato PEM) não encontrada para conta \${accountId}\`);
   }
   const pemPrivateKey = accountState.wsApiSecret; // Usar wsApiSecret que é a chave PEM
 
-  console.log(`[WS-API] Gerando assinatura Ed25519 para conta ${accountId}`);
-  console.log(`[WS-API] Payload: ${payload}`);
+  console.log(\`[WS-API] Gerando assinatura Ed25519 para conta \${accountId}\`);
+  console.log(\`[WS-API] Payload: \${payload}\`);
 
   const payloadBuffer = Buffer.from(payload, 'ascii');
 
@@ -82,10 +105,10 @@ async function createEd25519Signature(payload, accountId) {
     });
     const signatureBuffer = crypto.sign(null, payloadBuffer, privateKeyObject);
     const signature = signatureBuffer.toString('base64');
-    console.log(`[WS-API] ✅ Assinatura Ed25519 criada com crypto nativo para conta ${accountId}`);
+    console.log(\`[WS-API] ✅ Assinatura Ed25519 criada com crypto nativo para conta \${accountId}\`);
     return signature;
   } catch (nativeCryptoError) {
-    console.warn(`[WS-API] Falha ao assinar com crypto nativo para conta ${accountId}: ${nativeCryptoError.message}. Tentando fallbacks.`);
+    console.warn(\`[WS-API] Falha ao assinar com crypto nativo para conta \${accountId}: \${nativeCryptoError.message}. Tentando fallbacks.\`);
   }
 
   function extractRawKeyFromPem(pemKey) {
@@ -117,10 +140,10 @@ async function createEd25519Signature(payload, accountId) {
       }
       const signatureBytes = nobleEd25519SignFunction(payloadBuffer, rawPrivateKey);
       const signature = Buffer.from(signatureBytes).toString('base64');
-      console.log(`[WS-API] ✅ Assinatura Ed25519 criada com @noble/ed25519 para conta ${accountId}`);
+      console.log(\`[WS-API] ✅ Assinatura Ed25519 criada com @noble/ed25519 para conta \${accountId}\`);
       return signature;
     } catch (nobleError) {
-      console.warn(`[WS-API] Falha ao assinar com @noble/ed25519 para conta ${accountId}: ${nobleError.message}. Tentando próximo fallback.`);
+      console.warn(\`[WS-API] Falha ao assinar com @noble/ed25519 para conta \${accountId}: \${nobleError.message}. Tentando próximo fallback.\`);
     }
   }
 
@@ -133,15 +156,15 @@ async function createEd25519Signature(payload, accountId) {
       const keyPair = tweetnaclInstance.sign.keyPair.fromSeed(seed);
       const signatureBytes = tweetnaclInstance.sign.detached(payloadBuffer, keyPair.secretKey);
       const signature = Buffer.from(signatureBytes).toString('base64');
-      console.log(`[WS-API] ✅ Assinatura Ed25519 criada com tweetnacl para conta ${accountId}`);
+      console.log(\`[WS-API] ✅ Assinatura Ed25519 criada com tweetnacl para conta \${accountId}\`);
       return signature;
     } catch (naclError) {
-      console.error(`[WS-API] Erro ao assinar com tweetnacl para conta ${accountId}: ${naclError.message}. Este foi o último fallback.`);
+      console.error(\`[WS-API] Erro ao assinar com tweetnacl para conta \${accountId}: \${naclError.message}. Este foi o último fallback.\`);
     }
   }
 
-  const errorMessage = `Falha ao criar assinatura Ed25519 para conta ${accountId}: Todos os métodos de assinatura falharam.`;
-  console.error(`[WS-API] ${errorMessage}`);
+  const errorMessage = \`Falha ao criar assinatura Ed25519 para conta \${accountId}: Todos os métodos de assinatura falharam.\`;
+  console.error(\`[WS-API] \${errorMessage}\`);
   throw new Error(errorMessage);
 }
 
@@ -151,17 +174,17 @@ async function createEd25519Signature(payload, accountId) {
 async function createSignedRequest(method, params = {}, accountId) {
   const accountState = getAccountConnectionState(accountId);
   if (!accountState) {
-    console.warn(`[WS-API] Estado da conta ${accountId} não encontrado em createSignedRequest. Tentando carregar...`);
+    console.warn(\`[WS-API] Estado da conta \${accountId} não encontrado em createSignedRequest. Tentando carregar...\`);
     await api.loadCredentialsFromDatabase(accountId);
     const newState = getAccountConnectionState(accountId);
     if (!newState) {
-      throw new Error(`Estado da conexão não encontrado para conta ${accountId} mesmo após tentativa de carga.`);
+      throw new Error(\`Estado da conexão não encontrado para conta \${accountId} mesmo após tentativa de carga.\`);
     }
   }
   
   const currentAccountState = getAccountConnectionState(accountId);
   if (!currentAccountState) {
-      throw new Error(`Estado da conexão não encontrado para conta ${accountId}.`);
+      throw new Error(\`Estado da conexão não encontrado para conta \${accountId}.\`);
   }
 
   const requestId = uuidv4();
@@ -183,10 +206,10 @@ async function createSignedRequest(method, params = {}, accountId) {
   const sortedParams = Object.keys(requestParams)
     .filter(key => key !== 'signature')
     .sort()
-    .map(key => `${key}=${requestParams[key]}`)
+    .map(key => \`\${key}=\${requestParams[key]}\`)
     .join('&');
   
-  console.log(`[WS-API] Payload para assinatura (createSignedRequest): ${sortedParams}`);
+  console.log(\`[WS-API] Payload para assinatura (createSignedRequest): \${sortedParams}\`);
   
   const signature = await createEd25519Signature(sortedParams, accountId);
   
@@ -208,29 +231,29 @@ async function startWebSocketApi(accountId) {
     let accountState = getAccountConnectionState(accountId);
 
     if (!accountState || !accountState.wsApiKey || !accountState.wsApiUrl) {
-      console.error(`[WS-API] Credenciais ou URL da WebSocket API não encontradas para conta ${accountId}`);
+      console.error(\`[WS-API] Credenciais ou URL da WebSocket API não encontradas para conta \${accountId}\`);
       return false;
     }
 
     if (accountState.wsApiConnection && accountState.wsApiConnection.readyState === WebSocket.OPEN) {
-      console.log(`[WS-API] Conexão WebSocket API já está ativa para conta ${accountId}`);
+      console.log(\`[WS-API] Conexão WebSocket API já está ativa para conta \${accountId}\`);
       if (accountState.wsApiAuthenticated) {
         return true;
       }
       try {
-        console.log(`[WS-API] Tentando re-autenticar conexão existente para conta ${accountId}...`);
+        console.log(\`[WS-API] Tentando re-autenticar conexão existente para conta \${accountId}...\`);
         const authenticated = await authenticateWebSocketApi(accountState.wsApiConnection, accountId);
         return authenticated;
       } catch (authError) {
-        console.error(`[WS-API] Erro ao re-autenticar conexão existente para conta ${accountId}: ${authError.message}`);
+        console.error(\`[WS-API] Erro ao re-autenticar conexão existente para conta \${accountId}: \${authError.message}\`);
         cleanupWebSocketApi(accountId);
         return false;
       }
     }
 
-    console.log(`[WS-API] Iniciando WebSocket API para conta ${accountId}...`);
+    console.log(\`[WS-API] Iniciando WebSocket API para conta \${accountId}...\`);
     const endpoint = accountState.wsApiUrl;
-    console.log(`[WS-API] Conectando ao endpoint oficial: ${endpoint} para conta ${accountId}`);
+    console.log(\`[WS-API] Conectando ao endpoint oficial: \${endpoint} para conta \${accountId}\`);
 
     return new Promise((resolve, reject) => {
       const wsInstance = new WebSocket(endpoint);
@@ -238,31 +261,31 @@ async function startWebSocketApi(accountId) {
 
       const connectionTimeout = setTimeout(() => {
         if (wsInstance.readyState !== WebSocket.OPEN && wsInstance.readyState !== WebSocket.CLOSING && wsInstance.readyState !== WebSocket.CLOSED) {
-          console.error(`[WS-API] Timeout ao conectar WebSocket API para conta ${accountId}. Estado: ${wsInstance.readyState}`);
+          console.error(\`[WS-API] Timeout ao conectar WebSocket API para conta \${accountId}. Estado: \${wsInstance.readyState}\`);
           wsInstance.terminate();
-          reject(new Error(`Timeout ao conectar WebSocket API para conta ${accountId}`));
+          reject(new Error(\`Timeout ao conectar WebSocket API para conta \${accountId}\`));
         }
       }, 30000);
 
       wsInstance.on('open', async () => {
         clearTimeout(connectionTimeout);
-        console.log(`[WS-API] ✅ Conexão WebSocket API estabelecida para conta ${accountId}`);
+        console.log(\`[WS-API] ✅ Conexão WebSocket API estabelecida para conta \${accountId}\`);
         
         accountState.lastPongTime = Date.now();
 
         try {
           const authenticated = await authenticateWebSocketApi(wsInstance, accountId);
           if (authenticated) {
-            console.log(`[WS-API] Autenticação bem-sucedida para conta ${accountId}. Iniciando keep-alive.`);
+            console.log(\`[WS-API] Autenticação bem-sucedida para conta \${accountId}. Iniciando keep-alive.\`);
             
             if (accountState.pingInterval) clearInterval(accountState.pingInterval);
             accountState.pingInterval = setInterval(() => {
               const currentWsConn = getAccountConnectionState(accountId)?.wsApiConnection;
               if (currentWsConn && currentWsConn.readyState === WebSocket.OPEN) {
                 if (Date.now() - (getAccountConnectionState(accountId)?.lastPongTime || 0) > 7 * 60 * 1000) {
-                  console.warn(`[WS-API] Nenhum pong recebido do SERVIDOR para conta ${accountId} em 7 minutos. Conexão pode estar instável.`);
+                  console.warn(\`[WS-API] Nenhum pong recebido do SERVIDOR para conta \${accountId} em 7 minutos. Conexão pode estar instável.\`);
                 }
-                const clientPingId = `client-ping-${Date.now()}-${accountId}`;
+                const clientPingId = \`client-ping-\${Date.now()}-\${accountId}\`;
                 currentWsConn.send(JSON.stringify({ id: clientPingId, method: 'ping' }));
               } else {
                 if (accountState.pingInterval) clearInterval(accountState.pingInterval);
@@ -271,12 +294,12 @@ async function startWebSocketApi(accountId) {
             }, 3 * 60 * 1000);
             resolve(true);
           } else {
-            console.error(`[WS-API] Falha na autenticação para conta ${accountId}. Conexão será fechada.`);
+            console.error(\`[WS-API] Falha na autenticação para conta \${accountId}. Conexão será fechada.\`);
             wsInstance.close(1008, "Authentication Failed");
             resolve(false);
           }
         } catch (authError) {
-          console.error(`[WS-API] Erro durante a autenticação para conta ${accountId}:`, authError.message);
+          console.error(\`[WS-API] Erro durante a autenticação para conta \${accountId}:\`, authError.message);
           wsInstance.close(1008, "Authentication Error");
           reject(authError);
         }
@@ -293,19 +316,19 @@ async function startWebSocketApi(accountId) {
 
       wsInstance.on('error', (error) => {
         clearTimeout(connectionTimeout);
-        console.error(`[WS-API] Erro na conexão WebSocket API para conta ${accountId}: ${error.message}`);
+        console.error(\`[WS-API] Erro na conexão WebSocket API para conta \${accountId}: \${error.message}\`);
         reject(error);
       });
 
       wsInstance.on('close', (code, reason) => {
         clearTimeout(connectionTimeout);
-        console.log(`[WS-API] Conexão WebSocket API fechada para conta ${accountId}. Code: ${code}, Reason: ${reason ? reason.toString() : 'N/A'}`);
+        console.log(\`[WS-API] Conexão WebSocket API fechada para conta \${accountId}. Code: \${code}, Reason: \${reason ? reason.toString() : 'N/A'}\`);
         cleanupWebSocketApi(accountId);
       });
     });
 
   } catch (error) {
-    console.error(`[WS-API] Erro GERAL ao iniciar WebSocket API para conta ${accountId}:`, error.message);
+    console.error(\`[WS-API] Erro GERAL ao iniciar WebSocket API para conta \${accountId}:\`, error.message);
     cleanupWebSocketApi(accountId);
     return false;
   }
@@ -318,7 +341,7 @@ function handleWebSocketApiMessage(message, accountId) {
     try {
         const accountState = getAccountConnectionState(accountId);
         if (!accountState) {
-            console.error(`[WS-API] Estado da conta ${accountId} não encontrado para processar mensagem`);
+            console.error(\`[WS-API] Estado da conta \${accountId} não encontrado para processar mensagem\`);
             return;
         }
         
@@ -336,15 +359,15 @@ function handleWebSocketApiMessage(message, accountId) {
                         callbackEntry.resolve(message);
                     }
                 } else {
-                    console.warn(`[WS-API] Formato de callback inesperado para ID ${message.id} na conta ${accountId}. Callback:`, callbackEntry);
+                    console.warn(\`[WS-API] Formato de callback inesperado para ID \${message.id} na conta \${accountId}. Callback:\`, callbackEntry);
                 }
                 accountState.wsApiRequestCallbacks.delete(message.id);
             }
         } else if (message.method === 'ping') {
-            console.log(`[WS-API] Ping recebido do servidor para conta ${accountId} (ID: ${message.id || 'N/A'}), enviando pong...`);
+            console.log(\`[WS-API] Ping recebido do servidor para conta \${accountId} (ID: \${message.id || 'N/A'}), enviando pong...\`);
             sendPong(message.id, accountId); 
         } else if (message.method === 'pong') {
-            console.log(`[WS-API] Pong recebido do servidor para conta ${accountId} (ID: ${message.id || 'N/A'})`);
+            console.log(\`[WS-API] Pong recebido do servidor para conta \${accountId} (ID: \${message.id || 'N/A'})\`);
             accountState.lastPongTime = Date.now();
         } else if (message.e) {
             if (accountState.monitoringCallbacks && accountState.monitoringCallbacks.handleOrderUpdate && message.e === 'ORDER_TRADE_UPDATE') {
@@ -353,11 +376,11 @@ function handleWebSocketApiMessage(message, accountId) {
                  accountState.monitoringCallbacks.handleAccountUpdate(message, accountState.dbInstance, accountId);
             }
         } else {
-            console.log(`[WS-API] Mensagem não tratada recebida para conta ${accountId}:`, JSON.stringify(message));
+            console.log(\`[WS-API] Mensagem não tratada recebida para conta \${accountId}:\`, JSON.stringify(message));
         }
         
     } catch (error) {
-        console.error(`[WS-API] Erro ao processar mensagem para conta ${accountId}:`, error.message, error.stack);
+        console.error(\`[WS-API] Erro ao processar mensagem para conta \${accountId}:\`, error.message, error.stack);
         console.error('[WS-API] Mensagem original:', JSON.stringify(message, null, 2));
     }
 }
@@ -388,7 +411,7 @@ function cleanupWebSocketApi(accountId) {
       try {
         wsConn.terminate();
       } catch (e) {
-        console.warn(`[WS-API] Erro menor ao terminar wsApiConnection para conta ${accountId}: ${e.message}`);
+        console.warn(\`[WS-API] Erro menor ao terminar wsApiConnection para conta \${accountId}: \${e.message}\`);
       }
     }
   }
@@ -425,7 +448,7 @@ function sendPong(pingId, accountId) {
 
     accountState.wsApiConnection.send(JSON.stringify(pongRequest));
   } catch (error) {
-    console.error(`[WS-API] Erro ao enviar pong para conta ${accountId}:`, error);
+    console.error(\`[WS-API] Erro ao enviar pong para conta \${accountId}:\`, error);
   }
 }
 
@@ -447,7 +470,7 @@ async function checkSessionStatus(accountId) {
     
     return response;
   } catch (error) {
-    console.error(`[WS-API] Erro ao verificar status da sessão para conta ${accountId}:`, error.message || error);
+    console.error(\`[WS-API] Erro ao verificar status da sessão para conta \${accountId}:\`, error.message || error);
     const accountState = getAccountConnectionState(accountId, true);
     accountState.wsApiAuthenticated = false;
     return { result: { apiKey: null, authorizedSince: 0, connectedSince: 0 }, error: { message: error.message || 'Erro desconhecido ao verificar status', code: error.code || -1 } };
@@ -461,10 +484,10 @@ async function authenticateWebSocketApi(ws, accountId) {
   try {
     const accountState = getAccountConnectionState(accountId);
     if (!accountState || !accountState.wsApiKey || !accountState.wsApiSecret) {
-      throw new Error(`Credenciais WebSocket (apiKey ou privateKey PEM) incompletas para conta ${accountId}`);
+      throw new Error(\`Credenciais WebSocket (apiKey ou privateKey PEM) incompletas para conta \${accountId}\`);
     }
 
-    console.log(`[WS-API] Iniciando autenticação session.logon para conta ${accountId}...`);
+    console.log(\`[WS-API] Iniciando autenticação session.logon para conta \${accountId}...\`);
 
     const timestamp = Date.now();
     const authParams = {
@@ -473,14 +496,14 @@ async function authenticateWebSocketApi(ws, accountId) {
     };
 
     const sortedKeys = Object.keys(authParams).sort();
-    const payload = sortedKeys.map(key => `${key}=${authParams[key]}`).join('&');
+    const payload = sortedKeys.map(key => \`\${key}=\${authParams[key]}\`).join('&');
     
-    console.log(`[WS-API] Payload para assinatura (authenticateWebSocketApi): ${payload}`);
+    console.log(\`[WS-API] Payload para assinatura (authenticateWebSocketApi): \${payload}\`);
 
     const signature = await createEd25519Signature(payload, accountId);
 
     const authRequest = {
-      id: `auth-${timestamp}-${accountId}`,
+      id: \`auth-\${timestamp}-\${accountId}\`,
       method: 'session.logon',
       params: {
         apiKey: authParams.apiKey,
@@ -492,40 +515,40 @@ async function authenticateWebSocketApi(ws, accountId) {
     return new Promise((resolve, reject) => {
       const timeoutDuration = 30000;
       const timeoutId = setTimeout(() => {
-        console.error(`[WS-API] Timeout na autenticação WebSocket API para conta ${accountId} (ID: ${authRequest.id})`);
-        reject(new Error(`Timeout na autenticação WebSocket API (ID: ${authRequest.id})`));
+        console.error(\`[WS-API] Timeout na autenticação WebSocket API para conta \${accountId} (ID: \${authRequest.id})\`);
+        reject(new Error(\`Timeout na autenticação WebSocket API (ID: \${authRequest.id})\`));
       }, timeoutDuration);
 
       accountState.wsApiRequestCallbacks.set(authRequest.id, (responseMessage) => {
         clearTimeout(timeoutId);
         
-        console.log(`[WS-API] Resposta recebida para autenticação (ID: ${authRequest.id}):`, JSON.stringify(responseMessage, null, 2));
+        console.log(\`[WS-API] Resposta recebida para autenticação (ID: \${authRequest.id}):\`, JSON.stringify(responseMessage, null, 2));
         
         if (responseMessage.status === 200 && responseMessage.result) {
-          console.log(`[WS-API] ✅ Autenticação session.logon bem-sucedida para conta ${accountId}`);
+          console.log(\`[WS-API] ✅ Autenticação session.logon bem-sucedida para conta \${accountId}\`);
           accountState.wsApiAuthenticated = true;
           accountState.isAuthenticated = true;
           resolve(true);
         } else {
           const errorMsg = responseMessage.error?.msg || 'Erro desconhecido na autenticação';
-          console.error(`[WS-API] Falha na autenticação session.logon para conta ${accountId}:`, errorMsg, responseMessage.error);
-          reject(new Error(`Falha na autenticação session.logon: ${errorMsg} (Code: ${responseMessage.error?.code})`));
+          console.error(\`[WS-API] Falha na autenticação session.logon para conta \${accountId}:\`, errorMsg, responseMessage.error);
+          reject(new Error(\`Falha na autenticação session.logon: \${errorMsg} (Code: \${responseMessage.error?.code})\`));
         }
       });
 
-      console.log(`[WS-API] Enviando requisição de autenticação (ID: ${authRequest.id}):`, JSON.stringify(authRequest, null, 2));
+      console.log(\`[WS-API] Enviando requisição de autenticação (ID: \${authRequest.id}):\`, JSON.stringify(authRequest, null, 2));
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify(authRequest));
       } else {
         clearTimeout(timeoutId);
         accountState.wsApiRequestCallbacks.delete(authRequest.id);
-        console.error(`[WS-API] WebSocket não está aberto ao tentar enviar autenticação para conta ${accountId}. Estado: ${ws.readyState}`);
+        console.error(\`[WS-API] WebSocket não está aberto ao tentar enviar autenticação para conta \${accountId}. Estado: \${ws.readyState}\`);
         reject(new Error('WebSocket não está aberto para autenticação.'));
       }
     });
 
   } catch (error) {
-    console.error(`[WS-API] Erro crítico na função authenticateWebSocketApi para conta ${accountId}:`, error.message);
+    console.error(\`[WS-API] Erro crítico na função authenticateWebSocketApi para conta \${accountId}:\`, error.message);
     throw error;
   }
 }
@@ -554,19 +577,19 @@ async function ensurePriceWebsocketExists(symbol, accountId) {
   
   const updatedAccountState = getAccountConnectionState(accountId);
   if (!updatedAccountState || !updatedAccountState.wsUrl) {
-      console.error(`[WEBSOCKET] URL de mercado (wsUrl) não encontrada para conta ${accountId} em ensurePriceWebsocketExists.`);
+      console.error(\`[WEBSOCKET] URL de mercado (wsUrl) não encontrada para conta \${accountId} em ensurePriceWebsocketExists.\`);
       return;
   }
 
-  console.log(`[WEBSOCKET] Iniciando monitoramento de preço para ${symbol} (conta ${accountId})`);
+  console.log(\`[WEBSOCKET] Iniciando monitoramento de preço para \${symbol} (conta \${accountId})\`);
 
-  const wsEndpointUrl = `${updatedAccountState.wsUrl}/ws/${symbol.toLowerCase()}@bookTicker`;
-  console.log(`[WEBSOCKET] URL para monitoramento de preço: ${wsEndpointUrl}`);
+  const wsEndpointUrl = \`\${updatedAccountState.wsUrl}/ws/\${symbol.toLowerCase()}@bookTicker\`;
+  console.log(\`[WEBSOCKET] URL para monitoramento de preço: \${wsEndpointUrl}\`);
 
   const ws = new WebSocket(wsEndpointUrl);
 
   ws.on('open', () => {
-    console.log(`[WEBSOCKET] Conexão de preço aberta para ${symbol} (conta ${accountId})`);
+    console.log(\`[WEBSOCKET] Conexão de preço aberta para \${symbol} (conta \${accountId})\`);
   });
 
   ws.on('message', async (data) => {
@@ -575,7 +598,7 @@ async function ensurePriceWebsocketExists(symbol, accountId) {
   });
 
   ws.on('error', (error) => {
-    console.error(`[WEBSOCKET] Erro na conexão de preço para ${symbol} (conta ${accountId}):`, error.message);
+    console.error(\`[WEBSOCKET] Erro na conexão de preço para \${symbol} (conta \${accountId}):\`, error.message);
     if (priceWebsockets.get(symbol) === ws) {
         priceWebsockets.delete(symbol);
     }
@@ -583,7 +606,7 @@ async function ensurePriceWebsocketExists(symbol, accountId) {
   });
 
   ws.on('close', (code, reason) => {
-    console.log(`[WEBSOCKET] Conexão de preço fechada para ${symbol} (conta ${accountId}). Code: ${code}, Reason: ${reason ? reason.toString() : 'N/A'}`);
+    console.log(\`[WEBSOCKET] Conexão de preço fechada para \${symbol} (conta \${accountId}). Code: \${code}, Reason: \${reason ? reason.toString() : 'N/A'}\`);
     if (priceWebsockets.get(symbol) === ws) {
         priceWebsockets.delete(symbol);
     }
@@ -609,7 +632,7 @@ async function handlePriceUpdate(symbol, tickerData, accountId) {
           db = await accountState.monitoringCallbacks.getDbConnection();
           accountState.dbInstance = db;
         } catch (dbHandlerError) {
-          console.error(`[WEBSOCKETS] Erro ao obter DB via handler para ${symbol}: ${dbHandlerError.message}`);
+          console.error(\`[WEBSOCKETS] Erro ao obter DB via handler para \${symbol}: \${dbHandlerError.message}\`);
         }
       }
       
@@ -619,13 +642,13 @@ async function handlePriceUpdate(symbol, tickerData, accountId) {
           db = await getDatabaseInstance(accountId);
           accountState.dbInstance = db;
         } catch (directDbError) {
-          console.error(`[WEBSOCKETS] Erro ao obter DB diretamente para ${symbol}: ${directDbError.message}`);
+          console.error(\`[WEBSOCKETS] Erro ao obter DB diretamente para \${symbol}: \${directDbError.message}\`);
         }
       }
     }
 
     if (!db) {
-      console.error(`[WEBSOCKETS] Não foi possível obter conexão com o banco de dados para ${symbol} (conta ${accountId})`);
+      console.error(\`[WEBSOCKETS] Não foi possível obter conexão com o banco de dados para \${symbol} (conta \${accountId})\`);
       return;
     }
 
@@ -637,7 +660,7 @@ async function handlePriceUpdate(symbol, tickerData, accountId) {
       await accountState.monitoringCallbacks.onPriceUpdate(symbol, currentPrice, db, accountId);
     }
   } catch (error) {
-    console.error(`[WEBSOCKETS] Erro ao processar atualização de preço para ${symbol} (conta ${accountId}):`, error);
+    console.error(\`[WEBSOCKETS] Erro ao processar atualização de preço para \${symbol} (conta \${accountId}):\`, error);
   }
 }
 
@@ -647,8 +670,8 @@ async function handlePriceUpdate(symbol, tickerData, accountId) {
 function setupBookDepthWebsocket(symbol, callback, accountId) {
   const accountState = getAccountConnectionState(accountId, true);
   
-  const wsEndpoint = `${accountState.wsUrl}/${symbol.toLowerCase()}@bookTicker`;
-  console.log(`[WEBSOCKET] Conectando ao BookTicker em tempo real: ${wsEndpoint} (conta ${accountId})`);
+  const wsEndpoint = \`\${accountState.wsUrl}/\${symbol.toLowerCase()}@bookTicker\`;
+  console.log(\`[WEBSOCKET] Conectando ao BookTicker em tempo real: \${wsEndpoint} (conta \${accountId})\`);
   
   let ws = new WebSocket(wsEndpoint);
   let connectionTimeout = null;
@@ -658,13 +681,13 @@ function setupBookDepthWebsocket(symbol, callback, accountId) {
 
   connectionTimeout = setTimeout(() => {
     if (ws.readyState !== WebSocket.OPEN) {
-      console.error(`[WEBSOCKETS] Timeout ao estabelecer conexão para ${symbol} BookTicker (conta ${accountId})`);
+      console.error(\`[WEBSOCKETS] Timeout ao estabelecer conexão para \${symbol} BookTicker (conta \${accountId})\`);
       ws.terminate();
     }
   }, 10000);
 
   ws.on('open', () => {
-    console.log(`[WEBSOCKET] BookTicker WebSocket conectado para ${symbol} (conta ${accountId})`);
+    console.log(\`[WEBSOCKET] BookTicker WebSocket conectado para \${symbol} (conta \${accountId})\`);
     clearTimeout(connectionTimeout);
     reconnectAttempt = 0;
 
@@ -698,26 +721,26 @@ function setupBookDepthWebsocket(symbol, callback, accountId) {
             timestamp: tickerData.E || Date.now()
           });
         } else {
-          console.log(`[WEBSOCKET] Valores numéricos inválidos em BookTicker para ${symbol} (conta ${accountId}): bid=${bestBid}, ask=${bestAsk}`);
+          console.log(\`[WEBSOCKET] Valores numéricos inválidos em BookTicker para \${symbol} (conta \${accountId}): bid=\${bestBid}, ask=\${bestAsk}\`);
         }
       } else {
-        console.log(`[WEBSOCKET] Formato inesperado de dados BookTicker para ${symbol} (conta ${accountId})`);
+        console.log(\`[WEBSOCKET] Formato inesperado de dados BookTicker para \${symbol} (conta \${accountId})\`);
       }
     } catch (error) {
-      console.error(`[WEBSOCKET] Erro ao processar BookTicker para ${symbol} (conta ${accountId}):`, error.message);
+      console.error(\`[WEBSOCKET] Erro ao processar BookTicker para \${symbol} (conta \${accountId}):\`, error.message);
     }
   });
   
   ws.on('error', (error) => {
     clearTimeout(connectionTimeout);
     clearInterval(heartbeatInterval);
-    console.error(`[WEBSOCKET] Erro na conexão BookTicker para ${symbol} (conta ${accountId}):`, error.message);
+    console.error(\`[WEBSOCKET] Erro na conexão BookTicker para \${symbol} (conta \${accountId}):\`, error.message);
   });
   
   ws.on('close', () => {
     clearTimeout(connectionTimeout);
     clearInterval(heartbeatInterval);
-    console.log(`[WEBSOCKET] BookTicker WebSocket fechado para ${symbol} (conta ${accountId})`);
+    console.log(\`[WEBSOCKET] BookTicker WebSocket fechado para \${symbol} (conta \${accountId})\`);
   });
   
   return ws;
@@ -731,7 +754,7 @@ function stopPriceMonitoring(symbol, accountId) {
   if (!priceWebsockets) return false;
   
   if (priceWebsockets.has(symbol)) {
-    console.log(`[WEBSOCKET] Fechando websocket de preço para ${symbol} (conta ${accountId}) por solicitação externa`);
+    console.log(\`[WEBSOCKET] Fechando websocket de preço para \${symbol} (conta \${accountId}) por solicitação externa\`);
     priceWebsockets.get(symbol).close();
     priceWebsockets.delete(symbol);
     return true;
@@ -746,31 +769,31 @@ async function startUserDataStream(db, accountId) {
   const accountState = getAccountConnectionState(accountId, true); 
 
   if (accountState.userDataStream && accountState.userDataStream.readyState === WebSocket.OPEN) {
-    console.log(`[WEBSOCKET] UserDataStream já está ativo para conta ${accountId}`);
+    console.log(\`[WEBSOCKET] UserDataStream já está ativo para conta \${accountId}\`);
     return;
   }
 
-  console.log(`[WEBSOCKETS] Iniciando stream de dados do usuário para conta ${accountId}...`);
+  console.log(\`[WEBSOCKETS] Iniciando stream de dados do usuário para conta \${accountId}...\`);
   
   let listenKey;
   try {
     listenKey = await api.getListenKey(accountId);
   } catch (e) {
-    console.error(`[WEBSOCKETS] Erro crítico ao obter listenKey para conta ${accountId}: ${e.message}`);
+    console.error(\`[WEBSOCKETS] Erro crítico ao obter listenKey para conta \${accountId}: \${e.message}\`);
     throw e;
   }
 
   if (!listenKey) {
-    throw new Error(`Falha ao obter ListenKey para conta ${accountId}`);
+    throw new Error(\`Falha ao obter ListenKey para conta \${accountId}\`);
   }
 
   const wsUrl = accountState.wsUrl;
   if (!wsUrl) {
-    throw new Error(`URL base do WebSocket (wsUrl) não definida para conta ${accountId}`);
+    throw new Error(\`URL base do WebSocket (wsUrl) não definida para conta \${accountId}\`);
   }
   
-  const userDataEndpoint = `${wsUrl}/ws/${listenKey}`;
-  console.log(`[WEBSOCKETS] Conectando UserDataStream para conta ${accountId}: ${userDataEndpoint}`);
+  const userDataEndpoint = \`\${wsUrl}/ws/\${listenKey}\`;
+  console.log(\`[WEBSOCKETS] Conectando UserDataStream para conta \${accountId}: \${userDataEndpoint}\`);
   
   const ws = new WebSocket(userDataEndpoint);
   accountState.userDataStream = ws;
@@ -778,7 +801,7 @@ async function startUserDataStream(db, accountId) {
   accountState.lastUserDataStreamKeepAlive = Date.now();
 
   ws.on('open', () => {
-    console.log(`[WEBSOCKET] UserDataStream conectado para conta ${accountId}`);
+    console.log(\`[WEBSOCKET] UserDataStream conectado para conta \${accountId}\`);
     if (accountState.userDataKeepAliveInterval) {
       clearInterval(accountState.userDataKeepAliveInterval);
     }
@@ -788,7 +811,7 @@ async function startUserDataStream(db, accountId) {
           await api.keepAliveListenKey(accountId, accountState.listenKey);
           accountState.lastUserDataStreamKeepAlive = Date.now();
         } catch (kaError) {
-          console.error(`[WEBSOCKET] Erro ao renovar listenKey para conta ${accountId}: ${kaError.message}`);
+          console.error(\`[WEBSOCKET] Erro ao renovar listenKey para conta \${accountId}: \${kaError.message}\`);
         }
       } else {
         if(accountState.userDataKeepAliveInterval) clearInterval(accountState.userDataKeepAliveInterval);
@@ -801,7 +824,7 @@ async function startUserDataStream(db, accountId) {
     try {
         await handleUserDataMessage(data, accountId, db);
     } catch (e) {
-        console.error(`[WEBSOCKET] Erro CRÍTICO no handler de mensagem UserDataStream para conta ${accountId}: ${e.message}`);
+        console.error(\`[WEBSOCKET] Erro CRÍTICO no handler de mensagem UserDataStream para conta \${accountId}: \${e.message}\`);
     }
   });
 
@@ -814,7 +837,7 @@ async function startUserDataStream(db, accountId) {
   });
 
   ws.on('error', (error) => {
-    console.error(`[WEBSOCKET] Erro no UserDataStream para conta ${accountId}: ${error.message}`);
+    console.error(\`[WEBSOCKET] Erro no UserDataStream para conta \${accountId}: \${error.message}\`);
     if (accountState.userDataStream === ws) {
         accountState.userDataStream = null;
     }
@@ -826,7 +849,7 @@ async function startUserDataStream(db, accountId) {
 
   ws.on('close', (code, reason) => {
     const reasonStr = reason ? reason.toString() : 'N/A';
-    console.log(`[WEBSOCKET] UserDataStream fechado para conta ${accountId}. Code: ${code}, Reason: ${reasonStr}`);
+    console.log(\`[WEBSOCKET] UserDataStream fechado para conta \${accountId}. Code: \${code}, Reason: \${reasonStr}\`);
     if (accountState.userDataStream === ws) {
         accountState.userDataStream = null;
     }
@@ -840,7 +863,7 @@ async function startUserDataStream(db, accountId) {
 async function handleUserDataMessage(jsonData, accountId, db) {
   const accountState = getAccountConnectionState(accountId);
   if (!accountState || !accountState.monitoringCallbacks) {
-    console.error(`[WEBSOCKET] Callbacks de monitoramento não encontrados para conta ${accountId} em handleUserDataMessage.`);
+    console.error(\`[WEBSOCKET] Callbacks de monitoramento não encontrados para conta \${accountId} em handleUserDataMessage.\`);
     return;
   }
 
@@ -855,18 +878,18 @@ async function handleUserDataMessage(jsonData, accountId, db) {
           if (handleOrderUpdate && typeof handleOrderUpdate === 'function') {
             await handleOrderUpdate(message, db);
           } else {
-            console.warn(`[WEBSOCKET] handleOrderUpdate não definido ou não é uma função para conta ${accountId}`);
+            console.warn(\`[WEBSOCKET] handleOrderUpdate não definido ou não é uma função para conta \${accountId}\`);
           }
           break;
         case 'ACCOUNT_UPDATE':
           if (handleAccountUpdate && typeof handleAccountUpdate === 'function') {
             await handleAccountUpdate(message, db);
           } else {
-            console.warn(`[WEBSOCKET] handleAccountUpdate não definido ou não é uma função para conta ${accountId}`);
+            console.warn(\`[WEBSOCKET] handleAccountUpdate não definido ou não é uma função para conta \${accountId}\`);
           }
           break;
         case 'listenKeyExpired':
-          console.log(`[WEBSOCKET] UserDataStream (Conta ${accountId}) ListenKey expirou. Tentando renovar...`);
+          console.log(\`[WEBSOCKET] UserDataStream (Conta \${accountId}) ListenKey expirou. Tentando renovar...\`);
           await stopUserDataStream(accountId); 
           await startUserDataStream(db, accountId);
           break;
@@ -875,7 +898,7 @@ async function handleUserDataMessage(jsonData, accountId, db) {
       }
     }
   } catch (error) {
-    console.error(`[WEBSOCKET] Erro ao processar mensagem UserDataStream para conta ${accountId}: ${error.message}. Dados:`, jsonData.toString().substring(0, 500));
+    console.error(\`[WEBSOCKET] Erro ao processar mensagem UserDataStream para conta \${accountId}: \${error.message}. Dados:\`, jsonData.toString().substring(0, 500));
   }
 }
 
@@ -907,7 +930,7 @@ function restartUserDataStream(db, accountId) {
     try {
       await startUserDataStream(db, accountId);
     } catch (error) {
-      console.error(`[WEBSOCKETS] Erro ao reiniciar stream de dados do usuário para conta ${accountId}:`, error);
+      console.error(\`[WEBSOCKETS] Erro ao reiniciar stream de dados do usuário para conta \${accountId}:\`, error);
     }
   }, 5000);
 }
@@ -926,7 +949,7 @@ function getHandlers(accountId) {
 function getCredentials(accountId) {
   const accountState = getAccountConnectionState(accountId);
   if (!accountState) {
-    console.warn(`[WEBSOCKETS] Estado da conta ${accountId} não encontrado em getCredentials. Tente carregar primeiro.`);
+    console.warn(\`[WEBSOCKETS] Estado da conta \${accountId} não encontrado em getCredentials. Tente carregar primeiro.\`);
     return null;
   }
   
@@ -949,7 +972,7 @@ function getCredentials(accountId) {
 async function ensureWebSocketApiExists(accountId) {
   try {
     if (!accountId || typeof accountId !== 'number') {
-      console.error(`[WEBSOCKETS] ID da conta inválido em ensureWebSocketApiExists: ${accountId}`);
+      console.error(\`[WEBSOCKETS] ID da conta inválido em ensureWebSocketApiExists: \${accountId}\`);
       return false;
     }
 
@@ -961,11 +984,11 @@ async function ensureWebSocketApiExists(accountId) {
         accountState = getAccountConnectionState(accountId);
         
         if (!accountState || !accountState.wsApiKey) {
-          console.error(`[WEBSOCKETS] Falha ao carregar credenciais ou wsApiKey ausente para conta ${accountId}.`);
+          console.error(\`[WEBSOCKETS] Falha ao carregar credenciais ou wsApiKey ausente para conta \${accountId}.\`);
           return false;
         }
       } catch (credError) {
-        console.error(`[WEBSOCKETS] Erro ao carregar credenciais para conta ${accountId} em ensureWebSocketApiExists:`, credError.message);
+        console.error(\`[WEBSOCKETS] Erro ao carregar credenciais para conta \${accountId} em ensureWebSocketApiExists:\`, credError.message);
         return false;
       }
     }
@@ -974,16 +997,16 @@ async function ensureWebSocketApiExists(accountId) {
       if (accountState.wsApiAuthenticated) {
         return true;
       } else {
-        console.log(`[WEBSOCKETS] WebSocket API conectado mas não autenticado para conta ${accountId}, tentando autenticar...`);
+        console.log(\`[WEBSOCKETS] WebSocket API conectado mas não autenticado para conta \${accountId}, tentando autenticar...\`);
         return await authenticateWebSocketApi(accountState.wsApiConnection, accountId);
       }
     }
 
-    console.log(`[WEBSOCKETS] Criando nova conexão WebSocket API para conta ${accountId}...`);
+    console.log(\`[WEBSOCKETS] Criando nova conexão WebSocket API para conta \${accountId}...\`);
     return await startWebSocketApi(accountId);
     
   } catch (error) {
-    console.error(`[WEBSOCKETS] Erro ao garantir WebSocket API para conta ${accountId}:`, error.message);
+    console.error(\`[WEBSOCKETS] Erro ao garantir WebSocket API para conta \${accountId}:\`, error.message);
     return false;
   }
 }
@@ -1015,29 +1038,29 @@ async function sendWebSocketApiRequest(request, timeout = 30000, accountId) {
       await api.loadCredentialsFromDatabase(accountId);
       const newState = getAccountConnectionState(accountId);
       if (!newState) {
-        return Promise.reject(new Error(`[WS-API] Estado da conta ${accountId} não pôde ser inicializado.`));
+        return Promise.reject(new Error(\`[WS-API] Estado da conta \${accountId} não pôde ser inicializado.\`));
       }
     } catch (loadErr) {
-      return Promise.reject(new Error(`[WS-API] Falha ao carregar credenciais para conta ${accountId} antes de enviar requisição: ${loadErr.message}`));
+      return Promise.reject(new Error(\`[WS-API] Falha ao carregar credenciais para conta \${accountId} antes de enviar requisição: \${loadErr.message}\`));
     }
   }
   
   const currentAccountState = getAccountConnectionState(accountId);
   if (!currentAccountState) {
-      return Promise.reject(new Error(`[WS-API] Estado da conta ${accountId} não encontrado após tentativa de carga.`));
+      return Promise.reject(new Error(\`[WS-API] Estado da conta \${accountId} não encontrado após tentativa de carga.\`));
   }
 
   if (!currentAccountState.wsApiConnection || currentAccountState.wsApiConnection.readyState !== WebSocket.OPEN) {
-    console.log(`[WS-API] Conexão WebSocket API não está aberta para conta ${accountId}. Tentando estabelecer...`);
+    console.log(\`[WS-API] Conexão WebSocket API não está aberta para conta \${accountId}. Tentando estabelecer...\`);
     try {
       const connected = await startWebSocketApi(accountId);
       if (!connected || !currentAccountState.wsApiConnection || currentAccountState.wsApiConnection.readyState !== WebSocket.OPEN) {
         throw new Error('Falha ao estabelecer conexão WebSocket API.');
       }
-      console.log(`[WS-API] Conexão WebSocket API restabelecida para conta ${accountId}.`);
+      console.log(\`[WS-API] Conexão WebSocket API restabelecida para conta \${accountId}.\`);
     } catch (connError) {
-      console.error(`[WS-API] Erro ao tentar (re)estabelecer conexão WebSocket API para conta ${accountId}: ${connError.message}`);
-      return Promise.reject(new Error(`[WS-API] WebSocket API não conectado para conta ${accountId}: ${connError.message}`));
+      console.error(\`[WS-API] Erro ao tentar (re)estabelecer conexão WebSocket API para conta \${accountId}: \${connError.message}\`);
+      return Promise.reject(new Error(\`[WS-API] WebSocket API não conectado para conta \${accountId}: \${connError.message}\`));
     }
   }
 
@@ -1048,8 +1071,8 @@ async function sendWebSocketApiRequest(request, timeout = 30000, accountId) {
     const timer = setTimeout(() => {
       if (currentAccountState.wsApiRequestCallbacks.has(requestId)) {
         currentAccountState.wsApiRequestCallbacks.delete(requestId);
-        console.error(`[WS-API] Timeout para requisição ID ${requestId} (Conta: ${accountId}, Método: ${request.method})`);
-        reject({ error: `Timeout para requisição ${requestId}`, id: requestId, method: request.method });
+        console.error(\`[WS-API] Timeout para requisição ID \${requestId} (Conta: \${accountId}, Método: \${request.method})\`);
+        reject({ error: \`Timeout para requisição \${requestId}\`, id: requestId, method: request.method });
       }
     }, timeout);
 
@@ -1062,14 +1085,14 @@ async function sendWebSocketApiRequest(request, timeout = 30000, accountId) {
       } else {
         clearTimeout(timer);
         currentAccountState.wsApiRequestCallbacks.delete(requestId);
-        console.error(`[WS-API] Conexão fechou antes de enviar req ID ${requestId} (Conta: ${accountId})`);
-        reject(new Error(`WebSocket API connection closed before sending request ${requestId} for account ${accountId}.`));
+        console.error(\`[WS-API] Conexão fechou antes de enviar req ID \${requestId} (Conta: \${accountId})\`);
+        reject(new Error(\`WebSocket API connection closed before sending request \${requestId} for account \${accountId}.\`));
       }
     } catch (error) {
       clearTimeout(timer);
       currentAccountState.wsApiRequestCallbacks.delete(requestId);
-      console.error(`[WS-API] Erro ao enviar requisição ID ${requestId} (Conta: ${accountId}):`, error);
-      reject({ error: `Erro ao enviar requisição: ${error.message}`, id: requestId, method: request.method });
+      console.error(\`[WS-API] Erro ao enviar requisição ID \${requestId} (Conta: \${accountId}):\`, error);
+      reject({ error: \`Erro ao enviar requisição: \${error.message}\`, id: requestId, method: request.method });
     }
   });
 }
@@ -1081,7 +1104,7 @@ function createEd25519DERFromRaw(rawKey) {
 }
 
 function forceCleanupAccount(accountId) {
-  console.log(`[WEBSOCKET] 🧹 Limpeza completa para conta ${accountId}...`);
+  console.log(\`[WEBSOCKET] 🧹 Limpeza completa para conta \${accountId}...\`);
   
   try {
     cleanupWebSocketApi(accountId);
@@ -1108,10 +1131,10 @@ function forceCleanupAccount(accountId) {
       }
     }
     
-    console.log(`[WEBSOCKETS] ✅ Limpeza completa concluída para conta ${accountId}`);
+    console.log(\`[WEBSOCKETS] ✅ Limpeza completa concluída para conta \${accountId}\`);
     
   } catch (error) {
-    console.error(`[WEBSOCKETS] ❌ Erro durante limpeza da conta ${accountId}:`, error.message);
+    console.error(\`[WEBSOCKETS] ❌ Erro durante limpeza da conta \${accountId}:\`, error.message);
   }
 }
 
@@ -1140,3 +1163,111 @@ module.exports = {
   forceCleanupAccount,
   loadNobleEd25519,
 };
+`;
+
+writeFile(websocketsPath, websocketsContent);
+
+// 2. Corrigir api.js - ajustar makeAuthenticatedRequest
+console.log('\n2️⃣ Corrigindo api.js...');
+const apiPath = path.join(__dirname, 'api.js');
+createBackup(apiPath);
+
+const apiContent = fs.readFileSync(apiPath, 'utf8');
+
+// Corrigir a função makeAuthenticatedRequest para ter a ordem correta dos parâmetros
+const correctedApiContent = apiContent.replace(
+  /async function makeAuthenticatedRequest\(endpoint, method = 'GET', data = null, accountId\)/,
+  'async function makeAuthenticatedRequest(accountId, method = \'GET\', endpoint, data = null)'
+).replace(
+  /const response = await makeAuthenticatedRequest\(accountId, 'GET', endpoint, params\);/g,
+  'const response = await makeAuthenticatedRequest(accountId, \'GET\', endpoint, params);'
+).replace(
+  /await makeAuthenticatedRequest\('GET', '\/v1\/leverageBracket', {}, accountId\)/,
+  'await makeAuthenticatedRequest(accountId, \'GET\', \'/v1/leverageBracket\', {})'
+);
+
+writeFile(apiPath, correctedApiContent);
+
+// 3. Corrigir signalProcessor.js - adicionar formatErrorMessage
+console.log('\n3️⃣ Corrigindo signalProcessor.js...');
+const signalProcessorPath = path.join(__dirname, 'posicoes', 'signalProcessor.js');
+
+if (fs.existsSync(signalProcessorPath)) {
+  createBackup(signalProcessorPath);
+  
+  const signalContent = fs.readFileSync(signalProcessorPath, 'utf8');
+  
+  // Adicionar função formatErrorMessage se não existir
+  if (!signalContent.includes('function formatErrorMessage')) {
+    const formatErrorFunction = `
+// Função utilitária simples para formatar mensagens de erro
+function formatErrorMessage(error) {
+  if (error instanceof Error) {
+    return error.message.substring(0, 255);
+  }
+  if (typeof error === 'string') {
+    return error.substring(0, 255);
+  }
+  return 'Erro desconhecido'.substring(0, 255);
+}
+
+`;
+    
+    const correctedSignalContent = signalContent.replace(
+      /(const api = require\('\.\.\/api'\);)/,
+      `$1\n${formatErrorFunction}`
+    );
+    
+    writeFile(signalProcessorPath, correctedSignalContent);
+  }
+}
+
+// 4. Corrigir websocketApi.js - função getAccountInfoV2
+console.log('\n4️⃣ Corrigindo websocketApi.js...');
+const websocketApiPath = path.join(__dirname, 'websocketApi.js');
+createBackup(websocketApiPath);
+
+const websocketApiContent = fs.readFileSync(websocketApiPath, 'utf8');
+
+const correctedWebsocketApiContent = websocketApiContent.replace(
+  /async function getAccountInfoV2\(accountId\)/,
+  'async function getAccountInformationV2(accountId)'
+).replace(
+  /const accountInfoResult = await getAccountInfoV2\(accountId\);/,
+  'const accountInfoResult = await getAccountInformationV2(accountId);'
+);
+
+writeFile(websocketApiPath, correctedWebsocketApiContent);
+
+// 5. Instalar uuid se não estiver instalado
+console.log('\n5️⃣ Verificando dependência uuid...');
+const packageJsonPath = path.join(__dirname, 'package.json');
+if (fs.existsSync(packageJsonPath)) {
+  const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+  if (!packageJson.dependencies?.uuid && !packageJson.devDependencies?.uuid) {
+    console.log('📦 Instalando uuid...');
+    const { execSync } = require('child_process');
+    try {
+      execSync('npm install uuid', { stdio: 'inherit' });
+      console.log('✅ UUID instalado com sucesso');
+    } catch (error) {
+      console.warn('⚠️ Erro ao instalar uuid automaticamente. Execute: npm install uuid');
+    }
+  } else {
+    console.log('✅ UUID já está instalado');
+  }
+}
+
+console.log('\n🎉 Todas as correções foram aplicadas com sucesso!');
+console.log('\n📋 Resumo das correções:');
+console.log('1. ✅ websockets.js - Corrigido para usar api.js como fonte única de estado');
+console.log('2. ✅ api.js - Corrigida ordem dos parâmetros em makeAuthenticatedRequest');
+console.log('3. ✅ signalProcessor.js - Adicionada função formatErrorMessage');
+console.log('4. ✅ websocketApi.js - Corrigida função getAccountInformationV2');
+console.log('5. ✅ Dependência uuid verificada/instalada');
+
+console.log('\n🚀 Agora você pode testar o sistema:');
+console.log('   node posicoes/monitoramento.js --account 1');
+
+console.log('\n💾 Backups criados com timestamp para todos os arquivos alterados.');
+console.log('   Em caso de problemas, você pode restaurar usando os arquivos .backup');
