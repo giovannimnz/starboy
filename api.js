@@ -2,6 +2,10 @@ const axios = require('axios');
 const crypto = require('crypto');
 const { getDatabaseInstance } = require('./db/conexao');
 
+// Map para armazenar estados das contas
+const accountStates = new Map();
+const { getAccountState } = require('./utils/accountState');
+
 // Mapa global para armazenar estados das conexões de cada conta
 const accountConnections = new Map();
 
@@ -188,6 +192,14 @@ async function loadCredentialsFromDatabase(accountId) {
  * @param {Object} params - Parâmetros da requisição
  * @returns {Promise<Object>} - Resposta da API
  */
+/**
+ * Faz uma requisição autenticada para a API da Binance
+ * @param {number} accountId - ID da conta
+ * @param {string} method - Método HTTP (GET, POST, etc.)
+ * @param {string} endpoint - Endpoint da API
+ * @param {Object} params - Parâmetros da requisição
+ * @returns {Promise<Object>} - Resposta da API
+ */
 async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}) {
   try {
     console.log(`[API] makeAuthenticatedRequest chamado: accountId=${accountId}, method=${method}, endpoint=${endpoint}`);
@@ -197,16 +209,27 @@ async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}
       throw new Error(`AccountId deve ser um número válido: ${accountId} (tipo: ${typeof accountId})`);
     }
     
-    // Obter estado da conta
-    const accountState = accountStates.get(accountId);
+    // CORREÇÃO: Obter estado da conta usando função existente ou Map
+    let accountState;
+    
+    // Tentar obter do Map global primeiro
+    if (accountStates && accountStates.has(accountId)) {
+      accountState = accountStates.get(accountId);
+    } else {
+      // Fallback: tentar carregar credenciais
+      console.log(`[API] Estado não encontrado no Map, carregando credenciais para conta ${accountId}...`);
+      await loadCredentialsFromDatabase(accountId);
+      accountState = accountStates.get(accountId);
+    }
+    
     if (!accountState) {
-      throw new Error(`Estado da conta ${accountId} não encontrado`);
+      throw new Error(`Estado da conta ${accountId} não encontrado mesmo após carregamento`);
     }
     
     const { apiKey, secretKey, apiUrl } = accountState;
     
     if (!apiKey || !secretKey || !apiUrl) {
-      throw new Error(`Credenciais incompletas para conta ${accountId}`);
+      throw new Error(`Credenciais incompletas para conta ${accountId}: apiKey=${!!apiKey}, secretKey=${!!secretKey}, apiUrl=${!!apiUrl}`);
     }
     
     // CORREÇÃO: Adicionar timestamp obrigatório
