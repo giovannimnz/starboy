@@ -1,7 +1,7 @@
-console.log('��� Teste rápido após correções...');
+console.log('��� Teste rápido após correções...');
 
 try {
-  const api = require('./api');
+  const api = require('../api');
   console.log('✅ api.js carregado sem erro');
   
   // Verificar funções principais
@@ -12,7 +12,7 @@ try {
   console.log('- roundPriceToTickSize:', typeof api.roundPriceToTickSize);
   
   console.log('\n✅ Todos os módulos principais funcionando!');
-  console.log('\n��� Execute o monitoramento:');
+  console.log('\n��� Execute o monitoramento:');
   console.log('   node posicoes/monitoramento.js --account 1');
   
 } catch (error) {

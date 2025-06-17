@@ -45,57 +45,6 @@ function debugAccountStates() {
 }
 
 
-/**
- * Formatar quantidade respeitando a precisão máxima
- * @param {number} quantity - Quantidade a ser formatada
- * @param {number} precision - Precisão (casas decimais)
- * @returns {string} - Quantidade formatada
- */
-function formatQuantity(quantity, precision) {
-  if (typeof quantity !== 'number' || typeof precision !== 'number') {
-    console.error(`[API] Parâmetros inválidos para formatQuantity: quantity=${quantity}, precision=${precision}`);
-    return '0';
-  }
-  
-  // Garantir que precision seja válida (0-8)
-  const validPrecision = Math.max(0, Math.min(8, Math.floor(precision)));
-  
-  // Formatar com precisão exata
-  const formatted = parseFloat(quantity.toFixed(validPrecision));
-  
-  // Converter para string removendo zeros desnecessários
-  const result = formatted.toString();
-  
-  console.log(`[API] Quantidade formatada: ${quantity} → ${result} (precisão: ${validPrecision})`);
-  return result;
-}
-
-/**
- * Formatar preço respeitando a precisão máxima
- * @param {number} price - Preço a ser formatado
- * @param {number} precision - Precisão (casas decimais)
- * @returns {string} - Preço formatado
- */
-function formatPrice(price, precision) {
-  if (typeof price !== 'number' || typeof precision !== 'number') {
-    console.error(`[API] Parâmetros inválidos para formatPrice: price=${price}, precision=${precision}`);
-    return '0';
-  }
-  
-  // Garantir que precision seja válida (0-8)
-  const validPrecision = Math.max(0, Math.min(8, Math.floor(precision)));
-  
-  // Formatar com precisão exata
-  const formatted = parseFloat(price.toFixed(validPrecision));
-  
-  // Converter para string removendo zeros desnecessários
-  const result = formatted.toString();
-  
-  console.log(`[API] Preço formatado: ${price} → ${result} (precisão: ${validPrecision})`);
-  return result;
-}
-
-
 // Map global para estados das contas - DEVE SER O MESMO EM TODO LUGAR
 // Tornar disponível globalmente
 if (typeof global !== 'undefined') {
@@ -621,35 +570,6 @@ async function getListenKey(accountId) {
 /**
  * Obtém precisão de um símbolo
  */
-
-// Cache para precisões (evitar múltiplas chamadas)
-const precisionCache = new Map();
-
-/**
- * Obtém precisão com cache
- * @param {string} symbol - Símbolo
- * @param {number} accountId - ID da conta
- * @returns {Promise<Object>} - Informações de precisão
- */
-async function getPrecisionCached(symbol, accountId) {
-  const cacheKey = `${symbol}_${accountId}`;
-  
-  if (precisionCache.has(cacheKey)) {
-    const cached = precisionCache.get(cacheKey);
-    console.log(`[API] Usando precisão em cache para ${symbol}`);
-    return cached;
-  }
-  
-  console.log(`[API] Obtendo precisão para ${symbol} (conta ${accountId})...`);
-  const precision = await getPrecision(symbol, accountId);
-  
-  // Cache por 5 minutos
-  precisionCache.set(cacheKey, precision);
-  setTimeout(() => precisionCache.delete(cacheKey), 5 * 60 * 1000);
-  
-  return precision;
-}
-
 async function getPrecision(symbol, accountId) {
   try {
     console.log(`[API] Obtendo precisão para ${symbol} (conta ${accountId})...`);
@@ -959,44 +879,57 @@ async function roundPriceToTickSize(symbol, price, accountId) {
  * @param {string} price - Preço
  * @returns {Promise<Object>} - Resultado da ordem
  */
-/**
- * Cria ordem limit maker com formatação correta
- * @param {number} accountId - ID da conta
- * @param {string} symbol - Símbolo
- * @param {number} quantity - Quantidade (número)
- * @param {string} side - Lado (BUY/SELL)
- * @param {number} price - Preço (número)
- * @returns {Promise<Object>} - Resultado da ordem
- */
 async function newLimitMakerOrder(accountId, symbol, quantity, side, price) {
   try {
     console.log(`[API] Criando ordem LIMIT MAKER: ${side} ${quantity} ${symbol} @ ${price} (conta ${accountId})`);
-    
-    // Obter precisões uma única vez
-    const precision = await getPrecisionCached(symbol, accountId);
-    
-    // Formatar quantidade e preço corretamente
-    const formattedQuantity = formatQuantity(quantity, precision.quantityPrecision);
-    const formattedPrice = formatPrice(price, precision.pricePrecision);
-    
-    console.log(`[API] Formatação aplicada: qty=${formattedQuantity}, price=${formattedPrice}`);
     
     const orderParams = {
       symbol: symbol,
       side: side,
       type: 'LIMIT',
       timeInForce: 'GTC',
-      quantity: formattedQuantity,
-      price: formattedPrice
+      quantity: quantity,
+      price: price
     };
     
     const response = await makeAuthenticatedRequest(accountId, 'POST', '/v1/order', orderParams);
-    console.log(`[API] ✅ Ordem LIMIT MAKER criada: ${response.orderId}`);
-    return response;
     
+    if (response && response.orderId) {
+      console.log(`[API] ✅ Ordem LIMIT MAKER criada: ID ${response.orderId}`);
+      return response;
+    } else {
+      console.error(`[API] Resposta inválida ao criar ordem LIMIT MAKER:`, response);
+      throw new Error('Resposta inválida da API ao criar ordem');
+    }
   } catch (error) {
     console.error(`[API] Erro ao criar ordem LIMIT MAKER para ${symbol}:`, error.message);
     throw error;
   }
 }
 
+module.exports = {
+  setAccountState,
+  getAccountState,
+  debugAccountStates,
+  getAccountStatesMap,
+  setAccountState,
+  getAccountState,
+  getAccountConnectionState,
+  getAllAccountConnections,
+  loadCredentialsFromDatabase,
+  makeAuthenticatedRequest,
+  getPrice,
+  getAllOpenPositions,
+  getListenKey,
+  getPrecision,
+  getCurrentLeverage,
+  changeInitialLeverage,
+  getCurrentMarginType,
+  changeMarginType,
+  verifyAndFixEnvironmentConsistency,
+  getFuturesAccountBalanceDetails,
+  getRecentOrders,
+  getTickSize,
+  roundPriceToTickSize,
+  newLimitMakerOrder,
+};

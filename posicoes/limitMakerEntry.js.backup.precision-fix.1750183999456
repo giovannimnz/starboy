@@ -865,20 +865,15 @@ async function getAvailableBalance(accountId) {
 }
 
 // Função auxiliar para calcular tamanho da ordem
-// Função auxiliar para calcular tamanho da ordem COM FORMATAÇÃO CORRETA
 function calculateOrderSize(availableBalance, capitalPercentage, entryPrice, leverage, precision) {
     const capital = availableBalance * capitalPercentage;
-    const rawSize = (capital * leverage) / entryPrice;
+    const size = (capital * leverage) / entryPrice;
+    const sizeString = size.toFixed(precision);
+    const formattedSize = parseFloat(sizeString);
     
-    // CORREÇÃO CRÍTICA: Aplicar precisão correta
-    const validPrecision = Math.max(0, Math.min(8, Math.floor(precision)));
-    const formattedSize = parseFloat(rawSize.toFixed(validPrecision));
-    
-    console.log(`[MONITOR] Cálculo: capital=${capital.toFixed(2)}, rawSize=${rawSize}, precisão=${validPrecision}, formatado=${formattedSize}`);
-    
+    console.log(`[MONITOR] Tamanho calculado: ${size}, Precisão: ${precision}, Formatado: ${formattedSize}`);
     return formattedSize;
 }
-
 
 // Função auxiliar para calcular preço médio
 function calculateAveragePrice(fills) {

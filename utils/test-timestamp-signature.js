@@ -2,7 +2,7 @@
 console.log('🧪 Testando correções de timestamp e assinatura...');
 
 try {
-  const api = require('./api');
+  const api = require('../api');
   console.log('✅ api.js carregado sem erro');
   
   // Verificar se as funções principais existem
