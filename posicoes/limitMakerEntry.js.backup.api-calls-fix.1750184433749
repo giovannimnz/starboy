@@ -1,22 +1,3 @@
-
-// CORREÇÃO: Cache de precisão único para toda a execução
-let cachedPrecisionInfo = null;
-let cachedSymbol = null;
-
-async function getCachedPrecisionOnce(symbol, accountId) {
-  if (cachedPrecisionInfo && cachedSymbol === symbol) {
-    console.log(`[LIMIT_ENTRY] Usando precisão em cache para ${symbol}`);
-    return cachedPrecisionInfo;
-  }
-  
-  console.log(`[LIMIT_ENTRY] Obtendo precisão ÚNICA para ${symbol}`);
-  const { getPrecisionCached } = require('../api');
-  cachedPrecisionInfo = await getPrecisionCached(symbol, accountId);
-  cachedSymbol = symbol;
-  
-  return cachedPrecisionInfo;
-}
-
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 

@@ -1,5 +1,6 @@
 const axios = require('axios');
 const { getDatabaseInstance } = require('./db/conexao');
+
 const accountStates = new Map();
 
 console.log('[API] Map accountStates criado como singleton global (versão ultra-simples)');
@@ -42,36 +43,31 @@ function debugAccountStates() {
  * @param {number} precision - Precisão (casas decimais)
  * @returns {string} - Quantidade formatada
  */
-
-/**
- * Formatar quantidade CORRETA para cada símbolo
- * @param {number} quantity - Quantidade a ser formatada
- * @param {number} precision - Precisão (casas decimais)
- * @param {string} symbol - Símbolo (para regras específicas)
- * @returns {string} - Quantidade formatada
- */
-function formatQuantityCorrect(quantity, precision, symbol) {
+function formatQuantity(quantity, precision) {
   if (typeof quantity !== 'number' || typeof precision !== 'number') {
-    console.error(`[API] Parâmetros inválidos para formatQuantityCorrect`);
+    console.error(`[API] Parâmetros inválidos para formatQuantity: quantity=${quantity}, precision=${precision}`);
     return '0';
   }
   
-  // CORREÇÃO CRÍTICA: POLUSDT aceita apenas números inteiros (precisão 0)
-  if (symbol === 'POLUSDT') {
-    const integerQuantity = Math.floor(quantity);
-    console.log(`[API] POLUSDT - Quantidade convertida para inteiro: ${quantity} → ${integerQuantity}`);
-    return integerQuantity.toString();
-  }
-  
-  // Para outros símbolos, usar precisão normal
+  // Garantir que precision seja válida (0-8)
   const validPrecision = Math.max(0, Math.min(8, Math.floor(precision)));
+  
+  // Formatar com precisão exata
   const formatted = parseFloat(quantity.toFixed(validPrecision));
+  
+  // Converter para string removendo zeros desnecessários
   const result = formatted.toString();
   
   console.log(`[API] Quantidade formatada: ${quantity} → ${result} (precisão: ${validPrecision})`);
   return result;
 }
 
+/**
+ * Formatar preço respeitando a precisão máxima
+ * @param {number} price - Preço a ser formatado
+ * @param {number} precision - Precisão (casas decimais)
+ * @returns {string} - Preço formatado
+ */
 function formatPrice(price, precision) {
   if (typeof price !== 'number' || typeof precision !== 'number') {
     console.error(`[API] Parâmetros inválidos para formatPrice: price=${price}, precision=${precision}`);
@@ -945,6 +941,16 @@ async function roundPriceToTickSize(symbol, price, accountId) {
   }
 }
 
+
+/**
+ * Cria ordem limit maker
+ * @param {number} accountId - ID da conta
+ * @param {string} symbol - Símbolo
+ * @param {string} quantity - Quantidade
+ * @param {string} side - Lado (BUY/SELL)
+ * @param {string} price - Preço
+ * @returns {Promise<Object>} - Resultado da ordem
+ */
 /**
  * Cria ordem limit maker com formatação correta
  * @param {number} accountId - ID da conta
@@ -954,9 +960,6 @@ async function roundPriceToTickSize(symbol, price, accountId) {
  * @param {number} price - Preço (número)
  * @returns {Promise<Object>} - Resultado da ordem
  */
-/**
- * Cria ordem limit maker com formatação CORRETA
- */
 async function newLimitMakerOrder(accountId, symbol, quantity, side, price) {
   try {
     console.log(`[API] Criando ordem LIMIT MAKER: ${side} ${quantity} ${symbol} @ ${price} (conta ${accountId})`);
@@ -964,11 +967,11 @@ async function newLimitMakerOrder(accountId, symbol, quantity, side, price) {
     // Obter precisões uma única vez
     const precision = await getPrecisionCached(symbol, accountId);
     
-    // CORREÇÃO CRÍTICA: Usar formatação específica por símbolo
-    const formattedQuantity = formatQuantityCorrect(quantity, precision.quantityPrecision, symbol);
+    // Formatar quantidade e preço corretamente
+    const formattedQuantity = formatQuantity(quantity, precision.quantityPrecision);
     const formattedPrice = formatPrice(price, precision.pricePrecision);
     
-    console.log(`[API] Formatação CORRETA aplicada: qty=${formattedQuantity}, price=${formattedPrice}`);
+    console.log(`[API] Formatação aplicada: qty=${formattedQuantity}, price=${formattedPrice}`);
     
     const orderParams = {
       symbol: symbol,
@@ -980,7 +983,7 @@ async function newLimitMakerOrder(accountId, symbol, quantity, side, price) {
     };
     
     const response = await makeAuthenticatedRequest(accountId, 'POST', '/v1/order', orderParams);
-    console.log(`[API] ✅ Ordem LIMIT MAKER criada com sucesso: ${response.orderId}`);
+    console.log(`[API] ✅ Ordem LIMIT MAKER criada: ${response.orderId}`);
     return response;
     
   } catch (error) {
@@ -988,7 +991,6 @@ async function newLimitMakerOrder(accountId, symbol, quantity, side, price) {
     throw error;
   }
 }
-
 
 module.exports = {
   setAccountState,
