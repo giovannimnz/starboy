@@ -515,36 +515,6 @@ async function verifyAndFixEnvironmentConsistency(accountId) {
   }
 }
 
-
-/**
- * Obtém detalhes do saldo da conta de futuros
- * @param {number} accountId - ID da conta
- * @returns {Promise<Object>} - Detalhes do saldo
- */
-async function getFuturesAccountBalanceDetails(accountId) {
-  try {
-    console.log(`[API] Obtendo detalhes do saldo para conta ${accountId}...`);
-    
-    if (!accountId || typeof accountId !== 'number') {
-      throw new Error(`AccountId inválido: ${accountId}`);
-    }
-
-    const result = await makeAuthenticatedRequest(accountId, 'GET', '/v2/balance');
-    
-    if (result && Array.isArray(result)) {
-      console.log(`[API] ✅ Detalhes do saldo obtidos para conta ${accountId}`);
-      return {
-        assets: result
-      };
-    } else {
-      throw new Error('Resposta inválida da API de saldo');
-    }
-  } catch (error) {
-    console.error(`[API] Erro ao obter detalhes do saldo para conta ${accountId}:`, error.message);
-    throw error;
-  }
-}
-
 module.exports = {
   getAccountConnectionState,
   getAllAccountConnections,

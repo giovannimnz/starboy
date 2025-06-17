@@ -837,20 +837,17 @@ async function getAvailableBalance(accountId) {
             throw new Error(`AccountId inválido: ${accountId}`);
         }
 
-        // Usar função existente do api.js
-        const api = require('../api');
-        const balanceDetails = await api.getFuturesAccountBalanceDetails(accountId);
+        const { getFuturesAccountBalanceDetails } = require('../api');
+        const balanceDetails = await getFuturesAccountBalanceDetails(accountId);
         
         if (!balanceDetails || !balanceDetails.assets) {
-            console.log(`[LIMIT_ENTRY] ⚠️ Resposta de saldo inválida, usando valor padrão`);
-            return 1000; // Valor padrão para teste
+            throw new Error('Resposta inválida da API de saldo');
         }
 
         const usdtAsset = balanceDetails.assets.find(asset => asset.asset === 'USDT');
         
         if (!usdtAsset) {
-            console.log(`[LIMIT_ENTRY] ⚠️ Asset USDT não encontrado, usando valor padrão`);
-            return 1000; // Valor padrão para teste
+            throw new Error('Asset USDT não encontrado');
         }
 
         const availableBalance = parseFloat(usdtAsset.availableBalance);
@@ -859,8 +856,7 @@ async function getAvailableBalance(accountId) {
         return availableBalance;
     } catch (error) {
         console.error(`[LIMIT_ENTRY] Erro ao obter saldo para conta ${accountId}:`, error.message);
-        console.log(`[LIMIT_ENTRY] ⚠️ Usando valor padrão devido ao erro`);
-        return 1000; // Valor padrão em caso de erro
+        throw error;
     }
 }
 

@@ -147,7 +147,7 @@ async function processSignal(db, signal, currentPrice, accountId) {
         // Enviar notificação via Telegram se configurado
         if (chat_id) {
           const message = formatEntryMessage(signal, entryResult.filledQuantity, entryResult.averagePrice, entryResult.filledQuantity * entryResult.averagePrice);
-          try { try { await sendTelegramMessage(errorMessage, accountId); } catch (e) { console.warn("[TELEGRAM] Erro:", e.message); } } catch (telegramError) { console.warn("[TELEGRAM] Erro ao enviar mensagem:", telegramError.message); }
+          try { await sendTelegramMessage(message, accountId); } catch (telegramError) { console.warn("[TELEGRAM] Erro ao enviar mensagem:", telegramError.message); }
         }
         
         return entryResult;
@@ -158,7 +158,7 @@ async function processSignal(db, signal, currentPrice, accountId) {
         // Enviar notificação de erro
         if (chat_id) {
           const errorMessage = formatErrorMessage(signal, errorMsg);
-          try { await sendTelegramMessage(errorMessage, accountId); } catch (e) { console.warn("[TELEGRAM] Erro:", e.message); }
+          await sendTelegramMessage(accountId, chat_id, errorMessage);
         }
         
         return { success: false, error: errorMsg };
@@ -188,7 +188,7 @@ async function processSignal(db, signal, currentPrice, accountId) {
       // Enviar notificação de erro
       if (signal.chat_id) {
         const errorMessage = formatErrorMessage(signal, formatErrorMessage(error));
-        try { await sendTelegramMessage(errorMessage, accountId); } catch (e) { console.warn("[TELEGRAM] Erro:", e.message); }
+        await sendTelegramMessage(errorMessage, accountId);
       }
       
       return { success: false, error: error.message };

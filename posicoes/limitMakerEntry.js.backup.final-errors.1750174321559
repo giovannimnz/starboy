@@ -830,37 +830,29 @@ async function executeLimitMakerEntry(db, signal, currentPrice, accountId) {
 
 // Função auxiliar para obter saldo disponível
 async function getAvailableBalance(accountId) {
+    if (!accountId || typeof accountId !== 'number') {
+        throw new Error(`AccountId inválido em getAvailableBalance: ${accountId} (tipo: ${typeof accountId})`);
+    }
+    
     try {
-        console.log(`[LIMIT_ENTRY] Obtendo saldo disponível para conta ${accountId}...`);
-        
-        if (!accountId || typeof accountId !== 'number') {
-            throw new Error(`AccountId inválido: ${accountId}`);
+        console.log(`[LIMIT_ENTRY_DEBUG] executeLimitMakerEntry - accountId: ${accountId}, tipo: ${typeof accountId}, symbol: ${symbol}`); // Log no início
+        const db = await getDatabaseInstance(accountId);
+        if (!db) {
+            throw new Error(`Falha ao obter instância do banco de dados para conta ${accountId}`);
         }
 
-        // Usar função existente do api.js
-        const api = require('../api');
-        const balanceDetails = await api.getFuturesAccountBalanceDetails(accountId);
-        
-        if (!balanceDetails || !balanceDetails.assets) {
-            console.log(`[LIMIT_ENTRY] ⚠️ Resposta de saldo inválida, usando valor padrão`);
-            return 1000; // Valor padrão para teste
+        const [rows] = await db.query('SELECT saldo_base_calculo FROM contas WHERE id = ?', [accountId]);
+        const baseCalculo = rows.length > 0 ? parseFloat(rows[0].saldo_base_calculo || 0) : 0;
+
+        if (baseCalculo <= 0) {
+            throw new Error(`Saldo base de cálculo inválido ou zero para conta ${accountId}`);
         }
 
-        const usdtAsset = balanceDetails.assets.find(asset => asset.asset === 'USDT');
-        
-        if (!usdtAsset) {
-            console.log(`[LIMIT_ENTRY] ⚠️ Asset USDT não encontrado, usando valor padrão`);
-            return 1000; // Valor padrão para teste
-        }
-
-        const availableBalance = parseFloat(usdtAsset.availableBalance);
-        console.log(`[LIMIT_ENTRY] ✅ Saldo disponível: ${availableBalance} USDT`);
-        
-        return availableBalance;
+        console.log(`[LIMIT_ENTRY] Usando saldo base de cálculo para conta ${accountId}: ${baseCalculo.toFixed(2)} USDT`);
+        return baseCalculo;
     } catch (error) {
-        console.error(`[LIMIT_ENTRY] Erro ao obter saldo para conta ${accountId}:`, error.message);
-        console.log(`[LIMIT_ENTRY] ⚠️ Usando valor padrão devido ao erro`);
-        return 1000; // Valor padrão em caso de erro
+        console.error(`[LIMIT_ENTRY] Erro ao obter saldo base de cálculo para conta ${accountId}: ${error.message}`);
+        throw error;
     }
 }
 

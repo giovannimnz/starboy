@@ -90,10 +90,7 @@ async function getAccountInformationV2(params = {}, accountId) {
     
     const request = {
       method: 'account.status',
-      params: {
-        timestamp: Date.now(),
-        ...params
-      }
+      params: { ...params }
     };
     
     console.log(`[WS-API] Enviando requisição account.status para conta ${accountId}...`);
