@@ -322,12 +322,14 @@ async function loadCredentialsFromDatabase(accountId) {
     console.error(`[API] ❌ ERRO: Estado não encontrado no Map após criação!`);
   }
   
-  // GARANTIR que o estado está no Map unificado
-  setAccountState(accountId, accountState);
-  console.log('[API] Estado RE-SALVO via setAccountState para garantia');
-  
   console.log(`[API] === FIM loadCredentialsFromDatabase para conta ${accountId} ===`);
-  return accountState;
+    
+    // CORREÇÃO CRÍTICA: Usar setAccountState para salvar no Map unificado
+    console.log('[API] CORREÇÃO: Salvando estado usando setAccountState...');
+    setAccountState(accountId, finalState);
+    console.log('[API] CORREÇÃO: Estado salvo via setAccountState');
+    
+    return accountState;
 }
 
 /**
