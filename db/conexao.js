@@ -91,7 +91,7 @@ async function createDatabaseIfNotExists() {
 async function getDatabaseInstance(accountId = null) {
   try {
     if (accountId && accountId !== 1) {
-      console.log(`[DB] Solicitação de conexão para conta ${accountId}`);
+      //console.log(`[DB] Solicitação de conexão para conta ${accountId}`);
     }
     
     // CORREÇÃO: Verificar se está em processo de shutdown
