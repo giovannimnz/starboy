@@ -4,7 +4,6 @@ const { getDatabaseInstance } = require('./db/conexao');
 
 // Map para armazenar estados das contas
 const accountStates = new Map();
-const { getAccountState } = require('./utils/accountState');
 
 // Mapa global para armazenar estados das conexões de cada conta
 const accountConnections = new Map();
