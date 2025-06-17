@@ -3,9 +3,8 @@ const crypto = require('crypto');
 const { getDatabaseInstance } = require('./db/conexao');
 
 
-
 // ============================================================================
-// MAP GLOBAL ÚNICO PARA ESTADOS DAS CONTAS - VERSÃO SEM RECURSÃO
+// MAP GLOBAL ÚNICO PARA ESTADOS DAS CONTAS - NÃO DUPLICAR EM LUGAR NENHUM!
 // ============================================================================
 const accountStates = new Map();
 
@@ -14,66 +13,103 @@ if (typeof global !== 'undefined') {
   global.accountStates = accountStates;
 }
 
-console.log('[API] Map accountStates criado como singleton global (versão sem recursão)');
+console.log('[API] Map accountStates criado como singleton global');
+
+// ============================================================================
+// FUNÇÕES HELPER PARA GERENCIAR O MAP ÚNICO
+// ============================================================================
 
 /**
- * Define um estado de conta no Map ÚNICO - VERSÃO SEM RECURSÃO
+ * Define um estado de conta no Map ÚNICO
+ * @param {number} accountId - ID da conta
+ * @param {Object} state - Estado da conta
+ */
+/**
+ * Define um estado de conta no Map ÚNICO
  * @param {number} accountId - ID da conta
  * @param {Object} state - Estado da conta
  */
 function setAccountState(accountId, state) {
-  console.log(`[API] setAccountState(${accountId}) - DEFININDO no Map único`);
+  console.log(`[API] setAccountState(${accountId}) - ANTES: Map tem ${accountStates.size} contas`);
   
-  // Salvar diretamente no Map principal
+  // Log das chaves existentes antes
+  const keysBefore = Array.from(accountStates.keys());
+  console.log(`[API] setAccountState(${accountId}) - Chaves antes: [${keysBefore.join(', ')}]`);
+  
   accountStates.set(accountId, state);
   
-  // Verificar se foi salvo
-  const verification = accountStates.has(accountId);
-  console.log(`[API] setAccountState(${accountId}) - Resultado: ${verification ? 'SUCESSO' : 'FALHA'}`);
-  console.log(`[API] setAccountState(${accountId}) - Map agora tem ${accountStates.size} entradas`);
+  // Log das chaves existentes depois
+  const keysAfter = Array.from(accountStates.keys());
+  console.log(`[API] setAccountState(${accountId}) - DEPOIS: Map tem ${accountStates.size} contas`);
+  console.log(`[API] setAccountState(${accountId}) - Chaves depois: [${keysAfter.join(', ')}]`);
   
-  // Listar todas as chaves
-  const keys = Array.from(accountStates.keys());
-  console.log(`[API] setAccountState(${accountId}) - Chaves no Map: [${keys.join(', ')}]`);
+  // Garantir sincronização global
+  if (typeof global !== 'undefined') {
+    if (!global.accountStates) {
+      global.accountStates = accountStates;
+      console.log(`[API] setAccountState(${accountId}) - Global accountStates criado`);
+    }
+    global.accountStates.set(accountId, state);
+    console.log(`[API] setAccountState(${accountId}) - Estado sincronizado globalmente`);
+  }
   
-  return verification;
+  // Verificar imediatamente se foi salvo
+  const verificacao = accountStates.get(accountId);
+  console.log(`[API] setAccountState(${accountId}) - Verificação imediata: ${verificacao ? 'SUCESSO' : 'FALHOU'}`);
+  
+  if (verificacao) {
+    console.log(`[API] setAccountState(${accountId}) - ✅ Estado salvo com sucesso: apiKey=${verificacao.apiKey ? 'SIM' : 'NÃO'}`);
+  } else {
+    console.error(`[API] setAccountState(${accountId}) - ❌ FALHA CRÍTICA: Estado não foi salvo!`);
+  }
 }
 
 /**
- * Obtém um estado de conta do Map ÚNICO - VERSÃO SEM RECURSÃO
+ * Obtém um estado de conta do Map ÚNICO
+ * @param {number} accountId - ID da conta
+ * @returns {Object|null} - Estado da conta ou null
+ */
+/**
+ * Obtém um estado de conta do Map ÚNICO
  * @param {number} accountId - ID da conta
  * @returns {Object|null} - Estado da conta ou null
  */
 function getAccountState(accountId) {
-  console.log(`[API] getAccountState(${accountId}) - BUSCANDO (Map size: ${accountStates.size})`);
+  console.log(`[API] getAccountState(${accountId}) - BUSCANDO no Map (size: ${accountStates.size})`);
   
-  // Listar todas as chaves para debug
+  // Listar todas as chaves no Map para debug
   const keys = Array.from(accountStates.keys());
   console.log(`[API] getAccountState(${accountId}) - Chaves disponíveis: [${keys.join(', ')}]`);
   
-  // Buscar diretamente no Map principal
-  const state = accountStates.get(accountId);
+  let state = accountStates.get(accountId);
+  console.log(`[API] getAccountState(${accountId}) - Resultado direto do Map: ${state ? 'ENCONTRADO' : 'NÃO ENCONTRADO'}`);
   
-  console.log(`[API] getAccountState(${accountId}) - Resultado: ${state ? 'ENCONTRADO' : 'NÃO ENCONTRADO'}`);
+  // Se não encontrou, tentar do global como fallback
+  if (!state && typeof global !== 'undefined' && global.accountStates) {
+    console.log(`[API] getAccountState(${accountId}) - Tentando global como fallback...`);
+    state = global.accountStates.get(accountId);
+    if (state) {
+      console.log(`[API] getAccountState(${accountId}) - ✅ Encontrado no global, sincronizando com Map local`);
+      accountStates.set(accountId, state);
+    } else {
+      console.log(`[API] getAccountState(${accountId}) - ❌ Não encontrado nem no global`);
+    }
+  }
   
   if (state) {
-    console.log(`[API] getAccountState(${accountId}) - ✅ Estado válido com apiKey: ${state.apiKey ? 'SIM' : 'NÃO'}`);
+    console.log(`[API] getAccountState(${accountId}) - ✅ SUCESSO: Estado encontrado com apiKey=${state.apiKey ? 'SIM' : 'NÃO'}`);
+  } else {
+    console.log(`[API] getAccountState(${accountId}) - ❌ FALHA: Estado não encontrado em lugar nenhum`);
   }
   
   return state;
 }
 
 /**
- * Lista todos os estados para debug - SEM RECURSÃO
+ * Lista todos os estados para debug
  */
 function debugAccountStates() {
   console.log(`[API] DEBUG - accountStates Map tem ${accountStates.size} entradas:`);
-  
-  if (accountStates.size === 0) {
-    console.log(`[API] DEBUG - Map está vazio!`);
-    return;
-  }
-  
   for (const [id, state] of accountStates.entries()) {
     console.log(`[API] DEBUG - Conta ${id}: apiKey=${state.apiKey ? 'SIM' : 'NÃO'}, accountId=${state.accountId}`);
   }
@@ -354,14 +390,6 @@ async function loadCredentialsFromDatabase(accountId) {
  * @param {Object} params - Parâmetros da requisição
  * @returns {Promise<Object>} - Resposta da API
  */
-/**
- * Faz uma requisição autenticada para a API da Binance - SEM RECURSÃO
- * @param {number} accountId - ID da conta
- * @param {string} method - Método HTTP (GET, POST, etc.)
- * @param {string} endpoint - Endpoint da API
- * @param {Object} params - Parâmetros da requisição
- * @returns {Promise<Object>} - Resposta da API
- */
 async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}) {
   try {
     console.log(`[API] makeAuthenticatedRequest chamado: accountId=${accountId}, method=${method}, endpoint=${endpoint}`);
@@ -371,17 +399,27 @@ async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}
       throw new Error(`AccountId deve ser um número válido: ${accountId} (tipo: ${typeof accountId})`);
     }
     
-    // Debug do Map antes de buscar - SEM CHAMAR FUNÇÕES RECURSIVAS
+    // Debug do Map antes de buscar
     debugAccountStates();
     
-    // Buscar estado DIRETAMENTE no Map - SEM RECURSÃO
-    let accountState = accountStates.get(accountId);
+    // CORREÇÃO: Usar função helper unificada
+    let accountState = getAccountState(accountId);
     
-    console.log(`[API] makeAuthenticatedRequest - Estado direto do Map: ${accountState ? 'ENCONTRADO' : 'NÃO ENCONTRADO'}`);
-    
-    // Se não encontrou, FALHAR imediatamente - NÃO TENTAR RECARREGAR (evita recursão)
+    // Se não encontrou, tentar recarregar
     if (!accountState) {
-      throw new Error(`Estado da conta ${accountId} não encontrado no Map. Deve ser carregado primeiro via loadCredentialsFromDatabase.`);
+      console.log(`[API] Estado não encontrado, recarregando credenciais...`);
+      try {
+        await loadCredentialsFromDatabase(accountId);
+        accountState = getAccountState(accountId);
+      } catch (loadError) {
+        console.error(`[API] Erro ao recarregar credenciais: ${loadError.message}`);
+      }
+    }
+    
+    if (!accountState) {
+      // Debug final antes de falhar
+      debugAccountStates();
+      throw new Error(`Estado da conta ${accountId} não encontrado mesmo após recarregamento`);
     }
     
     const { apiKey, secretKey, apiUrl } = accountState;
@@ -390,7 +428,7 @@ async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}
       throw new Error(`Credenciais incompletas para conta ${accountId}: apiKey=${!!apiKey}, secretKey=${!!secretKey}, apiUrl=${!!apiUrl}`);
     }
     
-    console.log(`[API] ✅ Usando credenciais da conta ${accountId} - apiKey: ${apiKey.substring(0, 8)}...`);
+    console.log(`[API] ✅ Estado encontrado - usando apiKey: ${apiKey.substring(0, 8)}...`);
     
     // Adicionar timestamp obrigatório
     const timestamp = Date.now();
