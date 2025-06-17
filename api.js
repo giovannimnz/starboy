@@ -9,7 +9,7 @@ const accountConnections = new Map();
  * Obtém ou cria o estado de conexão para uma conta
  */
 function getAccountConnectionState(accountId, createIfMissing = false) {
-  console.log(`[API_STATE] getAccountConnectionState chamado: accountId=${accountId}, createIfMissing=${createIfMissing}`);
+  //console.log(`[API_STATE] getAccountConnectionState chamado: accountId=${accountId}, createIfMissing=${createIfMissing}`);
   
   if (!accountId || typeof accountId !== 'number') {
     console.warn(`[API_STATE] AccountId inválido: ${accountId} (tipo: ${typeof accountId})`);
@@ -18,7 +18,7 @@ function getAccountConnectionState(accountId, createIfMissing = false) {
 
   // Verificar se já existe
   let state = accountConnections.get(accountId);
-  console.log(`[API_STATE] Estado existente para conta ${accountId}: ${state ? 'SIM' : 'NÃO'}`);
+  //console.log(`[API_STATE] Estado existente para conta ${accountId}: ${state ? 'SIM' : 'NÃO'}`);
 
   if (!state && createIfMissing) {
     console.log(`[API_STATE] Criando novo estado para conta ${accountId}...`);
@@ -60,7 +60,7 @@ function getAccountConnectionState(accountId, createIfMissing = false) {
   
   // Verificar novamente se existe
   const finalState = accountConnections.get(accountId);
-  console.log(`[API_STATE] Estado final para conta ${accountId}: ${finalState ? 'ENCONTRADO' : 'NÃO ENCONTRADO'}`);
+  //console.log(`[API_STATE] Estado final para conta ${accountId}: ${finalState ? 'ENCONTRADO' : 'NÃO ENCONTRADO'}`);
   
   return finalState || null;
 }
