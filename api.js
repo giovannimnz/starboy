@@ -857,12 +857,18 @@ async function getFuturesAccountBalanceDetails(accountId) {
     const previousSaldo = previousBalance.length > 0 ? parseFloat(previousBalance[0].saldo || '0') : 0;
     const previousBaseCalculo = previousBalance.length > 0 ? parseFloat(previousBalance[0].saldo_base_calculo || '0') : 0;
     
-    // Calcular nova base de cálculo (5% do saldo disponível)
-    const novaBaseCalculo = Math.max(saldoDisponivel * 0.05, previousBaseCalculo);
+    // Calcular nova base de cálculo (manter o maior entre 5% do saldo atual e base anterior)
+    const calculoBaseada5Porcento = saldoDisponivel * 0.05;
+    const novaBaseCalculo = Math.max(calculoBaseada5Porcento, previousBaseCalculo);
     
-    // ATUALIZAR NO BANCO
+    console.log(`[API] Cálculo da base:`);
+    console.log(`  - 5% do saldo disponível: ${calculoBaseada5Porcento.toFixed(2)} USDT`);
+    console.log(`  - Base anterior: ${previousBaseCalculo.toFixed(2)} USDT`);
+    console.log(`  - Nova base (maior): ${novaBaseCalculo.toFixed(2)} USDT`);
+    
+    // CORREÇÃO: Usar coluna 'ultima_atualizacao' em vez de 'ultima_atualizacao_saldo'
     await db.query(
-      'UPDATE contas SET saldo = ?, saldo_base_calculo = ?, ultima_atualizacao_saldo = NOW() WHERE id = ?',
+      'UPDATE contas SET saldo = ?, saldo_base_calculo = ?, ultima_atualizacao = NOW() WHERE id = ?',
       [saldoTotal, novaBaseCalculo, accountId]
     );
     
@@ -891,6 +897,8 @@ async function getFuturesAccountBalanceDetails(accountId) {
       saldo: 0,
       saldo_disponivel: 0,
       saldo_base_calculo: 0,
+      previousSaldo: 0,
+      previousBaseCalculo: 0,
       timestamp: new Date().toISOString()
     };
   }

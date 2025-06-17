@@ -1013,8 +1013,8 @@ async function updateAccountBalance(db, saldo, accountId) {
     try {
       // 1. Buscar saldo atual e saldo_base_calculo para conta específica
       const [currentAccount] = await connection.query(
-          'SELECT saldo, saldo_base_calculo FROM conta WHERE id = ?',
-          [accountId] // CORREÇÃO: usar accountId específico
+          'SELECT saldo, saldo_base_calculo FROM contas WHERE id = ?',
+          [accountId] // CORREÇÃO: usar contas em vez de conta
       );
 
       if (currentAccount.length === 0) {
@@ -1032,16 +1032,16 @@ async function updateAccountBalance(db, saldo, accountId) {
         console.log(`[DB] Atualizando saldo_base_calculo da conta ${accountId}: ${currentBaseCalculo.toFixed(2)} → ${baseCalculo.toFixed(2)}`);
       }
 
-      // 3. Atualizar valores no banco para conta específica
+      // 3. CORREÇÃO: Atualizar valores no banco usando 'ultima_atualizacao'
       await connection.query(
-          'UPDATE conta SET saldo = ?, saldo_base_calculo = ? WHERE id = ?',
-          [saldo, baseCalculo, accountId] // CORREÇÃO: usar accountId específico
+          'UPDATE contas SET saldo = ?, saldo_base_calculo = ?, ultima_atualizacao = NOW() WHERE id = ?',
+          [saldo, baseCalculo, accountId] // CORREÇÃO: usar contas e ultima_atualizacao
       );
 
       await connection.commit();
 
       return {
-        accountId: accountId, // CORREÇÃO: incluir accountId
+        accountId: accountId,
         saldo: saldo,
         saldo_base_calculo: baseCalculo
       };
@@ -1070,9 +1070,10 @@ async function getBaseCalculoBalance(db, accountId) {
   }
 
   try {
+    // CORREÇÃO: Usar tabela 'contas' em vez de 'conta'
     const [rows] = await db.query(
-      'SELECT saldo_base_calculo FROM conta WHERE id = ?', 
-      [accountId] // CORREÇÃO: usar accountId específico
+      'SELECT saldo_base_calculo FROM contas WHERE id = ?', 
+      [accountId]
     );
     
     if (rows.length === 0) {
@@ -1122,7 +1123,7 @@ async function getApiCredentials(options = {}) {
 
     console.log(`[DB] Carregando credenciais da conta ${accountId} do banco de dados...`);
     
-    // CORREÇÃO: Query para conta específica
+    // CORREÇÃO: Query usando tabela 'contas'
     const [rows] = await db.query(`
       SELECT 
         c.id,
@@ -1167,12 +1168,6 @@ async function getApiCredentials(options = {}) {
       corretora: account.corretora || 'binance',
       ambiente: account.ambiente || 'prd'
     };
-
-    // Cache das credenciais
-    credentialsCache.set(cacheKey, {
-      data: credentials,
-      timestamp: Date.now()
-    });
 
     console.log(`[DB] ✅ Credenciais carregadas para conta ${accountId} (${account.nome})`);
     
