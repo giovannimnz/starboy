@@ -17,47 +17,36 @@ function getAccountConnectionState(accountId, createIfMissing = false) {
     return null;
   }
   if (!accountConnections.has(accountId) && createIfMissing) {
-    console.log(`[API_STATE] Criando novo estado para conta ${accountId} em api.js`);
+    // console.log(`[API_STATE] Criando novo estado para conta ${accountId} em api.js`);
     accountConnections.set(accountId, {
       accountId: accountId,
       apiKey: null,
       secretKey: null,
       wsApiKey: null,
-      wsApiSecret: null,
-      privateKey: null,
+      wsApiSecret: null, // Chave privada Ed25519
       apiUrl: null,
       wsUrl: null,
       wsApiUrl: null,
-      isAuthenticated: false,
-      wsApiAuthenticated: false,
-      wsApiConnection: null,
+      isAuthenticated: false, // Para REST API
+      wsApiAuthenticated: false, // Para WebSocket API
+      wsApiConnection: null, // Instância da conexão WebSocket API
       wsApiRequestCallbacks: new Map(),
       wsApiKeepAliveInterval: null,
       lastWsApiActivity: 0,
-      userDataStream: null,
+      userDataStream: null, // Instância da conexão UserDataStream
       listenKey: null,
       userDataKeepAliveInterval: null,
       lastUserDataStreamKeepAlive: 0,
-      priceWebsockets: new Map(),
-      monitoringCallbacks: null,
+      priceWebsockets: new Map(), // Map<symbol, WebSocket>
+      monitoringCallbacks: null, // Callbacks definidos por monitoramento.js
       isShuttingDown: false,
-      dbInstance: null,
-      lastPongTime: 0,
-      pingInterval: null,
+      // Adicionar outros campos conforme necessário
       ambiente: null,
       corretora: null,
       nomeConta: null,
     });
   }
   return accountConnections.get(accountId) || null;
-}
-
-/**
- * Obtém todas as conexões de contas (para compatibilidade)
- * @returns {Map} Mapa de conexões
- */
-function getAllAccountConnections() {
-  return accountConnections;
 }
 // >>> FIM: Mover estado da conexão para api.js <<<
 
