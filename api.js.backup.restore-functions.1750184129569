@@ -1000,35 +1000,3 @@ async function newLimitMakerOrder(accountId, symbol, quantity, side, price) {
   }
 }
 
-
-
-
-// ============================================================================
-// EXPORTS
-// ============================================================================
-module.exports = {
-  setAccountState,
-  getAccountState,
-  debugAccountStates,
-  getAccountStatesMap,
-  setAccountState,
-  getAccountState,
-  getAccountConnectionState,
-  getAllAccountConnections,
-  loadCredentialsFromDatabase,
-  makeAuthenticatedRequest,
-  getPrice,
-  getAllOpenPositions,
-  getListenKey,
-  getPrecision,
-  getCurrentLeverage,
-  changeInitialLeverage,
-  getCurrentMarginType,
-  changeMarginType,
-  verifyAndFixEnvironmentConsistency,
-  getFuturesAccountBalanceDetails,
-  getRecentOrders,
-  getTickSize,
-  roundPriceToTickSize,
-  newLimitMakerOrder,
-};
