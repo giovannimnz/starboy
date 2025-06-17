@@ -199,14 +199,6 @@ async function loadCredentialsFromDatabase(accountId) {
  * @param {Object} params - Parâmetros da requisição
  * @returns {Promise<Object>} - Resposta da API
  */
-/**
- * Faz uma requisição autenticada para a API da Binance
- * @param {number} accountId - ID da conta
- * @param {string} method - Método HTTP (GET, POST, etc.)
- * @param {string} endpoint - Endpoint da API
- * @param {Object} params - Parâmetros da requisição
- * @returns {Promise<Object>} - Resposta da API
- */
 async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}) {
   try {
     console.log(`[API] makeAuthenticatedRequest chamado: accountId=${accountId}, method=${method}, endpoint=${endpoint}`);
@@ -216,37 +208,21 @@ async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}
       throw new Error(`AccountId deve ser um número válido: ${accountId} (tipo: ${typeof accountId})`);
     }
     
-    // CORREÇÃO: Tentar obter estado de múltiplas formas
-    let accountState = null;
+    // CORREÇÃO: Obter estado da conta usando função existente ou Map
+    let accountState;
     
-    // Método 1: Tentar do Map global
-    if (typeof accountStates !== 'undefined' && accountStates && accountStates.has) {
+    // Tentar obter do Map global primeiro
+    if (accountStates && accountStates.has(accountId)) {
       accountState = accountStates.get(accountId);
-      console.log(`[API] Tentativa 1 - accountStates.get(${accountId}): ${accountState ? 'ENCONTRADO' : 'NÃO ENCONTRADO'}`);
-    }
-    
-    // Método 2: Se não encontrou, tentar recarregar
-    if (!accountState) {
-      console.log(`[API] Estado não encontrado, recarregando credenciais...`);
-      try {
-        await loadCredentialsFromDatabase(accountId);
-        if (typeof accountStates !== 'undefined' && accountStates && accountStates.has) {
-          accountState = accountStates.get(accountId);
-          console.log(`[API] Tentativa 2 - após loadCredentials: ${accountState ? 'ENCONTRADO' : 'NÃO ENCONTRADO'}`);
-        }
-      } catch (loadError) {
-        console.error(`[API] Erro ao recarregar credenciais: ${loadError.message}`);
-      }
-    }
-    
-    // Método 3: Se ainda não encontrou, usar cache global (se existir)
-    if (!accountState && typeof global !== 'undefined' && global.accountStates) {
-      accountState = global.accountStates.get(accountId);
-      console.log(`[API] Tentativa 3 - global.accountStates: ${accountState ? 'ENCONTRADO' : 'NÃO ENCONTRADO'}`);
+    } else {
+      // Fallback: tentar carregar credenciais
+      console.log(`[API] Estado não encontrado no Map, carregando credenciais para conta ${accountId}...`);
+      await loadCredentialsFromDatabase(accountId);
+      accountState = accountStates.get(accountId);
     }
     
     if (!accountState) {
-      throw new Error(`Estado da conta ${accountId} não encontrado em nenhum local após múltiplas tentativas`);
+      throw new Error(`Estado da conta ${accountId} não encontrado mesmo após carregamento`);
     }
     
     const { apiKey, secretKey, apiUrl } = accountState;
@@ -255,9 +231,7 @@ async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}
       throw new Error(`Credenciais incompletas para conta ${accountId}: apiKey=${!!apiKey}, secretKey=${!!secretKey}, apiUrl=${!!apiUrl}`);
     }
     
-    console.log(`[API] ✅ Estado encontrado - apiKey: ${apiKey.substring(0, 8)}..., apiUrl: ${apiUrl}`);
-    
-    // Adicionar timestamp obrigatório
+    // CORREÇÃO: Adicionar timestamp obrigatório
     const timestamp = Date.now();
     const paramsWithTimestamp = {
       ...params,
@@ -270,7 +244,7 @@ async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}
       .map(key => `${key}=${encodeURIComponent(paramsWithTimestamp[key])}`)
       .join('&');
     
-    // Gerar assinatura HMAC-SHA256
+    // CORREÇÃO: Gerar assinatura HMAC-SHA256 corretamente
     const crypto = require('crypto');
     const signature = crypto
       .createHmac('sha256', secretKey)
