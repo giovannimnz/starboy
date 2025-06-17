@@ -1,0 +1,1596 @@
+const axios = require("axios");
+const crypto = require("crypto");
+const { getDatabaseInstance } = require('./db/conexao'); // Se db for necessário para loadCredentials
+
+// >>> INÍCIO: Mover estado da conexão para api.js <<<
+const accountConnections = new Map();
+
+/**
+ * Retorna ou cria o estado da conexão para uma conta.
+ * @param {number} accountId - ID da conta.
+ * @param {boolean} createIfMissing - Criar se não existir.
+ * @returns {Object|null} O estado da conta ou null.
+ */
+function getAccountConnectionState(accountId, createIfMissing = false) {
+  if (!accountId || typeof accountId !== 'number') {
+    console.error(`[API_STATE] AccountId inválido fornecido para getAccountConnectionState: ${accountId}`);
+    return null;
+  }
+  if (!accountConnections.has(accountId) && createIfMissing) {
+    // console.log(`[API_STATE] Criando novo estado para conta ${accountId} em api.js`);
+    accountConnections.set(accountId, {
+      accountId: accountId,
+      apiKey: null,
+      secretKey: null,
+      wsApiKey: null,
+      wsApiSecret: null, // Chave privada Ed25519
+      apiUrl: null,
+      wsUrl: null,
+      wsApiUrl: null,
+      isAuthenticated: false, // Para REST API
+      wsApiAuthenticated: false, // Para WebSocket API
+      wsApiConnection: null, // Instância da conexão WebSocket API
+      wsApiRequestCallbacks: new Map(),
+      wsApiKeepAliveInterval: null,
+      lastWsApiActivity: 0,
+      userDataStream: null, // Instância da conexão UserDataStream
+      listenKey: null,
+      userDataKeepAliveInterval: null,
+      lastUserDataStreamKeepAlive: 0,
+      priceWebsockets: new Map(), // Map<symbol, WebSocket>
+      monitoringCallbacks: null, // Callbacks definidos por monitoramento.js
+      isShuttingDown: false,
+      // Adicionar outros campos conforme necessário
+      ambiente: null,
+      corretora: null,
+      nomeConta: null,
+    });
+  }
+  return accountConnections.get(accountId) || null;
+}
+// >>> FIM: Mover estado da conexão para api.js <<<
+
+async function loadCredentialsFromDatabase(accountId) {
+  // console.log(`[API] Carregando credenciais do banco para conta ${accountId} (chamado de api.js)...`);
+  if (typeof accountId !== 'number' || isNaN(accountId)) {
+    const errorMsg = `AccountId deve ser um número válido para carregar credenciais: ${String(accountId)} (tipo: ${typeof accountId})`;
+    console.error(`[API] ${errorMsg}`);
+    throw new Error(errorMsg);
+  }
+
+  const accountState = getAccountConnectionState(accountId, true); // Garante que o estado exista em api.js
+  const db = await getDatabaseInstance(accountId);
+
+  const [rows] = await db.query(
+    `SELECT c.api_key, c.api_secret, c.ws_api_key, c.ws_api_secret, c.nome as nome_conta,
+            co.ambiente, co.corretora, co.futures_rest_api_url, co.futures_ws_market_url, co.futures_ws_api_url
+     FROM contas c
+     JOIN corretoras co ON c.id_corretora = co.id
+     WHERE c.id = ? AND c.ativa = 1`,
+    [accountId]
+  );
+
+  if (rows.length === 0) {
+    throw new Error(`Conta ${accountId} não encontrada, inativa ou sem corretora associada.`);
+  }
+  const creds = rows[0];
+
+  accountState.apiKey = creds.api_key;
+  accountState.secretKey = creds.api_secret;
+  accountState.wsApiKey = creds.ws_api_key;
+  accountState.wsApiSecret = creds.ws_api_secret; // Chave privada Ed25519
+  accountState.apiUrl = creds.futures_rest_api_url;
+  accountState.wsUrl = creds.futures_ws_market_url; // Para bookTicker, klines, etc.
+  accountState.wsApiUrl = creds.futures_ws_api_url; // Para WebSocket API de trading
+  accountState.ambiente = creds.ambiente;
+  accountState.corretora = creds.corretora;
+  accountState.nomeConta = creds.nome_conta;
+
+  // console.log(`[API] Credenciais carregadas e estado atualizado em api.js para conta ${accountId}`);
+  return accountState; // Retorna o estado atualizado
+}
+
+/**
+ * Função loadCredentials deve usar loadCredentialsFromDatabase
+ */
+async function loadCredentials(accountId) {
+  // CORREÇÃO: Forçar reload sem cache para debug
+  return await loadCredentialsFromDatabase({ accountId, forceRefresh: true });
+}
+
+/**
+ * Cria assinatura HMAC SHA256 para requisições autenticadas
+ * @param {string} queryString - String de query para assinar
+ * @param {string} secretKey - Chave secreta para assinatura
+ * @returns {string} - Assinatura hex
+ */
+function createSignature(queryString, secretKey) {
+  // CORREÇÃO: Validação rigorosa da secretKey
+  if (!secretKey || typeof secretKey !== 'string' || secretKey.trim() === '') {
+    console.error(`[API] ERRO CRÍTICO: secretKey inválida`);
+    console.error(`- secretKey type: ${typeof secretKey}`);
+    console.error(`- secretKey value: ${secretKey}`);
+    console.error(`- secretKey length: ${secretKey ? secretKey.length : 'N/A'}`);
+    throw new Error(`Secret Key inválida ou não fornecida. Tipo: ${typeof secretKey}, Valor: ${secretKey ? 'Existe' : 'NULL/undefined'}`);
+  }
+  
+  try {
+    const signature = crypto.createHmac('sha256', secretKey.trim())
+                           .update(queryString)
+                           .digest('hex');
+    return signature;
+  } catch (cryptoError) {
+    console.error(`[API] Erro ao criar assinatura HMAC:`, cryptoError);
+    throw new Error(`Falha ao criar assinatura: ${cryptoError.message}`);
+  }
+}
+
+/**
+ * Faz uma requisição autenticada para a API da Binance
+ * @param {string} endpoint - Endpoint da API
+ * @param {string} method - Método HTTP (GET, POST, etc.)
+ * @param {Object} data - Dados para enviar
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Resposta da API
+ */
+
+
+/**
+ * Faz uma requisição autenticada à API
+ * @param {string} endpoint - Endpoint da API
+ * @param {string} method - Método HTTP (GET, POST, etc.)
+ * @param {Object|null} data - Dados para enviar (opcional)
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Resposta da API
+ */
+async function makeAuthenticatedRequest(endpoint, method = 'GET', data = null, accountId) {
+  try {
+    // CORREÇÃO CRÍTICA: Validar accountId primeiro
+    if (!accountId || typeof accountId !== 'number') {
+      console.error('[API] makeAuthenticatedRequest recebeu parâmetros inválidos:', {
+        endpoint,
+        method,
+        data: data ? 'presente' : 'null',
+        accountId,
+        accountIdType: typeof accountId
+      });
+      throw new Error(`AccountId deve ser um número válido para makeAuthenticatedRequest: ${accountId} (tipo: ${typeof accountId})`);
+    }
+
+    console.log(`[API] Fazendo requisição autenticada: ${method} ${endpoint} para conta ${accountId}`);
+    
+    // CORREÇÃO: Chamar loadCredentialsFromDatabase apenas com accountId
+    const credentials = await loadCredentialsFromDatabase(accountId);
+    
+    if (!credentials || !credentials.apiKey || !credentials.secretKey) {
+      throw new Error(`Credenciais incompletas para conta ${accountId}`);
+    }
+
+    const baseUrl = credentials.baseUrl || 'https://fapi.binance.com';
+    const timestamp = Date.now();
+    
+    // Preparar parâmetros
+    let params = {
+      timestamp: timestamp,
+      recvWindow: 5000
+    };
+
+    // Adicionar dados se fornecidos
+    if (data && typeof data === 'object') {
+      params = { ...params, ...data };
+    }
+
+    // Criar query string
+    const queryString = Object.keys(params)
+      .sort()
+      .map(key => `${key}=${encodeURIComponent(params[key])}`)
+      .join('&');
+
+    // Criar assinatura
+    const signature = crypto
+      .createHmac('sha256', credentials.secretKey)
+      .update(queryString)
+      .digest('hex');
+
+    const finalQueryString = `${queryString}&signature=${signature}`;
+    const url = `${baseUrl}/fapi${endpoint}?${finalQueryString}`;
+
+    console.log(`[API] URL da requisição: ${method} ${url.split('?')[0]}`);
+
+    // Fazer a requisição
+    const config = {
+      method: method,
+      url: url,
+      headers: {
+        'X-MBX-APIKEY': credentials.apiKey,
+        'Content-Type': 'application/json',
+        'User-Agent': 'StarBoy-Trading-Bot/1.0'
+      },
+      timeout: 10000
+    };
+
+    const response = await axios(config);
+    
+    console.log(`[API] ✅ Requisição ${method} ${endpoint} bem-sucedida para conta ${accountId}`);
+    return response.data;
+
+  } catch (error) {
+    console.error(`[API] Erro na requisição autenticada (${endpoint}):`, error.message);
+    
+    if (error.response) {
+      console.error(`[API] Status: ${error.response.status}`);
+      console.error(`[API] Dados: ${JSON.stringify(error.response.data)}`);
+    }
+    
+    throw new Error(`Falha na requisição ${method} ${endpoint}: ${error.message}`);
+  }
+}
+
+/**
+ * Obtém detalhes do saldo da conta de futuros
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Detalhes do saldo
+ */
+async function getFuturesAccountBalanceDetails(accountId) {
+  try {
+    const response = await makeAuthenticatedRequest('/v2/account', {}, 'GET', accountId);
+    return response;
+  } catch (error) {
+    console.error(`[API] Erro ao obter detalhes do saldo para conta ${accountId}:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Obtém alavancagem máxima para um símbolo
+ * @param {string} symbol - Símbolo do par
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<number>} - Alavancagem máxima
+ */
+async function getMaxLeverage(symbol, accountId) {
+  try {
+    const response = await makeAuthenticatedRequest('/v1/leverageBracket', { symbol }, 'GET', accountId);
+    return response[0]?.brackets[0]?.initialLeverage || 20;
+  } catch (error) {
+    console.error(`[API] Erro ao obter alavancagem máxima para ${symbol}:`, error.message);
+    return 20; // Default
+  }
+}
+
+/**
+ * Obtém alavancagem atual de um símbolo
+ * @param {string} symbol - Símbolo do par
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<number>} - Alavancagem atual
+ */
+async function getCurrentLeverage(symbol, accountId) {
+  const endpoint = '/fapi/v2/positionRisk';
+  const params = { symbol: symbol.toUpperCase() };
+  try {
+    // GARANTIR QUE O MÉTODO SEJA PASSADO COMO STRING
+    const response = await makeAuthenticatedRequest(accountId, 'GET', endpoint, params);
+    if (response && response.length > 0) {
+      const position = response.find(p => p.symbol === symbol.toUpperCase());
+      return position ? parseInt(position.leverage) : null;
+    }
+    return null;
+  } catch (error) {
+    console.error(`[API] Erro ao obter alavancagem atual para ${symbol}: ${error.message}`);
+    throw error; // Re-throw para que o chamador possa tratar
+  }
+}
+
+/**
+ * Obtém tipo de margem atual
+ * @param {string} symbol - Símbolo do par
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<string>} - Tipo de margem
+ */
+async function getCurrentMarginType(symbol, accountId) {
+  try {
+    const response = await makeAuthenticatedRequest('/v2/positionRisk', { symbol }, 'GET', accountId);
+    return response[0]?.marginType || 'cross';
+  } catch (error) {
+    console.error(`[API] Erro ao obter tipo de margem para ${symbol}:`, error.message);
+    return 'cross'; // Default
+  }
+}
+
+/**
+ * Altera alavancagem de um símbolo
+ * @param {string} symbol - Símbolo do par
+ * @param {number} leverage - Nova alavancagem
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Resposta da API
+ */
+async function changeInitialLeverage(symbol, leverage, accountId) {
+  try {
+    // CORREÇÃO: Validar accountId
+    if (!accountId) {
+      throw new Error(`AccountId é obrigatório para changeLeverage: ${accountId} (tipo: ${typeof accountId})`);
+    }
+    
+    const params = {
+      symbol: symbol,
+      leverage: leverage
+    };
+    
+    const response = await makeAuthenticatedRequest('/v1/leverage', params, 'POST', accountId);
+    console.log(`[API] ✅ Alavancagem alterada para ${symbol}: ${leverage}x`);
+    
+    return response;
+    
+  } catch (error) {
+    console.error(`[API] Erro ao alterar alavancagem para ${symbol}:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Altera tipo de margem
+ * @param {string} symbol - Símbolo do par
+ * @param {string} marginType - Tipo de margem ('cross' ou 'isolated')
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Resposta da API
+ */
+async function changeMarginType(symbol, marginType, accountId) {
+  try {
+    const response = await makeAuthenticatedRequest('/v1/marginType', { symbol, marginType }, 'POST', accountId);
+    console.log(`[API] Tipo de margem alterado para ${marginType} em ${symbol} (conta ${accountId})`);
+    return response;
+  } catch (error) {
+    console.error(`[API] Erro ao alterar tipo de margem para ${symbol}:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Cria uma nova ordem
+ * @param {Object} orderParams - Parâmetros da ordem
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Resposta da API
+ */
+async function newOrder(orderParams, accountId) {
+  try {
+    const response = await makeAuthenticatedRequest('/v1/order', orderParams, 'POST', accountId);
+    console.log(`[API] Nova ordem criada: ${response.orderId} para ${orderParams.symbol}`);
+    return response;
+  } catch (error) {
+    console.error(`[API] Erro ao criar nova ordem:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Cria ordem de entrada
+ * @param {string} symbol - Símbolo do par
+ * @param {string} side - Lado da ordem (BUY/SELL)
+ * @param {number} quantity - Quantidade
+ * @param {number} price - Preço
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Resposta da API
+ */
+async function newEntryOrder(symbol, side, quantity, price, accountId) {
+  const orderParams = {
+    symbol,
+    side,
+    type: 'LIMIT',
+    quantity: quantity.toString(),
+    price: price.toString(),
+    timeInForce: 'GTC'
+  };
+  
+  return await newOrder(orderParams, accountId);
+}
+
+/**
+ * Cria ordem LIMIT MAKER
+ * @param {number} accountId - ID da conta
+ * @param {string} symbol - Símbolo do par
+ * @param {number} quantity - Quantidade
+ * @param {string} side - Lado da ordem
+ * @param {number} price - Preço
+ * @returns {Promise<Object>} - Resposta da API
+ */
+async function newLimitMakerOrder(accountId, symbol, quantity, side, price) {
+  const orderParams = {
+    symbol,
+    side,
+    type: 'LIMIT',
+    quantity: quantity.toString(),
+    price: price.toString(),
+    timeInForce: 'GTX' // Good Till Crossing (Maker only)
+  };
+  
+  return await newOrder(orderParams, accountId);
+}
+
+/**
+ * Edita uma ordem existente
+ * @param {number} accountId - ID da conta
+ * @param {string} symbol - Símbolo do par
+ * @param {string} orderId - ID da ordem
+ * @param {number} quantity - Nova quantidade
+ * @param {number} price - Novo preço
+ * @returns {Promise<Object>} - Resposta da API
+ */
+async function editOrder(accountId, symbol, orderId, quantity, price) {
+  try {
+    const params = {
+      symbol,
+      orderId,
+      quantity: quantity.toString(),
+      price: price.toString(),
+      side: 'BUY' // Será substituído pela ordem original
+    };
+    
+    const response = await makeAuthenticatedRequest('/v1/order', params, 'PUT', accountId);
+    console.log(`[API] Ordem ${orderId} editada com sucesso`);
+    return response;
+  } catch (error) {
+    console.error(`[API] Erro ao editar ordem ${orderId}:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Cria ordem reduce-only
+ * @param {number} accountId - ID da conta
+ * @param {string} symbol - Símbolo do par
+ * @param {string} side - Lado da ordem
+ * @param {number} quantity - Quantidade
+ * @param {number} price - Preço
+ * @returns {Promise<Object>} - Resposta da API
+ */
+async function newReduceOnlyOrder(accountId, symbol, side, quantity, price) {
+  const orderParams = {
+    symbol,
+    side,
+    type: 'LIMIT',
+    quantity: quantity.toString(),
+    price: price.toString(),
+    timeInForce: 'GTC',
+    reduceOnly: 'true'
+  };
+  
+  return await newOrder(orderParams, accountId);
+}
+
+/**
+ * Cria ordem de stop
+ * @param {number} accountId - ID da conta
+ * @param {string} symbol - Símbolo do par
+ * @param {string} side - Lado da ordem
+ * @param {number} quantity - Quantidade
+ * @param {number} stopPrice - Preço de stop
+ * @returns {Promise<Object>} - Resposta da API
+ */
+async function newStopOrder(accountId, symbol, side, quantity, stopPrice) {
+  const orderParams = {
+    symbol,
+    side,
+    type: 'STOP_MARKET',
+    quantity: quantity.toString(),
+    stopPrice: stopPrice.toString(),
+    reduceOnly: 'true'
+  };
+  
+  return await newOrder(orderParams, accountId);
+}
+
+/**
+ * Cria ordem de stop ou take profit com limite
+ * @param {number} accountId - ID da conta
+ * @param {string} symbol - Símbolo do par
+ * @param {string} side - Lado da ordem
+ * @param {number} quantity - Quantidade
+ * @param {number} price - Preço limite
+ * @param {number} stopPrice - Preço de stop
+ * @param {string} orderType - Tipo da ordem (STOP ou TAKE_PROFIT)
+ * @returns {Promise<Object>} - Resposta da API
+ */
+async function newStopOrTpLimitOrder(accountId, symbol, side, quantity, price, stopPrice, orderType = 'STOP') {
+  const orderParams = {
+    symbol,
+    side,
+    type: orderType === 'STOP' ? 'STOP' : 'TAKE_PROFIT',
+    quantity: quantity.toString(),
+    price: price.toString(),
+    stopPrice: stopPrice.toString(),
+    timeInForce: 'GTC',
+    reduceOnly: 'true'
+  };
+  
+  return await newOrder(orderParams, accountId);
+}
+
+/**
+ * Cria ordem de take profit
+ * @param {number} accountId - ID da conta
+ * @param {string} symbol - Símbolo do par
+ * @param {string} side - Lado da ordem
+ * @param {number} quantity - Quantidade
+ * @param {number} stopPrice - Preço de take profit
+ * @returns {Promise<Object>} - Resposta da API
+ */
+async function newTakeProfitOrder(accountId, symbol, side, quantity, stopPrice) {
+  const orderParams = {
+    symbol,
+    side,
+    type: 'TAKE_PROFIT_MARKET',
+    quantity: quantity.toString(),
+    stopPrice: stopPrice.toString(),
+    reduceOnly: 'true'
+  };
+  
+  return await newOrder(orderParams, accountId);
+}
+
+/**
+ * Carrega credenciais da conta a partir do banco de dados
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Credenciais da conta
+ */
+async function loadCredentialsFromDatabase(accountId) {
+  // CORREÇÃO CRÍTICA: Validação mais robusta
+  if (!accountId) {
+    throw new Error(`AccountId é obrigatório: ${accountId} (tipo: ${typeof accountId})`);
+  }
+  
+  const numericAccountId = typeof accountId === 'string' ? parseInt(accountId) : accountId;
+  
+  if (isNaN(numericAccountId) || numericAccountId <= 0) {
+    throw new Error(`AccountId deve ser um número válido: ${accountId} (convertido: ${numericAccountId})`);
+  }
+  
+  try {
+    const { getDatabaseInstance } = require('./db/conexao');
+    const db = await getDatabaseInstance();
+    
+    const [rows] = await db.query(`
+      SELECT api_key, api_secret, ws_api_key, ws_api_secret 
+      FROM contas 
+      WHERE id = ? AND ativa = 1
+    `, [numericAccountId]);
+    
+    if (!rows || rows.length === 0) {
+      throw new Error(`Conta ${numericAccountId} não encontrada ou não está ativa`);
+    }
+    
+    const account = rows[0];
+    
+    return {
+      apiKey: account.api_key,
+      secretKey: account.api_secret,
+      wsApiKey: account.ws_api_key,
+      wsApiSecret: account.ws_api_secret
+    };
+    
+  } catch (error) {
+    console.error(`[API] Erro ao carregar credenciais da conta ${numericAccountId}:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Arredonda preço para o tick size correto
+ * @param {string} symbol - Símbolo do par
+ * @param {number} price - Preço a ser arredondado
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<number>} - Preço arredondado
+ */
+async function roundPriceToTickSize(symbol, price, accountId) {
+  try {
+    const tickInfo = await getTickSize(symbol, accountId);
+    const tickSize = parseFloat(tickInfo.tickSize);
+    
+    return Math.round(price / tickSize) * tickSize;
+  } catch (error) {
+    console.error(`[API] Erro ao arredondar preço para ${symbol}:`, error.message);
+    return price; // Retorna preço original em caso de erro
+  }
+}
+
+/**
+ * Obtém informações de tick size para um símbolo
+ * @param {string} symbol - Símbolo do par
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Informações de tick size
+ */
+async function getTickSize(symbol, accountId) {
+  try {
+    // CORREÇÃO: Validar accountId
+    if (!accountId || typeof accountId !== 'number') {
+      throw new Error(`AccountId é obrigatório para getTickSize: ${accountId} (tipo: ${typeof accountId})`);
+    }
+    
+    console.log(`[API] Obtendo informações do símbolo ${symbol} para conta ${accountId}...`);
+    
+    // CORREÇÃO: Carregar credenciais para obter a URL correta da API
+    const credentials = await loadCredentialsFromDatabase(accountId);
+    
+    if (!credentials || !credentials.apiKey) {
+      throw new Error(`Credenciais não encontradas para conta ${accountId}`);
+    }
+    
+    // CORREÇÃO: Usar a URL base das credenciais
+    const baseUrl = credentials.baseUrl || 'https://fapi.binance.com';
+    const apiUrl = `${baseUrl}/v1/exchangeInfo?symbol=${symbol}`;
+    
+    console.log(`[API] Fazendo requisição para: ${apiUrl}`);
+    
+    const response = await axios.get(apiUrl, {
+      timeout: 10000,
+      headers: {
+        'User-Agent': 'StarBoy-Trading-Bot/1.0'
+      }
+    });
+    
+    if (!response.data || !response.data.symbols || !response.data.symbols.length) {
+      throw new Error(`Nenhuma informação encontrada para o símbolo ${symbol}`);
+    }
+    
+    const symbolInfo = response.data.symbols.find(s => s.symbol === symbol);
+    if (!symbolInfo) {
+      throw new Error(`Símbolo ${symbol} não encontrado`);
+    }
+    
+    // Obter informações de filtros
+    const priceFilter = symbolInfo.filters.find(f => f.filterType === 'PRICE_FILTER');
+    if (!priceFilter) {
+      throw new Error(`Filtro de preço não encontrado para ${symbol}`);
+    }
+    
+    const lotSizeFilter = symbolInfo.filters.find(f => f.filterType === 'LOT_SIZE');
+    const marketLotSizeFilter = symbolInfo.filters.find(f => f.filterType === 'MARKET_LOT_SIZE');
+    
+    console.log(`[API] ✅ Informações obtidas para ${symbol}: tickSize=${priceFilter.tickSize}`);
+    
+    return {
+      tickSize: priceFilter.tickSize,
+      minPrice: priceFilter.minPrice,
+      maxPrice: priceFilter.maxPrice,
+      stepSize: lotSizeFilter?.stepSize || '1',
+      minQty: lotSizeFilter?.minQty || '1',
+      maxQty: lotSizeFilter?.maxQty || '9000000',
+      marketMinQty: marketLotSizeFilter?.minQty || '1',
+      marketMaxQty: marketLotSizeFilter?.maxQty || '9000000'
+    };
+    
+  } catch (error) {
+    console.error(`[API] Erro ao obter tick size para ${symbol} (conta ${accountId}):`, error.message);
+    
+    // FALLBACK: Se falhar, tentar sem autenticação (endpoint público)
+    try {
+      console.log(`[API] Tentando fallback sem autenticação para ${symbol}...`);
+      const fallbackResponse = await axios.get(`https://fapi.binance.com/fapi/v1/exchangeInfo?symbol=${symbol}`, {
+        timeout: 5000
+      });
+      
+      if (fallbackResponse.data?.symbols?.length > 0) {
+        const symbolInfo = fallbackResponse.data.symbols[0];
+        const priceFilter = symbolInfo.filters.find(f => f.filterType === 'PRICE_FILTER');
+        
+        if (priceFilter) {
+          console.log(`[API] ✅ Fallback bem-sucedido para ${symbol}`);
+          return {
+            tickSize: priceFilter.tickSize,
+            minPrice: priceFilter.minPrice,
+            maxPrice: priceFilter.maxPrice,
+            stepSize: '1',
+            minQty: '1',
+            maxQty: '9000000'
+          };
+        }
+      }
+    } catch (fallbackError) {
+      console.error(`[API] Fallback também falhou para ${symbol}:`, fallbackError.message);
+    }
+    
+    throw error;
+  }
+}
+
+/**
+ * Obtém precisão para um símbolo
+ * @param {string} symbol - Símbolo do par
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Informações de precisão
+ */
+async function getPrecision(symbol, accountId) {
+  console.log(`[API_GETPRECISION_DEBUG] getPrecision - symbol: ${symbol}, accountId: ${accountId}, tipo accountId: ${typeof accountId}`); // Log no início
+  if (typeof accountId !== 'number' || isNaN(accountId)) {
+    const errorMsg = `AccountId deve ser um número válido: ${String(accountId)} (convertido: ${typeof accountId})`;
+    console.error(`[API] Erro ao obter precisão para ${symbol}: ${errorMsg}`);
+    throw new Error(errorMsg);
+  }
+  // Certifique-se de que loadCredentialsFromDatabase é chamado com accountId numérico
+  console.log(`[API_GETPRECISION_DEBUG] Antes de loadCredentialsFromDatabase - accountId: ${accountId}, tipo: ${typeof accountId}`);
+  await loadCredentialsFromDatabase(accountId); // Garante que as credenciais estão carregadas para a conta correta
+
+  try {
+    const response = await makeAuthenticatedRequest('/v1/exchangeInfo', { symbol }, 'GET', accountId);
+    const symbolInfo = response.symbols.find(s => s.symbol === symbol);
+    
+    if (!symbolInfo) {
+      throw new Error(`Símbolo ${symbol} não encontrado na resposta da API`);
+    }
+    
+    return {
+      quantityPrecision: symbolInfo.quantityPrecision,
+      pricePrecision: symbolInfo.pricePrecision,
+      baseAssetPrecision: symbolInfo.baseAssetPrecision,
+      quotePrecision: symbolInfo.quotePrecision
+    };
+  } catch (error) {
+    console.error(`[API] Erro ao obter precisão para ${symbol}:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Obtém ordens abertas
+ * @param {string} symbol - Símbolo do par (opcional)
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Array>} - Lista de ordens abertas
+ */
+async function getOpenOrders(symbol, accountId) {
+  try {
+    const params = symbol ? { symbol } : {};
+    const response = await makeAuthenticatedRequest('/v1/openOrders', params, 'GET', accountId);
+    return response;
+  } catch (error) {
+    console.error(`[API] Erro ao obter ordens abertas:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Obtém ordens recentes
+ * @param {number} accountId - ID da conta
+ * @param {string} symbol - Símbolo do par
+ * @param {number} limit - Limite de ordens
+ * @returns {Promise<Array>} - Lista de ordens recentes
+ */
+async function getRecentOrders(accountId, symbol, limit = 500) {
+  try {
+    const params = { symbol, limit };
+    const response = await makeAuthenticatedRequest('/v1/allOrders', params, 'GET', accountId);
+    return response;
+  } catch (error) {
+    console.error(`[API] Erro ao obter ordens recentes:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Obtém status de uma ordem
+ * @param {number} accountId - ID da conta
+ * @param {string} symbol - Símbolo do par
+ * @param {string} orderId - ID da ordem
+ * @returns {Promise<Object>} - Status da ordem
+ */
+async function getOrderStatus(accountId, symbol, orderId) {
+  try {
+    const params = { symbol, orderId };
+    const response = await makeAuthenticatedRequest('/v1/order', params, 'GET', accountId);
+    return response;
+  } catch (error) {
+    console.error(`[API] Erro ao obter status da ordem ${orderId}:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Obtém status de múltiplas ordens
+ * @param {number} accountId - ID da conta
+ * @param {string} symbol - Símbolo do par
+ * @param {Array} orderIds - IDs das ordens
+ * @returns {Promise<Array>} - Status das ordens
+ */
+async function getMultipleOrderStatus(accountId, symbol, orderIds) {
+  try {
+    const promises = orderIds.map(orderId => getOrderStatus(accountId, symbol, orderId));
+    return await Promise.all(promises);
+  } catch (error) {
+    console.error(`[API] Erro ao obter status de múltiplas ordens:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Obtém detalhes da posição
+ * @param {string} symbol - Símbolo do par
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Detalhes da posição
+ */
+async function getPositionDetails(symbol, accountId) {
+  try {
+    const params = symbol ? { symbol } : {};
+    const response = await makeAuthenticatedRequest('/v2/positionRisk', params, 'GET', accountId);
+    
+    if (symbol) {
+      return response.find(pos => pos.symbol === symbol) || null;
+    }
+    
+    return response;
+  } catch (error) {
+    console.error(`[API] Erro ao obter detalhes da posição:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Obtém todas as posições abertas
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Array>} - Lista de posições
+ */
+async function getAllOpenPositions(accountId) {
+  try {
+    // CORREÇÃO CRÍTICA: Validar que recebemos apenas o accountId como número
+    if (!accountId || typeof accountId !== 'number') {
+      console.error('[API] getAllOpenPositions recebeu parâmetro inválido:', {
+        accountId,
+        type: typeof accountId,
+        isArray: Array.isArray(accountId),
+        keys: typeof accountId === 'object' ? Object.keys(accountId) : 'N/A'
+      });
+      throw new Error(`AccountId deve ser um número válido: ${accountId} (tipo: ${typeof accountId})`);
+    }
+
+    console.log(`[API] Obtendo posições abertas para conta ${accountId}...`);
+    
+    // CORREÇÃO: Passar parâmetros na ordem correta para makeAuthenticatedRequest
+    // makeAuthenticatedRequest(endpoint, method, data, accountId)
+    const response = await makeAuthenticatedRequest('/v2/positionRisk', 'GET', null, accountId);
+    
+    if (!response || !Array.isArray(response)) {
+      console.warn(`[API] Resposta inválida de posições para conta ${accountId}:`, response);
+      return [];
+    }
+
+    // Filtrar apenas posições com quantidade diferente de zero
+    const openPositions = response.filter(position => {
+      const positionAmt = parseFloat(position.positionAmt);
+      return positionAmt !== 0;
+    });
+
+    console.log(`[API] ✅ ${openPositions.length} posições abertas encontradas para conta ${accountId}`);
+
+    return openPositions.map(position => ({
+      simbolo: position.symbol,
+      quantidade: Math.abs(parseFloat(position.positionAmt)),
+      lado: parseFloat(position.positionAmt) > 0 ? 'BUY' : 'SELL',
+      precoEntrada: parseFloat(position.entryPrice),
+      precoAtual: parseFloat(position.markPrice),
+      pnlNaoRealizado: parseFloat(position.unRealizedProfit),
+      alavancagem: parseInt(position.leverage),
+      margem: parseFloat(position.isolatedMargin),
+      tipoMargem: position.marginType
+    }));
+
+  } catch (error) {
+    console.error(`[API] Erro ao obter posições abertas para conta ${accountId}:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Obtém saldo da posição
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<number>} - Saldo total
+ */
+async function obterSaldoPosicao(accountId) {
+  try {
+    const response = await getFuturesAccountBalanceDetails(accountId);
+    
+    // Encontrar saldo de USDT
+    const usdtAsset = response.assets.find(asset => asset.asset === 'USDT');
+    return usdtAsset ? parseFloat(usdtAsset.walletBalance) : 0;
+  } catch (error) {
+    console.error(`[API] Erro ao obter saldo da posição:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Cancela uma ordem
+ * @param {number} accountId - ID da conta
+ * @param {string} symbol - Símbolo do par
+ * @param {string} orderId - ID da ordem
+ * @returns {Promise<Object>} - Resposta da API
+ */
+async function cancelOrder(accountId, symbol, orderId) {
+  try {
+    const params = { symbol, orderId };
+    const response = await makeAuthenticatedRequest('/v1/order', params, 'DELETE', accountId);
+    console.log(`[API] Ordem ${orderId} cancelada com sucesso`);
+    return response;
+  } catch (error) {
+    console.error(`[API] Erro ao cancelar ordem ${orderId}:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Transfere fundos entre contas
+ * @param {string} asset - Ativo a ser transferido
+ * @param {number} amount - Quantidade
+ * @param {number} type - Tipo de transferência
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Resposta da API
+ */
+async function transferBetweenAccounts(asset, amount, type, accountId) {
+  try {
+    const params = { asset, amount: amount.toString(), type };
+    const response = await makeAuthenticatedRequest('/v1/futures/transfer', params, 'POST', accountId);
+    console.log(`[API] Transferência de ${amount} ${asset} realizada`);
+    return response;
+  } catch (error) {
+    console.error(`[API] Erro na transferência:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Cancela todas as ordens abertas
+ * @param {number} accountId - ID da conta
+ * @param {string} symbol - Símbolo do par
+ * @returns {Promise<Object>} - Resposta da API
+ */
+async function cancelAllOpenOrders(accountId, symbol) {
+  try {
+    const params = { symbol };
+    const response = await makeAuthenticatedRequest('/v1/allOpenOrders', params, 'DELETE', accountId);
+    console.log(`[API] Todas as ordens para ${symbol} foram canceladas`);
+    return response;
+  } catch (error) {
+    console.error(`[API] Erro ao cancelar todas as ordens:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Encerra uma posição
+ * @param {string} symbol - Símbolo do par
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Resposta da API
+ */
+async function encerrarPosicao(symbol, accountId) {
+  try {
+    // Obter detalhes da posição atual
+    const position = await getPositionDetails(symbol, accountId);
+    
+    if (!position || parseFloat(position.positionAmt) === 0) {
+      throw new Error(`Nenhuma posição aberta encontrada para ${symbol}`);
+    }
+    
+    const quantity = Math.abs(parseFloat(position.positionAmt));
+    const side = parseFloat(position.positionAmt) > 0 ? 'SELL' : 'BUY';
+    
+    // Criar ordem de mercado para fechar
+    const orderParams = {
+      symbol,
+      side,
+      type: 'MARKET',
+      quantity: quantity.toString(),
+      reduceOnly: 'true'
+    };
+    
+    const response = await newOrder(orderParams, accountId);
+    console.log(`[API] Posição ${symbol} encerrada com ordem ${response.orderId}`);
+    return response;
+  } catch (error) {
+    console.error(`[API] Erro ao encerrar posição ${symbol}:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Obtém brackets de alavancagem
+ * @param {string} symbol - Símbolo do par (opcional)
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Array>} - Brackets de alavancagem
+ */
+async function getAllLeverageBrackets(symbol, accountId) {
+  try {
+    const params = symbol ? { symbol } : {};
+    const response = await makeAuthenticatedRequest('/v1/leverageBracket', params, 'GET', accountId);
+    return response;
+  } catch (error) {
+    console.error(`[API] Erro ao obter brackets de alavancagem:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Define modo de posição
+ * @param {boolean} dualSidePosition - true para hedge mode, false para one-way mode
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Resposta da API
+ */
+async function setPositionMode(dualSidePosition, accountId) {
+  try {
+    const params = { dualSidePosition: dualSidePosition.toString() };
+    const response = await makeAuthenticatedRequest('/v1/positionSide/dual', params, 'POST', accountId);
+    console.log(`[API] Modo de posição alterado para ${dualSidePosition ? 'hedge' : 'one-way'}`);
+    return response;
+  } catch (error) {
+    console.error(`[API] Erro ao alterar modo de posição:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Obtém modo de posição atual
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Modo de posição atual
+ */
+async function getPositionMode(accountId) {
+  try {
+    const response = await makeAuthenticatedRequest('/v1/positionSide/dual', {}, 'GET', accountId);
+    return response;
+  } catch (error) {
+    console.error(`[API] Erro ao obter modo de posição:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Fecha posição usando closePosition=true
+ * @param {string} symbol - Símbolo do par
+ * @param {string} side - Lado da ordem (BUY/SELL)
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Resposta da API
+ */
+async function closePosition(symbol, side, accountId) {
+  try {
+    const orderParams = {
+      symbol,
+      side,
+      type: 'MARKET',
+      closePosition: 'true'
+    };
+    
+    const response = await newOrder(orderParams, accountId);
+    console.log(`[API] Posição ${symbol} fechada com closePosition=true`);
+    return response;
+  } catch (error) {
+    console.error(`[API] Erro ao fechar posição ${symbol}:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Obtém preço atual de um símbolo
+ * @param {string} symbol - Símbolo do par
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<number>} - Preço atual
+ */
+async function getPrice(symbol, accountId) {
+  console.log(`[API_GETPRICE_DEBUG] getPrice - symbol: ${symbol}, accountId: ${accountId}, tipo accountId: ${typeof accountId}`); // Log no início da função
+  if (typeof accountId !== 'number' || isNaN(accountId)) {
+    const errorMsg = `AccountId deve ser um número válido: ${String(accountId)} (tipo: ${typeof accountId})`;
+    console.error(`[API] Erro ao obter preço de ${symbol}: ${errorMsg}`);
+    throw new Error(errorMsg);
+  }
+}
+
+/**
+ * Atualiza os brackets de alavancagem no banco de dados
+ * @param {string} broker - Nome da corretora
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<void>}
+ */
+async function updateLeverageBracketsInDatabase(broker = 'binance', accountId) {
+  // CORREÇÃO: Validar accountId
+  if (!accountId || typeof accountId !== 'number') {
+    throw new Error(`AccountId é obrigatório: ${accountId} (tipo: ${typeof accountId})`);
+  }
+
+  try {
+    console.log(`[API] Atualizando brackets de alavancagem para ${broker}...`);
+    
+    // CORREÇÃO: Passar método como string explícita
+    const brackets = await makeAuthenticatedRequest('GET', '/v1/leverageBracket', {}, accountId);
+    
+    if (!brackets || !Array.isArray(brackets)) {
+      throw new Error('Resposta inválida da API de brackets de alavancagem');
+    }
+
+    const db = await getDatabaseInstance();
+    if (!db) {
+      throw new Error('Não foi possível conectar ao banco de dados');
+    }
+
+    // Processar cada símbolo
+    for (const symbolData of brackets) {
+      const { symbol, brackets: leverageBrackets } = symbolData;
+      
+      if (!leverageBrackets || !Array.isArray(leverageBrackets)) {
+        console.warn(`[API] Brackets inválidos para símbolo ${symbol}`);
+        continue;
+      }
+
+      // Atualizar brackets para este símbolo
+      for (const bracket of leverageBrackets) {
+        const { bracket: bracketId, initialLeverage, notionalCap, notionalFloor, maintMarginRatio, cum } = bracket;
+        
+        // CORREÇÃO: Usar tabela 'alavancagem' existente com campos corretos
+        await db.query(`
+          INSERT INTO alavancagem 
+          (symbol, corretora, bracket, initial_leverage, notional_cap, notional_floor, maint_margin_ratio, cum, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+          ON DUPLICATE KEY UPDATE
+          initial_leverage = VALUES(initial_leverage),
+          notional_cap = VALUES(notional_cap),
+          notional_floor = VALUES(notional_floor),
+          maint_margin_ratio = VALUES(maint_margin_ratio),
+          cum = VALUES(cum),
+          updated_at = NOW()
+        `, [symbol, broker, bracketId, initialLeverage, notionalCap, notionalFloor, maintMarginRatio, cum || 0]);
+      }
+    }
+
+    console.log(`[API] ✅ Brackets de alavancagem atualizados para ${brackets.length} símbolos`);
+
+  } catch (error) {
+    console.error(`[API] Erro ao atualizar brackets de alavancagem:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Obtém brackets de alavancagem do banco de dados
+ * @param {string} symbol - Símbolo do par
+ * @param {string} exchange - Nome da corretora
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Array>} - Brackets do banco de dados
+ */
+/**
+ * Obtém brackets de alavancagem do banco de dados
+ * @param {string} symbol - Símbolo do par
+ * @param {string} exchange - Nome da corretora
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Array>} - Brackets do banco de dados
+ */
+/**
+ * Obtém brackets de alavancagem do banco de dados
+ * @param {string} symbol - Símbolo do par
+ * @param {string} exchange - Nome da corretora
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Array>} - Brackets do banco de dados
+ */
+async function getLeverageBracketsFromDb(symbol, exchange = 'binance', accountId) {
+  try {
+    const db = await getDatabaseInstance(accountId);
+    
+    const [brackets] = await db.query(
+      `SELECT 
+        id,
+        symbol,
+        corretora,
+        bracket,
+        initial_leverage,
+        notional_cap,
+        notional_floor,
+        maint_margin_ratio,
+        cum,
+        updated_at
+       FROM alavancagem 
+       WHERE symbol = ? AND corretora = ? 
+       ORDER BY bracket ASC`,
+      [symbol, exchange]
+    );
+    
+    return brackets;
+  } catch (error) {
+    console.error(`[API] Erro ao obter brackets do banco para ${symbol}:`, error.message);
+    return [];
+  }
+}
+
+/**
+ * Cancela entrada pendente
+ * @param {string} symbol - Símbolo do par
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<boolean>} - true se cancelado com sucesso
+ */
+async function cancelPendingEntry(symbol, accountId) {
+  try {
+    const openOrders = await getOpenOrders(symbol, accountId);
+    
+    // Filtrar ordens de entrada
+    const entryOrders = openOrders.filter(order => 
+      order.type === 'LIMIT' && !order.reduceOnly
+    );
+    
+    if (entryOrders.length === 0) {
+      return false;
+    }
+    
+    // Cancelar todas as ordens de entrada
+    for (const order of entryOrders) {
+      await cancelOrder(accountId, symbol, order.orderId);
+    }
+    
+    console.log(`[API] ${entryOrders.length} ordens de entrada canceladas para ${symbol}`);
+    return true;
+  } catch (error) {
+    console.error(`[API] Erro ao cancelar entrada pendente para ${symbol}:`, error.message);
+    return false;
+  }
+}
+
+/**
+ * Verifica e corrige inconsistências de ambiente
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<boolean>} - true se correções foram feitas
+ */
+async function verifyAndFixEnvironmentConsistency(accountId) {
+  try {
+    const db = await getDatabaseInstance(accountId);
+    
+    // Obter informações da conta e corretora
+    const [accountInfo] = await db.query(`
+      SELECT c.id, c.id_corretora, cor.corretora, cor.ambiente, 
+             cor.futures_rest_api_url, cor.futures_ws_api_url, cor.futures_ws_market_url
+      FROM contas c
+      JOIN corretoras cor ON c.id_corretora = cor.id
+      WHERE c.id = ? AND c.ativa = 1
+    `, [accountId]);
+    
+    if (!accountInfo || accountInfo.length === 0) {
+      throw new Error(`Conta ID ${accountId} não encontrada`);
+    }
+    
+    const account = accountInfo[0];
+    
+    // Verificar se o ambiente da corretora está consistente com suas URLs
+    const isEnvProduction = account.ambiente === 'prd';
+    const hasTestnetUrls = account.futures_rest_api_url.includes('testnet') || 
+                          account.futures_ws_api_url.includes('testnet') ||
+                          account.futures_ws_market_url.includes('testnet');
+    
+    let correctionsMade = false;
+    
+    if (isEnvProduction && hasTestnetUrls) {
+      console.log(`[API] ⚠️ CORREÇÃO CRÍTICA: Corretora ${account.corretora} (ID: ${account.id_corretora}) 
+                  está em ambiente PRODUÇÃO mas usando URLs de TESTNET`);
+      
+      // Corrigir URLs para ambiente de produção
+      await db.query(`
+        UPDATE corretoras 
+        SET futures_rest_api_url = 'https://fapi.binance.com/fapi',
+            futures_ws_market_url = 'wss://fstream.binance.com',
+            futures_ws_api_url = 'wss://ws-fapi.binance.com/ws-fapi/v1'
+        WHERE id = ?`,
+        [account.id_corretora]
+      );
+      
+      console.log(`[API] ✅ URLs corrigidas para ambiente de PRODUÇÃO`);
+      correctionsMade = true;
+    } else if (!isEnvProduction && !hasTestnetUrls) {
+      console.log(`[API] ⚠️ CORREÇÃO CRÍTICA: Corretora ${account.corretora} (ID: ${account.id_corretora}) 
+                  está em ambiente TESTNET mas usando URLs de PRODUÇÃO`);
+      
+      // Corrigir URLs para ambiente testnet
+      await db.query(`
+        UPDATE corretoras 
+        SET futures_rest_api_url = 'https://testnet.binancefuture.com/fapi',
+            futures_ws_market_url = 'wss://stream.binancefuture.com',
+            futures_ws_api_url = 'wss://testnet.binancefuture.com/ws-fapi/v1'
+        WHERE id = ?`,
+        [account.id_corretora]
+      );
+      
+      console.log(`[API] ✅ URLs corrigidas para ambiente de TESTNET`);
+      correctionsMade = true;
+    }
+    
+    // Se correções foram feitas, limpar cache
+    if (correctionsMade) {
+      // Limpar cache de credenciais
+      accountCredentials.delete(accountId);
+      lastCacheTime = 0;
+      
+      // Recarregar credenciais
+      await loadCredentialsFromDatabase({ accountId, forceRefresh: true });
+    }
+    
+    return correctionsMade;
+  } catch (error) {
+    console.error(`[API] Erro ao verificar consistência de ambiente: ${error.message}`);
+    return false;
+  }
+}
+
+
+
+/**
+ * Obtém alavancagem máxima para um símbolo do banco de dados
+ * @param {string} symbol - Símbolo do par
+ * @param {string} exchange - Nome da corretora
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<number>} - Alavancagem máxima
+ */
+async function getMaxLeverageFromDb(symbol, exchange = 'binance', accountId) {
+  try {
+    const db = await getDatabaseInstance(accountId);
+    
+    const [result] = await db.query(
+      `SELECT MAX(initial_leverage) as max_leverage 
+       FROM alavancagem 
+       WHERE symbol = ? AND corretora = ?`,
+      [symbol, exchange]
+    );
+    
+    return result[0]?.max_leverage || 20; // Default 20x se não encontrar
+  } catch (error) {
+    console.error(`[API] Erro ao obter alavancagem máxima do banco para ${symbol}:`, error.message);
+    return 20; // Default
+  }
+}
+
+/**
+ * Obtém brackets de alavancagem do banco de dados
+ * @param {string} symbol - Símbolo do par
+ * @param {string} exchange - Nome da corretora
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Array>} - Brackets de alavancagem
+ */
+async function getLeverageBracketsFromDb(symbol, exchange = 'binance', accountId) {
+  try {
+    const db = await getDatabaseInstance(accountId);
+    
+    // CORREÇÃO: Usar tabela 'alavancagem' com campos corretos
+    const [brackets] = await db.query(
+      `SELECT 
+        id,
+        symbol,
+        corretora,
+        bracket,
+        initial_leverage,
+        notional_cap,
+        notional_floor,
+        maint_margin_ratio,
+        cum,
+        updated_at
+       FROM alavancagem 
+       WHERE symbol = ? AND corretora = ? 
+       ORDER BY bracket ASC`,
+      [symbol, exchange]
+    );
+    
+    return brackets;
+  } catch (error) {
+    console.error(`[API] Erro ao obter brackets do banco para ${symbol}:`, error.message);
+    return [];
+  }
+}
+
+
+/**
+ * Obtém informações de margem baseada no valor notional
+ * @param {string} symbol - Símbolo do par
+ * @param {number} notionalValue - Valor notional da posição
+ * @param {string} exchange - Nome da corretora
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Informações de margem
+ */
+async function getMarginInfoFromDb(symbol, notionalValue, exchange = 'binance', accountId) {
+  try {
+    const db = await getDatabaseInstance(accountId);
+    
+    const [brackets] = await db.query(
+      `SELECT 
+        bracket,
+        initial_leverage,
+        notional_cap,
+        notional_floor,
+        maint_margin_ratio,
+        cum
+       FROM alavancagem 
+       WHERE symbol = ? AND corretora = ? 
+         AND notional_floor <= ? 
+         AND (notional_cap >= ? OR notional_cap = 0)
+       ORDER BY bracket ASC
+       LIMIT 1`,
+      [symbol, exchange, notionalValue, notionalValue]
+    );
+    
+    if (brackets.length === 0) {
+      // Se não encontrar, pegar o primeiro bracket disponível
+      const [fallback] = await db.query(
+        `SELECT * FROM alavancagem 
+         WHERE symbol = ? AND corretora = ? 
+         ORDER BY bracket ASC 
+         LIMIT 1`,
+        [symbol, exchange]
+      );
+      
+      return fallback[0] || {
+        bracket: 1,
+        initial_leverage: 20,
+        notional_cap: 50000,
+        notional_floor: 0,
+        maint_margin_ratio: 0.004,
+        cum: 0
+      };
+    }
+    
+    return brackets[0];
+  } catch (error) {
+    console.error(`[API] Erro ao obter informações de margem do banco para ${symbol}:`, error.message);
+    return {
+      bracket: 1,
+      initial_leverage: 20,
+      notional_cap: 50000,
+      notional_floor: 0,
+      maint_margin_ratio: 0.004,
+      cum: 0
+    };
+  }
+}
+
+
+/**
+ * Calcula margem necessária baseada no valor notional
+ * @param {string} symbol - Símbolo do par
+ * @param {number} notionalValue - Valor notional da posição
+ * @param {number} leverage - Alavancagem a ser usada
+ * @param {string} exchange - Nome da corretora
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Informações de margem calculada
+ */
+async function calculateRequiredMargin(symbol, notionalValue, leverage, exchange = 'binance', accountId) {
+  try {
+    const marginInfo = await getMarginInfoFromDb(symbol, notionalValue, exchange, accountId);
+    
+    // Verificar se a alavancagem solicitada é permitida
+    if (leverage > marginInfo.initial_leverage) {
+      throw new Error(`Alavancagem ${leverage}x não permitida para ${symbol}. Máxima: ${marginInfo.initial_leverage}x`);
+    }
+    
+    // Calcular margem inicial
+    const initialMargin = notionalValue / leverage;
+    
+    // Calcular margem de manutenção
+    const maintMargin = (notionalValue * marginInfo.maint_margin_ratio) - marginInfo.cum;
+    
+    return {
+      symbol,
+      notionalValue,
+      leverage,
+      bracket: marginInfo.bracket,
+      initialMargin: parseFloat(initialMargin.toFixed(8)),
+      maintMargin: parseFloat(maintMargin.toFixed(8)),
+      maintMarginRatio: marginInfo.maint_margin_ratio,
+      maxLeverage: marginInfo.initial_leverage,
+      notionalCap: marginInfo.notional_cap,
+      notionalFloor: marginInfo.notional_floor
+    };
+  } catch (error) {
+    console.error(`[API] Erro ao calcular margem necessária para ${symbol}:`, error.message);
+    throw error;
+  }
+}
+
+
+/**
+ * Obtém um listenKey da Binance Futures API.
+ * @param {number} accountId - ID da conta.
+ * @returns {Promise<string|null>} O listenKey ou null em caso de erro.
+ */
+async function getListenKey(accountId) {
+  const accountState = accountConnections.get(accountId); // Assumindo que accountConnections está acessível ou é passado
+  if (!accountState || !accountState.apiKey || !accountState.apiUrl) {
+    console.error(`[API] API Key ou API URL não configuradas para getListenKey da conta ${accountId}.`);
+    // Tentar carregar credenciais se não estiverem no estado
+    const creds = await loadCredentialsFromDatabase(accountId); // loadCredentialsFromDatabase já atualiza accountConnections
+    if (!creds || !accountState.apiKey || !accountState.apiUrl) {
+        throw new Error(`Credenciais REST incompletas para getListenKey da conta ${accountId}.`);
+    }
+  }
+  
+  const endpoint = '/fapi/v1/listenKey';
+  const url = `${accountState.apiUrl}${endpoint}`;
+  console.log(`[API] Obtendo listenKey via: ${url} para conta ${accountId}`);
+
+  try {
+    const response = await makeAuthenticatedRequest(accountId, 'POST', endpoint, {});
+    if (response && response.listenKey) {
+      return response.listenKey;
+    } else {
+      console.error(`[API] Falha ao obter ListenKey para conta ${accountId}. Resposta:`, response);
+      return null;
+    }
+  } catch (error) {
+    console.error(`[API] Erro ao fazer requisição para obter ListenKey para conta ${accountId}: ${error.message}`);
+    return null;
+  }
+}
+
+/**
+ * Mantém o listenKey ativo (keep-alive).
+ * @param {number} accountId - ID da conta.
+ * @param {string} listenKeyToKeepAlive - O listenKey a ser mantido ativo.
+ * @returns {Promise<boolean>} True se bem-sucedido, false caso contrário.
+ */
+async function keepAliveListenKey(accountId, listenKeyToKeepAlive) {
+  const accountState = accountConnections.get(accountId);
+  if (!accountState || !accountState.apiKey || !accountState.apiUrl) {
+    console.error(`[API] API Key ou API URL não configuradas para keepAliveListenKey da conta ${accountId}.`);
+    // Tentar carregar credenciais se não estiverem no estado
+     const creds = await loadCredentialsFromDatabase(accountId);
+     if (!creds || !accountState.apiKey || !accountState.apiUrl) {
+        throw new Error(`Credenciais REST incompletas para keepAliveListenKey da conta ${accountId}.`);
+    }
+  }
+
+  const endpoint = '/fapi/v1/listenKey';
+  const url = `${accountState.apiUrl}${endpoint}`;
+  // console.log(`[API] Mantendo listenKey ativo via: ${url} para conta ${accountId}`);
+
+  try {
+    const response = await makeAuthenticatedRequest(accountId, 'PUT', endpoint, { listenKey: listenKeyToKeepAlive });
+    // A Binance retorna {} em sucesso para PUT /fapi/v1/listenKey
+    if (response && typeof response === 'object' && Object.keys(response).length === 0) {
+      // console.log(`[API] ListenKey para conta ${accountId} mantido ativo com sucesso.`);
+      return true;
+    } else {
+      console.error(`[API] Falha ao manter ListenKey ativo para conta ${accountId}. Resposta:`, response);
+      return false;
+    }
+  } catch (error) {
+    console.error(`[API] Erro ao fazer requisição para manter ListenKey ativo para conta ${accountId}: ${error.message}`);
+    return false;
+  }
+}
+
+module.exports = {
+  getFuturesAccountBalanceDetails,
+  getAccountConnectionState,
+  getMaxLeverage,
+  getCurrentLeverage,
+  getCurrentMarginType,
+  changeInitialLeverage,
+  changeMarginType,
+  newOrder,
+  newEntryOrder,
+  newLimitMakerOrder,
+  editOrder,
+  newReduceOnlyOrder,
+  newStopOrder,
+  newStopOrTpLimitOrder,
+  newTakeProfitOrder,
+  getTickSize,
+  roundPriceToTickSize,
+  getPrecision,
+  getOpenOrders,
+  getRecentOrders,
+  getOrderStatus,
+  getMultipleOrderStatus,
+  getPositionDetails,
+  getAllOpenPositions,
+  obterSaldoPosicao,
+  cancelOrder,
+  transferBetweenAccounts,
+  cancelAllOpenOrders,
+  encerrarPosicao,
+  getAllLeverageBrackets,
+  setPositionMode,
+  getPositionMode,
+  closePosition,
+  getPrice,
+  updateLeverageBracketsInDatabase,
+  getLeverageBracketsFromDb,
+  getMaxLeverageFromDb,
+  getMarginInfoFromDb,
+  calculateRequiredMargin,
+  cancelPendingEntry,
+  loadCredentialsFromDatabase,
+  verifyAndFixEnvironmentConsistency,
+  getListenKey, // EXPORTAR
+  keepAliveListenKey // EXPORTAR
+};

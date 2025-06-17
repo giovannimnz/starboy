@@ -1,0 +1,1286 @@
+const websockets = require('./websockets');
+const { getDatabaseInstance, formatDateForMySQL } = require('./db/conexao');
+let handlers = null;
+
+/**
+ * Inicializa os handlers de webhook para uma conta específica
+ * @param {number} accountId - ID da conta a ser inicializada
+ */
+async function initializeHandlers(accountId) {
+  try {
+    // CORREÇÃO: Validar accountId no início
+    if (!accountId || typeof accountId !== 'number') {
+      throw new Error(`ID da conta inválido: ${accountId} (tipo: ${typeof accountId})`);
+    }
+
+    console.log(`[WS-API] Inicializando handlers para conta ${accountId}...`);
+    
+    // Garantir que o WebSocket existe e está autenticado
+    const wsExists = await websockets.ensureWebSocketApiExists(accountId);
+    
+    if (!wsExists) {
+      console.error(`[WS-API] Não foi possível estabelecer WebSocket API para conta ${accountId}`);
+      return false;
+    }
+
+    console.log(`[WS-API] Handlers inicializados com sucesso para conta ${accountId}`);
+    return true;
+    
+  } catch (error) {
+    console.error(`[WS-API] Erro ao inicializar handlers para conta ${accountId}:`, error.message);
+    throw error;
+  }
+}
+
+const currentDateTime = formatDateForMySQL(new Date());
+
+/**
+ * Envia uma nova ordem via WebSocket API
+ * @param {Object} orderParams - Parâmetros da ordem conforme documentação da Binance
+ * @returns {Promise<Object>} Resposta da API contendo os detalhes da ordem criada
+ */
+async function placeOrderViaWebSocket(orderParams) {
+    // Verificar se WebSocket API está conectado
+    if (!websockets.isWebSocketApiConnected()) {
+        await websockets.startWebSocketApi();
+        
+        // Verificar novamente após tentativa de conexão
+        if (!websockets.isWebSocketApiConnected()) {
+            throw new Error('[WS-API] WebSocket API não está conectado. Impossível enviar ordem.');
+        }
+    }
+    
+    try {
+        // Validar parâmetros obrigatórios
+        validateOrderParams(orderParams);
+        
+        // Criar requisição assinada para ordem
+        const request = websockets.createSignedRequest('order.place', orderParams);
+        
+        // Log informativo antes de enviar
+        console.log(`[WS-API] Enviando ordem ${orderParams.type} via WebSocket API: ${orderParams.symbol}, ${orderParams.side}, ${orderParams.quantity || ''} @ ${orderParams.price || ''}`);
+        
+        // Enviar requisição e aguardar resposta
+        const response = await websockets.sendWebSocketApiRequest(request);
+        
+        // Verificar se a resposta contém um status de sucesso
+        if (response.status === 200 && response.result) {
+            console.log(`[WS-API] Ordem criada com sucesso via WebSocket API. ID: ${response.result.orderId}`);
+            return response.result;
+        } else {
+            throw new Error(`Resposta inválida da WebSocket API: ${JSON.stringify(response)}`);
+        }
+    } catch (error) {
+        // Capturar e formatar erro para diagnóstico mais fácil
+        const errorMessage = error.error?.msg || error.message || 'Erro desconhecido';
+        console.error(`[WS-API] Erro ao enviar ordem via WebSocket API: ${errorMessage}`);
+        
+        // Para facilitar o diagnóstico, incluir detalhes da ordem nos logs (removendo informações sensíveis)
+        const safeOrderParams = { ...orderParams };
+        delete safeOrderParams.apiKey;
+        delete safeOrderParams.signature;
+        console.error(`[WS-API] Parâmetros da ordem com erro: ${JSON.stringify(safeOrderParams)}`);
+        
+        throw error;
+    }
+}
+
+/**
+ * Envia uma ordem de entrada LIMIT MAKER via WebSocket API
+ * @param {string} symbol - Símbolo do par de negociação
+ * @param {number|string} quantity - Quantidade para a ordem
+ * @param {string} side - Lado da ordem ('BUY' ou 'SELL')
+ * @param {number|string} price - Preço da ordem
+ * @param {number} [accountId=1] - ID da conta
+ * @returns {Promise<Object>} Resposta da API
+ */
+async function placeLimitMakerOrderViaWebSocket(symbol, quantity, side, price, accountId = 1) {
+    // Verificar se WebSocket API está conectado
+    if (!websockets.isWebSocketApiConnected(accountId)) {
+        await websockets.startWebSocketApi(accountId);
+        
+        // Verificar novamente após tentativa de conexão
+        if (!websockets.isWebSocketApiConnected(accountId)) {
+            throw new Error(`[WS-API] WebSocket API não está conectado para conta ${accountId}. Impossível enviar ordem.`);
+        }
+    }
+    
+    try {
+        // Validações dos parâmetros
+        if (!symbol) throw new Error('Símbolo é obrigatório');
+        if (!side || (side !== 'BUY' && side !== 'SELL')) throw new Error('Side deve ser BUY ou SELL');
+        if (!quantity || isNaN(parseFloat(quantity)) || parseFloat(quantity) <= 0) throw new Error(`Quantidade inválida: ${quantity}`);
+        if (!price || isNaN(parseFloat(price)) || parseFloat(price) <= 0) throw new Error(`Preço inválido: ${price}`);
+        
+        // CORREÇÃO: Converter para string conforme documentação (DECIMAL parameters as JSON strings)
+        const quantityStr = typeof quantity === 'number' ? quantity.toString() : quantity;
+        const priceStr = typeof price === 'number' ? price.toString() : price;
+        
+        console.log(`[WS-API] Enviando ordem LIMIT MAKER via WebSocket: ${symbol} ${side} ${quantityStr} @ ${priceStr}`);
+        
+        // CORREÇÃO: Criar parâmetros da ordem conforme documentação
+        const orderParams = {
+            symbol,
+            side,
+            type: 'LIMIT',
+            quantity: quantityStr,
+            price: priceStr,
+            timeInForce: 'GTX', // GTX garante que seja uma ordem "post-only"
+            newOrderRespType: 'RESULT'
+            // CORREÇÃO: Não incluir apiKey, timestamp, signature aqui - será adicionado em createSignedRequest
+        };
+        
+        // Criar requisição assinada para ordem
+        const request = websockets.createSignedRequest('order.place', orderParams, accountId);
+        
+        // Enviar requisição e aguardar resposta
+        const response = await websockets.sendWebSocketApiRequest(request, 30000, accountId);
+        
+        // Verificar se a resposta contém um status de sucesso
+        if (response.status === 200 && response.result) {
+            console.log(`[WS-API] Ordem LIMIT MAKER criada com sucesso via WebSocket API. ID: ${response.result.orderId}`);
+            return response.result;
+        } else {
+            throw new Error(`Resposta inválida da WebSocket API: ${JSON.stringify(response)}`);
+        }
+    } catch (error) {
+        // Capturar e formatar erro para diagnóstico mais fácil
+        const errorMessage = error.error?.msg || error.message || 'Erro desconhecido';
+        console.error(`[WS-API] Erro ao enviar ordem LIMIT MAKER via WebSocket API: ${errorMessage}`);
+        
+        throw error;
+    }
+}
+
+/**
+ * Envia uma ordem STOP_LOSS via WebSocket API
+ * @param {string} symbol - Símbolo do par de negociação
+ * @param {number|string} quantity - Quantidade para a ordem (deixar null para closePosition=true)
+ * @param {string} side - Lado da ordem ('BUY' ou 'SELL')
+ * @param {number|string} stopPrice - Preço de gatilho da ordem
+ * @param {boolean} closePosition - Se true, fecha toda a posição quando acionada
+ * @returns {Promise<Object>} Resposta da API
+ */
+async function placeStopMarketOrderViaWebSocket(symbol, quantity, side, stopPrice, closePosition = false) {
+    const params = {
+        symbol,
+        side,
+        type: 'STOP_MARKET',
+        stopPrice,
+        newOrderRespType: 'RESULT'
+    };
+    
+    // Adicionar closePosition OU quantity, nunca ambos
+    if (closePosition) {
+        params.closePosition = 'true'; // API espera string, não boolean
+    } else {
+        params.quantity = quantity;
+        params.reduceOnly = 'true'; // Geralmente queremos reduceOnly para STOP_LOSS
+    }
+    
+    return await placeOrderViaWebSocket(params);
+}
+
+/**
+ * Envia uma ordem TAKE_PROFIT via WebSocket API
+ * @param {string} symbol - Símbolo do par de negociação
+ * @param {number|string} quantity - Quantidade para a ordem (deixar null para closePosition=true)
+ * @param {string} side - Lado da ordem ('BUY' ou 'SELL')
+ * @param {number|string} stopPrice - Preço de gatilho da ordem
+ * @param {boolean} closePosition - Se true, fecha toda a posição quando acionada
+ * @returns {Promise<Object>} Resposta da API
+ */
+async function placeTakeProfitMarketOrderViaWebSocket(symbol, quantity, side, stopPrice, closePosition = false) {
+    const params = {
+        symbol,
+        side,
+        type: 'TAKE_PROFIT_MARKET',
+        stopPrice,
+        newOrderRespType: 'RESULT'
+    };
+    
+    // Adicionar closePosition OU quantity, nunca ambos
+    if (closePosition) {
+        params.closePosition = 'true'; // API espera string, não boolean
+    } else {
+        params.quantity = quantity;
+        params.reduceOnly = 'true'; // Geralmente queremos reduceOnly para TP
+    }
+    
+    return await placeOrderViaWebSocket(params);
+}
+
+/**
+ * Valida os parâmetros obrigatórios da ordem de acordo com o tipo
+ * @param {Object} params - Parâmetros da ordem a serem validados
+ * @throws {Error} Se parâmetros obrigatórios estiverem faltando
+ */
+function validateOrderParams(params) {
+    // Verificar parâmetros básicos obrigatórios para todas ordens
+    if (!params.symbol) throw new Error('Parâmetro obrigatório "symbol" ausente');
+    if (!params.side) throw new Error('Parâmetro obrigatório "side" ausente');
+    if (!params.type) throw new Error('Parâmetro obrigatório "type" ausente');
+    
+    // Verificar parâmetros específicos por tipo de ordem
+    switch (params.type) {
+        case 'LIMIT':
+            if (!params.timeInForce) throw new Error('Parâmetro "timeInForce" obrigatório para ordem LIMIT');
+            if (!params.quantity) throw new Error('Parâmetro "quantity" obrigatório para ordem LIMIT');
+            if (!params.price && !params.priceMatch) throw new Error('Parâmetro "price" ou "priceMatch" obrigatório para ordem LIMIT');
+            break;
+        
+        case 'MARKET':
+            if (!params.quantity) throw new Error('Parâmetro "quantity" obrigatório para ordem MARKET');
+            break;
+        
+        case 'STOP':
+        case 'TAKE_PROFIT':
+            if (!params.quantity) throw new Error(`Parâmetro "quantity" obrigatório para ordem ${params.type}`);
+            if (!params.stopPrice) throw new Error(`Parâmetro "stopPrice" obrigatório para ordem ${params.type}`);
+            if (!params.price && !params.priceMatch) throw new Error(`Parâmetro "price" ou "priceMatch" obrigatório para ordem ${params.type}`);
+            break;
+        
+        case 'STOP_MARKET':
+        case 'TAKE_PROFIT_MARKET':
+            if (!params.stopPrice) throw new Error(`Parâmetro "stopPrice" obrigatório para ordem ${params.type}`);
+            
+            // Verificar combinação inválida de parâmetros
+            if (params.closePosition === 'true' || params.closePosition === true) {
+                if (params.quantity) throw new Error(`Parâmetro "quantity" não pode ser usado com "closePosition=true" para ordem ${params.type}`);
+                if (params.reduceOnly) throw new Error(`Parâmetro "reduceOnly" não pode ser usado com "closePosition=true" para ordem ${params.type}`);
+            } else if (!params.quantity && !params.closePosition) {
+                throw new Error(`Parâmetro "quantity" ou "closePosition=true" obrigatório para ordem ${params.type}`);
+            }
+            break;
+        
+        case 'TRAILING_STOP_MARKET':
+            if (!params.callbackRate) throw new Error('Parâmetro "callbackRate" obrigatório para ordem TRAILING_STOP_MARKET');
+            break;
+        
+        default:
+            // Tipos de ordem não reconhecidos serão validados pela API
+            break;
+    }
+}
+
+/**
+ * Modifica uma ordem existente via WebSocket API
+ * @param {Object} modifyParams - Parâmetros para modificação da ordem
+ * @returns {Promise<Object>} Resposta da API contendo os detalhes da ordem modificada
+ */
+async function modifyOrderViaWebSocket(modifyParams) {
+    // Verificar se WebSocket API está conectado
+    if (!websockets.isWebSocketApiConnected()) {
+        await websockets.startWebSocketApi();
+        
+        // Verificar novamente após tentativa de conexão
+        if (!websockets.isWebSocketApiConnected()) {
+            throw new Error('[WS-API] WebSocket API não está conectado. Impossível modificar ordem.');
+        }
+    }
+    
+    try {
+        // Validar parâmetros obrigatórios
+        validateModifyOrderParams(modifyParams);
+        
+        // Criar requisição assinada para modificação da ordem
+        const request = websockets.createSignedRequest('order.modify', modifyParams);
+        
+        // Log informativo antes de enviar
+        console.log(`[WS-API] Modificando ordem ${modifyParams.orderId || modifyParams.origClientOrderId} para ${modifyParams.symbol}: novo preço ${modifyParams.price}, quantidade ${modifyParams.quantity}`);
+        
+        // Enviar requisição e aguardar resposta
+        const response = await websockets.sendWebSocketApiRequest(request);
+        
+        // Verificar se a resposta contém um status de sucesso
+        if (response.status === 200 && response.result) {
+            console.log(`[WS-API] Ordem modificada com sucesso via WebSocket API. ID: ${response.result.orderId}`);
+            return response.result;
+        } else {
+            throw new Error(`Resposta inválida da WebSocket API: ${JSON.stringify(response)}`);
+        }
+    } catch (error) {
+        // Capturar e formatar erro para diagnóstico mais fácil
+        const errorMessage = error.error?.msg || error.message || 'Erro desconhecido';
+        console.error(`[WS-API] Erro ao modificar ordem via WebSocket API: ${errorMessage}`);
+        
+        // Para facilitar o diagnóstico, incluir detalhes da ordem nos logs (removendo informações sensíveis)
+        const safeParams = { ...modifyParams };
+        delete safeParams.apiKey;
+        delete safeParams.signature;
+        console.error(`[WS-API] Parâmetros da modificação com erro: ${JSON.stringify(safeParams)}`);
+        
+        throw error;
+    }
+}
+
+/**
+ * Valida os parâmetros obrigatórios para modificação de ordem
+ * @param {Object} params - Parâmetros para modificação de ordem a serem validados
+ * @throws {Error} Se parâmetros obrigatórios estiverem faltando
+ */
+function validateModifyOrderParams(params) {
+    // Verificar parâmetros básicos obrigatórios
+    if (!params.symbol) throw new Error('Parâmetro obrigatório "symbol" ausente');
+    if (!params.side) throw new Error('Parâmetro obrigatório "side" ausente');
+    if (!params.quantity) throw new Error('Parâmetro obrigatório "quantity" ausente');
+    
+    // Verificar se pelo menos um identificador da ordem está presente
+    if (!params.orderId && !params.origClientOrderId) {
+        throw new Error('É necessário fornecer "orderId" ou "origClientOrderId"');
+    }
+    
+    // Verificar se price ou priceMatch está presente (mas não ambos)
+    if (!params.price && !params.priceMatch) {
+        throw new Error('É necessário fornecer "price" ou "priceMatch"');
+    }
+    
+    if (params.price && params.priceMatch && params.priceMatch !== 'NONE') {
+        throw new Error('Não é possível fornecer "price" e "priceMatch" simultaneamente');
+    }
+}
+
+/**
+ * Função especializada para editar o preço de uma ordem LIMIT existente
+ * @param {string} symbol - Símbolo do par de negociação
+ * @param {string|number} orderId - ID da ordem a ser modificada
+ * @param {number|string} newPrice - Novo preço para a ordem
+ * @param {string} side - Lado da ordem ('BUY' ou 'SELL')
+ * @param {number|string} [quantity=null] - Quantidade (opcional, mantém a original se não especificada)
+ * @returns {Promise<Object>} Resposta da API
+ */
+async function editOrderPriceViaWebSocket(symbol, orderId, newPrice, side, quantity = null) {
+    try {
+        // Se quantity não foi especificada, precisamos obter a quantidade original
+        if (quantity === null) {
+            console.log(`[WS-API] Quantidade não especificada para edição da ordem ${orderId}. Obtendo detalhes da ordem original...`);
+            
+            // Obter detalhes da ordem atual para manter a mesma quantidade
+            const orderInfo = await getOrderViaWebSocket({
+                symbol,
+                orderId
+            });
+            
+            if (orderInfo && orderInfo.result) {
+                quantity = orderInfo.result.origQty;
+                console.log(`[WS-API] Usando quantidade da ordem original: ${quantity}`);
+            } else {
+                throw new Error(`Não foi possível obter a quantidade original da ordem ${orderId}`);
+            }
+        }
+
+        // Preparar parâmetros para modificação
+        const modifyParams = {
+            symbol,
+            orderId,
+            side,
+            quantity,
+            price: newPrice,
+            origType: 'LIMIT' // Atualmente, só suporta modificação de ordens LIMIT
+        };
+        
+        // Chamar a função genérica de modificação
+        return await modifyOrderViaWebSocket(modifyParams);
+    } catch (error) {
+        console.error(`[WS-API] Erro ao editar preço da ordem ${orderId}:`, error);
+        throw error;
+    }
+}
+
+/**
+ * Edita uma ordem existente, ou cancela e recria caso esteja parcialmente preenchida
+ * @param {string} symbol - Símbolo do par de negociação
+ * @param {string|number} orderId - ID da ordem a ser editada
+ * @param {number} newPrice - Novo preço da ordem
+ * @param {string} side - Lado da ordem (BUY/SELL)
+ * @param {number} [quantity=null] - Quantidade desejada (opcional, será obtida da ordem existente)
+ * @param {boolean} [retryIfPartiallyFilled=true] - Se deve recriar automaticamente ordens parcialmente preenchidas
+ * @returns {Promise<Object>} Resposta da API com detalhes da ordem editada ou recriada
+ */
+async function editOrderViaWebSocket(symbol, orderId, newPrice, side, quantity = null, retryIfPartiallyFilled = true) {
+    try {
+        console.log(`[WS-API] Editando ordem ${orderId} para ${symbol}: novo preço ${newPrice}, lado ${side}`);
+        
+        // Verificar se orderId e symbol estão na ordem correta
+        if (typeof orderId === 'string' && orderId.includes('USDT') && 
+            (typeof symbol === 'number' || !isNaN(parseInt(symbol)))) {
+            console.log(`[WS-API] Detectada troca de parâmetros. Corrigindo symbol=${orderId}, orderId=${symbol}`);
+            [symbol, orderId] = [orderId, symbol];
+        }
+        
+        // Obter detalhes atuais da ordem para verificação
+        let orderDetails;
+        try {
+            const orderResponse = await getOrderViaWebSocket({
+                symbol,
+                orderId
+            });
+            
+            if (!orderResponse || !orderResponse.result) {
+                throw new Error(`Ordem ${orderId} não encontrada`);
+            }
+            
+            orderDetails = orderResponse.result;
+            
+        } catch (error) {
+            console.error(`[WS-API] Erro ao obter status da ordem ${orderId}:`, error);
+            throw error;
+        }
+        
+        // Verificar se a ordem está parcialmente preenchida
+        if (orderDetails.status === 'PARTIALLY_FILLED') {
+            // Se não quiser a lógica automática para ordens parciais, retornar erro
+            if (!retryIfPartiallyFilled) {
+                throw {
+                    isPartiallyFilled: true,
+                    message: `Não é possível editar ordem parcialmente preenchida (${orderId}) via WebSocket. Cancele e recrie.`,
+                    orderDetails,
+                    code: 'ORDER_PARTIALLY_FILLED'
+                };
+            }
+            
+            console.log(`[WS-API] Ordem ${orderId} está parcialmente preenchida (${orderDetails.executedQty}/${orderDetails.origQty}). Cancelando e recriando.`);
+            
+            // Calcular quantidade restante (não preenchida)
+            const origQty = parseFloat(orderDetails.origQty);
+            const executedQty = parseFloat(orderDetails.executedQty);
+            const remainingQty = parseFloat((origQty - executedQty).toFixed(8));
+            
+            if (remainingQty <= 0) {
+                console.log(`[WS-API] Ordem ${orderId} já foi totalmente preenchida. Nada a fazer.`);
+                return orderDetails;
+            }
+            
+            // Cancelar a ordem parcial
+            try {
+                await cancelOrderViaWebSocket({
+                    symbol,
+                    orderId
+                });
+                console.log(`[WS-API] Ordem parcial ${orderId} cancelada com sucesso.`);
+            } catch (cancelError) {
+                // Se o erro for "ordem não encontrada", prosseguir com a criação da nova ordem
+                if (cancelError.response && cancelError.response.status === 400 && 
+                    cancelError.response.data && cancelError.response.data.code === -2011) {
+                    console.log(`[WS-API] Ordem ${orderId} já não existe. Continuando com a criação da nova ordem.`);
+                } else {
+                    console.error(`[WS-API] Erro ao cancelar ordem parcial ${orderId}:`, cancelError);
+                    throw cancelError;
+                }
+            }
+            
+            // Criar nova ordem com a quantidade restante e o novo preço
+            try {
+                console.log(`[WS-API] Criando nova ordem para quantidade restante: ${remainingQty} @ ${newPrice}`);
+                const newOrderResponse = await placeLimitMakerOrderViaWebSocket(
+                    symbol, remainingQty, side, newPrice
+                );
+                
+                if (!newOrderResponse || !newOrderResponse.orderId) {
+                    throw new Error(`Falha ao criar nova ordem: resposta inválida`);
+                }
+                
+                console.log(`[WS-API] Nova ordem criada com sucesso após cancelamento da parcial: ${newOrderResponse.orderId}`);
+                
+                // Retornar informação sobre a ordem antiga e nova
+                return {
+                    ...newOrderResponse,
+                    oldOrderId: orderId,
+                    wasPartiallyFilled: true,
+                    executedQty,
+                    originalPrice: orderDetails.price,
+                };
+            } catch (newOrderError) {
+                console.error(`[WS-API] Erro ao criar nova ordem após cancelamento da parcial:`, newOrderError);
+                throw {
+                    message: `Ordem parcial ${orderId} cancelada mas falha ao criar nova ordem: ${newOrderError.message}`,
+                    originalError: newOrderError,
+                    oldOrderId: orderId,
+                    wasPartiallyFilled: true,
+                    orderCanceled: true
+                };
+            }
+        } else if (orderDetails.status !== 'NEW') {
+            // Se não for NEW nem PARTIALLY_FILLED, não pode ser editada
+            throw new Error(`Ordem ${orderId} tem status ${orderDetails.status} e não pode ser editada.`);
+        }
+        
+        // Se chegou aqui, a ordem está no estado NEW e pode ser editada normalmente
+        
+        // Se não temos a quantidade e precisamos dela, usar a quantidade da ordem original
+        const orderQuantity = quantity || parseFloat(orderDetails.origQty);
+        
+        // Verificar se a quantidade é válida
+        if (orderQuantity <= 0 || isNaN(orderQuantity)) {
+            throw new Error(`Quantidade inválida para edição de ordem: ${orderQuantity}`);
+        }
+        
+        // Modificar a ordem via WebSocket API
+        return await editOrderPriceViaWebSocket(symbol, orderId, newPrice, side, orderQuantity);
+        
+    } catch (error) {
+        console.error(`[WS-API] Erro ao editar ordem ${orderId}:`, error);
+        throw error;
+    }
+}
+
+/**
+ * Cancela uma ordem ativa via WebSocket API
+ * @param {Object} cancelParams - Parâmetros para cancelamento da ordem
+ * @returns {Promise<Object>} Resposta da API contendo os detalhes da ordem cancelada
+ */
+async function cancelOrderViaWebSocket(cancelParams) {
+    // Verificar se WebSocket API está conectado
+    if (!websockets.isWebSocketApiConnected()) {
+        await websockets.startWebSocketApi();
+        
+        // Verificar novamente após tentativa de conexão
+        if (!websockets.isWebSocketApiConnected()) {
+            throw new Error('[WS-API] WebSocket API não está conectado. Impossível cancelar ordem.');
+        }
+    }
+    
+    try {
+        // Validar parâmetros obrigatórios
+        validateCancelOrderParams(cancelParams);
+        
+        // Criar requisição assinada para cancelamento da ordem
+        const request = websockets.createSignedRequest('order.cancel', cancelParams);
+        
+        // Log informativo antes de enviar
+        const orderIdentifier = cancelParams.orderId || cancelParams.origClientOrderId;
+        console.log(`[WS-API] Cancelando ordem ${orderIdentifier} para ${cancelParams.symbol} via WebSocket API`);
+        
+        // Enviar requisição e aguardar resposta
+        const response = await websockets.sendWebSocketApiRequest(request);
+        
+        // Verificar se a resposta contém um status de sucesso
+        if (response.status === 200 && response.result) {
+            console.log(`[WS-API] Ordem ${orderIdentifier} cancelada com sucesso via WebSocket API`);
+            return response.result;
+        } else {
+            throw new Error(`Resposta inválida da WebSocket API: ${JSON.stringify(response)}`);
+        }
+    } catch (error) {
+        // Capturar e formatar erro para diagnóstico mais fácil
+        const errorMessage = error.error?.msg || error.message || 'Erro desconhecido';
+        console.error(`[WS-API] Erro ao cancelar ordem via WebSocket API: ${errorMessage}`);
+        
+        // Para facilitar o diagnóstico, incluir detalhes nos logs (removendo informações sensíveis)
+        const safeParams = { ...cancelParams };
+        delete safeParams.apiKey;
+        delete safeParams.signature;
+        console.error(`[WS-API] Parâmetros do cancelamento com erro: ${JSON.stringify(safeParams)}`);
+        
+        throw error;
+    }
+}
+
+/**
+ * Valida os parâmetros obrigatórios para cancelamento de ordem
+ * @param {Object} params - Parâmetros para cancelamento de ordem a serem validados
+ * @throws {Error} Se parâmetros obrigatórios estiverem faltando
+ */
+function validateCancelOrderParams(params) {
+    // Verificar parâmetro de símbolo obrigatório
+    if (!params.symbol) throw new Error('Parâmetro obrigatório "symbol" ausente');
+    
+    // Verificar se pelo menos um identificador da ordem está presente
+    if (!params.orderId && !params.origClientOrderId) {
+        throw new Error('É necessário fornecer "orderId" ou "origClientOrderId"');
+    }
+}
+
+/**
+ * Cancela uma ordem pelo seu ID com parâmetros simplificados
+ * @param {string} symbol - Símbolo do par de negociação
+ * @param {number|string} orderId - ID da ordem a ser cancelada
+ * @returns {Promise<Object>} Resposta da API
+ */
+async function cancelOrderByIdViaWebSocket(symbol, orderId) {
+    try {
+        // Verificar se orderId é válido
+        if (!orderId) throw new Error('ID da ordem não pode ser vazio');
+        
+        // Verificar se symbol está válido
+        if (!symbol) throw new Error('Símbolo não pode ser vazio');
+        
+        // Verificar se orderId e symbol estão na ordem correta
+        if (typeof orderId === 'string' && orderId.includes('USDT') && 
+            (typeof symbol === 'number' || !isNaN(parseInt(symbol)))) {
+            console.log(`[WS-API] Detectada troca de parâmetros. Corrigindo symbol=${orderId}, orderId=${symbol}`);
+            [symbol, orderId] = [orderId, symbol];
+        }
+        
+        // Chamar a função genérica de cancelamento
+        return await cancelOrderViaWebSocket({
+            symbol,
+            orderId
+        });
+    } catch (error) {
+        console.error(`[WS-API] Erro ao cancelar ordem ${orderId} para ${symbol}:`, error);
+        throw error;
+    }
+}
+
+/**
+ * Cancela múltiplas ordens de um símbolo de uma vez
+ * @param {string} symbol - Símbolo do par de negociação
+ * @param {Array<number|string>} orderIds - Array de IDs de ordens a serem canceladas
+ * @returns {Promise<Array<Object>>} Array com resultados de cada cancelamento
+ */
+async function cancelMultipleOrdersViaWebSocket(symbol, orderIds) {
+    if (!Array.isArray(orderIds) || orderIds.length === 0) {
+        throw new Error('É necessário fornecer um array de IDs de ordens para cancelamento');
+    }
+    
+    console.log(`[WS-API] Cancelando ${orderIds.length} ordens para ${symbol} via WebSocket API`);
+    
+    // Processar em paralelo, mas com limite para não sobrecarregar a API
+    const results = [];
+    const errors = [];
+    
+    // Executar em pequenos lotes para evitar sobrecarregar a conexão
+    const BATCH_SIZE = 5;
+    
+    for (let i = 0; i < orderIds.length; i += BATCH_SIZE) {
+        const batch = orderIds.slice(i, i + BATCH_SIZE);
+        
+        // Executar lote em paralelo
+        const batchPromises = batch.map(orderId => 
+            cancelOrderByIdViaWebSocket(symbol, orderId)
+                .then(result => {
+                    results.push({orderId, status: 'success', data: result});
+                    return result;
+                })
+                .catch(error => {
+                    // Se o erro for "ordem não encontrada", considerar como sucesso (já cancelada)
+                    if (error.error?.code === -2011 || (error.message && error.message.includes('não encontrada'))) {
+                        results.push({orderId, status: 'not_found', message: 'Ordem já cancelada ou não existe'});
+                    } else {
+                        errors.push({orderId, error});
+                        results.push({orderId, status: 'error', message: error.message});
+                    }
+                })
+        );
+        
+        // Aguardar lote terminar antes de seguir para o próximo
+        await Promise.all(batchPromises);
+        
+        // Pequena pausa entre lotes para evitar rate limit
+        if (i + BATCH_SIZE < orderIds.length) {
+            await new Promise(resolve => setTimeout(resolve, 200));
+        }
+    }
+    
+    // Verificar se houve erros
+    if (errors.length > 0) {
+        console.warn(`[WS-API] ${errors.length} de ${orderIds.length} ordens tiveram erro no cancelamento`);
+    } else {
+        console.log(`[WS-API] Todas as ${orderIds.length} ordens foram canceladas com sucesso`);
+    }
+    
+    return results;
+}
+
+/**
+ * Cancela todas as ordens abertas para um símbolo
+ * @param {string} symbol - Símbolo do par de negociação
+ * @returns {Promise<Array<Object>>} Array com resultados de cada cancelamento
+ */
+async function cancelAllOpenOrdersViaWebSocket(symbol) {
+    try {
+        // Primeiro, obter todas as ordens abertas para o símbolo
+        const openOrders = await getOpenOrdersViaWebSocket({ symbol });
+        
+        if (!openOrders || !openOrders.result || !Array.isArray(openOrders.result)) {
+            throw new Error('Falha ao obter ordens abertas para cancelamento');
+        }
+        
+        const orderIds = openOrders.result.map(order => order.orderId);
+        
+        // Se não houver ordens, retornar sucesso imediato
+        if (orderIds.length === 0) {
+            console.log(`[WS-API] Nenhuma ordem aberta encontrada para ${symbol}`);
+            return [];
+        }
+        
+        console.log(`[WS-API] Cancelando todas as ${orderIds.length} ordens abertas para ${symbol}`);
+        
+        // Usar a função de cancelamento múltiplo
+        return await cancelMultipleOrdersViaWebSocket(symbol, orderIds);
+        
+    } catch (error) {
+        console.error(`[WS-API] Erro ao cancelar todas as ordens para ${symbol}:`, error);
+        throw error;
+    }
+}
+
+/**
+ * Obtém o status de uma ordem via WebSocket API
+ * @param {Object} orderParams - Parâmetros para consulta da ordem
+ * @returns {Promise<Object>} Resposta da API contendo os detalhes da ordem
+ */
+async function getOrderViaWebSocket(orderParams) {
+    // Verificar se WebSocket API está conectado
+    if (!websockets.isWebSocketApiConnected()) {
+        await websockets.startWebSocketApi();
+        
+        // Verificar novamente após tentativa de conexão
+        if (!websockets.isWebSocketApiConnected()) {
+            throw new Error('[WS-API] WebSocket API não está conectado. Impossível consultar ordem.');
+        }
+    }
+    
+    try {
+        // Validar parâmetros obrigatórios
+        validateOrderStatusParams(orderParams);
+        
+        // Criar requisição assinada para consulta da ordem
+        const request = websockets.createSignedRequest('order.status', orderParams);
+        
+        // Log informativo antes de enviar
+        const orderIdentifier = orderParams.orderId || orderParams.origClientOrderId;
+        console.log(`[WS-API] Consultando ordem ${orderIdentifier} para ${orderParams.symbol} via WebSocket API`);
+        
+        // Enviar requisição e aguardar resposta
+        const response = await websockets.sendWebSocketApiRequest(request);
+        
+        // Verificar se a resposta contém um status de sucesso
+        if (response.status === 200 && response.result) {
+            return response.result;
+        } else {
+            throw new Error(`Resposta inválida da WebSocket API: ${JSON.stringify(response)}`);
+        }
+    } catch (error) {
+        // Capturar e formatar erro para diagnóstico mais fácil
+        const errorMessage = error.error?.msg || error.message || 'Erro desconhecido';
+        
+        // Tratamento especial para erro de ordem não encontrada
+        if (error.status === 400 && error.error?.code === -2013) {
+            return { 
+                status: 'UNKNOWN', 
+                reason: 'Order does not exist',
+                errorCode: -2013
+            };
+        }
+        
+        console.error(`[WS-API] Erro ao consultar ordem via WebSocket API: ${errorMessage}`);
+        
+        // Para facilitar o diagnóstico, incluir detalhes da consulta nos logs (removendo informações sensíveis)
+        const safeParams = { ...orderParams };
+        delete safeParams.apiKey;
+        delete safeParams.signature;
+        console.error(`[WS-API] Parâmetros da consulta com erro: ${JSON.stringify(safeParams)}`);
+        
+        throw error;
+    }
+}
+
+/**
+ * Valida os parâmetros obrigatórios para consulta de ordem
+ * @param {Object} params - Parâmetros para consulta de ordem a serem validados
+ * @throws {Error} Se parâmetros obrigatórios estiverem faltando
+ */
+function validateOrderStatusParams(params) {
+    // Verificar parâmetro de símbolo obrigatório
+    if (!params.symbol) throw new Error('Parâmetro obrigatório "symbol" ausente');
+    
+    // Verificar se pelo menos um identificador da ordem está presente
+    if (!params.orderId && !params.origClientOrderId) {
+        throw new Error('É necessário fornecer "orderId" ou "origClientOrderId"');
+    }
+}
+
+/**
+ * Consulta o status de uma ordem via WebSocket API com parâmetros simplificados
+ * @param {string} symbol - Símbolo do par de negociação
+ * @param {number|string} orderId - ID da ordem a ser consultada
+ * @returns {Promise<Object>} Detalhes da ordem
+ */
+async function getOrderStatusViaWebSocket(symbol, orderId) {
+    try {
+        // Verificar se orderId e symbol estão na ordem correta
+        if (typeof orderId === 'string' && orderId.includes('USDT') && 
+            (typeof symbol === 'number' || !isNaN(parseInt(symbol)))) {
+            console.log(`[WS-API] Detectada troca de parâmetros. Corrigindo symbol=${orderId}, orderId=${symbol}`);
+            [symbol, orderId] = [orderId, symbol];
+        }
+        
+        // Validações básicas
+        if (!orderId) throw new Error('ID da ordem não pode ser vazio');
+        if (!symbol) throw new Error('Símbolo não pode ser vazio');
+        
+        // Chamar a função principal de consulta
+        const result = await getOrderViaWebSocket({
+            symbol,
+            orderId
+        });
+        
+        return result;
+    } catch (error) {
+        console.error(`[WS-API] Erro ao consultar status da ordem ${orderId} para ${symbol}:`, error);
+        
+        // Repassar o erro com informações adicionais
+        if (error.status === 400 && error.error?.code === -2013) {
+            throw { status: 400, error: { code: -2013, msg: 'Ordem não encontrada' }, originalError: error };
+        }
+        
+        throw error;
+    }
+}
+
+/**
+ * Obtém todas as ordens abertas para um símbolo ou para todos os símbolos
+ * @param {Object} params - Parâmetros para a consulta (symbol é opcional)
+ * @returns {Promise<Object>} Resposta da API com todas as ordens abertas
+ */
+async function getOpenOrdersViaWebSocket(params = {}) {
+    // Verificar se WebSocket API está conectado
+    if (!websockets.isWebSocketApiConnected()) {
+        await websockets.startWebSocketApi();
+        
+        if (!websockets.isWebSocketApiConnected()) {
+            throw new Error('[WS-API] WebSocket API não está conectado. Impossível consultar ordens abertas.');
+        }
+    }
+    
+    try {
+        // Criar requisição assinada
+        const requestParams = {
+            ...params,
+            timestamp: Date.now()
+        };
+        
+        const request = websockets.createSignedRequest('order.open', requestParams);
+        
+        // Log informativo
+        const symbolInfo = params.symbol ? `para ${params.symbol}` : 'para todos os símbolos';
+        console.log(`[WS-API] Consultando ordens abertas ${symbolInfo} via WebSocket API`);
+        
+        // Enviar requisição e aguardar resposta
+        const response = await websockets.sendWebSocketApiRequest(request);
+        
+        // Verificar resposta
+        if (response.status === 200) {
+            // Retorna o array completo das ordens abertas
+            return response;
+        } else {
+            throw new Error(`Resposta inválida da WebSocket API: ${JSON.stringify(response)}`);
+        }
+    } catch (error) {
+        const errorMessage = error.error?.msg || error.message || 'Erro desconhecido';
+        console.error(`[WS-API] Erro ao consultar ordens abertas: ${errorMessage}`);
+        throw error;
+    }
+}
+
+/**
+ * Obtém o histórico de ordens para um símbolo
+ * @param {Object} params - Parâmetros para a consulta (symbol é obrigatório)
+ * @returns {Promise<Array>} Array com histórico de ordens
+ */
+async function getAllOrdersViaWebSocket(params = {}) {
+    // Verificar se WebSocket API está conectado
+    if (!websockets.isWebSocketApiConnected()) {
+        await websockets.startWebSocketApi();
+        
+        if (!websockets.isWebSocketApiConnected()) {
+            throw new Error('[WS-API] WebSocket API não está conectado. Impossível consultar histórico de ordens.');
+        }
+    }
+    
+    try {
+        // Validar parâmetro obrigatório
+        if (!params.symbol) {
+            throw new Error('Parâmetro "symbol" é obrigatório para consultar histórico de ordens');
+        }
+        
+        // Parâmetros adicionais
+        const requestParams = {
+            ...params,
+            timestamp: Date.now()
+        };
+        
+        // Criar requisição assinada
+        const request = websockets.createSignedRequest('order.all', requestParams);
+        
+        // Log informativo
+        console.log(`[WS-API] Consultando histórico de ordens para ${params.symbol} via WebSocket API`);
+        
+        // Enviar requisição e aguardar resposta
+        const response = await websockets.sendWebSocketApiRequest(request);
+        
+        // Verificar resposta
+        if (response.status === 200) {
+            return response.result;
+        } else {
+            throw new Error(`Resposta inválida da WebSocket API: ${JSON.stringify(response)}`);
+        }
+    } catch (error) {
+        const errorMessage = error.error?.msg || error.message || 'Erro desconhecido';
+        console.error(`[WS-API] Erro ao consultar histórico de ordens: ${errorMessage}`);
+        throw error;
+    }
+}
+
+/**
+ * Consulta múltiplas ordens por ID para um símbolo
+ * @param {string} symbol - Símbolo do par de negociação
+ * @param {Array<number|string>} orderIds - Array de IDs de ordens a serem consultadas
+ * @returns {Promise<Array>} Array com os status de cada ordem
+ */
+async function getMultipleOrderStatusViaWebSocket(symbol, orderIds) {
+    if (!Array.isArray(orderIds) || orderIds.length === 0) {
+        throw new Error('É necessário fornecer um array de IDs de ordens para consulta');
+    }
+    
+    console.log(`[WS-API] Consultando status de ${orderIds.length} ordens para ${symbol} via WebSocket API`);
+    
+    // Processar em paralelo com limite de concorrência
+    const results = [];
+    const errors = [];
+    
+    // Executar em pequenos lotes
+    const BATCH_SIZE = 5;
+    
+    for (let i = 0; i < orderIds.length; i += BATCH_SIZE) {
+        const batch = orderIds.slice(i, i + BATCH_SIZE);
+        
+        // Consultar lote em paralelo
+        const batchPromises = batch.map(orderId => 
+            getOrderStatusViaWebSocket(symbol, orderId)
+                .then(result => {
+                    results.push({ orderId, status: result.status, data: result });
+                    return result;
+                })
+                .catch(error => {
+                    errors.push({ orderId, error });
+                    
+                    // Se for erro de ordem não encontrada, incluir informação útil
+                    if (error.status === 400 && error.error?.code === -2013) {
+                        results.push({ 
+                            orderId, 
+                            status: 'UNKNOWN', 
+                            reason: 'Order does not exist'
+                        });
+                    } else {
+                        results.push({ 
+                            orderId, 
+                            status: 'ERROR',
+                            message: error.message
+                        });
+                    }
+                })
+        );
+        
+        // Aguardar lote terminar
+        await Promise.all(batchPromises);
+        
+        // Pequena pausa entre lotes
+        if (i + BATCH_SIZE < orderIds.length) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+        }
+    }
+    
+    if (errors.length > 0) {
+        console.warn(`[WS-API] ${errors.length} de ${orderIds.length} ordens não puderam ser consultadas`);
+    }
+    
+    return results;
+}
+
+/**
+ * Obtém informações detalhadas da conta através da WebSocket API V2 conforme documentação
+ * @param {Object} params - Parâmetros adicionais (opcional)
+ * @param {number} accountId - ID da conta (obrigatório)
+ * @returns {Promise<Object>} Resposta completa da API com informações da conta
+ */
+/**
+ * Obtém informações detalhadas da conta através da WebSocket API V2 conforme documentação
+ * @param {Object} params - Parâmetros adicionais (opcional)
+ * @param {number} accountId - ID da conta (obrigatório)
+ * @returns {Promise<Object>} Resposta completa da API com informações da conta
+ */
+async function getAccountInformationV2(params = {}, accountId) {
+  try {
+    console.log(`[WS-API] Obtendo informações da conta ${accountId} via WebSocket API V2...`);
+    
+    // Verificar se o accountId é válido
+    if (!accountId || typeof accountId !== 'number') {
+      throw new Error(`AccountId é obrigatório e deve ser um número: ${accountId}`);
+    }
+    
+    // Verificar se o WebSocket está conectado
+    if (!websockets.isWebSocketApiConnected(accountId)) {
+      console.log(`[WS-API] WebSocket não conectado para conta ${accountId}, tentando conectar...`);
+      await websockets.startWebSocketApi(accountId);
+      // Aguardar um pouco para a conexão estabilizar
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    
+    // Criar requisição
+    const request = {
+      method: 'account.status',
+      params: { ...params }
+    };
+    
+    const response = await sendWebSocketApiRequest(request, 30000, accountId);
+
+    if (response && response.result) {
+      console.log(`[WS-API] ✅ Informações da conta ${accountId} recebidas com sucesso.`);
+      return {
+        status: 200,
+        result: response.result
+      };
+    } else if (response && response.error) {
+      console.error(`[WS-API] Erro da API ao obter informações da conta ${accountId}: ${response.error.code} - ${response.error.msg}`);
+      return { 
+        status: 400,
+        error: { 
+          message: `API Error: ${response.error.code} - ${response.error.msg}`, 
+          code: response.error.code 
+        } 
+      };
+    } else {
+      console.error(`[WS-API] Resposta inesperada ou vazia de account.status para conta ${accountId}:`, response);
+      return { 
+        status: 500,
+        error: { 
+          message: 'Resposta inesperada ou vazia de account.status' 
+        } 
+      };
+    }
+  } catch (error) {
+    console.error(`[WS-API] Falha na comunicação ao obter informações da conta ${accountId}: ${error.message || error}`);
+    return { 
+      status: 500,
+      error: { 
+        message: `Falha na comunicação: ${error.message || 'Erro interno em sendWebSocketApiRequest'}` 
+      } 
+    };
+  }
+}
+
+async function syncAccountBalanceViaWebSocket(accountId) {
+  if (!accountId || typeof accountId !== 'number') {
+    console.error('[WS-API] AccountId inválido para syncAccountBalanceViaWebSocket:', accountId);
+    return { success: false, error: 'AccountId inválido' };
+  }
+  // console.log(`[WS-API] Sincronizando saldo da conta ${accountId} via WebSocket...`);
+
+  try {
+    const accountInfoResult = await getAccountInformationV2(accountId);
+
+    if (accountInfoResult && !accountInfoResult.error && accountInfoResult.balances) {
+      const usdtBalanceData = accountInfoResult.balances.find(b => b.asset === 'USDT');
+      const currentAvailableBalance = parseFloat(usdtBalanceData?.availableBalance || 0);
+      // Você pode querer usar 'balance' em vez de 'availableBalance' dependendo da sua necessidade
+      // const currentTotalBalance = parseFloat(usdtBalanceData?.balance || 0);
+
+
+      const db = await getDatabaseInstance(accountId);
+      const [rows] = await db.query('SELECT saldo_base_calculo FROM contas WHERE id = ?', [accountId]);
+      const previousBaseCalculo = rows.length > 0 ? parseFloat(rows[0].saldo_base_calculo) : 0;
+
+      // Atualizar saldo e saldo_base_calculo. Decida qual valor usar para 'saldo'.
+      // Aqui, estou usando currentAvailableBalance para ambos como exemplo.
+      await db.query('UPDATE contas SET saldo = ?, saldo_base_calculo = ?, ultima_atualizacao = NOW() WHERE id = ?', [
+        currentAvailableBalance,
+        currentAvailableBalance, 
+        accountId
+      ]);
+      
+      console.log(`[WS-API] Saldo da conta ${accountId} sincronizado com sucesso via WebSocket: ${currentAvailableBalance} USDT`);
+      return {
+        success: true,
+        saldo: currentAvailableBalance, 
+        saldo_base_calculo: currentAvailableBalance,
+        previousBaseCalculo: previousBaseCalculo,
+      };
+    } else {
+      const errorMessage = accountInfoResult?.error?.message || 'Falha ao obter informações da conta';
+      const errorCode = accountInfoResult?.error?.code;
+      console.error(`[WS-API] Não foi possível sincronizar saldo para conta ${accountId}: ${errorMessage} (Code: ${errorCode || 'N/A'})`);
+      // Se o erro for 1008, pode ser necessário reautenticar ou reiniciar a conexão WS API.
+      if (errorCode === 1008 || (errorMessage && errorMessage.includes('disconnected'))) { // Exemplo de checagem
+         console.warn(`[WS-API] Conexão WS API para conta ${accountId} pode ter sido fechada (Policy Violation ou desconectada). Tentando garantir conexão na próxima vez.`);
+         // A lógica de ensureWebSocketApiConnection em sendWebSocketApiRequest tentará reconectar.
+      }
+      return { success: false, error: `Não foi possível sincronizar saldo: ${errorMessage}` };
+    }
+  } catch (error) { 
+    console.error(`[WS-API] Erro GERAL ao sincronizar saldo da conta ${accountId} via WebSocket: ${error.message}`);
+    return { success: false, error: `Erro geral na sincronização: ${error.message || 'Erro desconhecido'}` };
+  }
+}
+
+/**
+ * Versão simplificada que retorna apenas os dados essenciais da conta
+ * @param {Object} params - Parâmetros adicionais (opcional)
+ * @param {number} accountId - ID da conta (obrigatório)
+ * @returns {Promise<Object>} Objeto simplificado com informações essenciais da conta
+ */
+async function getAccountBalance(params = {}, accountId) {
+    // CORREÇÃO: Validar accountId obrigatório
+    if (!accountId || typeof accountId !== 'number') {
+        throw new Error(`AccountId é obrigatório e deve ser um número: ${accountId}`);
+    }
+
+    try {
+        // CORREÇÃO: Passar accountId para getAccountInformationV2
+        const response = await getAccountInformationV2(params, accountId);
+        
+        if (response.status === 200 && response.result) {
+            // Extrair apenas os dados relevantes para saldo
+            const { 
+                totalWalletBalance, 
+                availableBalance, 
+                totalMarginBalance, 
+                totalUnrealizedProfit,
+                assets 
+            } = response.result;
+            
+            // Montar objeto simplificado com os dados essenciais
+            return {
+                success: true,
+                accountId: accountId, // CORREÇÃO: Incluir accountId
+                totalWalletBalance: parseFloat(totalWalletBalance),
+                availableBalance: parseFloat(availableBalance),
+                totalMarginBalance: parseFloat(totalMarginBalance),
+                totalUnrealizedProfit: parseFloat(totalUnrealizedProfit),
+                assets: assets.map(asset => ({
+                    asset: asset.asset,
+                    walletBalance: parseFloat(asset.walletBalance),
+                    availableBalance: parseFloat(asset.availableBalance),
+                    unrealizedProfit: parseFloat(asset.unrealizedProfit),
+                    updateTime: asset.updateTime
+                }))
+            };
+        } else {
+            throw new Error('Resposta inválida da API');
+        }
+    } catch (error) {
+        console.error(`[WS-API] Erro ao obter saldo da conta ${accountId}: ${error.message}`);
+        return { 
+            success: false, 
+            accountId: accountId,
+            error: error.message,
+            code: error.error?.code
+        };
+    }
+}
+
+/**
+ * Sincroniza saldo da conta via WebSocket API e atualiza no banco
+ * @param {number} accountId - ID da conta (obrigatório)
+ * @returns {Promise<Object>} Resultado da sincronização
+ */
+async function syncAccountBalanceViaWebSocket(accountId) {
+    // CORREÇÃO: Validar accountId obrigatório
+    if (!accountId || typeof accountId !== 'number') {
+        throw new Error(`AccountId é obrigatório e deve ser um número: ${accountId}`);
+    }
+
+    try {
+        console.log(`[WS-API] Sincronizando saldo da conta ${accountId} via WebSocket...`);
+        
+        const db = await getDatabaseInstance();
+        
+        if (!db) {
+            throw new Error('Não foi possível obter instância do banco de dados');
+        }
+        
+        // CORREÇÃO: Verificar WebSocket para conta específica
+        if (!websockets.isWebSocketApiConnected(accountId)) {
+            console.log(`[WS-API] Conectando WebSocket API para sincronização de saldo da conta ${accountId}...`);
+            try {
+                await websockets.startWebSocketApi(accountId);
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            } catch (wsError) {
+                throw new Error(`Falha ao conectar WebSocket API: ${wsError.message}`);
+            }
+        }
+        
+        // CORREÇÃO: Usar accountId específico em getAccountBalance
+        const accountInfo = await getAccountBalance({}, accountId);
+        
+        if (!accountInfo || !accountInfo.success) {
+            throw new Error(`Falha ao obter informações da conta ${accountId}: ${accountInfo?.error || 'Erro desconhecido'}`);
+        }
+        
+        // CORREÇÃO: Usar tabela 'contas' em vez de 'conta'
+        const [currentAccount] = await db.query(
+            'SELECT saldo, saldo_base_calculo FROM contas WHERE id = ?',
+            [accountId]
+        );
+        
+        if (currentAccount.length === 0) {
+            throw new Error(`Conta ${accountId} não encontrada no banco de dados`);
+        }
+        
+        const previousSaldo = parseFloat(currentAccount[0].saldo || 0);
+        const previousBaseCalculo = parseFloat(currentAccount[0].saldo_base_calculo || 0);
+        
+        const realSaldo = accountInfo.totalWalletBalance;
+        const currentDateTime = new Date().toISOString().slice(0, 19).replace('T', ' ');
+        
+        // Determinar novo saldo_base_calculo
+        let newBaseCalculo = previousBaseCalculo;
+        
+        if (realSaldo > previousBaseCalculo) {
+            newBaseCalculo = realSaldo;
+            console.log(`[WS-API] Atualizando saldo_base_calculo da conta ${accountId}: ${previousBaseCalculo.toFixed(2)} → ${newBaseCalculo.toFixed(2)} USDT`);
+        }
+        
+        // CORREÇÃO: Atualizar tabela 'contas' em vez de 'conta'
+        await db.query(
+            'UPDATE contas SET saldo = ?, saldo_base_calculo = ?, ultima_atualizacao = ? WHERE id = ?',
+            [realSaldo, newBaseCalculo, currentDateTime, accountId]
+        );
+        
+        console.log(`[WS-API] ✅ Saldo da conta ${accountId} sincronizado: ${realSaldo.toFixed(2)} USDT`);
+        
+        return {
+            success: true,
+            accountId: accountId,
+            saldo: realSaldo,
+            saldo_base_calculo: newBaseCalculo,
+            previousSaldo: previousSaldo,
+            previousBaseCalculo: previousBaseCalculo,
+            updated_at: currentDateTime
+        };
+        
+    } catch (error) {
+        console.error(`[WS-API] Erro ao sincronizar saldo da conta ${accountId} via WebSocket: ${error.message}`);
+        return {
+            success: false,
+            accountId: accountId,
+            error: error.message
+        };
+    }
+}
+
+// Atualizar exportação para incluir as novas funções
+module.exports = {
+    placeOrderViaWebSocket,
+    cancelOrderViaWebSocket,
+    cancelOrderByIdViaWebSocket,
+    cancelMultipleOrdersViaWebSocket,
+    cancelAllOpenOrdersViaWebSocket,
+    modifyOrderViaWebSocket,
+    editOrderPriceViaWebSocket,
+    editOrderViaWebSocket,
+    placeLimitMakerOrderViaWebSocket,
+    placeStopMarketOrderViaWebSocket,
+    placeTakeProfitMarketOrderViaWebSocket,
+    getOrderViaWebSocket,
+    getOrderStatusViaWebSocket,
+    getOpenOrdersViaWebSocket,
+    getAllOrdersViaWebSocket,
+    getMultipleOrderStatusViaWebSocket,
+    getAccountInformationV2,
+    getAccountBalance,
+    syncAccountBalanceViaWebSocket,
+    initializeHandlers
+};
