@@ -113,7 +113,7 @@ async function initializeMonitoring(accountId) {
     // === ETAPA 4: Verificar estado da conexão ===
     console.log(`🔗 ETAPA 4: Verificando estado da conexão da conta ${accountId}...`);
     
-    let accountState = api.getAccountConnectionState(accountId);
+    let accountState = websockets.getAccountConnectionState(accountId);
     
     if (!accountState) {
       console.log('⚠️ Estado da conta não existe ainda, tentando inicializar...');
@@ -128,7 +128,7 @@ async function initializeMonitoring(accountId) {
         console.log(`❌ Conta ${accountId} não existe no mapa de conexões`);
         
         console.log('🔄 Tentando forçar inicialização do estado...');
-        accountState = api.getAccountConnectionState(accountId, true);
+        accountState = websockets.getAccountConnectionState(accountId, true);
         
         if (!accountState) {
           throw new Error('Impossível inicializar estado da conta mesmo forçando');

@@ -444,27 +444,24 @@ async function ensurePriceWebsocketExists(symbol, accountId) {
     return;
   }
 
-  let accountState = getAccountConnectionState(accountId, true);
+  const accountState = getAccountConnectionState(accountId, true);
   if (!accountState.wsUrl) {
-    console.log(`[WEBSOCKET] Carregando credenciais para conta ${accountId}...`);
     await api.loadCredentialsFromDatabase(accountId);
-    accountState = getAccountConnectionState(accountId);
   }
   
-  if (!accountState || !accountState.wsUrl) {
-      console.error(`[WEBSOCKET] URL de mercado não encontrada para conta ${accountId} após carregar credenciais`);
-      console.error(`[WEBSOCKET] Estado da conta: ${JSON.stringify(accountState, null, 2)}`);
+  const updatedAccountState = getAccountConnectionState(accountId);
+  if (!updatedAccountState || !updatedAccountState.wsUrl) {
+      console.error(`[WEBSOCKET] URL de mercado não encontrada para conta ${accountId}`);
       return;
   }
 
   console.log(`[WEBSOCKET] Iniciando monitoramento de preço para ${symbol} (conta ${accountId})`);
-  console.log(`[WEBSOCKET] Usando URL: ${accountState.wsUrl}`);
 
-  const wsEndpointUrl = `${accountState.wsUrl}/ws/${symbol.toLowerCase()}@bookTicker`;
+  const wsEndpointUrl = `${updatedAccountState.wsUrl}/ws/${symbol.toLowerCase()}@bookTicker`;
   const ws = new WebSocket(wsEndpointUrl);
 
   ws.on('open', () => {
-    console.log(`[WEBSOCKET] ✅ Conexão de preço aberta para ${symbol} (conta ${accountId})`);
+    console.log(`[WEBSOCKET] Conexão de preço aberta para ${symbol} (conta ${accountId})`);
   });
 
   ws.on('message', async (data) => {
@@ -792,6 +789,4 @@ module.exports = {
   createEd25519Signature,
   forceCleanupAccount,
   loadNobleEd25519
-,
-  getAccountConnectionState
 };
