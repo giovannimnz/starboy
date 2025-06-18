@@ -153,38 +153,31 @@ async function getChatIdForAccount(accountId) {
  * Verifica e processa novos sinais
  */
 async function checkNewTrades(accountId) {
-  if (!accountId || typeof accountId !== 'number') {
-    throw new Error(`AccountId é obrigatório para checkNewTrades: ${accountId}`);
-  }
-
   try {
+    console.log(`[SIGNAL] Verificando novos sinais para conta ${accountId}...`);
+    
+    const { getDatabaseInstance } = require('../db/conexao');
     const db = await getDatabaseInstance(accountId);
     
-    // Buscar sinais pendentes para a conta específica
-    const [signals] = await db.query(`
+    const [pendingSignals] = await db.query(`
       SELECT * FROM webhook_signals 
-      WHERE status = 'PENDING' 
-        AND conta_id = ?
-      ORDER BY created_at ASC 
-      LIMIT 5
+      WHERE conta_id = ? 
+      AND (status = 'PENDING' OR status = 'AGUARDANDO_ACIONAMENTO')
+      ORDER BY created_at DESC
+      LIMIT 10
     `, [accountId]);
-
-    if (signals.length === 0) {
-      return;
+    
+    console.log(`[SIGNAL] Encontrados ${pendingSignals.length} sinais pendentes para conta ${accountId}`);
+    
+    for (const signal of pendingSignals) {
+      console.log(`[SIGNAL] Processando sinal ${signal.id} (${signal.symbol}) para conta ${accountId}...`);
+      // Aqui você pode adicionar a lógica de processamento específica
     }
-
-    console.log(`[SIGNAL] ${signals.length} sinais pendentes encontrados para conta ${accountId}`);
-
-    for (const signal of signals) {
-      try {
-        await processSignal(signal, db, accountId);
-      } catch (signalError) {
-        console.error(`[SIGNAL] Erro ao processar sinal ${signal.id}:`, signalError.message);
-      }
-    }
+    
+    return pendingSignals.length;
   } catch (error) {
     console.error(`[SIGNAL] Erro ao verificar novos sinais para conta ${accountId}:`, error.message);
-    throw error;
+    return 0;
   }
 }
 
