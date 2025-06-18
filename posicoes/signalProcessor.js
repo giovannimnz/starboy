@@ -22,7 +22,7 @@ async function processSignal(signal, db, accountId) {
       ['PROCESSANDO', signal.id]
     );
     
-    // CORREÇÃO: Verificar se já existe posição aberta
+    // Verificar se já existe posição aberta
     const openPositions = await getAllOpenPositions(accountId);
     const existingPosition = openPositions.find(pos => pos.simbolo === signal.symbol);
     
@@ -37,16 +37,38 @@ async function processSignal(signal, db, accountId) {
       return;
     }
     
-    // Processar entrada
-    if (signal.side === 'BUY' || signal.side === 'SELL') {
-      // Converter signal.side para 'COMPRA' ou 'VENDA' se necessário
-      const ladoConvertido = signal.side === 'BUY' ? 'COMPRA' : 'VENDA';
+    // CORREÇÃO: Normalizar o lado do sinal
+    let normalizedSide = signal.side;
+    
+    if (typeof signal.side === 'string') {
+      const upperSide = signal.side.toUpperCase();
       
-      const signalForEntry = {
-        ...signal,
-        side: ladoConvertido
+      // Mapear diferentes formatos para o padrão esperado
+      const sideMapping = {
+        'BUY': 'COMPRA',
+        'SELL': 'VENDA',
+        'LONG': 'COMPRA',
+        'SHORT': 'VENDA',
+        'COMPRA': 'COMPRA',
+        'VENDA': 'VENDA'
       };
       
+      if (sideMapping[upperSide]) {
+        normalizedSide = sideMapping[upperSide];
+        console.log(`[SIGNAL] Lado normalizado: ${signal.side} → ${normalizedSide}`);
+      } else {
+        throw new Error(`Lado do sinal não reconhecido: "${signal.side}". Valores aceitos: BUY, SELL, LONG, SHORT, COMPRA, VENDA`);
+      }
+    }
+    
+    // Processar entrada com lado normalizado
+    if (normalizedSide === 'COMPRA' || normalizedSide === 'VENDA') {
+      const signalForEntry = {
+        ...signal,
+        side: normalizedSide
+      };
+      
+      console.log(`[SIGNAL] Executando ${normalizedSide} para ${signal.symbol}`);
       await executeLimitMakerEntry(signalForEntry, accountId);
       
       // Atualizar status para COMPLETED
@@ -57,31 +79,35 @@ async function processSignal(signal, db, accountId) {
       
       console.log(`[SIGNAL] ✅ Sinal ${signal.id} processado com sucesso`);
     } else {
-      throw new Error(`Lado do sinal inválido: ${signal.side}`);
+      throw new Error(`Lado do sinal inválido após normalização: ${normalizedSide}`);
     }
     
   } catch (error) {
     console.error(`[SIGNAL] Erro na execução do sinal ${signal.id}: ${error.message}`);
     
-    // CORREÇÃO: Usar formatErrorMessage do telegramBot.js (importar se necessário)
+    // Usar chat ID específico do sinal
     try {
-      // Se formatErrorMessage não está disponível, criar mensagem manualmente
       const errorMessage = `🚨 ERRO no Sinal ${signal.id}\n` +
                           `📊 Par: ${signal.symbol}\n` +
                           `📈 Lado: ${signal.side}\n` +
-                          `💰 Preço: ${signal.price}\n` +
+                          `💰 Preço: ${signal.price || 'N/A'}\n` +
                           `❌ Erro: ${error.message}\n` +
                           `⏰ Hora: ${new Date().toLocaleString('pt-BR')}`;
       
-      const chatId = await getChatIdForAccount(accountId);
+      // CORREÇÃO: Usar nova função que verifica o chat_id do próprio sinal
+      const chatId = await getChatIdForSignal(signal, accountId);
       if (chatId) {
         const sent = await sendTelegramMessage(accountId, chatId, errorMessage);
         if (!sent) {
-          console.warn(`[TELEGRAM] Falha ao enviar mensagem de erro para conta ${accountId}`);
+          console.warn(`[TELEGRAM] Falha ao enviar mensagem de erro para sinal ${signal.id} (chat: ${chatId})`);
+        } else {
+          console.log(`[TELEGRAM] ✅ Mensagem de erro enviada para sinal ${signal.id} (chat: ${chatId})`);
         }
+      } else {
+        console.warn(`[TELEGRAM] Nenhum chat ID disponível para enviar erro do sinal ${signal.id}`);
       }
     } catch (telegramError) {
-      console.error(`[TELEGRAM] Erro ao enviar mensagem:`, telegramError.message);
+      console.error(`[TELEGRAM] Erro ao enviar mensagem de erro do sinal ${signal.id}:`, telegramError.message);
     }
     
     // Atualizar status para ERROR
