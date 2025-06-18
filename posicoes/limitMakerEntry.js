@@ -30,7 +30,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
   
   // Constantes de configuração
   const MAX_CHASE_ATTEMPTS = 100;
-  const CHASE_TIMEOUT_MS = 60000; // 1 minuto
+  const CHASE_TIMEOUT_MS = 180000; // 3 minutos
   const WAIT_FOR_EXECUTION_TIMEOUT_MS = 5000;
   const EDIT_WAIT_TIMEOUT_MS = 3000;
   const MAX_DEPTH_STALENESS_MS = 3000;

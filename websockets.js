@@ -540,32 +540,51 @@ function setupBookDepthWebsocket(symbol, callback, accountId) {
     return null;
   }
   
+  // CORREÇÃO: Usar formato da versão antiga que funcionava
   const wsEndpoint = `${accountState.wsUrl}/ws/${symbol.toLowerCase()}@bookTicker`;
   console.log(`[WEBSOCKET] Conectando BookTicker: ${wsEndpoint}`);
   
-  const ws = new WebSocket(wsEndpoint);
+  let ws = new WebSocket(wsEndpoint);
+  let connectionTimeout = null;
+  let heartbeatInterval = null;
+  let reconnectAttempt = 0;
+  const MAX_RECONNECT_ATTEMPTS = 5;
   
-  // CORREÇÃO: Timeout para conexão
-  const connectionTimeout = setTimeout(() => {
+  // CORREÇÃO: Timeout aumentado para 10 segundos como na versão antiga
+  connectionTimeout = setTimeout(() => {
     if (ws.readyState !== WebSocket.OPEN) {
-      console.error(`[WEBSOCKET] Timeout na conexão BookTicker para ${symbol}`);
+      console.error(`[WEBSOCKET] Timeout ao estabelecer conexão BookTicker para ${symbol}`);
       ws.terminate();
     }
-  }, 5000);
+  }, 10000);
   
   ws.on('open', () => {
-    clearTimeout(connectionTimeout);
     console.log(`[WEBSOCKET] ✅ BookTicker conectado para ${symbol} (conta ${accountId})`);
+    clearTimeout(connectionTimeout);
+    reconnectAttempt = 0;
+
+    // CORREÇÃO: Adicionar heartbeat como na versão antiga
+    heartbeatInterval = setInterval(() => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.ping();
+      }
+    }, 15000);
   });
   
   ws.on('message', (data) => {
     try {
       const tickerData = JSON.parse(data);
       
-      // CORREÇÃO: Validação mais rigorosa dos dados
-      if (tickerData && tickerData.b && tickerData.a) {
+      // CORREÇÃO: Validação completa como na versão antiga
+      if (tickerData && 
+          (tickerData.e === 'bookTicker' || tickerData.e === undefined) && 
+          typeof tickerData.b === 'string' && 
+          typeof tickerData.a === 'string') {
+        
         const bestBid = parseFloat(tickerData.b);
         const bestAsk = parseFloat(tickerData.a);
+        const bestBidQty = parseFloat(tickerData.B || '0');
+        const bestAskQty = parseFloat(tickerData.A || '0');
         
         // VALIDAÇÃO ADICIONAL: Verificar se bid < ask e valores são positivos
         if (!isNaN(bestBid) && !isNaN(bestAsk) && 
@@ -576,6 +595,8 @@ function setupBookDepthWebsocket(symbol, callback, accountId) {
           callback({
             bestBid, 
             bestAsk,
+            bestBidQty,
+            bestAskQty,
             timestamp: tickerData.E || Date.now()
           }, accountId); // CORREÇÃO: Passar accountId para callback
           
@@ -583,7 +604,7 @@ function setupBookDepthWebsocket(symbol, callback, accountId) {
           console.warn(`[WEBSOCKET] Dados BookTicker inválidos para ${symbol}: Bid=${bestBid}, Ask=${bestAsk}`);
         }
       } else {
-        console.warn(`[WEBSOCKET] Estrutura de dados BookTicker inválida para ${symbol}:`, tickerData);
+        console.warn(`[WEBSOCKET] Formato inesperado de dados BookTicker para ${symbol}:`, JSON.stringify(tickerData).substring(0, 200));
       }
     } catch (error) {
       console.error(`[WEBSOCKET] Erro ao processar BookTicker para ${symbol}:`, error.message);
@@ -592,12 +613,32 @@ function setupBookDepthWebsocket(symbol, callback, accountId) {
   
   ws.on('error', (error) => {
     clearTimeout(connectionTimeout);
+    clearInterval(heartbeatInterval);
     console.error(`[WEBSOCKET] Erro na conexão BookTicker para ${symbol}:`, error.message);
   });
   
   ws.on('close', (code, reason) => {
     clearTimeout(connectionTimeout);
+    clearInterval(heartbeatInterval);
     console.log(`[WEBSOCKET] BookTicker fechado para ${symbol}. Code: ${code}, Reason: ${reason}`);
+    
+    // CORREÇÃO: Reconexão opcional (pode ativar se necessário)
+    const shouldReconnect = false; // Manter false por enquanto para debug
+    
+    if (shouldReconnect && reconnectAttempt < MAX_RECONNECT_ATTEMPTS) {
+      reconnectAttempt++;
+      const delay = Math.min(1000 * Math.pow(2, reconnectAttempt - 1), 30000);
+      console.log(`[WEBSOCKET] Tentando reconectar BookTicker para ${symbol} em ${delay/1000}s (tentativa ${reconnectAttempt}/${MAX_RECONNECT_ATTEMPTS})...`);
+      
+      setTimeout(() => {
+        try {
+          ws = new WebSocket(wsEndpoint);
+          // ... lógica de reconexão ...
+        } catch (reconnectError) {
+          console.error(`[WEBSOCKET] Erro ao reconectar BookTicker para ${symbol}:`, reconnectError.message);
+        }
+      }, delay);
+    }
   });
   
   return ws;
