@@ -650,116 +650,124 @@ if (require.main === module) {
   }
 }
 
-// === FUNÇÃO PARA CRIAR MÓDULOS MÍNIMOS ===
-async function createMinimalModule(modulePath) {
-  const fs = require('fs').promises;
-  const path = require('path');
-  
-  const moduleMap = {
-    './telegramBot': `
-async function initializeTelegramBot(accountId) {
-  console.log(\`[TELEGRAM] Bot não configurado para conta \${accountId}\`);
-  return null;
-}
-
-async function sendTelegramMessage(accountId, chatId, message) {
-  console.log(\`[TELEGRAM] Simulando envio para conta \${accountId}: \${message}\`);
-  return true;
-}
-
 module.exports = {
-  initializeTelegramBot,
-  sendTelegramMessage
-};`,
-    './signalTimeout': `
-async function checkExpiredSignals(accountId) {
-  console.log(\`[TIMEOUT] Verificação de sinais expirados para conta \${accountId} (funcionalidade mínima)\`);
-  return 0;
-}
-
-async function cancelSignal(db, signalId, status, reason, accountId) {
-  console.log(\`[TIMEOUT] Cancelando sinal \${signalId} para conta \${accountId}: \${reason}\`);
-  return true;
-}
-
-function timeframeToMs(timeframe) {
-  if (!timeframe) return 0;
-  const match = timeframe.match(/^(\\d+)([mhdwM])$/);
-  if (!match) return 0;
-  const [_, value, unit] = match;
-  const numValue = parseInt(value, 10);
-  switch(unit) {
-    case 'm': return numValue * 60 * 1000;
-    case 'h': return numValue * 60 * 60 * 1000;
-    case 'd': return numValue * 24 * 60 * 60 * 1000;
-    default: return 0;
+  initializeMonitoring,
+  syncAccountBalance,
+  gracefulShutdown,
+  checkNewTrades: (accountId) => {
+    const { checkNewTrades } = require('./signalProcessor');
+    return checkNewTrades(accountId);
   }
-}
-
-module.exports = {
-  checkExpiredSignals,
-  cancelSignal,
-  timeframeToMs
-};`,
-    './enhancedMonitoring': `
-async function updatePositionPricesWithTrailing(db, symbol, currentPrice, accountId) {
-  console.log(\`[ENHANCED] Atualizando preço \${symbol}: \${currentPrice} (conta \${accountId})\`);
-  return true;
-}
-
-async function runPeriodicCleanup(accountId) {
-  console.log(\`[ENHANCED] Limpeza periódica para conta \${accountId} (funcionalidade mínima)\`);
-  return true;
-}
-
-function monitorWebSocketHealth(accountId) {
-  console.log(\`[ENHANCED] Monitoramento de WebSocket para conta \${accountId} (funcionalidade mínima)\`);
-  return true;
-}
-
-module.exports = {
-  updatePositionPricesWithTrailing,
-  runPeriodicCleanup,
-  monitorWebSocketHealth
-};`,
-    './cleanup': `
-async function cleanupOrphanSignals(accountId) {
-  console.log(\`[CLEANUP] Limpeza de sinais órfãos para conta \${accountId} (funcionalidade mínima)\`);
-  return true;
-}
-
-async function forceCloseGhostPositions(accountId) {
-  console.log(\`[CLEANUP] Fechamento de posições fantasma para conta \${accountId} (funcionalidade mínima)\`);
-  return 0;
-}
-
-async function cancelOrphanOrders(accountId) {
-  console.log(\`[CLEANUP] Cancelamento de ordens órfãs para conta \${accountId} (funcionalidade mínima)\`);
-  return 0;
-}
-
-module.exports = {
-  cleanupOrphanSignals,
-  forceCloseGhostPositions,
-  cancelOrphanOrders
-};`
-  };
-  
-  if (moduleMap[modulePath]) {
-    const fullPath = path.resolve(__dirname, modulePath + '.js');
-    try {
-      await fs.writeFile(fullPath, moduleMap[modulePath]);
-      console.log(`[MONITOR]   ✅ Módulo mínimo criado: ${fullPath}`);
-    } catch (writeError) {
-      console.error(`[MONITOR]   ❌ Erro ao criar módulo mínimo ${fullPath}:`, writeError.message);
-    }
-  }
-}
+};
 
 // === EXECUÇÃO PRINCIPAL ===
 if (require.main === module) {
+  console.log(`[MONITOR] 🚀 === SCRIPT PRINCIPAL INICIADO ===`);
+  console.log(`[MONITOR] 📅 Timestamp: ${new Date().toISOString()}`);
+  console.log(`[MONITOR] 🖥️ Process ID: ${process.pid}`);
+  console.log(`[MONITOR] 📋 Arguments: ${JSON.stringify(process.argv)}`);
+
+  // === CAPTURA DE ERROS CRÍTICOS ===
+  process.on('uncaughtException', (error) => {
+    console.error(`\n[MONITOR] 💥 ERRO CRÍTICO NÃO TRATADO:`, error);
+    console.error(`[MONITOR] Stack trace:`, error.stack);
+    console.error(`[MONITOR] 🚨 PROCESSO SERÁ ENCERRADO!`);
+    process.exit(1);
+  });
+
+  process.on('unhandledRejection', (reason, promise) => {
+    console.error(`\n[MONITOR] 🚫 PROMISE REJEITADA:`, reason);
+    console.error(`[MONITOR] Promise:`, promise);
+    console.error(`[MONITOR] 🚨 PROCESSO PODE SER ENCERRADO!`);
+    process.exit(1);
+  });
+
+  // === PARSING DE ARGUMENTOS ===
+  let targetAccountId = null;
+
+  const accountIndex = process.argv.indexOf('--account');
+  if (accountIndex !== -1 && accountIndex + 1 < process.argv.length) {
+    const accountArg = process.argv[accountIndex + 1];
+    targetAccountId = parseInt(accountArg, 10);
+    
+    if (isNaN(targetAccountId) || targetAccountId <= 0) {
+      console.error(`[MONITOR] ❌ AccountId inválido: "${accountArg}"`);
+      process.exit(1);
+    }
+  } else {
+    console.error(`[MONITOR] ❌ Parâmetro --account não encontrado`);
+    process.exit(1);
+  }
+
+  console.log(`[MONITOR] ✅ AccountId validado: ${targetAccountId}`);
+
+  // === FUNÇÃO DE INICIALIZAÇÃO (SEM RECURSÃO) ===
+  async function startMonitoringProcess() {
+    try {
+      console.log(`[MONITOR] 🔄 Iniciando sistema de monitoramento para conta ${targetAccountId}...`);
+      
+      // Verificar dependências críticas
+      console.log(`[MONITOR] 📦 Verificando dependências críticas...`);
+      
+      const criticalModules = ['../db/conexao', '../api', '../websockets'];
+      for (const module of criticalModules) {
+        try {
+          require(module);
+          console.log(`[MONITOR]   ✅ ${module}`);
+        } catch (error) {
+          console.error(`[MONITOR]   ❌ ${module}: ${error.message}`);
+          throw new Error(`Módulo crítico ${module} não encontrado: ${error.message}`);
+        }
+      }
+
+      console.log(`[MONITOR] ✅ Dependências críticas verificadas`);
+      
+      // Chamar initializeMonitoring UMA ÚNICA VEZ
+      console.log(`[MONITOR] 🎯 Chamando initializeMonitoring para conta ${targetAccountId}...`);
+      const jobsResult = await initializeMonitoring(targetAccountId);
+      
+      if (!jobsResult || Object.keys(jobsResult).length === 0) {
+        throw new Error('initializeMonitoring retornou resultado vazio');
+      }
+      
+      console.log(`[MONITOR] 🎉 === MONITORAMENTO INICIALIZADO ===`);
+      console.log(`[MONITOR] 📊 Jobs agendados: ${Object.keys(jobsResult).length}`);
+      console.log(`[MONITOR] 🔄 Sistema entrando em modo de operação contínua...`);
+      
+      // Manter o processo vivo sem recursão
+      let heartbeatCounter = 0;
+      const heartbeatInterval = setInterval(() => {
+        heartbeatCounter++;
+        
+        // Log a cada 5 minutos
+        if (heartbeatCounter % 30 === 0) {
+          console.log(`[MONITOR] 💓 Heartbeat #${heartbeatCounter} - Conta ${targetAccountId}`);
+          console.log(`[MONITOR] 📊 Jobs ativos: ${Object.keys(jobsResult).length}`);
+        }
+      }, 10000); // 10 segundos
+      
+      console.log(`[MONITOR] ✅ Heartbeat configurado - Sistema operacional`);
+      
+    } catch (error) {
+      console.error(`[MONITOR] ❌ ERRO FATAL:`, error.message);
+      console.error(`[MONITOR] Stack trace:`, error.stack);
+      
+      try {
+        console.log(`[MONITOR] 🧹 Tentando graceful shutdown...`);
+        await gracefulShutdown(targetAccountId);
+      } catch (cleanupError) {
+        console.error(`[MONITOR] ❌ Erro no shutdown:`, cleanupError.message);
+      }
+      
+      console.error(`[MONITOR] 🚨 PROCESSO SERÁ ENCERRADO`);
+      process.exit(1);
+    }
+  }
+
+  // === EXECUTAR APENAS UMA VEZ ===
   console.log(`[MONITOR] 🎬 Executando como script principal para conta ${targetAccountId}`);
   startMonitoringProcess();
+  
 } else {
   console.log(`[MONITOR] 📚 Carregado como módulo`);
 }
