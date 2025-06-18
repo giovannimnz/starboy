@@ -424,7 +424,7 @@ DB_NAME = os.getenv('DB_NAME')
 #GRUPOS_ORIGEM_IDS = [-1002444455075]  # Lista com os IDs dos grupos de origem
 GRUPOS_ORIGEM_IDS = [-4192806079]  # Lista com os IDs dos grupos de origem
 GRUPO_DESTINO_ID = -1002016807368  # ID do grupo de destino
-CONTA_ID = 999
+CONTA_ID = 1
 
 # Mapeamento de IDs de grupo para nomes de fontes (NOVO)
 GRUPO_FONTE_MAPEAMENTO = {
@@ -748,44 +748,45 @@ def save_to_database(trade_data):
         if chat_id_destino and chat_id_destino > 0:
             chat_id_destino = -chat_id_destino
             
-        # CORREÇÃO: SQL query incluindo conta_id
+        # CORREÇÃO: SQL query com contagem correta de placeholders
         sql = """
               INSERT INTO webhook_signals
               (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price,
                chat_id, status, timeframe, message_id, message_id_orig, chat_id_orig_sinal,
                tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, message_source,
                divap_confirmado, cancelado_checker, error_message, conta_id)
-              VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+              VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
               """
 
+        # CORREÇÃO: Tupla values com 23 valores para corresponder aos 23 placeholders
         values = (
-            trade_data["symbol"],
-            trade_data["side"],
-            trade_data["leverage"],
-            trade_data["capital_pct"],
-            trade_data["entry"],
-            trade_data["tp"],  # Selected target for tp_price (main TP)
-            trade_data["stop_loss"],
-            chat_id_destino,  # CORREÇÃO: Usar chat_id_destino processado
-            trade_data.get("status", "PENDING"),  # Status agora vem do trade_data ou é PENDING por padrão
-            trade_data.get("timeframe", ""),
-            trade_data.get("message_id"),
-            trade_data.get("id_mensagem_origem_sinal"),
-            chat_id_origem,  # CORREÇÃO: Usar chat_id_origem processado
-            tp_prices[0],  # tp1_price
-            tp_prices[1],  # tp2_price
-            tp_prices[2],  # tp3_price
-            tp_prices[3],  # tp4_price
-            tp_prices[4],  # tp5_price
-            trade_data.get("message_source"),
-            trade_data.get("divap_confirmado", None),
-            trade_data.get("cancelado_checker", None),
-            trade_data.get("error_message", None),
-            CONTA_ID  # NOVO: Adicionar conta_id do parâmetro global
+            trade_data["symbol"],                           # 1
+            trade_data["side"],                            # 2
+            trade_data["leverage"],                        # 3
+            trade_data["capital_pct"],                     # 4
+            trade_data["entry"],                           # 5
+            trade_data["tp"],                              # 6
+            trade_data["stop_loss"],                       # 7
+            chat_id_destino,                               # 8
+            trade_data.get("status", "PENDING"),           # 9
+            trade_data.get("timeframe", ""),               # 10
+            trade_data.get("message_id"),                  # 11
+            trade_data.get("id_mensagem_origem_sinal"),    # 12
+            chat_id_origem,                                # 13
+            tp_prices[0],                                  # 14 - tp1_price
+            tp_prices[1],                                  # 15 - tp2_price
+            tp_prices[2],                                  # 16 - tp3_price
+            tp_prices[3],                                  # 17 - tp4_price
+            tp_prices[4],                                  # 18 - tp5_price
+            trade_data.get("message_source"),              # 19
+            trade_data.get("divap_confirmado", None),      # 20
+            trade_data.get("cancelado_checker", None),     # 21
+            trade_data.get("error_message", None),         # 22
+            CONTA_ID                                       # 23 - conta_id
         )
 
         cursor.execute(sql, values)
-        signal_id = cursor.lastrowid # Get the ID of the inserted row
+        signal_id = cursor.lastrowid
         conn.commit()
 
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Operação salva no banco (ID: {signal_id}, Conta: {CONTA_ID}): {trade_data['symbol']}")
@@ -795,71 +796,34 @@ def save_to_database(trade_data):
     except mysql.connector.Error as db_err:
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Erro no banco ao salvar: {db_err}")
         
-        # CORREÇÃO: Fallback logic incluindo conta_id
+        # CORREÇÃO: Fallback logic atualizada
         if "Unknown column" in str(db_err):
             print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Tentando fallback devido a coluna(s) desconhecida(s)...")
             
-            sql_fallback = None
-            values_fallback = None
-
             try:
-                # CORREÇÃO: Fallback básico incluindo conta_id
-                if "Unknown column 'conta_id'" in str(db_err):
-                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Fallback: coluna 'conta_id' não existe. Salvando sem conta_id.")
-                    sql_fallback = """
-                        INSERT INTO webhook_signals
-                        (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price, 
-                         chat_id, status, timeframe, message_id, message_id_orig, chat_id_orig_sinal,
-                         tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, message_source,
-                         divap_confirmado, cancelado_checker, error_message) 
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """
-                    values_fallback = values[:-1]  # Remover o último item (conta_id)
-                elif "Unknown column 'timeframe'" in str(db_err):
-                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Fallback: coluna 'timeframe' não existe. Salvando com TPs e conta_id.")
-                    sql_fallback = """
-                        INSERT INTO webhook_signals
-                        (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price, 
-                         chat_id, status, message_id, message_id_orig, chat_id_orig_sinal,
-                         tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, message_source,
-                         divap_confirmado, cancelado_checker, error_message, conta_id) 
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """
-                    # Remover timeframe (índice 9) da tupla values
-                    values_list = list(values)
-                    values_list.pop(9)  # Remove timeframe
-                    values_fallback = tuple(values_list)
-                else:
-                    # Fallback mais básico incluindo conta_id
-                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Fallback: Outras colunas desconhecidas. Inserção básica com conta_id.")
-                    sql_fallback = """
-                        INSERT INTO webhook_signals
-                        (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price, 
-                         chat_id, status, message_id, message_id_orig, chat_id_orig_sinal, conta_id) 
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """
-                    values_fallback = (
-                        trade_data["symbol"], trade_data["side"], trade_data["leverage"],
-                        trade_data["capital_pct"], trade_data["entry"], trade_data["tp"],
-                        trade_data["stop_loss"], chat_id_destino, "PENDING",
-                        trade_data.get("message_id"), trade_data.get("id_mensagem_origem_sinal"),
-                        chat_id_origem, CONTA_ID
-                    )
+                # Fallback básico sem campos opcionais
+                sql_fallback = """
+                    INSERT INTO webhook_signals
+                    (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price, 
+                     chat_id, status, message_id, message_id_orig, chat_id_orig_sinal, conta_id) 
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """
+                values_fallback = (
+                    trade_data["symbol"], trade_data["side"], trade_data["leverage"],
+                    trade_data["capital_pct"], trade_data["entry"], trade_data["tp"],
+                    trade_data["stop_loss"], chat_id_destino, "PENDING",
+                    trade_data.get("message_id"), trade_data.get("id_mensagem_origem_sinal"),
+                    chat_id_origem, CONTA_ID
+                )
 
-                if sql_fallback and values_fallback:
-                    if cursor is None and conn:
-                        cursor = conn.cursor()
-                    elif cursor is None and conn is None:
-                        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Conexão BD não estabelecida, fallback não pode prosseguir.")
-                        return None
-
-                    cursor.execute(sql_fallback, values_fallback)
-                    signal_id_fallback = cursor.lastrowid
-                    conn.commit()
-                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Operação salva com fallback (ID: {signal_id_fallback}, Conta: {CONTA_ID})")
-                    return signal_id_fallback
-                else:
-                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Lógica de fallback não determinou uma query para erro: {db_err}")
+                if cursor is None and conn:
+                    cursor = conn.cursor()
+                
+                cursor.execute(sql_fallback, values_fallback)
+                signal_id_fallback = cursor.lastrowid
+                conn.commit()
+                print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Operação salva com fallback (ID: {signal_id_fallback}, Conta: {CONTA_ID})")
+                return signal_id_fallback
 
             except Exception as e2:
                 print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Erro durante tentativa de fallback: {e2}")
