@@ -1324,11 +1324,16 @@ function calculateOrderSize(availableBalance, capitalPercentage, entryPrice, lev
         return parseFloat(truncatedSize.toFixed(quantityPrecision));
     }
 
-    // ✅ CORREÇÃO: Usar o stepSize para truncar a quantidade. Isso garante que o valor é sempre um múltiplo válido.
-    const truncatedSize = Math.floor(rawSize / stepSize) * stepSize;
+    // ✅ CORREÇÃO FINAL: Usar math mais preciso para evitar problemas de ponto flutuante
+    const stepMultiplier = 1 / stepSize;
+    const stepsRaw = rawSize * stepMultiplier;
+    const stepsFloor = Math.floor(stepsRaw);
+    const truncatedSize = stepsFloor / stepMultiplier;
+    
+    // ✅ GARANTIR que o resultado seja formatado com a precisão correta
     const formattedSize = parseFloat(truncatedSize.toFixed(quantityPrecision));
     
-    console.log(`[MONITOR] Cálculo: capital=${capital.toFixed(2)}, rawSize=${rawSize}, stepSize=${stepSize}, formatado=${formattedSize}`);
+    console.log(`[MONITOR] Cálculo: capital=${capital.toFixed(2)}, rawSize=${rawSize}, stepSize=${stepSize}, steps=${stepsFloor}, formatado=${formattedSize}`);
     
     return formattedSize;
 }
