@@ -104,28 +104,8 @@ async function processSignal(signal, db, accountId) {
     try {
       console.log(`[SIGNAL] 🚀 Chamando executeLimitMakerEntry para sinal ${signalId}...`);
       
-      // Verificar se o arquivo limitMakerEntry existe
-      let executeLimitMakerEntry;
-      try {
-        const limitMakerEntryModule = require('./limitMakerEntry');
-        executeLimitMakerEntry = limitMakerEntryModule.executeLimitMakerEntry;
-      } catch (requireError) {
-        console.warn(`[SIGNAL] ⚠️ limitMakerEntry.js não encontrado, usando implementação básica`);
-        
-        // Implementação básica temporária
-        executeLimitMakerEntry = async (db, signal, currentPrice, accountId) => {
-          console.log(`[SIGNAL] 🔧 Usando implementação básica para sinal ${signal.id}`);
-          return {
-            success: true,
-            filledQuantity: 0.001,
-            averagePrice: signal.entry_price,
-            totalValue: 0.001 * signal.entry_price,
-            orderId: `BASIC_${Date.now()}`
-          };
-        };
-      }
+      const { executeLimitMakerEntry } = require('./limitMakerEntry');
       
-      // Obter preço atual
       const api = require('../api');
       const currentPrice = await api.getPrice(signal.symbol, accountId);
       
@@ -135,8 +115,9 @@ async function processSignal(signal, db, accountId) {
       
       console.log(`[SIGNAL] 💰 Preço atual obtido: ${currentPrice}`);
       
-      // Executar entrada
-      const entryResult = await executeLimitMakerEntry(db, signalForEntry, currentPrice, accountId);
+      // CORREÇÃO: Chamar a função com os parâmetros corretos (sem o 'db').
+      // A função executeLimitMakerEntry agora obtém sua própria conexão com o banco.
+      const entryResult = await executeLimitMakerEntry(signalForEntry, currentPrice, accountId);
       
       if (entryResult && entryResult.success) {
         console.log(`[SIGNAL] ✅ Entrada executada com sucesso para sinal ${signalId}`);
