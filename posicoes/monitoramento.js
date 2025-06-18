@@ -3,18 +3,64 @@ const schedule = require('node-schedule');
 const { getDatabaseInstance } = require('../db/conexao');
 const { verifyAndFixEnvironmentConsistency, getFuturesAccountBalanceDetails } = require('../api');
 const websockets = require('../websockets');
-const api = require('../api'); // Certifique-se de que api é importado
+const api = require('../api');
+
+// NOVOS IMPORTS
 const { initializeTelegramBot } = require('./telegramBot');
 const { startPriceMonitoring, onPriceUpdate } = require('./priceMonitoring');
 const { checkNewTrades } = require('./signalProcessor');
 const { syncPositionsWithExchange, logOpenPositionsAndOrders } = require('./positionSync');
 const orderHandlers = require('./orderHandlers');
+const { checkExpiredSignals } = require('./signalTimeout');
+const { runPeriodicCleanup, monitorWebSocketHealth, updatePositionPricesWithTrailing } = require('./enhancedMonitoring');
+const { cleanupOrphanSignals, forceCloseGhostPositions, cancelOrphanOrders } = require('./cleanup');
 
 // Variáveis globais
 let handlers = {};
 let scheduledJobs = {};
 let isShuttingDown = false;
 let signalHandlersInstalled = false;
+
+/**
+ * Configura handlers de sinal do sistema (DEVE SER CHAMADA APENAS UMA VEZ POR PROCESSO)
+ * @param {number} accountIdForLog - ID da conta para logging, mas os handlers são para o processo.
+ */
+function setupSignalHandlers(accountIdForLog) { 
+  if (signalHandlersInstalled) {
+    return;
+  }
+  
+  console.log(`[MONITOR] 🛡️ Instalando signal handlers para graceful shutdown (processo para conta ${accountIdForLog})...`);
+  
+  process.once('SIGINT', async () => {
+    console.log(`\n[MONITOR] 📡 SIGINT (Ctrl+C) recebido para conta ${accountIdForLog} - iniciando graceful shutdown...`);
+    await gracefulShutdown(accountIdForLog);
+  });
+  
+  process.once('SIGTERM', async () => {
+    console.log(`\n[MONITOR] 📡 SIGTERM recebido para conta ${accountIdForLog} - iniciando graceful shutdown...`);
+    await gracefulShutdown(accountIdForLog);
+  });
+  
+  process.once('SIGQUIT', async () => {
+    console.log(`\n[MONITOR] 📡 SIGQUIT recebido para conta ${accountIdForLog} - iniciando graceful shutdown...`);
+    await gracefulShutdown(accountIdForLog);
+  });
+  
+  process.on('uncaughtException', (error) => { 
+    console.error(`\n[MONITOR] 💥 Erro não tratado (uncaughtException) no processo da conta ${accountIdForLog}:`, error);
+    console.error(`[MONITOR] O processo para a conta ${accountIdForLog} provavelmente será encerrado devido a este erro.`);
+  });
+  
+  process.on('unhandledRejection', (reason, promise) => { 
+    console.error(`\n[MONITOR] 🚫 Promise rejeitada não tratada no processo da conta ${accountIdForLog}:`, reason);
+    console.error('[MONITOR] Promise problematica:', promise);
+    console.error(`[MONITOR] O processo para a conta ${accountIdForLog} pode estar instável, mas continuará tentando executar.`);
+  });
+  
+  signalHandlersInstalled = true;
+  console.log(`[MONITOR] ✅ Signal handlers instalados com sucesso para o processo da conta ${accountIdForLog}`);
+}
 
 /**
  * Sincroniza saldo da conta via REST API
@@ -121,6 +167,19 @@ async function initializeMonitoring(accountId) {
       console.error('❌ Erro ao carregar credenciais:', credError.message);
       throw credError;
     }
+
+    // === ETAPA 3.5: Inicializar Bot do Telegram ===
+    console.log(`🤖 ETAPA 3.5: Inicializando bot do Telegram para conta ${accountId}...`);
+    try {
+      const telegramBot = await initializeTelegramBot(accountId);
+      if (telegramBot) {
+        console.log(`✅ Bot do Telegram inicializado para conta ${accountId}`);
+      } else {
+        console.log(`⚠️ Bot do Telegram não configurado para conta ${accountId}`);
+      }
+    } catch (telegramError) {
+      console.error(`⚠️ Erro ao inicializar bot do Telegram para conta ${accountId}:`, telegramError.message);
+    }
     
     // === ETAPA 4: Verificar estado da conexão ===
     console.log(`🔗 ETAPA 4: Verificando estado da conexão da conta ${accountId}...`);
@@ -183,6 +242,10 @@ async function initializeMonitoring(accountId) {
           ...currentHandlers,
           onPriceUpdate: async (symbol, price, db) => {
             try {
+              // USAR função melhorada do enhancedMonitoring
+              await updatePositionPricesWithTrailing(db, symbol, price, accountId);
+              
+              // Chamar também a função original para manter compatibilidade
               await onPriceUpdate(symbol, price, db, accountId);
             } catch (error) {
               console.error(`[MONITOR] ⚠️ Erro em onPriceUpdate para ${symbol} conta ${accountId}:`, error.message);
@@ -207,32 +270,33 @@ async function initializeMonitoring(accountId) {
     }
 
     // === ETAPA 9: Limpeza e preparação de sinais ===
-    console.log(`🧹 ETAPA 9: Limpando sinais com erro para conta ${accountId}...`);
-    
-    try {
-      await db.query(`
-        UPDATE webhook_signals 
-        SET status = 'ERROR', 
-            error_message = CONCAT(IFNULL(error_message, ''), ' | Limpo durante inicialização') 
-        WHERE status = 'PENDING' 
-          AND error_message LIKE '%not defined%'
-          AND conta_id = ?
-      `, [accountId]);
+    console.log(`🧹 ETAPA 9: Executando limpeza avançada para conta ${accountId}...`);
 
-      const [resetResult] = await db.query(`
-        UPDATE webhook_signals 
-        SET status = 'PENDING', 
-            error_message = NULL,
-            updated_at = NOW()
-        WHERE status = 'PROCESSANDO' 
-          AND conta_id = ?
-      `, [accountId]);
+    try {
+      // Limpeza de sinais órfãos
+      await cleanupOrphanSignals(accountId);
       
-      if (resetResult.affectedRows > 0) {
-        console.log(`[MONITOR] ✅ ${resetResult.affectedRows} sinais resetados para conta ${accountId}`);
+      // Verificar sinais expirados
+      const expiredCount = await checkExpiredSignals(accountId);
+      if (expiredCount > 0) {
+        console.log(`[MONITOR] ${expiredCount} sinais expirados cancelados para conta ${accountId}`);
       }
-    } catch (cleanError) {
-      console.error(`[MONITOR] ⚠️ Erro ao limpar sinais para conta ${accountId}:`, cleanError.message);
+      
+      // Cancelar ordens órfãs (uma vez na inicialização)
+      const canceledOrders = await cancelOrphanOrders(accountId);
+      if (canceledOrders > 0) {
+        console.log(`[MONITOR] ${canceledOrders} ordens órfãs canceladas para conta ${accountId}`);
+      }
+      
+      // Forçar fechamento de posições fantasma
+      const closedGhosts = await forceCloseGhostPositions(accountId);
+      if (closedGhosts > 0) {
+        console.log(`[MONITOR] ${closedGhosts} posições fantasma fechadas para conta ${accountId}`);
+      }
+      
+      console.log(`[MONITOR] ✅ Limpeza avançada concluída para conta ${accountId}`);
+    } catch (cleanupError) {
+      console.error(`[MONITOR] ⚠️ Erro durante limpeza avançada para conta ${accountId}:`, cleanupError.message);
     }
 
     // === ETAPA 10: Verificar sinais pendentes ===
@@ -265,10 +329,10 @@ async function initializeMonitoring(accountId) {
     }
 
     // === ETAPA 13: Agendar jobs ===
-    console.log(`⏰ ETAPA 13: Agendando jobs para conta ${accountId}...`);
-    
+    console.log(`⏰ ETAPA 13: Agendando jobs avançados para conta ${accountId}...`);
+
     const accountJobs = {};
-    
+
     // Job principal: verificar sinais pendentes a cada 15 segundos
     accountJobs.checkNewTrades = schedule.scheduleJob('*/15 * * * * *', async () => {
       if (isShuttingDown) return;
@@ -278,7 +342,7 @@ async function initializeMonitoring(accountId) {
         console.error(`[MONITOR] ⚠️ Erro na verificação periódica de sinais para conta ${accountId}:`, error.message);
       }
     });
-    
+
     // Job de sincronização de saldo a cada 5 minutos
     accountJobs.syncBalance = schedule.scheduleJob('*/5 * * * *', async () => {
       if (isShuttingDown) return;
@@ -289,84 +353,65 @@ async function initializeMonitoring(accountId) {
       }
     });
 
-    console.log(`[MONITOR] ✅ Sistema de monitoramento inicializado com sucesso para conta ${accountId}!`);
-    console.log(`[MONITOR] 📊 Jobs agendados: ${Object.keys(accountJobs).length}`);
-    
+    // NOVO: Job de verificação de sinais expirados a cada 2 minutos
+    accountJobs.checkExpiredSignals = schedule.scheduleJob('*/2 * * * *', async () => {
+      if (isShuttingDown) return;
+      try {
+        const expiredCount = await checkExpiredSignals(accountId);
+        if (expiredCount > 0) {
+          console.log(`[MONITOR] ${expiredCount} sinais expirados cancelados para conta ${accountId}`);
+        }
+      } catch (error) {
+        console.error(`[MONITOR] ⚠️ Erro na verificação de sinais expirados para conta ${accountId}:`, error.message);
+      }
+    });
+
+    // NOVO: Job de limpeza periódica a cada 10 minutos
+    accountJobs.periodicCleanup = schedule.scheduleJob('*/10 * * * *', async () => {
+      if (isShuttingDown) return;
+      try {
+        await runPeriodicCleanup(accountId);
+      } catch (error) {
+        console.error(`[MONITOR] ⚠️ Erro na limpeza periódica para conta ${accountId}:`, error.message);
+      }
+    });
+
+    // NOVO: Job de monitoramento de saúde dos WebSockets a cada 5 minutos
+    accountJobs.monitorWebSocketHealth = schedule.scheduleJob('*/5 * * * *', async () => {
+      if (isShuttingDown) return;
+      try {
+        monitorWebSocketHealth(accountId);
+      } catch (error) {
+        console.error(`[MONITOR] ⚠️ Erro no monitoramento de WebSockets para conta ${accountId}:`, error.message);
+      }
+    });
+
+    // NOVO: Job de cancelamento de ordens órfãs a cada hora
+    accountJobs.cancelOrphanOrders = schedule.scheduleJob('0 * * * *', async () => {
+      if (isShuttingDown) return;
+      try {
+        const canceledCount = await cancelOrphanOrders(accountId);
+        if (canceledCount > 0) {
+          console.log(`[MONITOR] ${canceledCount} ordens órfãs canceladas para conta ${accountId}`);
+        }
+      } catch (error) {
+        console.error(`[MONITOR] ⚠️ Erro ao cancelar ordens órfãs para conta ${accountId}:`, error.message);
+      }
+    });
+
+    // Armazenar jobs para cleanup no shutdown
     scheduledJobs[accountId] = accountJobs;
-    
+
+    console.log(`[MONITOR] ✅ Sistema de monitoramento avançado inicializado com sucesso para conta ${accountId}!`);
+    console.log(`[MONITOR] 📊 Jobs agendados: ${Object.keys(accountJobs).length}`);
+    console.log(`[MONITOR] 📋 Jobs ativos: ${Object.keys(accountJobs).join(', ')}`);
+
     return accountJobs;
-    
+
   } catch (error) {
-    console.error(`[MONITOR] ❌ Erro CRÍTICO na configuração inicial para conta ${accountId}: ${error.message}`);
+    console.error(`[MONITOR] ❌ Erro crítico durante inicialização para conta ${accountId}:`, error.message);
     throw error;
   }
-}
-
-let currentAccountId = null; // Renomeado para evitar conflito com a variável global 'accountId'
-
-if (require.main === module) {
-  currentAccountId = process.argv.includes('--account') 
-    ? parseInt(process.argv[process.argv.indexOf('--account') + 1])
-    : null;
-
-  if (!currentAccountId || isNaN(currentAccountId) || currentAccountId <= 0) {
-    console.error('[MONITOR] ❌ AccountId é obrigatório e deve ser um número válido');
-    console.error('[MONITOR] 📝 Uso: node posicoes/monitoramento.js --account <ID>');
-    console.error('[MONITOR] 📝 Exemplo: node posicoes/monitoramento.js --account 2');
-    process.exit(1);
-  }
-
-  console.log(`[MONITOR] Iniciando sistema de monitoramento para conta ID: ${currentAccountId}`);
-
-  (async () => {
-    try {
-      await initializeMonitoring(currentAccountId);
-    } catch (error) {
-      console.error(`[MONITOR] Erro crítico na inicialização para conta ${currentAccountId}:`, error);
-      process.exit(1);
-    }
-  })();
-}
-
-/**
- * Configura handlers de sinal do sistema (DEVE SER CHAMADA APENAS UMA VEZ POR PROCESSO)
- * @param {number} accountIdForLog - ID da conta para logging, mas os handlers são para o processo.
- */
-function setupSignalHandlers(accountIdForLog) { 
-  if (signalHandlersInstalled) {
-    return;
-  }
-  
-  console.log(`[MONITOR] 🛡️ Instalando signal handlers para graceful shutdown (processo para conta ${accountIdForLog})...`);
-  
-  process.once('SIGINT', async () => {
-    console.log(`\n[MONITOR] 📡 SIGINT (Ctrl+C) recebido para conta ${accountIdForLog} - iniciando graceful shutdown...`);
-    await gracefulShutdown(accountIdForLog);
-  });
-  
-  process.once('SIGTERM', async () => {
-    console.log(`\n[MONITOR] 📡 SIGTERM recebido para conta ${accountIdForLog} - iniciando graceful shutdown...`);
-    await gracefulShutdown(accountIdForLog);
-  });
-  
-  process.once('SIGQUIT', async () => {
-    console.log(`\n[MONITOR] 📡 SIGQUIT recebido para conta ${accountIdForLog} - iniciando graceful shutdown...`);
-    await gracefulShutdown(accountIdForLog);
-  });
-  
-  process.on('uncaughtException', (error) => { 
-    console.error(`\n[MONITOR] 💥 Erro não tratado (uncaughtException) no processo da conta ${accountIdForLog}:`, error);
-    console.error(`[MONITOR] O processo para a conta ${accountIdForLog} provavelmente será encerrado devido a este erro.`);
-  });
-  
-  process.on('unhandledRejection', (reason, promise) => { 
-    console.error(`\n[MONITOR] 🚫 Promise rejeitada não tratada no processo da conta ${accountIdForLog}:`, reason);
-    console.error('[MONITOR] Promise problematica:', promise);
-    console.error(`[MONITOR] O processo para a conta ${accountIdForLog} pode estar instável, mas continuará tentando executar.`);
-  });
-  
-  signalHandlersInstalled = true;
-  console.log(`[MONITOR] ✅ Signal handlers instalados com sucesso para o processo da conta ${accountIdForLog}`);
 }
 
 /**
@@ -383,7 +428,7 @@ async function gracefulShutdown(accountIdToShutdown) {
   console.log(`\n[MONITOR] 🛑 === INICIANDO GRACEFUL SHUTDOWN PARA CONTA ${accountIdToShutdown} ===`);
   
   try {
-    console.log(`[MONITOR] 📅 1/6 - Cancelando jobs agendados para conta ${accountIdToShutdown}...`);
+    console.log(`[MONITOR] 📅 1/7 - Cancelando jobs agendados para conta ${accountIdToShutdown}...`);
     if (scheduledJobs[accountIdToShutdown]) {
       let jobsCancelados = 0;
       for (const [jobName, job] of Object.entries(scheduledJobs[accountIdToShutdown])) {
@@ -398,8 +443,17 @@ async function gracefulShutdown(accountIdToShutdown) {
     } else {
       console.log(`[MONITOR]   ℹ️ Nenhum job agendado encontrado para conta ${accountIdToShutdown}`);
     }
+
+    console.log(`[MONITOR] 🧹 2/7 - Executando limpeza final para conta ${accountIdToShutdown}...`);
+    try {
+      // Última limpeza antes de fechar
+      await runPeriodicCleanup(accountIdToShutdown);
+      console.log(`[MONITOR]   ✅ Limpeza final concluída para conta ${accountIdToShutdown}`);
+    } catch (finalCleanupError) {
+      console.error(`[MONITOR]   ⚠️ Erro na limpeza final para conta ${accountIdToShutdown}:`, finalCleanupError.message);
+    }
     
-    console.log(`[MONITOR] 🔌 2/6 - Fechando WebSockets para conta ${accountIdToShutdown}...`);
+    console.log(`[MONITOR] 🔌 3/7 - Fechando WebSockets para conta ${accountIdToShutdown}...`);
     try {
       websockets.reset(accountIdToShutdown); 
       console.log(`[MONITOR]   ✅ WebSockets para conta ${accountIdToShutdown} fechados/resetados`);
@@ -407,7 +461,7 @@ async function gracefulShutdown(accountIdToShutdown) {
       console.error(`[MONITOR]   ⚠️ Erro ao fechar WebSockets para conta ${accountIdToShutdown}: ${wsError.message}`);
     }
     
-    console.log(`[MONITOR] 🧹 3/6 - Limpando handlers para conta ${accountIdToShutdown}...`);
+    console.log(`[MONITOR] 🧹 4/7 - Limpando handlers para conta ${accountIdToShutdown}...`);
     try {
       // CORREÇÃO: Usar orderHandlers para limpeza
       const handlersRemoved = orderHandlers.unregisterOrderHandlers(accountIdToShutdown);
@@ -425,15 +479,15 @@ async function gracefulShutdown(accountIdToShutdown) {
       console.error(`[MONITOR]   ⚠️ Erro ao limpar handlers para conta ${accountIdToShutdown}:`, handlerCleanupError.message);
     }
 
-    console.log(`[MONITOR] 📈 4/6 - Parando monitoramento de preços para conta ${accountIdToShutdown}...`);
+    console.log(`[MONITOR] 📈 5/7 - Parando monitoramento de preços para conta ${accountIdToShutdown}...`);
     // Esta lógica também é coberta por websockets.reset(accountIdToShutdown)
     console.log(`[MONITOR]   ✅ Monitoramento de preços para conta ${accountIdToShutdown} parado (via reset de websockets)`);
     
-    console.log(`[MONITOR] ⏱️ 5/6 - Aguardando finalização de operações pendentes para conta ${accountIdToShutdown}...`);
+    console.log(`[MONITOR] ⏱️ 6/7 - Aguardando finalização de operações pendentes para conta ${accountIdToShutdown}...`);
     await new Promise(resolve => setTimeout(resolve, 2000)); 
     console.log(`[MONITOR]   ✅ Aguarde concluído para conta ${accountIdToShutdown}`);
     
-    console.log(`[MONITOR] 🗃️ 6/6 - Fechando pool do banco de dados (se aplicável ao processo da conta ${accountIdToShutdown})...`);
+    console.log(`[MONITOR] 🗃️ 7/7 - Fechando pool do banco de dados (se aplicável ao processo da conta ${accountIdToShutdown})...`);
     try {
       const { closePool, getPool } = require('../db/conexao');
       if (getPool()) { 
@@ -464,6 +518,5 @@ module.exports = {
   initializeMonitoring,
   syncAccountBalance,
   gracefulShutdown,
-  checkNewTrades: (accountId) => checkNewTrades(accountId),
-  forceProcessPendingSignals: (accountId) => forceProcessPendingSignals(accountId)
+  checkNewTrades: (accountId) => checkNewTrades(accountId)
 };

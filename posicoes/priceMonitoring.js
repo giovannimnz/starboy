@@ -131,114 +131,154 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
   try {
     // Validação robusta dos parâmetros
     if (!symbol || typeof symbol !== 'string') {
-      console.error(`[PRICE] Símbolo inválido em onPriceUpdate: ${symbol}`);
+      console.error(`[PRICE] Símbolo inválido: ${symbol}`);
       return;
     }
     
     if (!currentPrice || isNaN(currentPrice) || currentPrice <= 0) {
-      console.error(`[PRICE] Preço inválido em onPriceUpdate: symbol=${symbol}, currentPrice=${currentPrice}, tipo=${typeof currentPrice}`);
+      console.error(`[PRICE] Preço inválido: ${currentPrice}`);
       return;
     }
     
     if (!accountId || typeof accountId !== 'number') {
-      console.error(`[PRICE] AccountId inválido em onPriceUpdate: ${accountId} (tipo: ${typeof accountId})`);
+      console.error(`[PRICE] AccountId inválido: ${accountId}`);
       return;
     }
     
-    if (!db) {
-      console.error(`[PRICE] Conexão DB inválida em onPriceUpdate para ${symbol}`);
-      return;
-    }
-    
-    // Converter currentPrice para número se necessário
-    const validPrice = parseFloat(currentPrice);
-    if (isNaN(validPrice) || validPrice <= 0) {
-      console.error(`[PRICE] Não foi possível converter preço para número válido: ${currentPrice}`);
-      return;
-    }
+    // NOVO: Usar função melhorada com trailing stops
+    await updatePositionPricesWithTrailing(db, symbol, currentPrice, accountId);
 
-    // Atualizar cache de preços
-    updatePriceCache(symbol, validPrice);
-    
-    // Atualizar preços das posições
-    await updatePositionPrices(db, symbol, validPrice);
-
-    // Log periódico de preços
-    const now = Date.now();
-    if (!lastPriceLogTime[symbol] || (now - lastPriceLogTime[symbol] > PRICE_LOG_INTERVAL)) {
-      lastPriceLogTime[symbol] = now;
-      console.log(`[PRICE] ${symbol}: ${validPrice}`);
-    }
-
-    // Buscar sinais pendentes para este símbolo
+    // Buscar sinais pendentes
     const [pendingSignalsResult] = await db.query(`
-      SELECT 
-      id, symbol, timeframe, side, leverage, capital_pct, 
-      entry_price, 
-      tp_price, sl_price, 
-      tp1_price, tp2_price, tp3_price, tp4_price, tp5_price,
-      status, error_message, position_id, entry_order_id, 
-      tp_order_id, sl_order_id, chat_id, message_id, created_at, 
-      updated_at, timeout_at, max_lifetime_minutes, 
-      registry_message_id, message_id_orig, message_source, conta_id
-      FROM webhook_signals
+      SELECT * FROM webhook_signals
       WHERE symbol = ? AND conta_id = ? AND 
       (status = 'AGUARDANDO_ACIONAMENTO' OR status = 'PENDING')
     `, [symbol, accountId]);
     
     const pendingSignals = pendingSignalsResult || [];
 
-    // Verificar se há posições abertas ou ordens pendentes
-    const [openPositionsResult] = await db.query(`
-      SELECT COUNT(*) as count FROM posicoes 
+    // Processar cada sinal pendente
+    for (const signal of pendingSignals) {
+      const entryPrice = parseFloat(signal.entry_price);
+      const slPrice = parseFloat(signal.sl_price);
+      
+      // Verificar condições de acionamento
+      const isTriggered = (signal.side.toUpperCase() === 'COMPRA' || signal.side.toUpperCase() === 'BUY') 
+        ? currentPrice >= entryPrice 
+        : currentPrice <= entryPrice;
+      
+      const isStopLossHit = slPrice > 0 && (
+        (signal.side.toUpperCase() === 'COMPRA' || signal.side.toUpperCase() === 'BUY') 
+          ? currentPrice <= slPrice 
+          : currentPrice >= slPrice
+      );
+
+      // Verificar timeout
+      const now = new Date();
+      const timeoutAt = signal.timeout_at ? new Date(signal.timeout_at) : null;
+      const isTimedOut = timeoutAt && now >= timeoutAt;
+
+      if (isTriggered) {
+        console.log(`[PRICE] ✅ Gatilho acionado para ${signal.symbol} @ ${currentPrice}`);
+        
+        try {
+          const { processSignal } = require('./signalProcessor');
+          await processSignal(signal, db, accountId);
+        } catch (processError) {
+          console.error(`[PRICE] Erro ao processar sinal ${signal.id}:`, processError.message);
+        }
+      } else if (isStopLossHit) {
+        console.log(`[PRICE] ❌ SL atingido antes da entrada para ${signal.symbol}`);
+        
+        const { cancelSignal } = require('./signalTimeout');
+        await cancelSignal(db, signal.id, 'SL_BEFORE_ENTRY',
+          `Stop loss (${slPrice}) atingido antes da entrada (${currentPrice})`, accountId);
+      } else if (isTimedOut) {
+        console.log(`[PRICE] ⏱️ Timeout para sinal ${signal.id} (${signal.symbol})`);
+        
+        const { cancelSignal } = require('./signalTimeout');
+        await cancelSignal(db, signal.id, 'TIMEOUT_ENTRY',
+          `Entrada não acionada dentro do limite de tempo`, accountId);
+      }
+    }
+
+    // Verificar se deve fechar WebSocket
+    const [counts] = await db.query(`
+      SELECT 
+        (SELECT COUNT(*) FROM webhook_signals WHERE symbol = ? AND conta_id = ? AND status IN ('PENDING', 'AGUARDANDO_ACIONAMENTO')) as signals,
+        (SELECT COUNT(*) FROM posicoes WHERE simbolo = ? AND conta_id = ? AND status = 'OPEN') as positions,
+        (SELECT COUNT(*) FROM ordens WHERE simbolo = ? AND conta_id = ? AND status = 'NEW') as orders
+    `, [symbol, accountId, symbol, accountId, symbol, accountId]);
+
+    const totalActivity = (counts[0]?.signals || 0) + (counts[0]?.positions || 0) + (counts[0]?.orders || 0);
+
+    if (totalActivity === 0) {
+      const websockets = require('../websockets');
+      websockets.stopPriceMonitoring(symbol, accountId);
+      console.log(`[PRICE] WebSocket fechado para ${symbol} (conta ${accountId}) - sem atividade`);
+    }
+
+  } catch (error) {
+    console.error(`[PRICE] Erro no processamento para ${symbol} (conta ${accountId}):`, error);
+  }
+}
+
+/**
+ * Atualiza preços das posições abertas com suporte a trailing stops
+ * @param {Object} db - Conexão com banco
+ * @param {string} symbol - Símbolo
+ * @param {number} currentPrice - Preço atual
+ * @param {number} accountId - ID da conta
+ */
+async function updatePositionPricesWithTrailing(db, symbol, currentPrice, accountId) {
+  try {
+    // Obter todas as posições abertas para o símbolo
+    const [positions] = await db.query(`
+      SELECT * FROM posicoes
       WHERE simbolo = ? AND status = 'OPEN' AND conta_id = ?
     `, [symbol, accountId]);
     
-    const [pendingOrdersResult] = await db.query(`
-      SELECT COUNT(*) as count FROM ordens
-      WHERE simbolo = ? AND status = 'NEW' AND conta_id = ?
-    `, [symbol, accountId]);
-
-    const openPositionsCount = (openPositionsResult?.[0]?.count) || 0;
-    const pendingOrdersCount = (pendingOrdersResult?.[0]?.count) || 0;
-
-    // Verificar se precisamos manter o WebSocket ativo
-    if (pendingSignals.length === 0 && 
-        openPositionsCount === 0 && 
-        pendingOrdersCount === 0) {
+    for (const position of positions) {
+      const { id, tipo, preco_abertura, stop_loss, take_profit } = position;
       
-      if (!websocketEmptyCheckCounter[symbol]) {
-        websocketEmptyCheckCounter[symbol] = 0;
-      }
-      websocketEmptyCheckCounter[symbol]++;
+      let newStopLoss = stop_loss;
+      let newTakeProfit = take_profit;
+      let updateNeeded = false;
       
-      if (websocketEmptyCheckCounter[symbol] >= MAX_EMPTY_CHECKS) {
-        console.log(`[PRICE] ${symbol}: Sem atividade por ${MAX_EMPTY_CHECKS} verificações. Removendo WebSocket.`);
-        websockets.stopPriceMonitoring(symbol, accountId);
-        delete websocketEmptyCheckCounter[symbol];
-        latestPrices.delete(symbol);
-        delete lastPriceLogTime[symbol];
-        return; 
-      }
-    } else {
-      websocketEmptyCheckCounter[symbol] = 0;
-    }
-
-    // Processar sinais pendentes
-    if (pendingSignals.length > 0) {
-      const { processSignal } = require('./signalProcessor');
-      
-      for (const signal of pendingSignals) {
-        try {
-          console.log(`[PRICE] Processando sinal ${signal.id} para ${signal.symbol} com preço ${validPrice}`);
-          await processSignal(db, signal, validPrice, accountId);
-        } catch (signalError) {
-          console.error(`[PRICE] Erro ao processar sinal ${signal.id}:`, signalError);
+      // Ajustar stop loss para cima se for uma posição de compra
+      if (tipo === 'COMPRA' || tipo === 'BUY') {
+        if (currentPrice > preco_abertura) {
+          const trailingStop = currentPrice - (preco_abertura * 0.02); // Exemplo: 2% abaixo do preço atual
+          if (trailingStop > stop_loss) {
+            newStopLoss = trailingStop;
+            updateNeeded = true;
+          }
         }
+      } 
+      // Ajustar stop loss para baixo se for uma posição de venda
+      else if (tipo === 'VENDA' || tipo === 'SELL') {
+        if (currentPrice < preco_abertura) {
+          const trailingStop = currentPrice + (preco_abertura * 0.02); // Exemplo: 2% acima do preço atual
+          if (trailingStop < stop_loss) {
+            newStopLoss = trailingStop;
+            updateNeeded = true;
+          }
+        }
+      }
+
+      // Atualizar stop loss na base de dados se necessário
+      if (updateNeeded) {
+        await db.query(`
+          UPDATE posicoes
+          SET stop_loss = ?, data_hora_ultima_atualizacao = NOW()
+          WHERE id = ?
+        `, [newStopLoss, id]);
+        
+        console.log(`[PRICE] Stop loss atualizado para posição ${id} (${symbol}): ${newStopLoss}`);
       }
     }
   } catch (error) {
-    console.error(`[PRICE] Erro no processamento de preço para ${symbol} (conta ${accountId}):`, error);
+    console.error(`[PRICE] Erro ao atualizar posições com trailing stops para ${symbol}:`, error);
   }
 }
 
