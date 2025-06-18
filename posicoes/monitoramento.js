@@ -168,7 +168,7 @@ async function initializeMonitoring(accountId) {
       throw credError;
     }
 
-    // === ETAPA 3.5: Inicializar Bot do Telegram ===
+/*    // === ETAPA 3.5: Inicializar Bot do Telegram ===
     console.log(`🤖 ETAPA 3.5: Inicializando bot do Telegram para conta ${accountId}...`);
     try {
       const telegramBot = await initializeTelegramBot(accountId);
@@ -180,7 +180,7 @@ async function initializeMonitoring(accountId) {
     } catch (telegramError) {
       console.error(`⚠️ Erro ao inicializar bot do Telegram para conta ${accountId}:`, telegramError.message);
     }
-    
+    */
     // === ETAPA 4: Verificar estado da conexão ===
     console.log(`🔗 ETAPA 4: Verificando estado da conexão da conta ${accountId}...`);
     
