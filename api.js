@@ -696,7 +696,11 @@ async function getPrecision(symbol, accountId) {
             const marketMaxQty = marketLotSizeFilter ? parseFloat(marketLotSizeFilter.maxQty) : maxQty;
             
             // ✅ VALOR NOTIONAL MÍNIMO
-            const minNotional = minNotionalFilter ? parseFloat(minNotionalFilter.minNotional) : 0;
+            let minNotional = 0;
+            if (minNotionalFilter) {
+              const minNotionalValue = parseFloat(minNotionalFilter.minNotional);
+              minNotional = isNaN(minNotionalValue) ? 0 : minNotionalValue;
+            }
 
             const precision = {
                 quantityPrecision: Math.floor(quantityPrecision),
@@ -708,7 +712,7 @@ async function getPrecision(symbol, accountId) {
                 stepSize: stepSize,
                 marketMinQty: marketMinQty,
                 marketMaxQty: marketMaxQty,
-                minNotional: minNotional
+                minNotional: minNotional // ✅ GARANTIDO QUE NÃO SEJA NaN
             };
 
             console.log(`[API] ✅ Precisão completa obtida para ${symbol}:`, {

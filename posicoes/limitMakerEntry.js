@@ -14,7 +14,10 @@ const {
   getAllOpenPositions, 
   getFuturesAccountBalanceDetails, 
   getPrecision,
-  getTickSize
+  getTickSize,
+  getPrecisionCached,
+  validateQuantity,
+  adjustQuantityToRequirements,
 } = require('../api');
 const { getDatabaseInstance, insertPosition, insertNewOrder, formatDateForMySQL } = require('../db/conexao');
 const websockets = require('../websockets');
@@ -74,17 +77,19 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       throw new Error(`Signal inválido: ${JSON.stringify(signal)}`);
     }
     
+    // ✅ DEFINIR numericAccountId LOGO NO INÍCIO
+    const numericAccountId = parseInt(accountId) || accountId;
+    
     console.log(`[LIMIT_ENTRY] Iniciando LIMIT MAKER para Sinal ID ${signal.id} (${signal.symbol}) na conta ${accountId}`);
     
     // OBTER CONEXÃO DO BANCO PARA A CONTA ESPECÍFICA
-    // CORREÇÃO: A variável 'db' agora é declarada sem conflito com parâmetros.
     const db = await getDatabaseInstance(accountId);
     if (!db) {
       throw new Error(`Não foi possível obter conexão com banco para conta ${accountId}`);
     }
     
     connection = await db.getConnection();
-    const numericAccountId = parseInt(accountId) || accountId;
+    // ✅ REMOVER ESTA LINHA DUPLICADA: const numericAccountId = parseInt(accountId) || accountId;
     
     // VERIFICAR SE JÁ EXISTE POSIÇÃO ABERTA
     const existingPositionsOnExchange = await getAllOpenPositions(numericAccountId, signal.symbol);
@@ -1080,8 +1085,6 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
             if (rp2Adjustment.success) {
               rp2Qty = rp2Adjustment.adjustedQuantity;
               console.log(`[LIMIT_ENTRY] RP2 quantidade ajustada: ${rp2Adjustment.originalQuantity} → ${rp2Qty}`);
-            } else {
-              console.warn(`[LIMIT_ENTRY] RP2 não pode ser ajustada: ${rp2Adjustment.error}. Pulando RP2.`);
               rp2Qty = 0;
             }
           }
@@ -1254,10 +1257,11 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
     const originalErrorMessage = error.message || String(error);
     console.error(`[LIMIT_ENTRY] ERRO FATAL DURANTE ENTRADA (Sinal ID ${signal.id}): ${originalErrorMessage}`, error.stack || error);
     
-    // ✅ GARANTIR VARIÁVEIS NO RECOVERY
+    // ✅ GARANTIR VARIÁVEIS NO RECOVERY - CORRIGIR ORDEM DAS VARIÁVEIS
     const recoveryAccountId = numericAccountId || accountId || parseInt(accountId) || 1;
     const recoveryQuantityPrecision = quantityPrecision || 3;
     const recoveryPricePrecision = pricePrecision || 2;
+    const recoveryBinanceSide = binanceSide || (signal.side === 'COMPRA' ? 'BUY' : 'SELL');
     
     console.log(`[LIMIT_ENTRY_RECOVERY] Usando recoveryAccountId: ${recoveryAccountId}`);
     
@@ -1265,7 +1269,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       console.warn(`[LIMIT_ENTRY_RECOVERY] Tentando SALVAR POSIÇÃO ${positionId} (${totalFilledSize.toFixed(recoveryQuantityPrecision)} ${signal.symbol} @ ${averageEntryPrice.toFixed(recoveryPricePrecision)}) apesar do erro: ${originalErrorMessage}`);
       
       try {
-        const binanceOppositeSide = binanceSide === 'BUY' ? 'SELL' : 'BUY';
+        const binanceOppositeSide = recoveryBinanceSide === 'BUY' ? 'SELL' : 'BUY';
         const slPriceVal = signal.sl_price ? parseFloat(signal.sl_price) : null;
         
         if (slPriceVal && slPriceVal > 0) {
@@ -1302,14 +1306,18 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
               last_update: formatDateForMySQL(new Date()),
               orign_sig: `WEBHOOK_${signal.id}_RECOVERY`
             };
-            await insertNewOrder(connection, slOrderData);
+            
+            // ✅ VERIFICAR SE CONNECTION EXISTE ANTES DE USAR
+            if (connection) {
+              await insertNewOrder(connection, slOrderData);
+            }
           }
         }
         
         // CRIAR TP DE EMERGÊNCIA SE DISPONÍVEL
         const finalTpPriceVal = signal.tp_price ? parseFloat(signal.tp_price) : (signal.tp5_price ? parseFloat(signal.tp5_price) : null);
         if (finalTpPriceVal && finalTpPriceVal > 0) {
-          console.log(`[LIMIT_ENTRY_RECOVERY] Criando TP de emergência: ${totalFilledSize.toFixed(quantityPrecision)} @ ${finalTpPriceVal.toFixed(pricePrecision)}`);
+          console.log(`[LIMIT_ENTRY_RECOVERY] Criando TP de emergência: ${totalFilledSize.toFixed(recoveryQuantityPrecision)} @ ${finalTpPriceVal.toFixed(recoveryPricePrecision)}`);
           
           const tpResponse = await newStopOrder(
             recoveryAccountId,
@@ -1342,11 +1350,18 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
               last_update: formatDateForMySQL(new Date()),
               orign_sig: `WEBHOOK_${signal.id}_RECOVERY`
             };
-            await insertNewOrder(connection, tpOrderData);
+            
+            // ✅ VERIFICAR SE CONNECTION EXISTE ANTES DE USAR
+            if (connection) {
+              await insertNewOrder(connection, tpOrderData);
+            }
           }
         }
         
-        await connection.commit();
+        // ✅ VERIFICAR SE CONNECTION EXISTE ANTES DE COMMIT
+        if (connection) {
+          await connection.commit();
+        }
         console.warn(`[LIMIT_ENTRY_RECOVERY] ✅ Posição ${positionId} SALVA com SL/TP de emergência. Erro original: ${originalErrorMessage}`);
         
         return {
@@ -1366,7 +1381,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
     if (activeOrderId) {
       try {
         console.log(`[LIMIT_ENTRY] Cancelando ordem ativa ${activeOrderId}...`);
-        await cancelOrder(numericAccountId, signal.symbol, activeOrderId);
+        await cancelOrder(recoveryAccountId, signal.symbol, activeOrderId); // ✅ USAR recoveryAccountId
         console.log(`[LIMIT_ENTRY] ✅ Ordem ${activeOrderId} cancelada`);
       } catch (cancelError) {
         console.error(`[LIMIT_ENTRY] Erro ao cancelar ordem ${activeOrderId}:`, cancelError.message);
@@ -1395,7 +1410,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
     return { success: false, error: originalErrorMessage };
 
   } finally {
-    // BLOCO FINALLY
+    // BLOCO FINALLY (sem mudanças)
     if (depthWs) {
       console.log(`[LIMIT_ENTRY] Fechando WebSocket de profundidade para ${signal?.symbol || 'unknown'} no bloco finally.`);
       try {
