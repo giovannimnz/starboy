@@ -237,6 +237,8 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
     const tickSize = parseFloat(tickSizeData.tickSize);
 
     // LOOP PRINCIPAL DE CHASING
+    let remainingToFillMarket = 0; // <-- ADICIONAR ESTA LINHA ANTES DO WHILE
+    
     while (totalFilledSize < totalEntrySize && 
            chaseAttempts < MAX_CHASE_ATTEMPTS && 
            (Date.now() - executionStartTime) < CHASE_TIMEOUT_MS) {
@@ -282,7 +284,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       // VERIFICAR DADOS DO BOOK
       const isDepthDataStale = (Date.now() - lastDepthUpdateTimestamp > MAX_DEPTH_STALENESS_MS);
       if (!currentBestBid || !currentBestAsk || isDepthDataStale || wsUpdateErrorCount > 3) {
-        console.log(`[LIMIT_ENTRY] Dados do BookTicker obsoletos ou inválidos.`);
+        console.log(`[LIMIT_ENTRY] Dados do BookTicker obsoletos ou inválidos. Tentando continuar com dados disponíveis.`);
       }
 
       const bestBid = currentBestBid;
@@ -511,46 +513,48 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       console.warn(`[LIMIT_ENTRY] Usando currentPriceTrigger como averageEntryPrice (fallback).`);
     }
 
-    let remainingToFillMarket = 0;
+    // CALCULAR QUANTIDADE RESTANTE PARA MARKET (se necessário)
+    remainingToFillMarket = parseFloat((totalEntrySize - totalFilledSize).toFixed(quantityPrecision));
+
     // TENTAR PREENCHER RESTANTE COM ORDEM MARKET
-      if (remainingToFillMarket > 0) {
-        console.log(`[LIMIT_ENTRY] Tentando preencher restante (${remainingToFillMarket.toFixed(quantityPrecision)}) com ordem MARKET.`);
-        if (activeOrderId) { 
-          try {
-            const lastOrderStatus = await getOrderStatus(numericAccountId, signal.symbol, activeOrderId);
-            if (lastOrderStatus && (lastOrderStatus.status === 'NEW' || lastOrderStatus.status === 'PARTIALLY_FILLED')) {
-              await cancelOrder(numericAccountId, signal.symbol, activeOrderId); 
-              console.log(`[LIMIT_ENTRY] Última ordem LIMIT ${activeOrderId} cancelada.`);
-            }
-          } catch (cancelErr) { 
-            console.warn(`[LIMIT_ENTRY] Falha ao cancelar antes da MARKET:`, cancelErr.message); 
-          }
-          activeOrderId = null; 
-        }
+    if (remainingToFillMarket > 0) {
+      console.log(`[LIMIT_ENTRY] Tentando preencher restante (${remainingToFillMarket.toFixed(quantityPrecision)}) com ordem MARKET.`);
+      if (activeOrderId) { 
         try {
-          // NOVO: Enviar ordem MARKET
-          const marketOrderResponse = await api.newMarketOrder(
-            numericAccountId,
-            signal.symbol,
-            remainingToFillMarket,
-            binanceSide
-          );
-          if (marketOrderResponse && marketOrderResponse.orderId && marketOrderResponse.status === 'FILLED') {
-            const marketFilledQty = parseFloat(marketOrderResponse.executedQty);
-            const marketFilledPrice = parseFloat(marketOrderResponse.avgPrice || marketOrderResponse.price); 
-            if (marketFilledQty > 0) {
-              partialFills.push({ qty: marketFilledQty, price: marketFilledPrice, orderId: String(marketOrderResponse.orderId) });
-              totalFilledSize = partialFills.reduce((sum, pf) => sum + pf.qty, 0); 
-              averageEntryPrice = calculateAveragePrice(partialFills); 
-            }
-            console.log(`[LIMIT_ENTRY] Ordem MARKET final preenchida: ${marketFilledQty.toFixed(quantityPrecision)} @ ${marketFilledPrice.toFixed(pricePrecision)}`);
-          } else {
-            console.error(`[LIMIT_ENTRY] Falha na ordem MARKET final:`, marketOrderResponse);
+          const lastOrderStatus = await getOrderStatus(numericAccountId, signal.symbol, activeOrderId);
+          if (lastOrderStatus && (lastOrderStatus.status === 'NEW' || lastOrderStatus.status === 'PARTIALLY_FILLED')) {
+            await cancelOrder(numericAccountId, signal.symbol, activeOrderId); 
+            console.log(`[LIMIT_ENTRY] Última ordem LIMIT ${activeOrderId} cancelada.`);
           }
-        } catch (marketError) {
-          console.error(`[LIMIT_ENTRY] Erro ao executar ordem MARKET final:`, marketError.response?.data || marketError.message);
+        } catch (cancelErr) { 
+          console.warn(`[LIMIT_ENTRY] Falha ao cancelar antes da MARKET:`, cancelErr.message); 
         }
+        activeOrderId = null; 
       }
+      try {
+        // NOVO: Enviar ordem MARKET
+        const marketOrderResponse = await api.newMarketOrder(
+          numericAccountId,
+          signal.symbol,
+          remainingToFillMarket,
+          binanceSide
+        );
+        if (marketOrderResponse && marketOrderResponse.orderId && marketOrderResponse.status === 'FILLED') {
+          const marketFilledQty = parseFloat(marketOrderResponse.executedQty);
+          const marketFilledPrice = parseFloat(marketOrderResponse.avgPrice || marketOrderResponse.price); 
+          if (marketFilledQty > 0) {
+            partialFills.push({ qty: marketFilledQty, price: marketFilledPrice, orderId: String(marketOrderResponse.orderId) });
+            totalFilledSize = partialFills.reduce((sum, pf) => sum + pf.qty, 0); 
+            averageEntryPrice = calculateAveragePrice(partialFills); 
+          }
+          console.log(`[LIMIT_ENTRY] Ordem MARKET final preenchida: ${marketFilledQty.toFixed(quantityPrecision)} @ ${marketFilledPrice.toFixed(pricePrecision)}`);
+        } else {
+          console.error(`[LIMIT_ENTRY] Falha na ordem MARKET final:`, marketOrderResponse);
+        }
+      } catch (marketError) {
+        console.error(`[LIMIT_ENTRY] Erro ao executar ordem MARKET final:`, marketError.response?.data || marketError.message);
+      }
+    }
     
     const MIN_FILL_THRESHOLD_ABSOLUTE = 0.000001; 
     if (totalFilledSize <= MIN_FILL_THRESHOLD_ABSOLUTE) { 
