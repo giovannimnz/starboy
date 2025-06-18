@@ -56,7 +56,7 @@ async function updatePositionPricesWithTrailing(db, symbol, currentPrice, accoun
  */
 async function runPeriodicCleanup(accountId) {
   try {
-    console.log(`[CLEANUP] Executando limpeza periódica para conta ${accountId}...`);
+    //console.log(`[CLEANUP] Executando limpeza periódica para conta ${accountId}...`);
     
     // Verificar sinais expirados
     await checkExpiredSignals(accountId);
@@ -70,7 +70,7 @@ async function runPeriodicCleanup(accountId) {
       await forceCloseGhostPositions(accountId);
     }
     
-    console.log(`[CLEANUP] ✅ Limpeza periódica concluída para conta ${accountId}`);
+    //console.log(`[CLEANUP] ✅ Limpeza periódica concluída para conta ${accountId}`);
   } catch (error) {
     console.error(`[CLEANUP] Erro na limpeza periódica:`, error.message);
   }

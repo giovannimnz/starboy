@@ -136,7 +136,7 @@ async function syncAccountBalance(accountId) {
         console.log(`[MONITOR] 💰 Saldo alterado para conta ${accountId}: ${result.previousSaldo.toFixed(2)} → ${result.saldo.toFixed(2)} USDT (${sinal}${mudanca.toFixed(2)})`);
       }
       
-      console.log(`[MONITOR] ✅ Sincronização de saldo concluída para conta ${accountId}`);
+      //console.log(`[MONITOR] ✅ Sincronização de saldo concluída para conta ${accountId}`);
       
       return {
         accountId: accountId,
@@ -642,8 +642,8 @@ if (require.main === module) {
       
       // Log de heartbeat a cada 5 minutos
       if (heartbeatCounter % 30 === 0) { // 30 * 10s = 5 minutos
-        console.log(`[MONITOR] 💓 Heartbeat #${heartbeatCounter} - Conta ${targetAccountId} - ${now.toISOString()}`);
-        console.log(`[MONITOR] 📊 Jobs ativos: ${Object.keys(jobsResult).length}`);
+        //console.log(`[MONITOR] 💓 Heartbeat #${heartbeatCounter} - Conta ${targetAccountId} - ${now.toISOString()}`);
+        //console.log(`[MONITOR] 📊 Jobs ativos: ${Object.keys(jobsResult).length}`);
       }
     }, 10000); // Verificar a cada 10 segundos
     

@@ -577,7 +577,7 @@ async function getAllOpenPositions(accountId) {
         tipo: pos.marginType === 'isolated' ? 'ISOLATED' : 'CROSS'
       }));
 
-    console.log(`[API] ✅ ${openPositions.length} posições abertas encontradas para conta ${accountId}`);
+    //console.log(`[API] ✅ ${openPositions.length} posições abertas encontradas para conta ${accountId}`);
     return openPositions;
   } catch (error) {
     console.error(`[API] Erro ao obter posições abertas para conta ${accountId}:`, error.message);
@@ -872,7 +872,7 @@ async function getFuturesAccountBalanceDetails(accountId) {
       [saldoTotal, novaBaseCalculo, accountId]
     );
     
-    console.log(`[API] ✅ Saldo atualizado no banco para conta ${accountId}`);
+    //console.log(`[API] ✅ Saldo atualizado no banco para conta ${accountId}`);
     
     // RETORNAR FORMATO PADRONIZADO
     return {
