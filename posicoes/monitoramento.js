@@ -15,6 +15,51 @@ const { checkExpiredSignals } = require('./signalTimeout');
 const { runPeriodicCleanup, monitorWebSocketHealth, updatePositionPricesWithTrailing } = require('./enhancedMonitoring');
 const { cleanupOrphanSignals, forceCloseGhostPositions, cancelOrphanOrders } = require('./cleanup');
 
+// === DEBUGGING ROBUSTO ===
+console.log(`[MONITOR] 🚀 === INICIANDO MONITORAMENTO PARA CONTA ${process.argv[4] || 'INDEFINIDA'} ===`);
+console.log(`[MONITOR] 📅 Timestamp: ${new Date().toISOString()}`);
+console.log(`[MONITOR] 🖥️ Process ID: ${process.pid}`);
+console.log(`[MONITOR] 📁 Working Directory: ${process.cwd()}`);
+console.log(`[MONITOR] 📋 Arguments: ${JSON.stringify(process.argv)}`);
+
+// Capturar erros não tratados ANTES de qualquer outra coisa
+process.on('uncaughtException', (error) => {
+  console.error(`\n[MONITOR] 💥 ERRO CRÍTICO NÃO TRATADO:`, error);
+  console.error(`[MONITOR] Stack trace:`, error.stack);
+  console.error(`[MONITOR] 🚨 PROCESSO SERÁ ENCERRADO!`);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error(`\n[MONITOR] 🚫 PROMISE REJEITADA:`, reason);
+  console.error(`[MONITOR] Promise:`, promise);
+  console.error(`[MONITOR] 🚨 PROCESSO PODE SER ENCERRADO!`);
+  process.exit(1);
+});
+
+// === PARSING DE ARGUMENTOS ROBUSTO ===
+let targetAccountId = null;
+
+// Buscar --account
+const accountIndex = process.argv.indexOf('--account');
+if (accountIndex !== -1 && accountIndex + 1 < process.argv.length) {
+  const accountArg = process.argv[accountIndex + 1];
+  targetAccountId = parseInt(accountArg, 10);
+  
+  if (isNaN(targetAccountId) || targetAccountId <= 0) {
+    console.error(`[MONITOR] ❌ AccountId inválido: "${accountArg}" (convertido para: ${targetAccountId})`);
+    console.error(`[MONITOR] Uso correto: node monitoramento.js --account <ID_NUMERICO>`);
+    process.exit(1);
+  }
+} else {
+  console.error(`[MONITOR] ❌ Parâmetro --account não encontrado ou sem valor`);
+  console.error(`[MONITOR] Argumentos recebidos: ${JSON.stringify(process.argv)}`);
+  console.error(`[MONITOR] Uso correto: node monitoramento.js --account <ID_NUMERICO>`);
+  process.exit(1);
+}
+
+console.log(`[MONITOR] ✅ AccountId validado: ${targetAccountId}`);
+
 // Variáveis globais
 let handlers = {};
 let scheduledJobs = {};
@@ -168,7 +213,7 @@ async function initializeMonitoring(accountId) {
       throw credError;
     }
 
-/*    // === ETAPA 3.5: Inicializar Bot do Telegram ===
+   // === ETAPA 3.5: Inicializar Bot do Telegram ===
     console.log(`🤖 ETAPA 3.5: Inicializando bot do Telegram para conta ${accountId}...`);
     try {
       const telegramBot = await initializeTelegramBot(accountId);
@@ -180,7 +225,7 @@ async function initializeMonitoring(accountId) {
     } catch (telegramError) {
       console.error(`⚠️ Erro ao inicializar bot do Telegram para conta ${accountId}:`, telegramError.message);
     }
-    */
+    
     // === ETAPA 4: Verificar estado da conexão ===
     console.log(`🔗 ETAPA 4: Verificando estado da conexão da conta ${accountId}...`);
     
@@ -514,9 +559,82 @@ async function gracefulShutdown(accountIdToShutdown) {
   }
 }
 
-module.exports = {
-  initializeMonitoring,
-  syncAccountBalance,
-  gracefulShutdown,
-  checkNewTrades: (accountId) => checkNewTrades(accountId)
-};
+// === INICIALIZAÇÃO PROTEGIDA ===
+async function startMonitoringProcess() {
+  try {
+    console.log(`[MONITOR] 🔄 Iniciando sistema de monitoramento para conta ${targetAccountId}...`);
+    
+    // Verificar se todos os módulos necessários estão disponíveis
+    console.log(`[MONITOR] 📦 Verificando dependências...`);
+    
+    const requiredModules = [
+      '../db/conexao',
+      '../api',
+      '../websockets',
+      './telegramBot',
+      './signalProcessor',
+      './positionSync',
+      './orderHandlers',
+      './signalTimeout',
+      './enhancedMonitoring',
+      './cleanup'
+    ];
+    
+    for (const module of requiredModules) {
+      try {
+        require(module);
+        console.log(`[MONITOR]   ✅ ${module}`);
+      } catch (moduleError) {
+        console.error(`[MONITOR]   ❌ ${module}: ${moduleError.message}`);
+        throw new Error(`Falha ao carregar módulo ${module}: ${moduleError.message}`);
+      }
+    }
+    
+    console.log(`[MONITOR] ✅ Todas as dependências carregadas com sucesso`);
+    
+    // IMPORTANTE: Chamar initializeMonitoring de forma protegida
+    const jobsResult = await initializeMonitoring(targetAccountId);
+    
+    if (!jobsResult || Object.keys(jobsResult).length === 0) {
+      throw new Error('initializeMonitoring retornou resultado vazio ou inválido');
+    }
+    
+    console.log(`[MONITOR] 🎉 === MONITORAMENTO INICIALIZADO COM SUCESSO PARA CONTA ${targetAccountId} ===`);
+    console.log(`[MONITOR] 📊 Jobs agendados: ${Object.keys(jobsResult).length}`);
+    console.log(`[MONITOR] 🔄 Sistema entrando em modo de operação contínua...`);
+    
+    // Manter o processo vivo
+    setInterval(() => {
+      // Log de heartbeat a cada 5 minutos
+      const now = new Date();
+      if (now.getMinutes() % 5 === 0 && now.getSeconds() < 10) {
+        console.log(`[MONITOR] 💓 Heartbeat - Conta ${targetAccountId} - ${now.toISOString()}`);
+      }
+    }, 10000); // Verificar a cada 10 segundos
+    
+  } catch (error) {
+    console.error(`[MONITOR] ❌ ERRO FATAL na inicialização da conta ${targetAccountId}:`, error.message);
+    console.error(`[MONITOR] Stack trace:`, error.stack);
+    
+    // Tentar limpeza de emergência
+    try {
+      console.log(`[MONITOR] 🧹 Tentando limpeza de emergência...`);
+      await gracefulShutdown(targetAccountId);
+    } catch (cleanupError) {
+      console.error(`[MONITOR] ❌ Erro na limpeza de emergência:`, cleanupError.message);
+    }
+    
+    console.error(`[MONITOR] 🚨 PROCESSO SERÁ ENCERRADO DEVIDO AO ERRO FATAL`);
+    process.exit(1);
+  }
+}
+
+// === EXECUÇÃO PRINCIPAL ===
+if (require.main === module) {
+  console.log(`[MONITOR] 🎬 Executando como script principal para conta ${targetAccountId}`);
+  startMonitoringProcess();
+} else {
+  console.log(`[MONITOR] 📚 Carregado como módulo`);
+}
+
+// Remover a execução automática do final do arquivo se existir
