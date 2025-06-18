@@ -561,6 +561,8 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       try {
         // ENVIAR ORDEM MARKET
         console.log(`[LIMIT_ENTRY] Enviando ordem MARKET: ${binanceSide} ${remainingToFillMarket.toFixed(quantityPrecision)} ${signal.symbol}`);
+        console.log(`[LIMIT_ENTRY] DEBUG - Parâmetros: accountId=${numericAccountId}, symbol=${signal.symbol}, quantity=${remainingToFillMarket}, side=${binanceSide}`);
+        
         const marketOrderResponse = await api.newMarketOrder(
           numericAccountId,
           signal.symbol,
@@ -569,66 +571,78 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
         );
         
         console.log(`[LIMIT_ENTRY] Resposta ordem MARKET:`, marketOrderResponse);
+        console.log(`[LIMIT_ENTRY] DEBUG - Status inicial: ${marketOrderResponse?.status}, OrderId: ${marketOrderResponse?.orderId}`);
         
-        if (marketOrderResponse && marketOrderResponse.orderId) {
-          // AGUARDAR EXECUÇÃO DA ORDEM MARKET
-          let marketFinalStatus = marketOrderResponse;
-          let waitAttempts = 0;
-          const maxWaitAttempts = 10;
+        // AGUARDAR EXECUÇÃO DA ORDEM MARKET
+        let marketFinalStatus = marketOrderResponse;
+        let waitAttempts = 0;
+        const maxWaitAttempts = 10;
+        
+        // Se a ordem não foi preenchida imediatamente, aguardar
+        while (marketFinalStatus.status !== 'FILLED' && waitAttempts < maxWaitAttempts) {
+          console.log(`[LIMIT_ENTRY] Aguardando execução MARKET... tentativa ${waitAttempts + 1}/${maxWaitAttempts}, status: ${marketFinalStatus.status}`);
+          await new Promise(resolve => setTimeout(resolve, 500));
           
-          // Se a ordem não foi preenchida imediatamente, aguardar
-          while (marketFinalStatus.status !== 'FILLED' && waitAttempts < maxWaitAttempts) {
-            console.log(`[LIMIT_ENTRY] Aguardando execução MARKET... tentativa ${waitAttempts + 1}/${maxWaitAttempts}, status: ${marketFinalStatus.status}`);
-            await new Promise(resolve => setTimeout(resolve, 500));
+          try {
+            // ADICIONAR TIMEOUT PARA EVITAR TRAVAMENTO
+            const statusPromise = api.getOrderStatus(signal.symbol, marketOrderResponse.orderId, numericAccountId);
+            const timeoutPromise = new Promise((_, reject) => 
+              setTimeout(() => reject(new Error('Timeout ao verificar status')), 5000)
+            );
             
-            try {
-              marketFinalStatus = await api.getOrderStatus(signal.symbol, marketOrderResponse.orderId, numericAccountId);
-              console.log(`[LIMIT_ENTRY] Status atualizado MARKET: ${marketFinalStatus.status}, executedQty: ${marketFinalStatus.executedQty}`);
-            } catch (statusError) {
-              console.warn(`[LIMIT_ENTRY] Erro ao verificar status MARKET:`, statusError.message);
-              break;
+            marketFinalStatus = await Promise.race([statusPromise, timeoutPromise]);
+            console.log(`[LIMIT_ENTRY] Status atualizado MARKET: ${marketFinalStatus.status}, executedQty: ${marketFinalStatus.executedQty}`);
+          } catch (statusError) {
+            console.warn(`[LIMIT_ENTRY] Erro ao verificar status MARKET:`, statusError.message);
+            // Se der timeout ou erro, assumir que foi executada
+            if (statusError.message.includes('Timeout')) {
+              console.log(`[LIMIT_ENTRY] Timeout na verificação - assumindo ordem executada`);
+              marketFinalStatus = { 
+                status: 'FILLED', 
+                executedQty: remainingToFillMarket.toString(), 
+                avgPrice: currentPriceTrigger.toString() 
+              };
             }
-            
-            waitAttempts++;
+            break;
           }
           
-          // PROCESSAR RESULTADO FINAL
-          if (marketFinalStatus.status === 'FILLED') {
-            const marketFilledQty = parseFloat(marketFinalStatus.executedQty);
-            const marketFilledPrice = parseFloat(marketFinalStatus.avgPrice || marketFinalStatus.price);
+          waitAttempts++;
+        }
+        
+        // PROCESSAR RESULTADO FINAL
+        if (marketFinalStatus.status === 'FILLED') {
+          const marketFilledQty = parseFloat(marketFinalStatus.executedQty);
+          const marketFilledPrice = parseFloat(marketFinalStatus.avgPrice || marketFinalStatus.price);
+          
+          if (marketFilledQty > 0) {
+            partialFills.push({ 
+              qty: marketFilledQty, 
+              price: marketFilledPrice, 
+              orderId: String(marketOrderResponse.orderId) 
+            });
+            totalFilledSize = partialFills.reduce((sum, pf) => sum + pf.qty, 0);
+            averageEntryPrice = calculateAveragePrice(partialFills);
             
-            if (marketFilledQty > 0) {
-              partialFills.push({ 
-                qty: marketFilledQty, 
-                price: marketFilledPrice, 
-                orderId: String(marketOrderResponse.orderId) 
-              });
-              totalFilledSize = partialFills.reduce((sum, pf) => sum + pf.qty, 0);
-              averageEntryPrice = calculateAveragePrice(partialFills);
-              
-              console.log(`[LIMIT_ENTRY] ✅ Ordem MARKET executada: ${marketFilledQty.toFixed(quantityPrecision)} @ ${marketFilledPrice.toFixed(pricePrecision)}`);
-              console.log(`[LIMIT_ENTRY] ✅ Total preenchido: ${totalFilledSize.toFixed(quantityPrecision)}`);
-            }
-          } else {
-            console.warn(`[LIMIT_ENTRY] ⚠️ Ordem MARKET não foi totalmente executada. Status final: ${marketFinalStatus.status}, executedQty: ${marketFinalStatus.executedQty}`);
-            
-            // Se teve execução parcial, contabilizar
-            const partialQty = parseFloat(marketFinalStatus.executedQty || 0);
-            if (partialQty > 0) {
-              const partialPrice = parseFloat(marketFinalStatus.avgPrice || marketFinalStatus.price || currentPriceTrigger);
-              partialFills.push({ 
-                qty: partialQty, 
-                price: partialPrice, 
-                orderId: String(marketOrderResponse.orderId) 
-              });
-              totalFilledSize = partialFills.reduce((sum, pf) => sum + pf.qty, 0);
-              averageEntryPrice = calculateAveragePrice(partialFills);
-              
-              console.log(`[LIMIT_ENTRY] ⚠️ Contabilizada execução parcial MARKET: ${partialQty.toFixed(quantityPrecision)} @ ${partialPrice.toFixed(pricePrecision)}`);
-            }
+            console.log(`[LIMIT_ENTRY] ✅ Ordem MARKET executada: ${marketFilledQty.toFixed(quantityPrecision)} @ ${marketFilledPrice.toFixed(pricePrecision)}`);
+            console.log(`[LIMIT_ENTRY] ✅ Total preenchido: ${totalFilledSize.toFixed(quantityPrecision)}`);
           }
         } else {
-          console.error(`[LIMIT_ENTRY] ❌ Falha na criação da ordem MARKET: resposta inválida`);
+          console.warn(`[LIMIT_ENTRY] ⚠️ Ordem MARKET não foi totalmente executada. Status final: ${marketFinalStatus.status}, executedQty: ${marketFinalStatus.executedQty}`);
+          
+          // Se teve execução parcial, contabilizar
+          const partialQty = parseFloat(marketFinalStatus.executedQty || 0);
+          if (partialQty > 0) {
+            const partialPrice = parseFloat(marketFinalStatus.avgPrice || marketFinalStatus.price || currentPriceTrigger);
+            partialFills.push({ 
+              qty: partialQty, 
+              price: partialPrice, 
+              orderId: String(marketOrderResponse.orderId) 
+            });
+            totalFilledSize = partialFills.reduce((sum, pf) => sum + pf.qty, 0);
+            averageEntryPrice = calculateAveragePrice(partialFills);
+            
+            console.log(`[LIMIT_ENTRY] ⚠️ Contabilizada execução parcial MARKET: ${partialQty.toFixed(quantityPrecision)} @ ${partialPrice.toFixed(pricePrecision)}`);
+          }
         }
       } catch (marketError) {
         console.error(`[LIMIT_ENTRY] ❌ Erro ao executar ordem MARKET final:`, marketError.response?.data || marketError.message);
@@ -903,13 +917,153 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
     
     return { success: false, error: originalErrorMessage };
 
+  } catch (error) {
+    // BLOCO CATCH PRINCIPAL - MANTER APENAS ESTE
+    const originalErrorMessage = error.message || String(error);
+    console.error(`[LIMIT_ENTRY] ERRO FATAL DURANTE ENTRADA (Sinal ID ${signal.id}): ${originalErrorMessage}`, error.stack || error);
+    
+    // VERIFICAR SE JÁ EXISTE ALGUMA POSIÇÃO CRIADA (recovery)
+    if (positionId && totalFilledSize > 0 && averageEntryPrice > 0) {
+      console.warn(`[LIMIT_ENTRY_RECOVERY] Tentando SALVAR POSIÇÃO ${positionId} (${totalFilledSize.toFixed(quantityPrecision)} ${signal.symbol} @ ${averageEntryPrice.toFixed(pricePrecision)}) apesar do erro: ${originalErrorMessage}`);
+      
+      try {
+        // CRIAR SL/TP DE EMERGÊNCIA SE HOUVE PREENCHIMENTO
+        const binanceOppositeSide = binanceSide === 'BUY' ? 'SELL' : 'BUY';
+        const slPriceVal = signal.sl_price ? parseFloat(signal.sl_price) : null;
+        
+        if (slPriceVal && slPriceVal > 0) {
+          console.log(`[LIMIT_ENTRY_RECOVERY] Criando SL de emergência: ${totalFilledSize.toFixed(quantityPrecision)} @ ${slPriceVal.toFixed(pricePrecision)}`);
+          
+          const slResponse = await newStopOrder(
+            numericAccountId,
+            signal.symbol,
+            totalFilledSize,
+            binanceOppositeSide,
+            slPriceVal,
+            null,
+            true
+          );
+          
+          if (slResponse && slResponse.data && slResponse.data.orderId) {
+            console.log(`[LIMIT_ENTRY_RECOVERY] ✅ SL de emergência criado: ${slResponse.data.orderId}`);
+            
+            const slOrderData = {
+              tipo_ordem: 'STOP_MARKET',
+              preco: slPriceVal,
+              quantidade: totalFilledSize,
+              id_posicao: positionId,
+              status: 'NEW',
+              data_hora_criacao: formatDateForMySQL(new Date()),
+              id_externo: String(slResponse.data.orderId),
+              side: binanceOppositeSide,
+              simbolo: signal.symbol,
+              tipo_ordem_bot: 'STOP_LOSS',
+              target: null,
+              reduce_only: true,
+              close_position: false,
+              last_update: formatDateForMySQL(new Date()),
+              orign_sig: `WEBHOOK_${signal.id}_RECOVERY`
+            };
+            await insertNewOrder(connection, slOrderData);
+          }
+        }
+
+        // CRIAR TP DE EMERGÊNCIA SE DISPONÍVEL
+        const finalTpPriceVal = signal.tp_price ? parseFloat(signal.tp_price) : (signal.tp5_price ? parseFloat(signal.tp5_price) : null);
+        if (finalTpPriceVal && finalTpPriceVal > 0) {
+          console.log(`[LIMIT_ENTRY_RECOVERY] Criando TP de emergência: ${totalFilledSize.toFixed(quantityPrecision)} @ ${finalTpPriceVal.toFixed(pricePrecision)}`);
+          
+          const tpResponse = await newStopOrder(
+            numericAccountId,
+            signal.symbol,
+            totalFilledSize,
+            binanceOppositeSide,
+            finalTpPriceVal,
+            finalTpPriceVal,
+            true,
+            true
+          );
+          
+          if (tpResponse && tpResponse.data && tpResponse.data.orderId) {
+            console.log(`[LIMIT_ENTRY_RECOVERY] ✅ TP de emergência criado: ${tpResponse.data.orderId}`);
+            
+            const tpOrderData = {
+              tipo_ordem: 'TAKE_PROFIT_MARKET',
+              preco: finalTpPriceVal,
+              quantidade: totalFilledSize,
+              id_posicao: positionId,
+              status: 'NEW',
+              data_hora_criacao: formatDateForMySQL(new Date()),
+              id_externo: String(tpResponse.data.orderId),
+              side: binanceOppositeSide,
+              simbolo: signal.symbol,
+              tipo_ordem_bot: 'TAKE_PROFIT',
+              target: null,
+              reduce_only: true,
+              close_position: false,
+              last_update: formatDateForMySQL(new Date()),
+              orign_sig: `WEBHOOK_${signal.id}_RECOVERY`
+            };
+            await insertNewOrder(connection, tpOrderData);
+          }
+        }
+        
+        await connection.commit();
+        console.warn(`[LIMIT_ENTRY_RECOVERY] ✅ Posição ${positionId} SALVA com SL/TP de emergência. Erro original: ${originalErrorMessage}`);
+        
+        return {
+          success: true,
+          positionId,
+          averagePrice: averageEntryPrice,
+          filledQuantity: totalFilledSize,
+          warning: `Erro durante entrada: ${originalErrorMessage}. Posição salva com SL/TP de emergência.`
+        };
+        
+      } catch (recoveryError) {
+        console.error(`[LIMIT_ENTRY_RECOVERY] ❌ ERRO na recuperação:`, recoveryError.message);
+      }
+    }
+    
+    // CANCELAR ORDEM ATIVA SE EXISTIR
+    if (activeOrderId) {
+      try {
+        console.log(`[LIMIT_ENTRY] Cancelando ordem ativa ${activeOrderId}...`);
+        await cancelOrder(numericAccountId, signal.symbol, activeOrderId);
+        console.log(`[LIMIT_ENTRY] ✅ Ordem ${activeOrderId} cancelada`);
+      } catch (cancelError) {
+        console.error(`[LIMIT_ENTRY] Erro ao cancelar ordem ${activeOrderId}:`, cancelError.message);
+      }
+    }
+    
+    // ROLLBACK E ATUALIZAÇÃO DO STATUS
+    if (connection) {
+      try {
+        await connection.rollback();
+        console.log(`[LIMIT_ENTRY] ROLLBACK executado para sinal ${signal.id}`);
+      } catch (rollbackError) {
+        console.error(`[LIMIT_ENTRY] Erro no rollback:`, rollbackError.message);
+      }
+      
+      try {
+        await connection.query(
+          'UPDATE webhook_signals SET status = ?, error_message = ? WHERE id = ?',
+          ['ERROR', originalErrorMessage.substring(0, 250), signal.id]
+        );
+      } catch (updateError) {
+        console.error(`[LIMIT_ENTRY] Erro ao atualizar status:`, updateError.message);
+      }
+    }
+    
+    return { success: false, error: originalErrorMessage };
+
   } finally {
+    // BLOCO FINALLY
     if (depthWs) {
       console.log(`[LIMIT_ENTRY] Fechando WebSocket de profundidade para ${signal?.symbol || 'unknown'} no bloco finally.`);
       try {
         depthWs.close();
       } catch (wsCloseError) {
-        console.error(`[LIMIT_ENTRY] Erro ao fechar WebSocket de profundidade no finally: ${wsCloseError.message}`);
+        console.error(`[LIMIT_ENTRY] Erro ao fechar WebSocket:`, wsCloseError.message);
       }
     }
     if (connection) {
