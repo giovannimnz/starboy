@@ -1793,14 +1793,14 @@ async function getOrderStatus(symbol, orderId, accountId) {
     }
     
     if (!accountId || typeof accountId !== 'number') {
-      throw new Error(`AccountId deve ser um número. Recebido: ${accountId} (tipo: ${typeof accountId})`);
+      throw new Error(`AccountId deve ser um número válido: ${accountId}`);
     }
     
     console.log(`[API] Obtendo status da ordem ${orderId} para ${symbol} (conta ${accountId})...`);
     
     const params = {
       symbol: symbol,
-      orderId: String(orderId) // ✅ CORREÇÃO: Garantir que o ID da ordem seja sempre uma string.
+      orderId: String(orderId) // ✅ CORREÇÃO CRÍTICA: Garante que o ID não seja corrompido.
     };
     
     const response = await makeAuthenticatedRequest(accountId, 'GET', '/v1/order', params);

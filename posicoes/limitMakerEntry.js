@@ -136,6 +136,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
     const precisionInfo = await getPrecision(signal.symbol, numericAccountId);
     quantityPrecision = precisionInfo.quantityPrecision;
     pricePrecision = precisionInfo.pricePrecision;
+    const stepSize = precisionInfo.stepSize; // ✅ OBTÉM O STEP SIZE
 
     const availableBalance = await getAvailableBalance(numericAccountId);
     const capitalPercentage = parseFloat(signal.capital_pct) / 100;
@@ -149,7 +150,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
     }
     
     totalEntrySize = calculateOrderSize(
-      availableBalance, capitalPercentage, currentPriceTrigger, leverage, quantityPrecision
+      availableBalance, capitalPercentage, currentPriceTrigger, leverage, stepSize, quantityPrecision // ✅ PASSA O STEP SIZE PARA A FUNÇÃO
     );
     
     if (totalEntrySize <= 0 || isNaN(totalEntrySize)) {
@@ -1312,18 +1313,22 @@ async function getAvailableBalance(accountId) {
 
 
 // FUNÇÃO AUXILIAR PARA CALCULAR TAMANHO DA ORDEM
-function calculateOrderSize(availableBalance, capitalPercentage, entryPrice, leverage, precision) {
+function calculateOrderSize(availableBalance, capitalPercentage, entryPrice, leverage, stepSize, quantityPrecision) {
     const capital = availableBalance * capitalPercentage;
     const rawSize = (capital * leverage) / entryPrice;
     
-    const validPrecision = Math.max(0, Math.min(8, Math.floor(precision)));
+    if (stepSize <= 0) {
+        console.warn(`[MONITOR] StepSize inválido (${stepSize}), usando precisão para cálculo.`);
+        const multiplier = Math.pow(10, quantityPrecision);
+        const truncatedSize = Math.floor(rawSize * multiplier) / multiplier;
+        return parseFloat(truncatedSize.toFixed(quantityPrecision));
+    }
+
+    // ✅ CORREÇÃO: Usar o stepSize para truncar a quantidade. Isso garante que o valor é sempre um múltiplo válido.
+    const truncatedSize = Math.floor(rawSize / stepSize) * stepSize;
+    const formattedSize = parseFloat(truncatedSize.toFixed(quantityPrecision));
     
-    // ✅ CORREÇÃO: Truncar em vez de arredondar para garantir conformidade com o stepSize
-    const multiplier = Math.pow(10, validPrecision);
-    const truncatedSize = Math.floor(rawSize * multiplier) / multiplier;
-    const formattedSize = parseFloat(truncatedSize.toFixed(validPrecision));
-    
-    console.log(`[MONITOR] Cálculo: capital=${capital.toFixed(2)}, rawSize=${rawSize}, precisão=${validPrecision}, formatado=${formattedSize}`);
+    console.log(`[MONITOR] Cálculo: capital=${capital.toFixed(2)}, rawSize=${rawSize}, stepSize=${stepSize}, formatado=${formattedSize}`);
     
     return formattedSize;
 }
