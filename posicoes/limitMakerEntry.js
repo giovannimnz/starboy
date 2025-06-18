@@ -14,7 +14,7 @@ const {
   getAllOpenPositions, 
   getFuturesAccountBalanceDetails, 
   getPrecision,
-  getTickSize          // <-- ESTA FUNÇÃO ESTAVA FALTANDO
+  getTickSize
 } = require('../api');
 const { getDatabaseInstance, insertPosition, insertNewOrder, formatDateForMySQL } = require('../db/conexao');
 const websockets = require('../websockets');
@@ -1019,19 +1019,6 @@ async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3000, accountI
         console.log(`[WAIT_ORDER] Erro na verificação final da ordem ${orderId}: ${error.message}`);
         return { status: 'UNKNOWN', executedQty: '0', avgPrice: '0' };
     }
-}
-
-// FUNÇÃO AUXILIAR PARA OBTER TICK SIZE
-async function getTickSize(symbol, accountId) {
-  try {
-    const precision = await getPrecision(symbol, accountId);
-    return {
-      tickSize: precision.tickSize || 0.01
-    };
-  } catch (error) {
-    console.warn(`[LIMIT_ENTRY] Erro ao obter tick size para ${symbol}:`, error.message);
-    return { tickSize: 0.01 }
-  }
 }
 
 module.exports = {
