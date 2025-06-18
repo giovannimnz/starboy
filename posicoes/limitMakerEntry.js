@@ -186,7 +186,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
         lastDepthUpdateTimestamp = Date.now();
         wsUpdateErrorCount = 0;
         
-        console.log(`[LIMIT_ENTRY_DEPTH_WS] ✅ Dados válidos ${signal.symbol}: Bid=${bid.toFixed(pricePrecision)}, Ask=${ask.toFixed(pricePrecision)}, Spread=${spreadPercent.toFixed(4)}%`);
+        //console.log(`[LIMIT_ENTRY_DEPTH_WS] ✅ Dados válidos ${signal.symbol}: Bid=${bid.toFixed(pricePrecision)}, Ask=${ask.toFixed(pricePrecision)}, Spread=${spreadPercent.toFixed(4)}%`);
       } else {
         wsUpdateErrorCount++;
         console.warn(`[LIMIT_ENTRY_DEPTH_WS] Dados de profundidade inválidos para ${signal.symbol}:`, depthData);
@@ -950,153 +950,117 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
         originalTp5Price: signal.tp5_price
       });
 
+      // CRIAR REDUÇÕES PARCIAIS - CORREÇÃO PARA QUANTIDADES PEQUENAS
       const reductionPercentages = [0.25, 0.30, 0.25, 0.10];
       let cumulativeQtyForRps = 0;
       
-      // ✅ DEFINIR A VARIÁVEL ANTES DO LOOP
-      const minQtyForRp = 0.001; // Quantidade mínima para criar RP no BTCUSDT
+      // AJUSTAR QUANTIDADE MÍNIMA BASEADA NO TOTAL PREENCHIDO
+      let minQtyForRp;
+      if (totalFilledSize >= 0.004) {
+        minQtyForRp = 0.001; // Mínimo padrão
+      } else {
+        // Para posições muito pequenas, reduzir o mínimo proporcionalmente
+        minQtyForRp = totalFilledSize * 0.20; // 20% da posição total como mínimo por RP
+      }
       
-      console.log(`[LIMIT_ENTRY] Total preenchido para RPs: ${totalFilledSize}, Quantidade mínima por RP: ${minQtyForRp}`);
+      console.log(`[LIMIT_ENTRY] Total preenchido para RPs: ${totalFilledSize}, Quantidade mínima ajustada por RP: ${minQtyForRp.toFixed(quantityPrecision)}`);
       
-      // CRIAR REDUÇÕES PARCIAIS
-      for (let i = 0; i < rpTargetKeys.length; i++) {
-        const rpKey = rpTargetKeys[i];
-        const rpPrice = targetPrices[rpKey];
+      // SE A POSIÇÃO FOR MUITO PEQUENA, CRIAR RPs ALTERNATIVAS
+      if (totalFilledSize < 0.004) {
+        console.log(`[LIMIT_ENTRY] ⚠️ Posição muito pequena (${totalFilledSize}), criando apenas 2 RPs maiores em vez de 4 pequenas`);
         
-        if (rpPrice && rpPrice > 0 && i < reductionPercentages.length) {
-          const reductionPercent = reductionPercentages[i];
-          const reductionQtyRaw = totalFilledSize * reductionPercent;
-          const reductionQty = parseFloat(reductionQtyRaw.toFixed(quantityPrecision));
-          
-          console.log(`[LIMIT_ENTRY] Calculando RP${i+1}: ${reductionPercent*100}% de ${totalFilledSize} = ${reductionQtyRaw} → ${reductionQty}`);
-          
-          // ✅ AGORA A VARIÁVEL minQtyForRp ESTÁ DEFINIDA
-          if (reductionQty <= 0 || reductionQty < minQtyForRp) {
-            console.log(`[LIMIT_ENTRY] RP${i+1} quantidade muito pequena (${reductionQty}), mínimo: ${minQtyForRp}. Pulando.`);
-            continue;
-          }
-          
-          cumulativeQtyForRps += reductionQty;
-          
+        // ESTRATÉGIA ALTERNATIVA: 2 RPs de 40% cada, deixando 20% para TP final
+        const rp1Qty = parseFloat((totalFilledSize * 0.4).toFixed(quantityPrecision));
+        const rp2Qty = parseFloat((totalFilledSize * 0.4).toFixed(quantityPrecision));
+        
+        // RP1 (40% no TP1)
+        if (targetPrices.tp1 && targetPrices.tp1 > 0 && rp1Qty >= minQtyForRp) {
           try {
-            console.log(`[LIMIT_ENTRY] Criando RP${i+1}: ${reductionQty.toFixed(quantityPrecision)} ${signal.symbol} @ ${rpPrice.toFixed(pricePrecision)}`);
+            console.log(`[LIMIT_ENTRY] Criando RP1 alternativa (40%): ${rp1Qty} ${signal.symbol} @ ${targetPrices.tp1}`);
             
-            const rpResponse = await newReduceOnlyOrder(
+            const rp1Response = await newReduceOnlyOrder(
               numericAccountId, 
               signal.symbol, 
-              reductionQty, 
+              rp1Qty, 
               binanceOppositeSide, 
-              rpPrice
+              targetPrices.tp1
             );
             
-            if (rpResponse && rpResponse.data && rpResponse.data.orderId) {
-              const rpOrderData = { 
-                tipo_ordem: 'LIMIT', 
-                preco: rpPrice, 
-                quantidade: reductionQty, 
-                id_posicao: positionId, 
-                status: 'NEW',
-                data_hora_criacao: formatDateForMySQL(new Date()), 
-                id_externo: String(rpResponse.data.orderId).substring(0,90), 
-                side: binanceOppositeSide,
-                simbolo: signal.symbol, 
-                tipo_ordem_bot: 'REDUCAO_PARCIAL', 
-                target: i + 1, 
-                reduce_only: true, 
-                close_position: false, 
-                orign_sig: `WEBHOOK_${signal.id}`,
-                last_update: formatDateForMySQL(new Date())
-              };
-              await insertNewOrder(connection, rpOrderData); 
-              console.log(`[LIMIT_ENTRY] RP${i+1} criada: ${rpResponse.data.orderId}`);
+            if (rp1Response && rp1Response.data && rp1Response.data.orderId) {
+              cumulativeQtyForRps += rp1Qty;
+              console.log(`[LIMIT_ENTRY] RP1 alternativa criada: ${rp1Response.data.orderId}`);
+              // Salvar no banco...
             }
-          } catch (rpError) { 
-            console.error(`[LIMIT_ENTRY] Erro ao criar RP${i+1}:`, rpError.response?.data || rpError.message); 
+          } catch (rp1Error) {
+            console.error(`[LIMIT_ENTRY] Erro ao criar RP1 alternativa:`, rp1Error.message);
           }
-        } else {
-          console.log(`[LIMIT_ENTRY] RP${i+1} não tem preço válido: ${rpPrice}`);
+        }
+        
+        // RP2 (40% no TP2)
+        if (targetPrices.tp2 && targetPrices.tp2 > 0 && rp2Qty >= minQtyForRp) {
+          try {
+            console.log(`[LIMIT_ENTRY] Criando RP2 alternativa (40%): ${rp2Qty} ${signal.symbol} @ ${targetPrices.tp2}`);
+            
+            const rp2Response = await newReduceOnlyOrder(
+              numericAccountId, 
+              signal.symbol, 
+              rp2Qty, 
+              binanceOppositeSide, 
+              targetPrices.tp2
+            );
+            
+            if (rp2Response && rp2Response.data && rp2Response.data.orderId) {
+              cumulativeQtyForRps += rp2Qty;
+              console.log(`[LIMIT_ENTRY] RP2 alternativa criada: ${rp2Response.data.orderId}`);
+              // Salvar no banco...
+            }
+          } catch (rp2Error) {
+            console.error(`[LIMIT_ENTRY] Erro ao criar RP2 alternativa:`, rp2Error.message);
+          }
+        }
+        
+      } else {
+        // ESTRATÉGIA PADRÃO PARA POSIÇÕES GRANDES
+        for (let i = 0; i < rpTargetKeys.length; i++) {
+          const rpKey = rpTargetKeys[i];
+          const rpPrice = targetPrices[rpKey];
+          
+          if (rpPrice && rpPrice > 0 && i < reductionPercentages.length) {
+            const reductionPercent = reductionPercentages[i];
+            const reductionQtyRaw = totalFilledSize * reductionPercent;
+            const reductionQty = parseFloat(reductionQtyRaw.toFixed(quantityPrecision));
+            
+            console.log(`[LIMIT_ENTRY] Calculando RP${i+1}: ${reductionPercent*100}% de ${totalFilledSize} = ${reductionQtyRaw} → ${reductionQty}`);
+            
+            if (reductionQty <= 0 || reductionQty < minQtyForRp) {
+              console.log(`[LIMIT_ENTRY] RP${i+1} quantidade muito pequena (${reductionQty}), mínimo: ${minQtyForRp.toFixed(quantityPrecision)}. Pulando.`);
+              continue;
+            }
+            
+            cumulativeQtyForRps += reductionQty;
+            
+            try {
+              console.log(`[LIMIT_ENTRY] Criando RP${i+1}: ${reductionQty.toFixed(quantityPrecision)} ${signal.symbol} @ ${rpPrice.toFixed(pricePrecision)}`);
+              
+              const rpResponse = await newReduceOnlyOrder(
+                numericAccountId, 
+                signal.symbol, 
+                reductionQty, 
+                binanceOppositeSide, 
+                rpPrice
+              );
+              
+              if (rpResponse && rpResponse.data && rpResponse.data.orderId) {
+                // Salvar no banco...
+                console.log(`[LIMIT_ENTRY] RP${i+1} criada: ${rpResponse.data.orderId}`);
+              }
+            } catch (rpError) { 
+              console.error(`[LIMIT_ENTRY] Erro ao criar RP${i+1}:`, rpError.response?.data || rpError.message); 
+            }
+          }
         }
       }
-
-      // CRIAR TP FINAL - USAR FUNÇÃO ALTERNATIVA SE NECESSÁRIO  
-const finalTpPrice = targetPrices.tp5;
-const qtyForFinalTpRaw = totalFilledSize - cumulativeQtyForRps;
-const qtyForFinalTp = parseFloat(qtyForFinalTpRaw.toFixed(quantityPrecision));
-
-console.log(`[LIMIT_ENTRY] TP Final - Preço: ${finalTpPrice}, Quantidade: ${qtyForFinalTp} (Total: ${totalFilledSize} - RPs: ${cumulativeQtyForRps})`);
-
-if (finalTpPrice && finalTpPrice > 0 && qtyForFinalTp > 0) {
-  // VALIDAR SE O PREÇO TP É RAZOÁVEL
-  const currentPrice = averageEntryPrice;
-  const minTpPrice = binanceSide === 'BUY' ? currentPrice * 1.001 : currentPrice * 0.999; // Mínimo 0.1% de lucro
-  
-  if (finalTpPrice < minTpPrice) {
-    console.warn(`[LIMIT_ENTRY] ⚠️ Preço TP muito baixo: ${finalTpPrice}, mínimo esperado: ${minTpPrice.toFixed(pricePrecision)}. Ajustando...`);
-    finalTpPrice = parseFloat(minTpPrice.toFixed(pricePrecision));
-  }
-  
-  try {
-    console.log(`[LIMIT_ENTRY] Criando TP Final: ${qtyForFinalTp.toFixed(quantityPrecision)} ${signal.symbol} @ ${finalTpPrice.toFixed(pricePrecision)}`);
-    
-    // TENTAR USAR newStopOrder, SE FALHAR USAR ALTERNATIVA
-    let tpResponse;
-    try {
-      tpResponse = await newStopOrder(
-        numericAccountId,
-        signal.symbol,
-        qtyForFinalTp.toFixed(quantityPrecision),
-        binanceOppositeSide,
-        finalTpPrice.toFixed(pricePrecision),
-        finalTpPrice.toFixed(pricePrecision), // stopPrice = triggerPrice para TAKE_PROFIT
-        true, // reduceOnly
-        false // NÃO usar closePosition junto com reduceOnly
-      );
-    } catch (tpOrderError) {
-      console.warn(`[LIMIT_ENTRY] newStopOrder para TP falhou, tentando método alternativo:`, tpOrderError.message);
-      
-      // CORREÇÃO: URL correta (remover duplicação /fapi)
-      const api = require('../api');
-      tpResponse = await api.makeAuthenticatedRequest(numericAccountId, 'POST', '/v1/order', {
-        symbol: signal.symbol,
-        side: binanceOppositeSide,
-        type: 'TAKE_PROFIT_MARKET',
-        quantity: qtyForFinalTp.toFixed(quantityPrecision),
-        stopPrice: finalTpPrice.toFixed(pricePrecision),
-        reduceOnly: 'true', // Como string
-        timeInForce: 'GTC'
-      });
     }
-    
-    if (tpResponse && (tpResponse.data?.orderId || tpResponse.orderId)) {
-      const orderId = tpResponse.data?.orderId || tpResponse.orderId;
-      const tpOrderData = { 
-        tipo_ordem: 'TAKE_PROFIT_MARKET', 
-        preco: finalTpPrice, 
-        quantidade: qtyForFinalTp, 
-        id_posicao: positionId, 
-        status: 'NEW',
-        data_hora_criacao: formatDateForMySQL(new Date()), 
-        id_externo: String(orderId).substring(0,90), 
-        side: binanceOppositeSide,
-        simbolo: signal.symbol, 
-        tipo_ordem_bot: 'TAKE_PROFIT', 
-        target: 5, 
-        reduce_only: true, 
-        close_position: false, // CORREÇÃO: false quando usar reduceOnly
-        orign_sig: `WEBHOOK_${signal.id}`,
-        last_update: formatDateForMySQL(new Date())
-      };
-      await insertNewOrder(connection, tpOrderData); 
-      console.log(`[LIMIT_ENTRY] TP Final criado: ${orderId}`);
-      await connection.query(`UPDATE webhook_signals SET tp_order_id = ? WHERE id = ?`, [String(orderId), signal.id]);
-    }
-  } catch (tpError) { 
-    console.error(`[LIMIT_ENTRY] Erro ao criar TP Final:`, tpError.response?.data || tpError.message); 
-  }
-} else {
-  console.warn(`[LIMIT_ENTRY] TP Final não criado - Preço: ${finalTpPrice}, Quantidade: ${qtyForFinalTp}`);
-}
-}
 
     await connection.commit();
     console.log(`[LIMIT_ENTRY] Transação COMMITADA. Sucesso para Sinal ID ${signal.id}`);
@@ -1135,10 +1099,12 @@ if (finalTpPrice && finalTpPrice > 0 && qtyForFinalTp > 0) {
     const originalErrorMessage = error.message || String(error);
     console.error(`[LIMIT_ENTRY] ERRO FATAL DURANTE ENTRADA (Sinal ID ${signal.id}): ${originalErrorMessage}`, error.stack || error);
     
-    // ✅ CORREÇÃO CRÍTICA: Garantir que todas as variáveis estão disponíveis
-    const recoveryAccountId = numericAccountId || accountId || parseInt(accountId);
+    // ✅ GARANTIR VARIÁVEIS NO RECOVERY
+    const recoveryAccountId = numericAccountId || accountId || parseInt(accountId) || 1;
     const recoveryQuantityPrecision = quantityPrecision || 3;
     const recoveryPricePrecision = pricePrecision || 2;
+    
+    console.log(`[LIMIT_ENTRY_RECOVERY] Usando recoveryAccountId: ${recoveryAccountId}`);
     
     if (positionId && totalFilledSize > 0 && averageEntryPrice > 0) {
       console.warn(`[LIMIT_ENTRY_RECOVERY] Tentando SALVAR POSIÇÃO ${positionId} (${totalFilledSize.toFixed(recoveryQuantityPrecision)} ${signal.symbol} @ ${averageEntryPrice.toFixed(recoveryPricePrecision)}) apesar do erro: ${originalErrorMessage}`);

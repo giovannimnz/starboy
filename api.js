@@ -1018,26 +1018,42 @@ async function roundPriceToTickSize(symbol, price, accountId) {
     console.log(`[API] Arredondando preço ${price} para ${symbol}...`);
     
     const precision = await getPrecisionCached(symbol, accountId);
-    const tickSize = Math.pow(10, -precision.pricePrecision);
+    
+    // CORREÇÃO CRÍTICA: Usar tickSize real do exchangeInfo em vez de calcular
+    let tickSize;
+    if (precision.tickSize && precision.tickSize > 0) {
+      tickSize = precision.tickSize;
+    } else {
+      // Fallback: calcular baseado na pricePrecision
+      tickSize = Math.pow(10, -precision.pricePrecision);
+    }
     
     if (!tickSize || tickSize <= 0) {
       console.warn(`[API] TickSize inválido para ${symbol}, usando preço original`);
       return parseFloat(price);
     }
     
-    // CORREÇÃO CRÍTICA: Usar Math.round para evitar problemas de floating point
-    const tickSizeMultiplier = 1 / tickSize;
-    const rounded = Math.round(price * tickSizeMultiplier) / tickSizeMultiplier;
+    // CORREÇÃO MATEMÁTICA: Usar arredondamento mais preciso
+    const multiplier = 1 / tickSize;
+    const rounded = Math.round(price * multiplier) / multiplier;
     
-    // Garantir que o preço tenha a precisão correta
+    // VALIDAÇÃO FINAL: Garantir que o preço é múltiplo exato do tickSize
+    const remainder = (rounded * 1e10) % (tickSize * 1e10);
+    
+    if (Math.abs(remainder) > 1e-10) {
+      // Se ainda não é múltiplo exato, forçar arredondamento
+      const corrected = Math.floor(price / tickSize) * tickSize;
+      console.log(`[API] Preço corrigido para múltiplo exato: ${price} → ${corrected} (tick: ${tickSize})`);
+      return parseFloat(corrected.toFixed(precision.pricePrecision));
+    }
+    
     const finalPrice = parseFloat(rounded.toFixed(precision.pricePrecision));
-    
     console.log(`[API] Preço ${price} arredondado para ${finalPrice} (tick size: ${tickSize})`);
     return finalPrice;
     
   } catch (error) {
     console.error(`[API] Erro ao arredondar preço para ${symbol}:`, error.message);
-    return parseFloat(price); // Retorna preço original em caso de erro
+    return parseFloat(price);
   }
 }
 

@@ -590,7 +590,7 @@ function setupBookDepthWebsocket(symbol, callback, accountId) {
         if (!isNaN(bestBid) && !isNaN(bestAsk) && 
             bestBid > 0 && bestAsk > 0 && bestBid < bestAsk) {
           
-          console.log(`[WEBSOCKET] BookTicker dados válidos ${symbol}: Bid=${bestBid}, Ask=${bestAsk}`);
+          //console.log(`[WEBSOCKET] BookTicker dados válidos ${symbol}: Bid=${bestBid}, Ask=${bestAsk}`);
           
           callback({
             bestBid, 
