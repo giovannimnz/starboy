@@ -511,6 +511,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       console.warn(`[LIMIT_ENTRY] Usando currentPriceTrigger como averageEntryPrice (fallback).`);
     }
 
+    let remainingToFillMarket = 0;
     // TENTAR PREENCHER RESTANTE COM ORDEM MARKET
       if (remainingToFillMarket > 0) {
         console.log(`[LIMIT_ENTRY] Tentando preencher restante (${remainingToFillMarket.toFixed(quantityPrecision)}) com ordem MARKET.`);
