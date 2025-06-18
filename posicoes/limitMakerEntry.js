@@ -1,6 +1,21 @@
 const axios = require('axios');
 const fs = require('fs').promises;
-const { getRecentOrders, editOrder, roundPriceToTickSize, newMarketOrder, newLimitMakerOrder, newReduceOnlyOrder, cancelOrder, newStopOrder, getOpenOrders, getOrderStatus, getAllOpenPositions, getFuturesAccountBalanceDetails, getPrecision } = require('../api');
+const { 
+  getRecentOrders, 
+  editOrder, 
+  roundPriceToTickSize, 
+  newMarketOrder, 
+  newLimitMakerOrder, 
+  newReduceOnlyOrder, 
+  cancelOrder, 
+  newStopOrder, 
+  getOpenOrders, 
+  getOrderStatus, 
+  getAllOpenPositions, 
+  getFuturesAccountBalanceDetails, 
+  getPrecision,
+  getTickSize          // <-- ESTA FUNÇÃO ESTAVA FALTANDO
+} = require('../api');
 const { getDatabaseInstance, insertPosition, insertNewOrder, formatDateForMySQL } = require('../db/conexao');
 const websockets = require('../websockets');
 const api = require('../api');
@@ -235,7 +250,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
     }
 
     // OBTER TICK SIZE UMA ÚNICA VEZ FORA DO LOOP
-    const tickSizeData = await api.getTickSize(signal.symbol, numericAccountId);
+    const tickSizeData = await getTickSize(signal.symbol, numericAccountId);
     const tickSize = parseFloat(tickSizeData.tickSize) || 0.01;
     
     console.log(`[LIMIT_ENTRY] ✅ Dados iniciais prontos. Iniciando loop de chasing...`);
@@ -703,14 +718,15 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
         try {
           console.log(`[LIMIT_ENTRY] Criando SL: ${totalFilledSize} ${signal.symbol} @ ${slPriceVal}`);
           
+          // USAR A FUNÇÃO CORRETA DO API.JS
           const stopOrderResult = await newStopOrder(
             numericAccountId,
             signal.symbol,
             totalFilledSize,
             binanceOppositeSide,
             slPriceVal,
-            null,
-            true
+            null, // stopPrice = triggerPrice
+            true  // reduceOnly
           );
           
           if (stopOrderResult && stopOrderResult.data && stopOrderResult.data.orderId) {
@@ -721,7 +737,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
               preco: slPriceVal,
               quantidade: totalFilledSize,
               id_posicao: positionId,
-              status: 'OPEN',
+              status: 'NEW',
               data_hora_criacao: formatDateForMySQL(new Date()),
               id_externo: String(stopOrderResult.data.orderId),
               side: binanceOppositeSide,
@@ -735,13 +751,14 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
             };
             
             await insertNewOrder(connection, slOrderData);
+            await connection.query(`UPDATE webhook_signals SET sl_order_id = ? WHERE id = ?`, [String(stopOrderResult.data.orderId), signal.id]);
           }
         } catch (slError) {
           console.error(`[LIMIT_ENTRY] Erro ao criar SL:`, slError.message);
         }
       }
 
-      // CRIAR TAKE PROFITS
+      // CRIAR TAKE PROFITS - CORREÇÃO
       const targetPrices = {
         tp1: signal.tp1_price ? parseFloat(signal.tp1_price) : null,
         tp2: signal.tp2_price ? parseFloat(signal.tp2_price) : null,
@@ -753,6 +770,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       const reductionPercentages = [0.25, 0.30, 0.25, 0.10];
       let cumulativeQtyForRps = 0;
       
+      // CRIAR REDUÇÕES PARCIAIS
       for (let i = 0; i < rpTargetKeys.length; i++) {
         const rpKey = rpTargetKeys[i];
         const rpPrice = targetPrices[rpKey];
@@ -766,7 +784,16 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
           cumulativeQtyForRps += reductionQty;
           try {
             console.log(`[LIMIT_ENTRY] Criando RP${i+1}: ${reductionQty.toFixed(quantityPrecision)} ${signal.symbol} @ ${rpPrice.toFixed(pricePrecision)}`);
-            const rpResponse = await newReduceOnlyOrder(numericAccountId, signal.symbol, reductionQty, binanceOppositeSide, rpPrice.toFixed(pricePrecision));
+            
+            // USAR A FUNÇÃO CORRETA DO API.JS
+            const rpResponse = await newReduceOnlyOrder(
+              numericAccountId, 
+              signal.symbol, 
+              reductionQty, 
+              binanceOppositeSide, 
+              rpPrice.toFixed(pricePrecision)
+            );
+            
             if (rpResponse && rpResponse.data && rpResponse.data.orderId) {
               const rpOrderData = { 
                 tipo_ordem: 'LIMIT', 
@@ -802,10 +829,19 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       if (finalTpPrice && finalTpPrice > 0 && qtyForFinalTp > 0) {
         try {
           console.log(`[LIMIT_ENTRY] Criando TP Final: ${qtyForFinalTp.toFixed(quantityPrecision)} ${signal.symbol} @ ${finalTpPrice.toFixed(pricePrecision)}`);
-          const tpResponse = await newStopOrder(numericAccountId, signal.symbol, qtyForFinalTp.toFixed(quantityPrecision), 
-              binanceOppositeSide, finalTpPrice.toFixed(pricePrecision), 
-              finalTpPrice.toFixed(pricePrecision), true, true 
+          
+          // USAR A FUNÇÃO CORRETA DO API.JS PARA TAKE PROFIT
+          const tpResponse = await newStopOrder(
+            numericAccountId, 
+            signal.symbol, 
+            qtyForFinalTp.toFixed(quantityPrecision), 
+            binanceOppositeSide, 
+            finalTpPrice.toFixed(pricePrecision), 
+            finalTpPrice.toFixed(pricePrecision), // stopPrice = triggerPrice para TAKE_PROFIT
+            true, // reduceOnly
+            true  // closePosition
           );
+          
           if (tpResponse && tpResponse.data && tpResponse.data.orderId) {
             const tpOrderData = { 
               tipo_ordem: 'TAKE_PROFIT_MARKET', 
