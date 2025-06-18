@@ -1,3 +1,8 @@
+const axios = require('axios');
+const fs = require('fs').promises;
+const { newEntryOrder, getRecentOrders, editOrder, roundPriceToTickSize, newLimitMakerOrder, newReduceOnlyOrder, cancelOrder, newStopOrder, getOpenOrders, getOrderStatus, getAllOpenPositions, getPrecision, getTickSize } = require('../api');
+const { getDatabaseInstance, insertPosition, insertNewOrder, formatDateForMySQL } = require('../db/conexao');
+const websockets = require('../websockets');
 const api = require('../api');
 const globalExecutionCache = new Map();
 
@@ -22,73 +27,20 @@ function getOrCreateExecutionCache(symbol, accountId) {
   return globalExecutionCache.get(cacheKey);
 }
 
-async function getOptimizedPrecision(symbol, accountId) {
-  const cache = getOrCreateExecutionCache(symbol, accountId);
-  
-  if (cache.precision) {
-    console.log(`[LIMIT_ENTRY] Usando precisão em cache otimizado para ${symbol}`);
-    return cache.precision;
-  }
-  
-  console.log(`[LIMIT_ENTRY] Obtendo precisão ÚNICA para ${symbol} (execução otimizada)`);
-  const { getPrecisionCached } = require('../api');
-  cache.precision = await getPrecisionCached(symbol, accountId);
-  
-  return cache.precision;
-}
-
-async function getOptimizedTickSize(symbol, accountId) {
-  const cache = getOrCreateExecutionCache(symbol, accountId);
-  
-  if (cache.tickSize) {
-    console.log(`[LIMIT_ENTRY] Usando tick size em cache otimizado para ${symbol}`);
-    return cache.tickSize;
-  }
-  
-  console.log(`[LIMIT_ENTRY] Obtendo tick size ÚNICO para ${symbol} (execução otimizada)`);
-  const precision = await getOptimizedPrecision(symbol, accountId);
-  cache.tickSize = Math.pow(10, -precision.pricePrecision);
-  
-  return cache.tickSize;
-}
-
-
 // CORREÇÃO: Cache de precisão único para toda a execução
 let cachedPrecisionInfo = null;
 let cachedSymbol = null;
 
-async function getCachedPrecisionOnce(symbol, accountId) {
-  if (cachedPrecisionInfo && cachedSymbol === symbol) {
-    console.log(`[LIMIT_ENTRY] Usando precisão em cache para ${symbol}`);
-    return cachedPrecisionInfo;
-  }
-  
-  console.log(`[LIMIT_ENTRY] Obtendo precisão ÚNICA para ${symbol}`);
-  const { getPrecisionCached } = require('../api');
-  cachedPrecisionInfo = await getPrecisionCached(symbol, accountId);
-  cachedSymbol = symbol;
-  
-  return cachedPrecisionInfo;
-}
-
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
-const axios = require('axios');
-const fs = require('fs').promises;
-const { newEntryOrder, getRecentOrders, editOrder, roundPriceToTickSize, newLimitMakerOrder, newReduceOnlyOrder, cancelOrder, newStopOrder, getOpenOrders, getOrderStatus, getAllOpenPositions, getPrecision, getTickSize } = require('../api');
-const { getDatabaseInstance, insertPosition, insertNewOrder, formatDateForMySQL } = require('../db/conexao');
-const websockets = require('../websockets');
-
 /**
  * Executa entrada usando Limit Maker
- * @param {Object} db - Conexão com o banco de dados
  * @param {Object} signal - Sinal a ser processado
- * @param {number} currentPrice - Preço atual do mercado
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} Resultado da operação
  */
-async function executeLimitMakerEntry(db, signal, currentPrice, accountId) {
+async function executeLimitMakerEntry(signal, accountId) {
     let connection = null;
     let activeOrderId = null;
     let depthWs = null;
@@ -105,7 +57,32 @@ async function executeLimitMakerEntry(db, signal, currentPrice, accountId) {
             throw new Error(`AccountId inválido em executeLimitMakerEntry: ${accountId} (tipo: ${typeof accountId})`);
         }
         
+        // CORREÇÃO: Validar signal
+        if (!signal || !signal.id || !signal.symbol) {
+            throw new Error(`Signal inválido: ${JSON.stringify(signal)}`);
+        }
+        
         console.log(`[LIMIT_ENTRY] Iniciando LIMIT MAKER para Sinal ID ${signal.id} (${signal.symbol}) na conta ${accountId}`);
+        
+        // CORREÇÃO: Obter conexão corretamente
+        const { getDatabaseInstance } = require('../db/conexao');
+        const db = await getDatabaseInstance(accountId);
+        
+        if (!db) {
+            throw new Error(`Não foi possível obter conexão com banco para conta ${accountId}`);
+        }
+        
+        connection = await db.getConnection();
+        
+        // CORREÇÃO: Obter preço atual se necessário
+        const api = require('../api');
+        const currentPrice = signal.price || signal.entry_price || await api.getPrice(signal.symbol, accountId);
+        
+        if (!currentPrice || currentPrice <= 0) {
+            throw new Error(`Preço inválido para ${signal.symbol}: ${currentPrice}`);
+        }
+        
+        console.log(`[LIMIT_ENTRY] Preço para entrada: ${currentPrice}`);
         
         // Obter a conexão do banco de dados para a conta específica
         connection = await db.getConnection();
@@ -832,116 +809,37 @@ async function executeLimitMakerEntry(db, signal, currentPrice, accountId) {
 
     } catch (error) { 
         const originalErrorMessage = error.message || String(error);
-        console.error(`[LIMIT_ENTRY] ERRO FATAL DURANTE ENTRADA (Sinal ID ${signal.id}): ${originalErrorMessage}`, error.stack || error);
+        console.error(`[LIMIT_ENTRY] ERRO FATAL DURANTE ENTRADA (Sinal ID ${signal.id}): ${originalErrorMessage}`);
         
-        // Lógica de recuperação se posição foi criada mas houve erro
-        if (positionId && totalFilledSize > 0 && averageEntryPrice > 0) { 
-            console.warn(`[LIMIT_ENTRY_RECOVERY] Tentando SALVAR POSIÇÃO ${positionId} (${totalFilledSize.toFixed(quantityPrecision)} ${signal.symbol} @ ${averageEntryPrice.toFixed(pricePrecision)}) e enviar SL/TP de emergência devido ao erro: ${originalErrorMessage}`);
+        // CORREÇÃO: Verificar se db está disponível antes de usar
+        if (connection) {
             try {
-                const binanceOppositeSide = binanceSide === 'BUY' ? 'SELL' : 'BUY';
-                const slPriceVal = signal.sl_price ? parseFloat(signal.sl_price) : null;
-                
-                if (slPriceVal && slPriceVal > 0) {
-                    console.log(`[LIMIT_ENTRY_RECOVERY] Enviando SL de emergência: ${totalFilledSize.toFixed(quantityPrecision)} @ ${slPriceVal.toFixed(pricePrecision)}`);
-                    const slResponse = await newStopOrder(numericAccountId, signal.symbol, totalFilledSize.toFixed(quantityPrecision), 
-                        binanceOppositeSide, slPriceVal.toFixed(pricePrecision), null, true, true 
-                    );
-                    if (slResponse && slResponse.data && slResponse.data.orderId) {
-                        const slOrderData = { 
-                            tipo_ordem: 'STOP_MARKET', preco: slPriceVal, quantidade: totalFilledSize, id_posicao: positionId, status: 'NEW', 
-                            data_hora_criacao: formatDateForMySQL(new Date()), id_externo: String(slResponse.data.orderId).substring(0,90), side: binanceOppositeSide, 
-                            simbolo: signal.symbol, tipo_ordem_bot: 'STOP_LOSS', reduce_only: true, close_position: true, orign_sig: `WEBHOOK_${signal.id}`,
-                            last_update: formatDateForMySQL(new Date()), observacao: 'SL Enviado em Recuperação de Erro'
-                        };
-                        await insertNewOrder(connection, slOrderData); 
-                        console.log(`[LIMIT_ENTRY_RECOVERY] SL de emergência (recuperação) criado: ${slResponse.data.orderId}`);
-                        await connection.query(`UPDATE webhook_signals SET sl_order_id = ?, status = 'EXECUTADO_COM_AVISO_RECUPERACAO', error_message = LEFT(CONCAT('Recuperação: ', ?, error_message), 250) WHERE id = ? AND position_id = ?`, 
-                                                [String(slResponse.data.orderId), `Erro: ${originalErrorMessage}. Posição salva, SL emergência tentado.`, signal.id, positionId]);
-                    } else { 
-                        console.error(`[LIMIT_ENTRY_RECOVERY] Falha ao criar SL de emergência (recuperação). Resposta inválida:`, slResponse); 
-                    }
-                } else { 
-                    console.warn(`[LIMIT_ENTRY_RECOVERY] SL de emergência inválido (${slPriceVal}). Não enviado.`); 
-                }
-
-                const finalTpPriceVal = signal.tp_price ? parseFloat(signal.tp_price) : (signal.tp5_price ? parseFloat(signal.tp5_price) : null);
-                if (finalTpPriceVal && finalTpPriceVal > 0) {
-                    console.log(`[LIMIT_ENTRY_RECOVERY] Enviando TP Final de emergência: ${totalFilledSize.toFixed(quantityPrecision)} @ ${finalTpPriceVal.toFixed(pricePrecision)}`);
-                    const tpResponse = await newStopOrder(numericAccountId, signal.symbol, totalFilledSize.toFixed(quantityPrecision), 
-                        binanceOppositeSide, finalTpPriceVal.toFixed(pricePrecision),
-                        finalTpPriceVal.toFixed(pricePrecision), true, true 
-                    );
-                    if (tpResponse && tpResponse.data && tpResponse.data.orderId) {
-                        const tpOrderData = {
-                            tipo_ordem: 'TAKE_PROFIT_MARKET', preco: finalTpPriceVal, quantidade: totalFilledSize, id_posicao: positionId, status: 'NEW',
-                            data_hora_criacao: formatDateForMySQL(new Date()), id_externo: String(tpResponse.data.orderId).substring(0,90), side: binanceOppositeSide,
-                            simbolo: signal.symbol, tipo_ordem_bot: 'TAKE_PROFIT', target: 5, reduce_only: true, close_position: true, orign_sig: `WEBHOOK_${signal.id}`,
-                            last_update: formatDateForMySQL(new Date()), observacao: 'TP Enviado em Recuperação de Erro'
-                        };
-                        await insertNewOrder(connection, tpOrderData); 
-                        console.log(`[LIMIT_ENTRY_RECOVERY] TP de emergência (recuperação) criado: ${tpResponse.data.orderId}`);
-                        await connection.query(`UPDATE webhook_signals SET tp_order_id = ?, status = 'EXECUTADO_COM_AVISO_RECUPERACAO', error_message = LEFT(CONCAT('Recuperação: ', ?, error_message), 250) WHERE id = ? AND position_id = ?`, 
-                                                [String(tpResponse.data.orderId), `Erro: ${originalErrorMessage}. Posição salva, SL/TP emergência foram tentados.`, signal.id, positionId]);
-                    } else { 
-                        console.error(`[LIMIT_ENTRY_RECOVERY] Falha criar TP de emergência (recuperação). Resposta inválida:`, tpResponse); 
-                    }
-                } else { 
-                    console.warn(`[LIMIT_ENTRY_RECOVERY] TP Final de emergência inválido. Não enviado.`); 
-                }
-                
-                await connection.commit(); 
-                console.warn(`[LIMIT_ENTRY_RECOVERY] Posição ${positionId} SALVA e SL/TP de emergência tentados. Erro original: ${originalErrorMessage}`);
-                
-                return {
-                    success: true, positionId, averagePrice: averageEntryPrice, filledQuantity: totalFilledSize,
-                    warning: `Erro durante entrada: ${originalErrorMessage}. Posição salva e SL/TP de emergência foram tentados.`
-                };
-            } catch (recoveryError) {
-                console.error(`[LIMIT_ENTRY_RECOVERY] ERRO CRÍTICO NA LÓGICA DE RECUPERAÇÃO (SL/TP):`, recoveryError.message, recoveryError.stack);
-                if (connection) { 
-                    try { await connection.rollback(); console.log('[LIMIT_ENTRY_RECOVERY] Rollback da recuperação tentado.'); }
-                    catch (rbRecoveryErr) { console.error('[LIMIT_ENTRY_RECOVERY] Erro no rollback da recuperação:', rbRecoveryErr); }
-                }
+                await connection.rollback();
+                console.log(`[LIMIT_ENTRY] (Catch Principal) ROLLBACK da transação principal efetuado para Sinal ${signal.id}.`);
+            } catch (rollbackError) {
+                console.error(`[LIMIT_ENTRY] (Catch Principal) Erro ao fazer rollback:`, rollbackError.message);
             }
-        }
-        
-        if (activeOrderId) { 
-            try { 
-                console.log(`[LIMIT_ENTRY] (Catch Principal) Tentando cancelar ordem ativa ${activeOrderId} antes do rollback.`);
-                await cancelOrder(numericAccountId, signal.symbol, activeOrderId); 
-                console.log(`[LIMIT_ENTRY] (Catch Principal) Ordem ${activeOrderId} cancelada com sucesso.`);
-            } catch (cancelErrOnCatch) { 
-                console.error(`[LIMIT_ENTRY] (Catch Principal) Erro ao cancelar ordem ${activeOrderId}:`, cancelErrOnCatch.message); 
+            
+            // CORREÇÃO: Usar connection.query em vez de db.query
+            try {
+                await connection.query(
+                    'UPDATE webhook_signals SET status = ?, error_message = ? WHERE id = ?',
+                    ['ERROR', originalErrorMessage, signal.id]
+                );
+            } catch (updateError) {
+                console.error(`[LIMIT_ENTRY] (Catch Principal) Erro ao atualizar status do sinal para ERROR no DB:`, updateError.message); 
             }
-        }
-        
-        if (connection) { 
-            try { 
-                await connection.rollback(); 
-                console.log(`[LIMIT_ENTRY] (Catch Principal) ROLLBACK da transação principal efetuado para Sinal ${signal.id}.`); 
-            } catch (rbErr) { 
-                console.error(`[LIMIT_ENTRY] (Catch Principal) Erro CRÍTICO ao efetuar ROLLBACK para Sinal ${signal.id}:`, rbErr); 
-            }
-        }
-        
-        try {
-            await db.query( 
-                `UPDATE webhook_signals SET status = 'ERROR', error_message = ? WHERE id = ?`,
-                [String(originalErrorMessage).substring(0, 250), signal.id]
-            );
-        } catch (updateError) { 
-            console.error(`[LIMIT_ENTRY] (Catch Principal) Erro ao atualizar status do sinal para ERROR no DB:`, updateError); 
         }
         
         return { success: false, error: originalErrorMessage };
 
     } finally {
         if (depthWs) {
-            console.log(`[LIMIT_ENTRY] Fechando WebSocket de profundidade para ${signal.symbol} no bloco finally.`);
+            console.log(`[LIMIT_ENTRY] Fechando WebSocket de profundidade para ${signal?.symbol || 'unknown'} no bloco finally.`);
             try {
                 depthWs.close();
             } catch (wsCloseError) {
-                console.error(`[LIMIT_ENTRY] Erro ao fechar WebSocket de profundidade para ${signal.symbol} no finally: ${wsCloseError.message}`);
+                console.error(`[LIMIT_ENTRY] Erro ao fechar WebSocket de profundidade no finally: ${wsCloseError.message}`);
             }
         }
         if (connection) {
@@ -1081,51 +979,6 @@ async function waitForOrderStatus(symbol, orderId, accountId) {
     }
 }
 
-// Função de fallback para quando BookTicker falha
-async function processWithMockData(mockDepthData, signal, accountId) {
-  try {
-    console.log('[LIMIT_ENTRY] Processando com dados simulados...');
-    
-    const api = require('../api');
-    
-    // Calcular preço de entrada baseado no sinal
-    let entryPrice;
-    
-    if (signal.side === 'BUY') {
-      // Para compra, usar preço ask ligeiramente acima do mercado
-      entryPrice = parseFloat(mockDepthData.askPrice);
-    } else {
-      // Para venda, usar preço bid ligeiramente abaixo do mercado
-      entryPrice = parseFloat(mockDepthData.bidPrice);
-    }
-    
-    console.log(`[LIMIT_ENTRY] Preço de entrada calculado: ${entryPrice}`);
-
-    await waitForOrderExecution(signal.symbol, activeOrderId, EDIT_WAIT_TIMEOUT_MS, numericAccountId)
-    
-    // Executar ordem limit maker com preço calculado
-    const orderData = {
-      symbol: signal.symbol,
-      side: signal.side,
-      type: 'LIMIT',
-      timeInForce: 'GTC',
-      quantity: signal.quantity,
-      price: entryPrice.toFixed(7)
-    };
-    
-    console.log('[LIMIT_ENTRY] Executando ordem com dados simulados...');
-    const result = await api.createOrder(accountId, orderData);
-    
-    console.log('[LIMIT_ENTRY] ✅ Ordem executada com sucesso usando fallback');
-    return result;
-    
-  } catch (error) {
-    console.error('[LIMIT_ENTRY] Erro no processamento com dados simulados:', error.message);
-    throw error;
-  }
-}
-
 module.exports = {
-    executeLimitMakerEntry,
-    waitForOrderStatus
+    executeLimitMakerEntry
 };

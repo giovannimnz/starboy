@@ -13,7 +13,7 @@ const processingSignals = new Set();
  * Processa um sinal específico
  */
 async function processSignal(signal, db, accountId) {
-  console.log(`[SIGNAL] Processando sinal ID ${signal.id} para ${signal.symbol}: ${signal.side} a ${signal.price}`);
+  console.log(`[SIGNAL] Processando sinal ID ${signal.id} para ${signal.symbol}: ${signal.side} a ${signal.entry_price || signal.price}`);
   
   try {
     // Atualizar status para PROCESSANDO
@@ -37,16 +37,16 @@ async function processSignal(signal, db, accountId) {
       return;
     }
     
-    // CORREÇÃO: Normalizar o lado do sinal
+    // CORREÇÃO: Normalizar o lado do sinal - ACEITAR "VENDA"
     let normalizedSide = signal.side;
     
     if (typeof signal.side === 'string') {
       const upperSide = signal.side.toUpperCase();
       
-      // Mapear diferentes formatos para o padrão esperado
+      // Mapear diferentes formatos para o padrão esperado pelo limitMakerEntry
       const sideMapping = {
         'BUY': 'COMPRA',
-        'SELL': 'VENDA',
+        'SELL': 'VENDA', 
         'LONG': 'COMPRA',
         'SHORT': 'VENDA',
         'COMPRA': 'COMPRA',
@@ -65,10 +65,19 @@ async function processSignal(signal, db, accountId) {
     if (normalizedSide === 'COMPRA' || normalizedSide === 'VENDA') {
       const signalForEntry = {
         ...signal,
-        side: normalizedSide
+        side: normalizedSide,
+        price: signal.entry_price || signal.price
       };
       
       console.log(`[SIGNAL] Executando ${normalizedSide} para ${signal.symbol}`);
+      console.log(`[SIGNAL] Parâmetros para limitMakerEntry: signal.id=${signalForEntry.id}, accountId=${accountId}`);
+      
+      // CORREÇÃO CRÍTICA: Chamar executeLimitMakerEntry com assinatura correta
+      // Verificar no código atual qual é a assinatura esperada
+      const api = require('../api');
+      const currentPrice = await api.getPrice(signal.symbol, accountId);
+      
+      // ASSINATURA CORRETA: executeLimitMakerEntry(signal, accountId)
       await executeLimitMakerEntry(signalForEntry, accountId);
       
       // Atualizar status para COMPLETED
@@ -90,11 +99,10 @@ async function processSignal(signal, db, accountId) {
       const errorMessage = `🚨 ERRO no Sinal ${signal.id}\n` +
                           `📊 Par: ${signal.symbol}\n` +
                           `📈 Lado: ${signal.side}\n` +
-                          `💰 Preço: ${signal.price || 'N/A'}\n` +
+                          `💰 Preço: ${signal.entry_price || signal.price || 'N/A'}\n` +
                           `❌ Erro: ${error.message}\n` +
                           `⏰ Hora: ${new Date().toLocaleString('pt-BR')}`;
       
-      // CORREÇÃO: Usar nova função que verifica o chat_id do próprio sinal
       const chatId = await getChatIdForSignal(signal, accountId);
       if (chatId) {
         const sent = await sendTelegramMessage(accountId, chatId, errorMessage);
