@@ -646,36 +646,62 @@ async function getPrecisionCached(symbol, accountId) {
   return precision;
 }
 
+let exchangeInfoCache = null;
+let lastCacheTime = 0;
+const CACHE_DURATION = 10 * 60 * 1000; // 10 minutos
+
 async function getPrecision(symbol, accountId) {
-  try {
-    console.log(`[API] Obtendo precisão para ${symbol} (conta ${accountId})...`);
+    const now = Date.now();
     
-    const response = await makeAuthenticatedRequest(accountId, 'GET', '/v1/exchangeInfo', {});
-    
-    if (response && response.symbols) {
-      const symbolInfo = response.symbols.find(s => s.symbol === symbol);
-      if (symbolInfo) {
-        const quantityPrecision = symbolInfo.quantityPrecision || 3;
-        const pricePrecision = symbolInfo.pricePrecision || 2;
+    // Bloco Try/Catch para garantir que qualquer erro seja capturado
+    try {
+        // Verifica se o cache é inválido ou expirou
+        if (!exchangeInfoCache || (now - lastCacheTime > CACHE_DURATION)) {
+            console.log(`[API] Cache de exchangeInfo inválido/expirado. Buscando da API...`);
+            const response = await makeAuthenticatedRequest(accountId, 'GET', '/v1/exchangeInfo');
+
+            // Validação robusta da resposta da API
+            if (!response || !response.data || !Array.isArray(response.data.symbols)) {
+                console.error('[API] Erro Crítico: Resposta de exchangeInfo da API é inválida ou malformada.', response);
+                throw new Error('Resposta inválida da API para exchangeInfo');
+            }
+            
+            exchangeInfoCache = response.data.symbols;
+            lastCacheTime = now;
+            console.log(`[API] Cache de exchangeInfo atualizado com sucesso.`);
+        }
+
+        const symbolInfo = exchangeInfoCache.find(s => s.symbol === symbol);
         
-        console.log(`[API] ✅ Precisão obtida para ${symbol}: quantity=${quantityPrecision}, price=${pricePrecision}`);
-        return {
-          quantityPrecision,
-          pricePrecision,
-          minQty: parseFloat(symbolInfo.filters?.find(f => f.filterType === 'LOT_SIZE')?.minQty || '0.001'),
-          stepSize: parseFloat(symbolInfo.filters?.find(f => f.filterType === 'LOT_SIZE')?.stepSize || '0.001'),
-          tickSize: parseFloat(symbolInfo.filters?.find(f => f.filterType === 'PRICE_FILTER')?.tickSize || '0.01')
-        };
-      }
+        if (symbolInfo) {
+            const priceFilter = symbolInfo.filters.find(f => f.filterType === 'PRICE_FILTER');
+            const lotSizeFilter = symbolInfo.filters.find(f => f.filterType === 'LOT_SIZE');
+
+            // Calcula a precisão com valores padrão de fallback
+            const quantityPrecision = lotSizeFilter ? Math.max(0, Math.log10(1 / parseFloat(lotSizeFilter.stepSize))) : 0;
+            const pricePrecision = symbolInfo.pricePrecision || 2;
+            const tickSize = priceFilter ? parseFloat(priceFilter.tickSize) : 0.01;
+
+            const precision = {
+                quantityPrecision: Math.floor(quantityPrecision),
+                pricePrecision: pricePrecision,
+                tickSize: tickSize
+            };
+            
+            console.log(`[API] ✅ Precisão obtida para ${symbol}: quantity=${precision.quantityPrecision}, price=${precision.pricePrecision}, tick=${precision.tickSize}`);
+            return precision;
+        }
+        
+        // Se o símbolo não for encontrado no cache
+        throw new Error(`Informações de precisão não encontradas para o símbolo ${symbol}`);
+
+    } catch (error) {
+        console.error(`[API] ERRO GRAVE em getPrecision para ${symbol}:`, error.message);
+        // Re-lança o erro para que a função chamadora (limitMakerEntry) possa tratá-lo em seu próprio bloco catch.
+        throw error;
     }
-    
-    console.warn(`[API] Precisão não encontrada para ${symbol}, usando padrões`);
-    return { quantityPrecision: 3, pricePrecision: 2, minQty: 0.001, stepSize: 0.001, tickSize: 0.01 };
-  } catch (error) {
-    console.error(`[API] Erro ao obter precisão para ${symbol}:`, error.message);
-    return { quantityPrecision: 3, pricePrecision: 2, minQty: 0.001, stepSize: 0.001, tickSize: 0.01 };
-  }
 }
+
 /**
  * Obtém alavancagem atual de um símbolo
  */

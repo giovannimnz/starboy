@@ -224,6 +224,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       if (fallbackBid && fallbackAsk) {
         currentBestBid = fallbackBid;
         currentBestAsk = fallbackAsk;
+        lastDepthUpdateTimestamp = Date.now(); // <-- ADICIONAR ESTA LINHA
         hasValidBookData = true;
         console.log(`[LIMIT_ENTRY] ✅ Usando dados de fallback REST: Bid=${currentBestBid.toFixed(pricePrecision)}, Ask=${currentBestAsk.toFixed(pricePrecision)}`);
       } else {
