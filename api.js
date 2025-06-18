@@ -51,18 +51,17 @@ function debugAccountStates() {
  * @returns {string} - Quantidade formatada
  */
 function formatQuantityCorrect(quantity, precision, symbol) {
+  // VALIDAÇÃO CRÍTICA
   if (typeof quantity !== 'number' || typeof precision !== 'number') {
-    console.error(`[API] Parâmetros inválidos para formatQuantityCorrect`);
+    console.error(`[API] ERRO - Parâmetros inválidos para formatQuantityCorrect: quantity=${quantity} (${typeof quantity}), precision=${precision} (${typeof precision}), symbol=${symbol}`);
     return '0';
   }
   
-  // CORREÇÃO CRÍTICA: POLUSDT aceita apenas números inteiros (precisão 0)
-  if (symbol === 'POLUSDT') {
-    const integerQuantity = Math.floor(quantity);
-    console.log(`[API] POLUSDT - Quantidade convertida para inteiro: ${quantity} → ${integerQuantity}`);
-    return integerQuantity.toString();
+  if (quantity <= 0 || isNaN(quantity)) {
+    console.error(`[API] ERRO - Quantidade inválida: ${quantity}`);
+    return '0';
   }
-  
+   
   // Para outros símbolos, usar precisão normal
   const validPrecision = Math.max(0, Math.min(8, Math.floor(precision)));
   const formatted = parseFloat(quantity.toFixed(validPrecision));
