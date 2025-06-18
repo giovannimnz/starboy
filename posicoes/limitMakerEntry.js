@@ -8,7 +8,7 @@ const {
   newLimitMakerOrder, 
   newReduceOnlyOrder, 
   cancelOrder, 
-  newStopOrder, 
+  newStopOrder,
   getOpenOrders, 
   getOrderStatus, 
   getAllOpenPositions, 
@@ -732,19 +732,37 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
         try {
           console.log(`[LIMIT_ENTRY] Criando SL: ${totalFilledSize} ${signal.symbol} @ ${slPriceVal}`);
           
-          // USAR A FUNÇÃO CORRETA DO API.JS
-          const stopOrderResult = await newStopOrder(
-            numericAccountId,
-            signal.symbol,
-            totalFilledSize,
-            binanceOppositeSide,
-            slPriceVal,
-            null, // stopPrice = triggerPrice
-            true  // reduceOnly
-          );
+          // TENTAR USAR newStopOrder, SE FALHAR USAR ALTERNATIVA
+          let stopOrderResult;
+          try {
+            stopOrderResult = await newStopOrder(
+              numericAccountId,
+              signal.symbol,
+              totalFilledSize,
+              binanceOppositeSide,
+              slPriceVal,
+              null, // stopPrice = triggerPrice
+              true  // reduceOnly
+            );
+          } catch (stopOrderError) {
+            console.warn(`[LIMIT_ENTRY] newStopOrder falhou, tentando método alternativo:`, stopOrderError.message);
+            
+            // MÉTODO ALTERNATIVO: Usar API direta
+            const api = require('../api');
+            stopOrderResult = await api.makeAuthenticatedRequest(numericAccountId, 'POST', '/fapi/v1/order', {
+              symbol: signal.symbol,
+              side: binanceOppositeSide,
+              type: 'STOP_MARKET',
+              quantity: totalFilledSize.toFixed(quantityPrecision),
+              stopPrice: slPriceVal.toFixed(pricePrecision),
+              reduceOnly: 'true',
+              timeInForce: 'GTC'
+            });
+          }
           
-          if (stopOrderResult && stopOrderResult.data && stopOrderResult.data.orderId) {
-            console.log(`[LIMIT_ENTRY] SL criado com ID: ${stopOrderResult.data.orderId}`);
+          if (stopOrderResult && (stopOrderResult.data?.orderId || stopOrderResult.orderId)) {
+            const orderId = stopOrderResult.data?.orderId || stopOrderResult.orderId;
+            console.log(`[LIMIT_ENTRY] SL criado com ID: ${orderId}`);
             
             const slOrderData = {
               tipo_ordem: 'STOP_MARKET',
@@ -753,7 +771,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
               id_posicao: positionId,
               status: 'NEW',
               data_hora_criacao: formatDateForMySQL(new Date()),
-              id_externo: String(stopOrderResult.data.orderId),
+              id_externo: String(orderId),
               side: binanceOppositeSide,
               simbolo: signal.symbol,
               tipo_ordem_bot: 'STOP_LOSS',
@@ -765,7 +783,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
             };
             
             await insertNewOrder(connection, slOrderData);
-            await connection.query(`UPDATE webhook_signals SET sl_order_id = ? WHERE id = ?`, [String(stopOrderResult.data.orderId), signal.id]);
+            await connection.query(`UPDATE webhook_signals SET sl_order_id = ? WHERE id = ?`, [String(orderId), signal.id]);
           }
         } catch (slError) {
           console.error(`[LIMIT_ENTRY] Erro ao criar SL:`, slError.message);
@@ -835,7 +853,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
         }
       }
 
-      // CRIAR TP FINAL
+      // CRIAR TP FINAL - USAR FUNÇÃO ALTERNATIVA SE NECESSÁRIO  
       const finalTpPrice = targetPrices.tp5;
       const qtyForFinalTpRaw = totalFilledSize - cumulativeQtyForRps;
       const qtyForFinalTp = parseFloat(qtyForFinalTpRaw.toFixed(quantityPrecision));
@@ -844,19 +862,38 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
         try {
           console.log(`[LIMIT_ENTRY] Criando TP Final: ${qtyForFinalTp.toFixed(quantityPrecision)} ${signal.symbol} @ ${finalTpPrice.toFixed(pricePrecision)}`);
           
-          // USAR A FUNÇÃO CORRETA DO API.JS PARA TAKE PROFIT
-          const tpResponse = await newStopOrder(
-            numericAccountId, 
-            signal.symbol, 
-            qtyForFinalTp.toFixed(quantityPrecision), 
-            binanceOppositeSide, 
-            finalTpPrice.toFixed(pricePrecision), 
-            finalTpPrice.toFixed(pricePrecision), // stopPrice = triggerPrice para TAKE_PROFIT
-            true, // reduceOnly
-            true  // closePosition
-          );
+          // TENTAR USAR newStopOrder, SE FALHAR USAR ALTERNATIVA
+          let tpResponse;
+          try {
+            tpResponse = await newStopOrder(
+              numericAccountId,
+              signal.symbol,
+              qtyForFinalTp.toFixed(quantityPrecision),
+              binanceOppositeSide,
+              finalTpPrice.toFixed(pricePrecision),
+              finalTpPrice.toFixed(pricePrecision), // stopPrice = triggerPrice para TAKE_PROFIT
+              true, // reduceOnly
+              true  // closePosition
+            );
+          } catch (tpOrderError) {
+            console.warn(`[LIMIT_ENTRY] newStopOrder para TP falhou, tentando método alternativo:`, tpOrderError.message);
+            
+            // MÉTODO ALTERNATIVO: Usar API direta
+            const api = require('../api');
+            tpResponse = await api.makeAuthenticatedRequest(numericAccountId, 'POST', '/fapi/v1/order', {
+              symbol: signal.symbol,
+              side: binanceOppositeSide,
+              type: 'TAKE_PROFIT_MARKET',
+              quantity: qtyForFinalTp.toFixed(quantityPrecision),
+              stopPrice: finalTpPrice.toFixed(pricePrecision),
+              reduceOnly: 'true',
+              closePosition: 'true',
+              timeInForce: 'GTC'
+            });
+          }
           
-          if (tpResponse && tpResponse.data && tpResponse.data.orderId) {
+          if (tpResponse && (tpResponse.data?.orderId || tpResponse.orderId)) {
+            const orderId = tpResponse.data?.orderId || tpResponse.orderId;
             const tpOrderData = { 
               tipo_ordem: 'TAKE_PROFIT_MARKET', 
               preco: finalTpPrice, 
@@ -864,7 +901,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
               id_posicao: positionId, 
               status: 'NEW',
               data_hora_criacao: formatDateForMySQL(new Date()), 
-              id_externo: String(tpResponse.data.orderId).substring(0,90), 
+              id_externo: String(orderId).substring(0,90), 
               side: binanceOppositeSide,
               simbolo: signal.symbol, 
               tipo_ordem_bot: 'TAKE_PROFIT', 
@@ -875,8 +912,8 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
               last_update: formatDateForMySQL(new Date())
             };
             await insertNewOrder(connection, tpOrderData); 
-            console.log(`[LIMIT_ENTRY] TP Final criado: ${tpResponse.data.orderId}`);
-            await connection.query(`UPDATE webhook_signals SET tp_order_id = ? WHERE id = ?`, [String(tpResponse.data.orderId), signal.id]);
+            console.log(`[LIMIT_ENTRY] TP Final criado: ${orderId}`);
+            await connection.query(`UPDATE webhook_signals SET tp_order_id = ? WHERE id = ?`, [String(orderId), signal.id]);
           }
         } catch (tpError) { 
           console.error(`[LIMIT_ENTRY] Erro ao criar TP Final:`, tpError.response?.data || tpError.message); 
