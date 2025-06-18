@@ -1827,7 +1827,7 @@ async function cancelOrder(symbol, orderId, accountId) {
     
     const params = {
       symbol: symbol,
-      orderId: orderId
+      orderId: String(orderId) // ✅ CORREÇÃO: Garantir que o ID da ordem seja sempre uma string.
     };
     
     const response = await makeAuthenticatedRequest(accountId, 'DELETE', '/v1/order', params);
@@ -1855,6 +1855,7 @@ module.exports = {
   getAllOpenPositions,
   getListenKey,
   getPrecision,
+  getPrecisionCached,
   getCurrentLeverage,
   changeInitialLeverage,
   getCurrentMarginType,

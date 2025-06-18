@@ -45,6 +45,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
   let binanceSide;
   let quantityPrecision;
   let pricePrecision;
+  let numericAccountId;
   
   // Constantes de configuração
   const MAX_CHASE_ATTEMPTS = 100;
@@ -78,7 +79,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
     }
     
     // ✅ DEFINIR numericAccountId LOGO NO INÍCIO
-    const numericAccountId = parseInt(accountId) || accountId;
+    numericAccountId = parseInt(accountId) || accountId; // ✅ CORREÇÃO: Apenas atribuir o valor.
     
     console.log(`[LIMIT_ENTRY] Iniciando LIMIT MAKER para Sinal ID ${signal.id} (${signal.symbol}) na conta ${accountId}`);
     
@@ -1315,7 +1316,11 @@ function calculateOrderSize(availableBalance, capitalPercentage, entryPrice, lev
     const rawSize = (capital * leverage) / entryPrice;
     
     const validPrecision = Math.max(0, Math.min(8, Math.floor(precision)));
-    const formattedSize = parseFloat(rawSize.toFixed(validPrecision));
+    
+    // ✅ CORREÇÃO: Truncar em vez de arredondar para garantir conformidade com o stepSize
+    const multiplier = Math.pow(10, validPrecision);
+    const truncatedSize = Math.floor(rawSize * multiplier) / multiplier;
+    const formattedSize = parseFloat(truncatedSize.toFixed(validPrecision));
     
     console.log(`[MONITOR] Cálculo: capital=${capital.toFixed(2)}, rawSize=${rawSize}, precisão=${validPrecision}, formatado=${formattedSize}`);
     
