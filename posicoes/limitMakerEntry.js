@@ -322,41 +322,62 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       if (binanceSide === 'BUY') {
         // Para compras: posicionar dentro do spread quando possível
         const spreadSize = bestAsk - bestBid;
+        
+        // CORREÇÃO CRÍTICA: Usar múltiplos de tick size
         const moreBidPrice = bestBid + tickSize;
         
-        if (spreadSize > tickSize && moreBidPrice < bestAsk) {
+        if (spreadSize > (tickSize * 2) && moreBidPrice < (bestAsk - tickSize)) {
           currentLocalMakerPrice = moreBidPrice;
           console.log(`[LIMIT_ENTRY] Estratégia agressiva: Ordem BUY posicionada DENTRO do spread a ${currentLocalMakerPrice.toFixed(pricePrecision)}`);
         } else {
+          // CORREÇÃO: Garantir que o preço seja válido
           currentLocalMakerPrice = bestBid;
           console.log(`[LIMIT_ENTRY] Spread estreito. Posicionando ordem BUY no melhor bid: ${currentLocalMakerPrice.toFixed(pricePrecision)}`);
         }
         
+        // VALIDAÇÃO FINAL: Garantir que é múltiplo do tick size
+        const remainder = (currentLocalMakerPrice * 100) % (tickSize * 100);
+        if (remainder !== 0) {
+          currentLocalMakerPrice = Math.floor(currentLocalMakerPrice / tickSize) * tickSize;
+          console.log(`[LIMIT_ENTRY] Ajuste de tick size: preço ajustado para ${currentLocalMakerPrice.toFixed(pricePrecision)}`);
+        }
+        
         // Verificação final para garantir ordem MAKER
-        if (currentLocalMakerPrice >= bestAsk - tickSize) {
+        if (currentLocalMakerPrice >= bestAsk) {
           currentLocalMakerPrice = bestAsk - tickSize;
           console.log(`[LIMIT_ENTRY] Ajuste: preço BUY ajustado para garantir ordem maker: ${currentLocalMakerPrice.toFixed(pricePrecision)}`);
         }
       } else { // SELL
         // Para vendas: posicionar dentro do spread quando possível
         const spreadSize = bestAsk - bestBid;
+        
+        // CORREÇÃO CRÍTICA: Usar múltiplos de tick size
         const lessAskPrice = bestAsk - tickSize;
         
-        if (spreadSize > tickSize && lessAskPrice > bestBid) {
+        if (spreadSize > (tickSize * 2) && lessAskPrice > (bestBid + tickSize)) {
           currentLocalMakerPrice = lessAskPrice;
           console.log(`[LIMIT_ENTRY] Estratégia agressiva: Ordem SELL posicionada DENTRO do spread a ${currentLocalMakerPrice.toFixed(pricePrecision)}`);
         } else {
+          // CORREÇÃO: Garantir que o preço seja válido
           currentLocalMakerPrice = bestAsk;
           console.log(`[LIMIT_ENTRY] Spread estreito. Posicionando ordem SELL no melhor ask: ${currentLocalMakerPrice.toFixed(pricePrecision)}`);
         }
         
+        // VALIDAÇÃO FINAL: Garantir que é múltiplo do tick size
+        const remainder = (currentLocalMakerPrice * 100) % (tickSize * 100);
+        if (remainder !== 0) {
+          currentLocalMakerPrice = Math.ceil(currentLocalMakerPrice / tickSize) * tickSize;
+          console.log(`[LIMIT_ENTRY] Ajuste de tick size: preço ajustado para ${currentLocalMakerPrice.toFixed(pricePrecision)}`);
+        }
+        
         // Verificação final para garantir ordem MAKER
-        if (currentLocalMakerPrice <= bestBid + tickSize) {
+        if (currentLocalMakerPrice <= bestBid) {
           currentLocalMakerPrice = bestBid + tickSize;
           console.log(`[LIMIT_ENTRY] Ajuste: preço SELL ajustado para garantir ordem maker: ${currentLocalMakerPrice.toFixed(pricePrecision)}`);
         }
       }
 
+      // CORREÇÃO CRÍTICA: Usar roundPriceToTickSize APÓS os cálculos
       currentLocalMakerPrice = await roundPriceToTickSize(signal.symbol, currentLocalMakerPrice, numericAccountId);
 
       console.log(`[LIMIT_ENTRY] Preço MAKER ${binanceSide}: ${currentLocalMakerPrice.toFixed(pricePrecision)} | Book: Bid=${bestBid.toFixed(pricePrecision)}, Ask=${bestAsk.toFixed(pricePrecision)}`);
@@ -932,6 +953,11 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       const reductionPercentages = [0.25, 0.30, 0.25, 0.10];
       let cumulativeQtyForRps = 0;
       
+      // ✅ DEFINIR A VARIÁVEL ANTES DO LOOP
+      const minQtyForRp = 0.001; // Quantidade mínima para criar RP no BTCUSDT
+      
+      console.log(`[LIMIT_ENTRY] Total preenchido para RPs: ${totalFilledSize}, Quantidade mínima por RP: ${minQtyForRp}`);
+      
       // CRIAR REDUÇÕES PARCIAIS
       for (let i = 0; i < rpTargetKeys.length; i++) {
         const rpKey = rpTargetKeys[i];
@@ -1109,20 +1135,22 @@ if (finalTpPrice && finalTpPrice > 0 && qtyForFinalTp > 0) {
     const originalErrorMessage = error.message || String(error);
     console.error(`[LIMIT_ENTRY] ERRO FATAL DURANTE ENTRADA (Sinal ID ${signal.id}): ${originalErrorMessage}`, error.stack || error);
     
-    // ✅ GARANTIR QUE numericAccountId ESTÁ DISPONÍVEL NO RECOVERY
-    const recoveryAccountId = numericAccountId || accountId;
+    // ✅ CORREÇÃO CRÍTICA: Garantir que todas as variáveis estão disponíveis
+    const recoveryAccountId = numericAccountId || accountId || parseInt(accountId);
+    const recoveryQuantityPrecision = quantityPrecision || 3;
+    const recoveryPricePrecision = pricePrecision || 2;
     
     if (positionId && totalFilledSize > 0 && averageEntryPrice > 0) {
-      console.warn(`[LIMIT_ENTRY_RECOVERY] Tentando SALVAR POSIÇÃO ${positionId} (${totalFilledSize.toFixed(quantityPrecision)} ${signal.symbol} @ ${averageEntryPrice.toFixed(pricePrecision)}) apesar do erro: ${originalErrorMessage}`);
+      console.warn(`[LIMIT_ENTRY_RECOVERY] Tentando SALVAR POSIÇÃO ${positionId} (${totalFilledSize.toFixed(recoveryQuantityPrecision)} ${signal.symbol} @ ${averageEntryPrice.toFixed(recoveryPricePrecision)}) apesar do erro: ${originalErrorMessage}`);
       
       try {
         const binanceOppositeSide = binanceSide === 'BUY' ? 'SELL' : 'BUY';
         const slPriceVal = signal.sl_price ? parseFloat(signal.sl_price) : null;
         
         if (slPriceVal && slPriceVal > 0) {
-          console.log(`[LIMIT_ENTRY_RECOVERY] Criando SL de emergência: ${totalFilledSize.toFixed(quantityPrecision)} @ ${slPriceVal.toFixed(pricePrecision)}`);
+          console.log(`[LIMIT_ENTRY_RECOVERY] Criando SL de emergência: ${totalFilledSize.toFixed(recoveryQuantityPrecision)} @ ${slPriceVal.toFixed(recoveryPricePrecision)}`);
           
-          // ✅ USAR recoveryAccountId EM VEZ DE numericAccountId
+          // ✅ USAR recoveryAccountId que está garantidamente definido
           const slResponse = await newStopOrder(
             recoveryAccountId,
             signal.symbol,

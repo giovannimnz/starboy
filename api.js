@@ -1017,18 +1017,23 @@ async function roundPriceToTickSize(symbol, price, accountId) {
   try {
     console.log(`[API] Arredondando preço ${price} para ${symbol}...`);
     
-    const tickSize = await getTickSize(symbol, accountId);
+    const precision = await getPrecisionCached(symbol, accountId);
+    const tickSize = Math.pow(10, -precision.pricePrecision);
     
     if (!tickSize || tickSize <= 0) {
       console.warn(`[API] TickSize inválido para ${symbol}, usando preço original`);
       return parseFloat(price);
     }
     
-    // Arredondar para o múltiplo mais próximo do tick size
-    const rounded = Math.round(price / tickSize) * tickSize;
+    // CORREÇÃO CRÍTICA: Usar Math.round para evitar problemas de floating point
+    const tickSizeMultiplier = 1 / tickSize;
+    const rounded = Math.round(price * tickSizeMultiplier) / tickSizeMultiplier;
     
-    console.log(`[API] Preço ${price} arredondado para ${rounded} (tick size: ${tickSize})`);
-    return parseFloat(rounded.toFixed(8)); // Máximo 8 decimais
+    // Garantir que o preço tenha a precisão correta
+    const finalPrice = parseFloat(rounded.toFixed(precision.pricePrecision));
+    
+    console.log(`[API] Preço ${price} arredondado para ${finalPrice} (tick size: ${tickSize})`);
+    return finalPrice;
     
   } catch (error) {
     console.error(`[API] Erro ao arredondar preço para ${symbol}:`, error.message);
