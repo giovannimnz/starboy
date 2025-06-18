@@ -259,7 +259,7 @@ async function getChatIdForAccount(accountId) {
  */
 async function checkNewTrades(accountId) {
   try {
-    console.log(`[SIGNAL] 🔍 Verificando novos sinais para conta ${accountId}...`);
+    //console.log(`[SIGNAL] 🔍 Verificando novos sinais para conta ${accountId}...`);
     
     // Validar accountId
     if (!accountId || typeof accountId !== 'number') {
