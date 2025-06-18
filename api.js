@@ -1800,7 +1800,7 @@ async function getOrderStatus(symbol, orderId, accountId) {
     
     const params = {
       symbol: symbol,
-      orderId: String(orderId) // ✅ CORREÇÃO CRÍTICA: Garante que o ID não seja corrompido.
+      orderId: String(orderId)
     };
     
     const response = await makeAuthenticatedRequest(accountId, 'GET', '/v1/order', params);

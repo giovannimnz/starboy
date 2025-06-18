@@ -11,6 +11,7 @@ const { startPriceMonitoring, onPriceUpdate } = require('./priceMonitoring');
 const { checkNewTrades } = require('./signalProcessor');
 const { syncPositionsWithExchange, logOpenPositionsAndOrders } = require('./positionSync');
 const orderHandlers = require('./orderHandlers');
+const accountHandlers = require('./accountHandlers'); // ✅ NOVO
 const { checkExpiredSignals } = require('./signalTimeout');
 const { runPeriodicCleanup, monitorWebSocketHealth, updatePositionPricesWithTrailing } = require('./enhancedMonitoring');
 const { cleanupOrphanSignals, forceCloseGhostPositions, cancelOrphanOrders } = require('./cleanup');
@@ -268,24 +269,41 @@ try {
       console.warn('⚠️ Erro ao verificar status da sessão:', sessionError.message);
     }
 
-    // === ETAPA 7: CORREÇÃO - Configurar handlers APENAS via orderHandlers.js ===
+    // === ETAPA 7: CONFIGURAR HANDLERS SEPARADAMENTE ===
     console.log(`🔧 ETAPA 7: Configurando handlers para conta ${accountId}...`);
     
     try {
-      // USAR APENAS orderHandlers - SEM configuração manual
-      const handlersInitialized = await orderHandlers.initializeOrderHandlers(accountId);
+      // INICIALIZAR ORDER HANDLERS
+      console.log(`[MONITOR] Inicializando ORDER handlers para conta ${accountId}...`);
+      const orderHandlersInitialized = await orderHandlers.initializeOrderHandlers(accountId);
       
-      if (!handlersInitialized) {
+      if (!orderHandlersInitialized) {
         throw new Error('Falha ao inicializar order handlers');
       }
+      console.log(`[MONITOR] ✅ Order handlers inicializados para conta ${accountId}`);
       
-      console.log(`[MONITOR] ✅ Order handlers inicializados com sucesso para conta ${accountId}`);
+      // INICIALIZAR ACCOUNT HANDLERS
+      console.log(`[MONITOR] Inicializando ACCOUNT handlers para conta ${accountId}...`);
+      const accountHandlersInitialized = await accountHandlers.initializeAccountHandlers(accountId);
       
-      // Verificar se estão registrados
-      const handlersRegistered = orderHandlers.areHandlersRegistered(accountId);
-      console.log(`[MONITOR] Status dos handlers: ${handlersRegistered ? 'REGISTRADOS' : 'NÃO REGISTRADOS'}`);
+      if (!accountHandlersInitialized) {
+        throw new Error('Falha ao inicializar account handlers');
+      }
+      console.log(`[MONITOR] ✅ Account handlers inicializados para conta ${accountId}`);
       
-      // ADICIONAR callback de preço APENAS se não foi registrado via orderHandlers
+      // VERIFICAR STATUS FINAL DOS HANDLERS
+      const orderHandlersOK = orderHandlers.areHandlersRegistered(accountId);
+      const accountHandlersOK = accountHandlers.areAccountHandlersRegistered(accountId);
+      
+      console.log(`[MONITOR] Status final dos handlers para conta ${accountId}:`);
+      console.log(`  - Order handlers: ${orderHandlersOK ? '✅' : '❌'}`);
+      console.log(`  - Account handlers: ${accountHandlersOK ? '✅' : '❌'}`);
+      
+      if (!orderHandlersOK || !accountHandlersOK) {
+        throw new Error('Nem todos os handlers foram registrados corretamente');
+      }
+      
+      // ADICIONAR callback de preço (mantém como estava)
       const currentHandlers = websockets.getHandlers(accountId);
       if (!currentHandlers.onPriceUpdate) {
         console.log(`[MONITOR] Adicionando callback de preço para conta ${accountId}...`);
@@ -293,10 +311,7 @@ try {
           ...currentHandlers,
           onPriceUpdate: async (symbol, price, db) => {
             try {
-              // USAR função melhorada do enhancedMonitoring
               await updatePositionPricesWithTrailing(db, symbol, price, accountId);
-              
-              // Chamar também a função original para manter compatibilidade
               await onPriceUpdate(symbol, price, db, accountId);
             } catch (error) {
               console.error(`[MONITOR] ⚠️ Erro em onPriceUpdate para ${symbol} conta ${accountId}:`, error.message);
@@ -305,9 +320,9 @@ try {
         }, accountId);
       }
       
-    } catch (orderHandlerError) {
-      console.error(`[MONITOR] ❌ Erro crítico ao configurar handlers para conta ${accountId}:`, orderHandlerError.message);
-      throw orderHandlerError; // Não usar fallback manual que causa conflitos
+    } catch (handlerError) {
+      console.error(`[MONITOR] ❌ Erro crítico ao configurar handlers para conta ${accountId}:`, handlerError.message);
+      throw handlerError;
     }
 
     // === ETAPA 8: Iniciar UserDataStream ===
@@ -514,12 +529,20 @@ async function gracefulShutdown(accountIdToShutdown) {
     
     console.log(`[MONITOR] 🧹 4/7 - Limpando handlers para conta ${accountIdToShutdown}...`);
     try {
-      // CORREÇÃO: Usar orderHandlers para limpeza
-      const handlersRemoved = orderHandlers.unregisterOrderHandlers(accountIdToShutdown);
-      if (handlersRemoved) {
+      // LIMPAR ORDER HANDLERS
+      const orderHandlersRemoved = orderHandlers.unregisterOrderHandlers(accountIdToShutdown);
+      if (orderHandlersRemoved) {
         console.log(`[MONITOR]   ✅ Order handlers removidos para conta ${accountIdToShutdown}`);
       } else {
         console.log(`[MONITOR]   ⚠️ Falha ao remover order handlers para conta ${accountIdToShutdown}`);
+      }
+      
+      // LIMPAR ACCOUNT HANDLERS
+      const accountHandlersRemoved = accountHandlers.unregisterAccountHandlers(accountIdToShutdown);
+      if (accountHandlersRemoved) {
+        console.log(`[MONITOR]   ✅ Account handlers removidos para conta ${accountIdToShutdown}`);
+      } else {
+        console.log(`[MONITOR]   ⚠️ Falha ao remover account handlers para conta ${accountIdToShutdown}`);
       }
       
       // Limpar também os websocket handlers
