@@ -1081,9 +1081,27 @@ async function newLimitMakerOrder(accountId, symbol, quantity, side, price) {
   }
 }
 
+async function newMarketOrder(accountId, symbol, quantity, side) {
+  try {
+    console.log(`[API] Criando ordem MARKET: ${side} ${quantity} ${symbol} (conta ${accountId})`);
+    const precision = await getPrecisionCached(symbol, accountId);
+    const formattedQuantity = formatQuantityCorrect(quantity, precision.quantityPrecision, symbol);
 
+    const orderParams = {
+      symbol: symbol,
+      side: side,
+      type: 'MARKET',
+      quantity: formattedQuantity
+    };
 
-
+    const response = await makeAuthenticatedRequest(accountId, 'POST', '/v1/order', orderParams);
+    console.log(`[API] ✅ Ordem MARKET criada com sucesso: ${response.orderId}`);
+    return response;
+  } catch (error) {
+    console.error(`[API] Erro ao criar ordem MARKET para ${symbol}:`, error.message);
+    throw error;
+  }
+}
 
 /**
  * Obtém status de uma ordem via REST API
@@ -1192,7 +1210,7 @@ module.exports = {
   getTickSize,
   roundPriceToTickSize,
   newLimitMakerOrder,
+  newMarketOrder,
   getOrderStatus,
-  cancelOrder,
-  newLimitMakerOrder
+  cancelOrder
 };

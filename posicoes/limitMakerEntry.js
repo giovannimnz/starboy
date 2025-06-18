@@ -1,6 +1,6 @@
 const axios = require('axios');
 const fs = require('fs').promises;
-const { newEntryOrder, getRecentOrders, editOrder, roundPriceToTickSize, newLimitMakerOrder, newReduceOnlyOrder, cancelOrder, newStopOrder, getOpenOrders, getOrderStatus, getAllOpenPositions, getFuturesAccountBalanceDetails, getPrecision } = require('../api');
+const { getRecentOrders, editOrder, roundPriceToTickSize, newMarketOrder, newLimitMakerOrder, newReduceOnlyOrder, cancelOrder, newStopOrder, getOpenOrders, getOrderStatus, getAllOpenPositions, getFuturesAccountBalanceDetails, getPrecision } = require('../api');
 const { getDatabaseInstance, insertPosition, insertNewOrder, formatDateForMySQL } = require('../db/conexao');
 const websockets = require('../websockets');
 const api = require('../api');
@@ -512,10 +512,6 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
     }
 
     // TENTAR PREENCHER RESTANTE COM ORDEM MARKET
-    if (totalFilledSize < totalEntrySize) {
-      console.log(`[LIMIT_ENTRY] Chasing encerrado. Preenchido: ${totalFilledSize.toFixed(quantityPrecision)}/${totalEntrySize.toFixed(quantityPrecision)}`);
-      const remainingToFillMarket = parseFloat((totalEntrySize - totalFilledSize).toFixed(quantityPrecision));
-      
       if (remainingToFillMarket > 0) {
         console.log(`[LIMIT_ENTRY] Tentando preencher restante (${remainingToFillMarket.toFixed(quantityPrecision)}) com ordem MARKET.`);
         if (activeOrderId) { 
@@ -531,25 +527,29 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
           activeOrderId = null; 
         }
         try {
-          marketOrderResponseForDb = await newEntryOrder(numericAccountId, signal.symbol, remainingToFillMarket, binanceSide);
-          
-          if (marketOrderResponseForDb && marketOrderResponseForDb.orderId && marketOrderResponseForDb.status === 'FILLED') {
-            const marketFilledQty = parseFloat(marketOrderResponseForDb.executedQty);
-            const marketFilledPrice = parseFloat(marketOrderResponseForDb.avgPrice || marketOrderResponseForDb.price); 
+          // NOVO: Enviar ordem MARKET
+          const marketOrderResponse = await api.newMarketOrder(
+            numericAccountId,
+            signal.symbol,
+            remainingToFillMarket,
+            binanceSide
+          );
+          if (marketOrderResponse && marketOrderResponse.orderId && marketOrderResponse.status === 'FILLED') {
+            const marketFilledQty = parseFloat(marketOrderResponse.executedQty);
+            const marketFilledPrice = parseFloat(marketOrderResponse.avgPrice || marketOrderResponse.price); 
             if (marketFilledQty > 0) {
-              partialFills.push({ qty: marketFilledQty, price: marketFilledPrice, orderId: String(marketOrderResponseForDb.orderId) });
+              partialFills.push({ qty: marketFilledQty, price: marketFilledPrice, orderId: String(marketOrderResponse.orderId) });
               totalFilledSize = partialFills.reduce((sum, pf) => sum + pf.qty, 0); 
               averageEntryPrice = calculateAveragePrice(partialFills); 
             }
             console.log(`[LIMIT_ENTRY] Ordem MARKET final preenchida: ${marketFilledQty.toFixed(quantityPrecision)} @ ${marketFilledPrice.toFixed(pricePrecision)}`);
           } else {
-            console.error(`[LIMIT_ENTRY] Falha na ordem MARKET final:`, marketOrderResponseForDb);
+            console.error(`[LIMIT_ENTRY] Falha na ordem MARKET final:`, marketOrderResponse);
           }
         } catch (marketError) {
-           console.error(`[LIMIT_ENTRY] Erro ao executar ordem MARKET final:`, marketError.response?.data || marketError.message);
+          console.error(`[LIMIT_ENTRY] Erro ao executar ordem MARKET final:`, marketError.response?.data || marketError.message);
         }
       }
-    }
     
     const MIN_FILL_THRESHOLD_ABSOLUTE = 0.000001; 
     if (totalFilledSize <= MIN_FILL_THRESHOLD_ABSOLUTE) { 
