@@ -424,6 +424,7 @@ DB_NAME = os.getenv('DB_NAME')
 #GRUPOS_ORIGEM_IDS = [-1002444455075]  # Lista com os IDs dos grupos de origem
 GRUPOS_ORIGEM_IDS = [-4192806079]  # Lista com os IDs dos grupos de origem
 GRUPO_DESTINO_ID = -1002016807368  # ID do grupo de destino
+CONTA_ID = 999
 
 # Mapeamento de IDs de grupo para nomes de fontes (NOVO)
 GRUPO_FONTE_MAPEAMENTO = {
@@ -737,15 +738,24 @@ def save_to_database(trade_data):
         all_tps = trade_data.get('all_tps', []) # Get all TPs from trade_data, default to empty list
         for i in range(min(5, len(all_tps))): # Fill with available values, up to 5
             tp_prices[i] = all_tps[i]
+        
+        # CORREÇÃO: Garantir que chat_ids sempre tenham sinal negativo
+        chat_id_origem = trade_data.get('chat_id_origem_sinal')
+        if chat_id_origem and chat_id_origem > 0:
+            chat_id_origem = -chat_id_origem
             
-        # SQL query including the new columns tp1_price to tp5_price and message_source
+        chat_id_destino = trade_data.get('chat_id')
+        if chat_id_destino and chat_id_destino > 0:
+            chat_id_destino = -chat_id_destino
+            
+        # CORREÇÃO: SQL query incluindo conta_id
         sql = """
               INSERT INTO webhook_signals
               (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price,
-               chat_id, status, timeframe, message_id, message_id_orig,
+               chat_id, status, timeframe, message_id, message_id_orig, chat_id_orig_sinal,
                tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, message_source,
-               divap_confirmado, cancelado_checker, error_message)
-              VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               divap_confirmado, cancelado_checker, error_message, conta_id)
+              VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
               """
 
         values = (
@@ -756,11 +766,12 @@ def save_to_database(trade_data):
             trade_data["entry"],
             trade_data["tp"],  # Selected target for tp_price (main TP)
             trade_data["stop_loss"],
-            trade_data["chat_id"],
+            chat_id_destino,  # CORREÇÃO: Usar chat_id_destino processado
             trade_data.get("status", "PENDING"),  # Status agora vem do trade_data ou é PENDING por padrão
             trade_data.get("timeframe", ""),
             trade_data.get("message_id"),
             trade_data.get("id_mensagem_origem_sinal"),
+            chat_id_origem,  # CORREÇÃO: Usar chat_id_origem processado
             tp_prices[0],  # tp1_price
             tp_prices[1],  # tp2_price
             tp_prices[2],  # tp3_price
@@ -769,104 +780,94 @@ def save_to_database(trade_data):
             trade_data.get("message_source"),
             trade_data.get("divap_confirmado", None),
             trade_data.get("cancelado_checker", None),
-            trade_data.get("error_message", None)
+            trade_data.get("error_message", None),
+            CONTA_ID  # NOVO: Adicionar conta_id do parâmetro global
         )
 
         cursor.execute(sql, values)
         signal_id = cursor.lastrowid # Get the ID of the inserted row
         conn.commit()
 
-        #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Operation saved to database: {trade_data['symbol']} (ID: {signal_id})")
-        #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] TPs saved: TP1={tp_prices[0]}, TP2={tp_prices[1]}, TP3={tp_prices[2]}, TP4={tp_prices[3]}, TP5={tp_prices[4]}")
-        #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Message source: {trade_data.get('message_source')}")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Operação salva no banco (ID: {signal_id}, Conta: {CONTA_ID}): {trade_data['symbol']}")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Chat origem: {chat_id_origem}, Chat destino: {chat_id_destino}")
         return signal_id
 
     except mysql.connector.Error as db_err:
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Database error while saving: {db_err}")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Erro no banco ao salvar: {db_err}")
         
-        # Fallback logic for "Unknown column" errors
+        # CORREÇÃO: Fallback logic incluindo conta_id
         if "Unknown column" in str(db_err):
-            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Attempting fallback due to unknown column(s)...")
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Tentando fallback devido a coluna(s) desconhecida(s)...")
             
             sql_fallback = None
             values_fallback = None
 
             try:
-                # Case 1: 'timeframe' column is missing
-                if "Unknown column 'timeframe'" in str(db_err):
-                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Fallback: 'timeframe' column missing. Saving with TPs.")
+                # CORREÇÃO: Fallback básico incluindo conta_id
+                if "Unknown column 'conta_id'" in str(db_err):
+                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Fallback: coluna 'conta_id' não existe. Salvando sem conta_id.")
                     sql_fallback = """
                         INSERT INTO webhook_signals
                         (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price, 
-                         chat_id, status, message_id, message_id_orig,
-                         tp1_price, tp2_price, tp3_price, tp4_price, tp5_price) 
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         chat_id, status, timeframe, message_id, message_id_orig, chat_id_orig_sinal,
+                         tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, message_source,
+                         divap_confirmado, cancelado_checker, error_message) 
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """
-                    # tp_prices is already defined from the main try block
-                    values_fallback = (
-                        trade_data["symbol"], trade_data["side"], trade_data["leverage"],
-                        trade_data["capital_pct"], trade_data["entry"], trade_data["tp"],
-                        trade_data["stop_loss"], trade_data["chat_id"], "PENDING",
-                        trade_data.get("message_id"), trade_data.get("id_mensagem_origem_sinal"),
-                        tp_prices[0], tp_prices[1], tp_prices[2], tp_prices[3], tp_prices[4]
-                    )
-                
-                # Case 2: One of 'tpX_price' columns is missing
-                elif any(f"Unknown column 'tp{i}_price'" in str(db_err) for i in range(1, 6)):
-                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Fallback: TP1-TP5 column(s) missing. Saving with timeframe (if available).")
+                    values_fallback = values[:-1]  # Remover o último item (conta_id)
+                elif "Unknown column 'timeframe'" in str(db_err):
+                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Fallback: coluna 'timeframe' não existe. Salvando com TPs e conta_id.")
                     sql_fallback = """
                         INSERT INTO webhook_signals
                         (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price, 
-                         chat_id, status, timeframe, message_id, message_id_orig) 
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         chat_id, status, message_id, message_id_orig, chat_id_orig_sinal,
+                         tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, message_source,
+                         divap_confirmado, cancelado_checker, error_message, conta_id) 
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """
-                    values_fallback = (
-                        trade_data["symbol"], trade_data["side"], trade_data["leverage"],
-                        trade_data["capital_pct"], trade_data["entry"], trade_data["tp"],
-                        trade_data["stop_loss"], trade_data["chat_id"], "PENDING",
-                        trade_data.get("timeframe", ""), trade_data.get("message_id"),
-                        trade_data.get("id_mensagem_origem_sinal")
-                    )
-                
-                # Case 3: Other "Unknown column" error (e.g. 'message_id_orig' or other combinations)
-                # This attempts a more basic insert without timeframe and without individual TPs.
+                    # Remover timeframe (índice 9) da tupla values
+                    values_list = list(values)
+                    values_list.pop(9)  # Remove timeframe
+                    values_fallback = tuple(values_list)
                 else:
-                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Fallback: Other unknown column. Basic insert attempt.")
+                    # Fallback mais básico incluindo conta_id
+                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Fallback: Outras colunas desconhecidas. Inserção básica com conta_id.")
                     sql_fallback = """
                         INSERT INTO webhook_signals
                         (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price, 
-                         chat_id, status, message_id, message_id_orig) 
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                         chat_id, status, message_id, message_id_orig, chat_id_orig_sinal, conta_id) 
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                         """
                     values_fallback = (
                         trade_data["symbol"], trade_data["side"], trade_data["leverage"],
                         trade_data["capital_pct"], trade_data["entry"], trade_data["tp"],
-                        trade_data["stop_loss"], trade_data["chat_id"], "PENDING",
-                        trade_data.get("message_id"), trade_data.get("id_mensagem_origem_sinal")
+                        trade_data["stop_loss"], chat_id_destino, "PENDING",
+                        trade_data.get("message_id"), trade_data.get("id_mensagem_origem_sinal"),
+                        chat_id_origem, CONTA_ID
                     )
 
                 if sql_fallback and values_fallback:
-                    if cursor is None and conn: # Recreate cursor if it was not created or closed due to severe error
+                    if cursor is None and conn:
                         cursor = conn.cursor()
                     elif cursor is None and conn is None:
-                        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] DB connection not established, fallback cannot proceed.")
+                        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Conexão BD não estabelecida, fallback não pode prosseguir.")
                         return None
 
                     cursor.execute(sql_fallback, values_fallback)
                     signal_id_fallback = cursor.lastrowid
                     conn.commit()
-                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Operation saved with fallback (ID: {signal_id_fallback})")
+                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Operação salva com fallback (ID: {signal_id_fallback}, Conta: {CONTA_ID})")
                     return signal_id_fallback
-                else: # Should not happen if "Unknown column" was in db_err string
-                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Fallback logic did not determine a query for error: {db_err}")
+                else:
+                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Lógica de fallback não determinou uma query para erro: {db_err}")
 
             except Exception as e2:
-                print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Error during fallback attempt: {e2}")
+                print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Erro durante tentativa de fallback: {e2}")
         
-        return None # Return None if the main try failed and fallback was not successful or not applicable
+        return None
 
     except Exception as e_generic:
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Generic error while saving to database: {e_generic}")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Erro genérico ao salvar no banco: {e_generic}")
         return None
 
     finally:
@@ -1140,11 +1141,15 @@ async def handle_new_message(event):
     incoming_message_id = event.message.id if event and hasattr(event, 'message') and hasattr(event.message, 'id') else 'desconhecido'
     incoming_chat_id = event.chat_id if event and hasattr(event, 'chat_id') else 'desconhecido'
 
-    # Obter a fonte da mensagem com base no chat_id (NOVO)
+    # CORREÇÃO: Garantir que chat_id seja sempre negativo
+    if isinstance(incoming_chat_id, int) and incoming_chat_id > 0:
+        incoming_chat_id = -incoming_chat_id
+        print(f"[CORREÇÃO] Chat ID convertido para negativo: {incoming_chat_id}")
+
+    # Obter a fonte da mensagem com base no chat_id
     message_source = GRUPO_FONTE_MAPEAMENTO.get(incoming_chat_id)
     
     try:
-        incoming_chat_id = event.chat_id
         incoming_message_id = event.message.id
         incoming_text = event.message.text
 
@@ -1152,26 +1157,20 @@ async def handle_new_message(event):
             return
 
         incoming_created_at = event.message.date.strftime("%Y-%m-%d %H:%M:%S")
-        GRUPOS_PERMITIDOS_PARA_REGISTRO = GRUPOS_ORIGEM_IDS #+ [GRUPO_DESTINO_ID] 
+        GRUPOS_PERMITIDOS_PARA_REGISTRO = GRUPOS_ORIGEM_IDS
         is_incoming_reply = event.message.reply_to_msg_id is not None
         incoming_reply_to_id = event.message.reply_to_msg_id if is_incoming_reply else None
 
         # 1. PRIMEIRO, processar se for um SINAL DE TRADE de um GRUPO DE ORIGEM
         if incoming_chat_id in GRUPOS_ORIGEM_IDS:
             chat_obj = await event.get_chat() 
-            #print(f"[INFO] Mensagem ID {incoming_message_id} de GRUPO DE ORIGEM {chat_obj.id if chat_obj else incoming_chat_id}. Verificando se é sinal...")
             
-            # CORREÇÃO: REMOVER AWAIT aqui - extract_trade_info NÃO é assíncrona
             trade_info = extract_trade_info(incoming_text)
 
             if trade_info:
-                #print(f"[INFO] Sinal de trade detectado em msg ID {incoming_message_id}: {trade_info['symbol']} {trade_info['side']}")
-                
                 if ENABLE_DIVAP_VERIFICATION:
-                    # Verificar se é realmente um padrão DIVAP válido
                     is_valid_divap, error_message = await verify_divap_pattern(trade_info)
                 else:
-                    # Se verificação está desabilitada, considerar todos os sinais como válidos
                     is_valid_divap, error_message = True, None
                     print(f"[INFO] Verificação DIVAP desativada. Sinal {trade_info['symbol']} aceito sem verificação.")                
 
@@ -1187,7 +1186,6 @@ async def handle_new_message(event):
                             selected_tp = trade_info['all_tps'][0]
                     
                     if selected_tp is None and trade_info.get('all_tps'):
-                        #print(f"[INFO] Enviando todos os {len(trade_info.get('all_tps'))} alvos.")
                         pass
                     elif selected_tp is None:
                         print(f"[AVISO] Sinal da Msg ID {incoming_message_id} (Símbolo: {trade_info['symbol']}) não tem nenhum TP. Enviando apenas com entrada e SL.")
@@ -1197,23 +1195,20 @@ async def handle_new_message(event):
 
                     # Garantir que tp_price nunca seja NULL
                     if selected_tp is None:
-                        # Se não há TP selecionado, usar o último alvo como tp_price para o banco de dados
-                        # Isso evita o erro "Column 'tp_price' cannot be null"
                         if trade_info.get('all_tps') and len(trade_info['all_tps']) > 0:
-                            # Usar o último alvo disponível
                             trade_info['tp'] = trade_info['all_tps'][-1]
-                            #print(f"[INFO] Sem alvo específico selecionado. Usando último alvo ({trade_info['tp']}) como tp_price para o banco.")
                         else:
-                            # Se não houver alvos disponíveis, usar o preço de entrada como fallback
                             trade_info['tp'] = trade_info['entry']
                             print(f"[AVISO] Sem alvos disponíveis. Usando preço de entrada ({trade_info['entry']}) como tp_price para o banco.")
                     else:
                         trade_info['tp'] = selected_tp
 
+                    # CORREÇÃO: Garantir chat_ids negativos e incluir conta_id
                     trade_info['id_mensagem_origem_sinal'] = incoming_message_id
-                    trade_info['chat_id_origem_sinal'] = incoming_chat_id
-                    trade_info['chat_id'] = GRUPO_DESTINO_ID 
-                    trade_info['message_source'] = message_source  # Adicionar message_source                
+                    trade_info['chat_id_origem_sinal'] = incoming_chat_id  # Já processado como negativo
+                    trade_info['chat_id'] = GRUPO_DESTINO_ID  # Já definido como negativo
+                    trade_info['message_source'] = message_source
+                    trade_info['conta_id'] = CONTA_ID  # NOVO: Adicionar conta_id
 
                     # Enviar a mensagem ao grupo destino
                     sent_message_to_dest = await client.send_message(GRUPO_DESTINO_ID, message_text_to_send)
@@ -1223,13 +1218,12 @@ async def handle_new_message(event):
                     trade_info['message_id'] = sent_message_id_in_dest
                     trade_info['divap_confirmado'] = 1
                     trade_info['cancelado_checker'] = 0
-                    trade_info['message_source'] = message_source
                     
                     # Salvar com status PENDING (padrão)
                     signal_id_from_webhook_db = save_to_database(trade_info) 
                     
                     if signal_id_from_webhook_db:
-                        print(f"[INFO] Sinal salvo em webhook_signals com ID: {signal_id_from_webhook_db}")
+                        print(f"[INFO] Sinal salvo em webhook_signals com ID: {signal_id_from_webhook_db} (Conta: {CONTA_ID})")
                         save_message_to_database( 
                             message_id=incoming_message_id,
                             chat_id=incoming_chat_id,
@@ -1241,7 +1235,6 @@ async def handle_new_message(event):
                             created_at=incoming_created_at,
                             message_source=message_source                        
                         )
-                        #print(f"[INFO] Mensagem original ID {incoming_message_id} (Chat {incoming_chat_id}) registrada em signals_msg com Sinal ID {signal_id_from_webhook_db}.")
                         
                         save_message_to_database(
                             message_id=sent_message_id_in_dest,
@@ -1253,11 +1246,9 @@ async def handle_new_message(event):
                             signal_id=signal_id_from_webhook_db, 
                             created_at=sent_message_created_at,
                             message_source=message_source                         
-
                         )
-                        #print(f"[INFO] Mensagem enviada ID {sent_message_id_in_dest} (Chat {GRUPO_DESTINO_ID}) registrada em signals_msg com Sinal ID {signal_id_from_webhook_db}.")
                     else:
-                        print(f"[AVISO] Falha ao salvar sinal em webhook_signals para msg origem {incoming_message_id}. Mensagens em signals_msg não terão signal_id associado por este fluxo.")
+                        print(f"[AVISO] Falha ao salvar sinal em webhook_signals para msg origem {incoming_message_id}.")
                         save_message_to_database(
                             message_id=incoming_message_id,
                             chat_id=incoming_chat_id,
@@ -1272,8 +1263,6 @@ async def handle_new_message(event):
 
                 else:
                     # DIVAP NÃO confirmado - Salvar no banco com status CANCELED
-                    #print(f"[INFO] Sinal de trade REJEITADO para {trade_info['symbol']}: {error_message}")
-                    
                     trade_info['id_mensagem_origem_sinal'] = incoming_message_id
                     trade_info['chat_id_origem_sinal'] = incoming_chat_id
                     trade_info['chat_id'] = GRUPO_DESTINO_ID
@@ -1282,6 +1271,7 @@ async def handle_new_message(event):
                     trade_info['cancelado_checker'] = 1
                     trade_info['status'] = 'CANCELED'
                     trade_info['error_message'] = error_message
+                    trade_info['conta_id'] = CONTA_ID  # NOVO: Adicionar conta_id
                     
                     # Salvar sem enviar para o grupo destino
                     save_to_database(trade_info)
@@ -1301,10 +1291,7 @@ async def handle_new_message(event):
 
                 return 
             else: 
-                #print(f"[INFO] Mensagem ID {incoming_message_id} de GRUPO DE ORIGEM não é um sinal de trade parseável.")
                 pass
-
-        # ... resto do código igual ...
 
     except Exception as e:
         print(f"[ERRO GERAL EM HANDLE_NEW_MESSAGE] Falha ao processar mensagem ID {incoming_message_id} de Chat ID {incoming_chat_id}: {e}")

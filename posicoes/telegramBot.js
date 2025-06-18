@@ -118,17 +118,15 @@ function formatEntryMessage(signal, filledQuantity, averagePrice, amountInUsdt) 
 }
 
 /**
- * Formata mensagem de erro
- * @param {Object} signal - Dados do sinal
- * @param {string} errorMessage - Mensagem de erro
- * @returns {string} - Mensagem formatada
+ * Formata mensagem de erro para Telegram
  */
 function formatErrorMessage(signal, errorMessage) {
-  return `❌ <b>ERRO NA ENTRADA</b>\n\n` +
-         `📊 Par: <b>${signal.symbol}</b>\n` +
-         `📈 Direção: <b>${signal.side}</b>\n` +
-         `❗ Erro: <b>${errorMessage}</b>\n\n` +
-         `⏰ ${new Date().toLocaleString()}`;
+  return `🚨 ERRO no Sinal ${signal.id}\n` +
+         `📊 Par: ${signal.symbol}\n` +
+         `📈 Lado: ${signal.side}\n` +
+         `💰 Preço: ${signal.price}\n` +
+         `❌ Erro: ${errorMessage}\n` +
+         `⏰ Hora: ${new Date().toLocaleString('pt-BR')}`;
 }
 
 module.exports = {
