@@ -867,13 +867,7 @@ async function validateQuantity(symbol, quantity, price, accountId, orderType = 
 }
 
 /**
- * Ajusta automaticamente a quantidade para atender aos requisitos
- * @param {string} symbol - Símbolo
- * @param {number} quantity - Quantidade original
- * @param {number} price - Preço
- * @param {number} accountId - ID da conta
- * @param {string} orderType - Tipo da ordem
- * @returns {Promise<Object>} - Quantidade ajustada
+ * Ajusta automaticamente a quantidade para atender aos requisitos - SEM VALIDAÇÃO DE PREÇO MÍNIMO
  */
 async function adjustQuantityToRequirements(symbol, quantity, price, accountId, orderType = 'LIMIT') {
     try {
@@ -904,25 +898,14 @@ async function adjustQuantityToRequirements(symbol, quantity, price, accountId, 
             }
         }
         
-        // SE NÃO TEM SUGESTÃO OU A SUGESTÃO FALHOU, TENTAR CALCULAR MÍNIMO VÁLIDO
+        // ✅ CORREÇÃO: SIMPLIFICAR CÁLCULO SEM VALIDAÇÃO DE NOTIONAL PROBLEMÁTICA
         const precision = await getPrecisionCached(symbol, accountId);
         const minQtyRequired = orderType === 'MARKET' ? 
             (precision.marketMinQty || precision.minQty) : 
             precision.minQty;
         
-        // ✅ CORREÇÃO CRÍTICA: GARANTIR QUE ATENDE TAMBÉM O NOTIONAL MÍNIMO
-        let finalQuantity = minQtyRequired;
-        if (precision.minNotional > 0) {
-            const minQtyForNotional = precision.minNotional / price;
-            finalQuantity = Math.max(minQtyRequired, minQtyForNotional);
-            
-            console.log(`[API] Cálculo de quantidade mínima:`);
-            console.log(`  - minQty do exchange: ${minQtyRequired}`);
-            console.log(`  - minNotional: ${precision.minNotional} USDT`);
-            console.log(`  - Preço: ${price}`);
-            console.log(`  - Qty para notional: ${minQtyForNotional.toFixed(8)}`);
-            console.log(`  - Quantidade final: ${finalQuantity.toFixed(8)}`);
-        }
+        // USAR APENAS O MÍNIMO OBRIGATÓRIO DO EXCHANGE
+        let finalQuantity = Math.max(quantity, minQtyRequired);
         
         // ARREDONDAR PARA O STEP SIZE
         if (precision.stepSize > 0) {
@@ -931,17 +914,6 @@ async function adjustQuantityToRequirements(symbol, quantity, price, accountId, 
         
         // FORMATAR COM PRECISÃO CORRETA
         finalQuantity = parseFloat(finalQuantity.toFixed(precision.quantityPrecision));
-        
-        // ✅ VALIDAÇÃO FINAL: Verificar se a quantidade realmente atende o notional
-        const finalNotional = finalQuantity * price;
-        if (precision.minNotional > 0 && finalNotional < precision.minNotional) {
-            return {
-                success: false,
-                originalQuantity: quantity,
-                error: `Mesmo com ajuste máximo, não é possível atingir notional mínimo. Quantidade: ${finalQuantity}, Notional: ${finalNotional.toFixed(2)}, Mínimo: ${precision.minNotional}`,
-                suggestedAction: `Aumente o capital ou use um símbolo com menor valor notional mínimo`
-            };
-        }
         
         console.log(`[API] Quantidade ajustada automaticamente: ${quantity} → ${finalQuantity}`);
         return {

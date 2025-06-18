@@ -698,25 +698,56 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
 
     console.log(`[LIMIT_ENTRY] Processo de entrada finalizado para Sinal ID ${signal.id}: Total Preenchido ${totalFilledSize.toFixed(quantityPrecision)} de ${totalEntrySize.toFixed(quantityPrecision)} (${(fillRatio * 100).toFixed(1)}%) @ Preço Médio ${averageEntryPrice.toFixed(pricePrecision)}`);
     
-    // INSERIR POSIÇÃO NO BANCO
-    const positionData = {
-      simbolo: signal.symbol, 
-      quantidade: totalFilledSize, 
-      preco_medio: averageEntryPrice, 
-      status: 'OPEN',
-      data_hora_abertura: formatDateForMySQL(new Date(executionStartTime)), 
-      side: binanceSide, 
-      leverage: leverage,
-      data_hora_ultima_atualizacao: formatDateForMySQL(new Date()), 
-      preco_entrada: averageEntryPrice,
-      preco_corrente: averageEntryPrice, 
-      orign_sig: `WEBHOOK_${signal.id}`,
-      quantidade_aberta: totalFilledSize,
-    };
+    // INSERIR POSIÇÃO NO BANCO - CORREÇÃO PARA EVITAR DUPLICATAS
+    console.log(`[LIMIT_ENTRY] Verificando se posição já existe antes de inserir...`);
     
-    positionId = await insertPosition(connection, positionData, signal.id);
-    if (!positionId) throw new Error(`Falha ao inserir posição no banco de dados para Sinal ID ${signal.id}`);
-    console.log(`[LIMIT_ENTRY] Posição ID ${positionId} criada no banco de dados para Sinal ID ${signal.id}`);
+    // ✅ VERIFICAR SE JÁ EXISTE POSIÇÃO PARA ESTE SÍMBOLO
+    const [existingDbPositions] = await connection.query(
+      'SELECT id FROM posicoes WHERE simbolo = ? AND status = ? AND conta_id = ?',
+      [signal.symbol, 'OPEN', accountId]
+    );
+    
+    if (existingDbPositions.length > 0) {
+      console.log(`[LIMIT_ENTRY] ✅ Posição já existe no banco para ${signal.symbol} (ID: ${existingDbPositions[0].id}), atualizando dados...`);
+      
+      positionId = existingDbPositions[0].id;
+      
+      // ATUALIZAR POSIÇÃO EXISTENTE EM VEZ DE CRIAR NOVA
+      await connection.query(
+        `UPDATE posicoes SET 
+         quantidade = ?,
+         preco_medio = ?,
+         preco_entrada = ?,
+         preco_corrente = ?,
+         data_hora_ultima_atualizacao = NOW()
+         WHERE id = ?`,
+        [totalFilledSize, averageEntryPrice, averageEntryPrice, averageEntryPrice, positionId]
+      );
+      
+      console.log(`[LIMIT_ENTRY] ✅ Posição ${positionId} atualizada no banco para ${signal.symbol}`);
+      
+    } else {
+      // CRIAR NOVA POSIÇÃO APENAS SE NÃO EXISTIR
+      const positionData = {
+        simbolo: signal.symbol, 
+        quantidade: totalFilledSize, 
+        preco_medio: averageEntryPrice, 
+        status: 'OPEN',
+        data_hora_abertura: formatDateForMySQL(new Date(executionStartTime)), 
+        side: binanceSide, 
+        leverage: leverage,
+        data_hora_ultima_atualizacao: formatDateForMySQL(new Date()), 
+        preco_entrada: averageEntryPrice,
+        preco_corrente: averageEntryPrice, 
+        orign_sig: `WEBHOOK_${signal.id}`,
+        quantidade_aberta: totalFilledSize,
+        conta_id: accountId
+      };
+      
+      positionId = await insertPosition(connection, positionData, signal.id);
+      if (!positionId) throw new Error(`Falha ao inserir posição no banco de dados para Sinal ID ${signal.id}`);
+      console.log(`[LIMIT_ENTRY] ✅ Nova posição ID ${positionId} criada no banco de dados para Sinal ID ${signal.id}`);
+    }
 
     // REGISTRAR TODAS AS ORDENS NO BANCO
     for (const fill of partialFills) {

@@ -62,7 +62,7 @@ async function handleAccountUpdate(message, accountId, db = null) {
   } catch (error) {
     console.error(`[ACCOUNT] ❌ ERRO CRÍTICO ao processar atualização da conta ${accountId}:`, {
       error: error.message,
-      stack: error.stack?.split('\n')?.[0], // Primeira linha do stack
+      stack: error.stack?.split('\n')?.[0],
       messageType: message?.e,
       reason: message?.a?.m
     });
@@ -71,10 +71,6 @@ async function handleAccountUpdate(message, accountId, db = null) {
 
 /**
  * Processa atualizações de saldo - VERSÃO MELHORADA
- * @param {Object} connection - Conexão com banco
- * @param {Array} balances - Array de saldos
- * @param {number} accountId - ID da conta
- * @param {string} reason - Motivo da atualização
  */
 async function handleBalanceUpdates(connection, balances, accountId, reason) {
   try {
@@ -127,12 +123,7 @@ async function handleBalanceUpdates(connection, balances, accountId, reason) {
 }
 
 /**
- * Processa atualizações de posições - VERSÃO MELHORADA COM LOGS DETALHADOS
- * @param {Object} connection - Conexão com banco
- * @param {Array} positions - Array de posições
- * @param {number} accountId - ID da conta
- * @param {string} reason - Motivo da atualização
- * @param {number} eventTime - Timestamp do evento
+ * Processa atualizações de posições - VERSÃO CORRIGIDA SEM OBSERVACOES E SEM VALIDAÇÃO DE PREÇO MÍNIMO
  */
 async function handlePositionUpdates(connection, positions, accountId, reason, eventTime) {
   try {
@@ -173,10 +164,9 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
                status = 'CLOSED',
                quantidade = 0,
                data_hora_fechamento = NOW(),
-               data_hora_ultima_atualizacao = NOW(),
-               observacoes = CONCAT(COALESCE(observacoes, ''), '; Fechada via ACCOUNT_UPDATE (', ?, ')')
+               data_hora_ultima_atualizacao = NOW()
                WHERE id = ?`,
-              [reason, existingPos.id]
+              [existingPos.id]
             );
             
             console.log(`[ACCOUNT] ✅ Posição ${symbol} fechada no banco (ID: ${existingPos.id}, motivo: ${reason})`);
@@ -214,6 +204,7 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
           }
           
           try {
+            // ✅ CORREÇÃO: REMOVER CAMPO observacoes QUE NÃO EXISTE
             await connection.query(
               `UPDATE posicoes SET 
                quantidade = ?,
@@ -221,10 +212,9 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
                preco_corrente = ?,
                preco_medio = ?,
                side = ?,
-               data_hora_ultima_atualizacao = NOW(),
-               observacoes = CONCAT(COALESCE(observacoes, ''), '; Atualizada via ACCOUNT_UPDATE (', ?, ')')
+               data_hora_ultima_atualizacao = NOW()
                WHERE id = ?`,
-              [absPositionAmt, entryPrice, entryPrice, entryPrice, side, reason, existingPos.id]
+              [absPositionAmt, entryPrice, entryPrice, entryPrice, side, existingPos.id]
             );
             
             if (qtyChanged || priceChanged) {
@@ -253,8 +243,8 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
               preco_corrente: entryPrice,
               orign_sig: `EXTERNAL_${reason}`, // Identificar como externa
               quantidade_aberta: absPositionAmt,
-              conta_id: accountId,
-              observacoes: `Criada via ACCOUNT_UPDATE (motivo: ${reason}, marginType: ${marginType}, positionSide: ${positionSide})`
+              conta_id: accountId
+              // ✅ REMOVIDO: observacoes que causava erro
             };
             
             const positionId = await insertPosition(connection, positionData);
@@ -276,8 +266,6 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
 
 /**
  * Registra os handlers de conta para uma conta específica
- * @param {number} accountId - ID da conta
- * @returns {boolean} - Sucesso do registro
  */
 function registerAccountHandlers(accountId) {
   try {
@@ -304,8 +292,6 @@ function registerAccountHandlers(accountId) {
 
 /**
  * Verifica se os handlers de conta estão registrados
- * @param {number} accountId - ID da conta
- * @returns {boolean} - Status do registro
  */
 function areAccountHandlersRegistered(accountId) {
   try {
@@ -323,8 +309,6 @@ function areAccountHandlersRegistered(accountId) {
 
 /**
  * Remove os handlers de conta
- * @param {number} accountId - ID da conta
- * @returns {boolean} - Sucesso da remoção
  */
 function unregisterAccountHandlers(accountId) {
   try {
@@ -348,8 +332,6 @@ function unregisterAccountHandlers(accountId) {
 
 /**
  * Inicializa completamente o sistema de handlers de conta
- * @param {number} accountId - ID da conta
- * @returns {Promise<boolean>} - Sucesso da inicialização
  */
 async function initializeAccountHandlers(accountId) {
   try {
