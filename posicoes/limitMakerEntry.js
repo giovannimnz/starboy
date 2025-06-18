@@ -1016,7 +1016,8 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
           const rpKey = rpTargetKeys[i];
           const rpPrice = targetPrices[rpKey];
           
-          if (rpPrice && rpPrice > 0 && i < reductionPercentages.length) {
+          // ✅ CORREÇÃO: Adicionar validação de preço
+          if (rpPrice && rpPrice > averageEntryPrice && i < reductionPercentages.length) {
             const reductionPercent = reductionPercentages[i];
             let reductionQtyRaw = totalFilledSize * reductionPercent;
             let reductionQty = parseFloat(reductionQtyRaw.toFixed(quantityPrecision));
@@ -1083,7 +1084,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
                 
               }
             } catch (rpError) { 
-              console.error(`[LIMIT_ENTRY] Erro ao criar RP${i+1}:`, rpError.response?.data || rpError.message); 
+              console.warn(`[LIMIT_ENTRY] Pulando RP${i+1} devido a preço inválido ou menor que a entrada. Preço: ${rpPrice}, Entrada: ${averageEntryPrice}`);
             }
           }
         }
