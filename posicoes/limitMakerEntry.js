@@ -544,27 +544,79 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
         activeOrderId = null; 
       }
       try {
-        // NOVO: Enviar ordem MARKET
+        // ENVIAR ORDEM MARKET
+        console.log(`[LIMIT_ENTRY] Enviando ordem MARKET: ${binanceSide} ${remainingToFillMarket.toFixed(quantityPrecision)} ${signal.symbol}`);
         const marketOrderResponse = await api.newMarketOrder(
           numericAccountId,
           signal.symbol,
           remainingToFillMarket,
           binanceSide
         );
-        if (marketOrderResponse && marketOrderResponse.orderId && marketOrderResponse.status === 'FILLED') {
-          const marketFilledQty = parseFloat(marketOrderResponse.executedQty);
-          const marketFilledPrice = parseFloat(marketOrderResponse.avgPrice || marketOrderResponse.price); 
-          if (marketFilledQty > 0) {
-            partialFills.push({ qty: marketFilledQty, price: marketFilledPrice, orderId: String(marketOrderResponse.orderId) });
-            totalFilledSize = partialFills.reduce((sum, pf) => sum + pf.qty, 0); 
-            averageEntryPrice = calculateAveragePrice(partialFills); 
+        
+        console.log(`[LIMIT_ENTRY] Resposta ordem MARKET:`, marketOrderResponse);
+        
+        if (marketOrderResponse && marketOrderResponse.orderId) {
+          // AGUARDAR EXECUÇÃO DA ORDEM MARKET
+          let marketFinalStatus = marketOrderResponse;
+          let waitAttempts = 0;
+          const maxWaitAttempts = 10;
+          
+          // Se a ordem não foi preenchida imediatamente, aguardar
+          while (marketFinalStatus.status !== 'FILLED' && waitAttempts < maxWaitAttempts) {
+            console.log(`[LIMIT_ENTRY] Aguardando execução MARKET... tentativa ${waitAttempts + 1}/${maxWaitAttempts}, status: ${marketFinalStatus.status}`);
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+            try {
+              marketFinalStatus = await api.getOrderStatus(signal.symbol, marketOrderResponse.orderId, numericAccountId);
+              console.log(`[LIMIT_ENTRY] Status atualizado MARKET: ${marketFinalStatus.status}, executedQty: ${marketFinalStatus.executedQty}`);
+            } catch (statusError) {
+              console.warn(`[LIMIT_ENTRY] Erro ao verificar status MARKET:`, statusError.message);
+              break;
+            }
+            
+            waitAttempts++;
           }
-          console.log(`[LIMIT_ENTRY] Ordem MARKET final preenchida: ${marketFilledQty.toFixed(quantityPrecision)} @ ${marketFilledPrice.toFixed(pricePrecision)}`);
+          
+          // PROCESSAR RESULTADO FINAL
+          if (marketFinalStatus.status === 'FILLED') {
+            const marketFilledQty = parseFloat(marketFinalStatus.executedQty);
+            const marketFilledPrice = parseFloat(marketFinalStatus.avgPrice || marketFinalStatus.price);
+            
+            if (marketFilledQty > 0) {
+              partialFills.push({ 
+                qty: marketFilledQty, 
+                price: marketFilledPrice, 
+                orderId: String(marketOrderResponse.orderId) 
+              });
+              totalFilledSize = partialFills.reduce((sum, pf) => sum + pf.qty, 0);
+              averageEntryPrice = calculateAveragePrice(partialFills);
+              
+              console.log(`[LIMIT_ENTRY] ✅ Ordem MARKET executada: ${marketFilledQty.toFixed(quantityPrecision)} @ ${marketFilledPrice.toFixed(pricePrecision)}`);
+              console.log(`[LIMIT_ENTRY] ✅ Total preenchido: ${totalFilledSize.toFixed(quantityPrecision)}`);
+            }
+          } else {
+            console.warn(`[LIMIT_ENTRY] ⚠️ Ordem MARKET não foi totalmente executada. Status final: ${marketFinalStatus.status}, executedQty: ${marketFinalStatus.executedQty}`);
+            
+            // Se teve execução parcial, contabilizar
+            const partialQty = parseFloat(marketFinalStatus.executedQty || 0);
+            if (partialQty > 0) {
+              const partialPrice = parseFloat(marketFinalStatus.avgPrice || marketFinalStatus.price || currentPriceTrigger);
+              partialFills.push({ 
+                qty: partialQty, 
+                price: partialPrice, 
+                orderId: String(marketOrderResponse.orderId) 
+              });
+              totalFilledSize = partialFills.reduce((sum, pf) => sum + pf.qty, 0);
+              averageEntryPrice = calculateAveragePrice(partialFills);
+              
+              console.log(`[LIMIT_ENTRY] ⚠️ Contabilizada execução parcial MARKET: ${partialQty.toFixed(quantityPrecision)} @ ${partialPrice.toFixed(pricePrecision)}`);
+            }
+          }
         } else {
-          console.error(`[LIMIT_ENTRY] Falha na ordem MARKET final:`, marketOrderResponse);
+          console.error(`[LIMIT_ENTRY] ❌ Falha na criação da ordem MARKET: resposta inválida`);
         }
       } catch (marketError) {
-        console.error(`[LIMIT_ENTRY] Erro ao executar ordem MARKET final:`, marketError.response?.data || marketError.message);
+        console.error(`[LIMIT_ENTRY] ❌ Erro ao executar ordem MARKET final:`, marketError.response?.data || marketError.message);
       }
     }
     
