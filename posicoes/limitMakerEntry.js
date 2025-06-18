@@ -167,9 +167,33 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       
       if (adjustment.success) {
         console.log(`[LIMIT_ENTRY] ✅ Quantidade ajustada: ${totalEntrySize} → ${adjustment.adjustedQuantity}`);
+        
+        // ✅ VERIFICAÇÃO CRÍTICA: Se ajuste mudou drasticamente a quantidade, avisar
+        const adjustmentRatio = adjustment.adjustedQuantity / totalEntrySize;
+        if (adjustmentRatio > 10) { // Se teve que aumentar mais de 10x
+          console.warn(`[LIMIT_ENTRY] ⚠️ AVISO: Quantidade foi aumentada drasticamente (${adjustmentRatio.toFixed(1)}x) para atender requisitos mínimos`);
+          console.warn(`[LIMIT_ENTRY] Original: ${totalEntrySize.toFixed(quantityPrecision)}, Ajustada: ${adjustment.adjustedQuantity.toFixed(quantityPrecision)}`);
+        }
+        
         totalEntrySize = adjustment.adjustedQuantity;
       } else {
-        throw new Error(`Quantidade de entrada inválida para ${signal.symbol}: ${entryValidation.reason}. Não foi possível ajustar automaticamente: ${adjustment.error}`);
+        // ✅ FALHA CRÍTICA: Se não conseguiu ajustar, abortar o sinal
+        const errorMsg = `Quantidade de entrada inválida para ${signal.symbol}: ${entryValidation.reason}. Ajuste impossível: ${adjustment.error}`;
+        console.error(`[LIMIT_ENTRY] ❌ ${errorMsg}`);
+        
+        // Atualizar status do sinal para ERROR
+        if (connection) {
+          await connection.query(
+            'UPDATE webhook_signals SET status = ?, error_message = ? WHERE id = ?',
+            ['ERROR', errorMsg.substring(0, 250), signal.id]
+          );
+        }
+        
+        return { 
+          success: false, 
+          error: errorMsg,
+          suggestion: adjustment.suggestedAction || "Aumente o capital disponível ou escolha outro símbolo"
+        };
       }
     } else {
       console.log(`[LIMIT_ENTRY] ✅ Quantidade de entrada válida: ${totalEntrySize}`);
