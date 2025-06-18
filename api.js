@@ -679,17 +679,47 @@ async function getPrecision(symbol, accountId) {
         if (symbolInfo) {
             const priceFilter = symbolInfo.filters.find(f => f.filterType === 'PRICE_FILTER');
             const lotSizeFilter = symbolInfo.filters.find(f => f.filterType === 'LOT_SIZE');
+            const minNotionalFilter = symbolInfo.filters.find(f => f.filterType === 'MIN_NOTIONAL'); // ✅ NOVO
+            const marketLotSizeFilter = symbolInfo.filters.find(f => f.filterType === 'MARKET_LOT_SIZE'); // ✅ NOVO
+            
             const quantityPrecision = lotSizeFilter ? Math.max(0, Math.log10(1 / parseFloat(lotSizeFilter.stepSize))) : 0;
             const pricePrecision = symbolInfo.pricePrecision || 2;
             const tickSize = priceFilter ? parseFloat(priceFilter.tickSize) : 0.01;
+            
+            // ✅ EXTRAIR QUANTIDADES MÍNIMAS E MÁXIMAS
+            const minQty = lotSizeFilter ? parseFloat(lotSizeFilter.minQty) : 0.001;
+            const maxQty = lotSizeFilter ? parseFloat(lotSizeFilter.maxQty) : 10000000;
+            const stepSize = lotSizeFilter ? parseFloat(lotSizeFilter.stepSize) : 0.001;
+            
+            // ✅ QUANTIDADE MÍNIMA PARA MARKET ORDERS
+            const marketMinQty = marketLotSizeFilter ? parseFloat(marketLotSizeFilter.minQty) : minQty;
+            const marketMaxQty = marketLotSizeFilter ? parseFloat(marketLotSizeFilter.maxQty) : maxQty;
+            
+            // ✅ VALOR NOTIONAL MÍNIMO
+            const minNotional = minNotionalFilter ? parseFloat(minNotionalFilter.minNotional) : 0;
 
             const precision = {
                 quantityPrecision: Math.floor(quantityPrecision),
                 pricePrecision: pricePrecision,
-                tickSize: tickSize
+                tickSize: tickSize,
+                // ✅ NOVOS CAMPOS PARA VALIDAÇÃO
+                minQty: minQty,
+                maxQty: maxQty,
+                stepSize: stepSize,
+                marketMinQty: marketMinQty,
+                marketMaxQty: marketMaxQty,
+                minNotional: minNotional
             };
 
-            console.log(`[API] ✅ Precisão obtida para ${symbol}: quantity=${precision.quantityPrecision}, price=${precision.pricePrecision}, tick=${precision.tickSize}`);
+            console.log(`[API] ✅ Precisão completa obtida para ${symbol}:`, {
+                quantityPrecision: precision.quantityPrecision,
+                pricePrecision: precision.pricePrecision,
+                tickSize: precision.tickSize,
+                minQty: precision.minQty,
+                maxQty: precision.maxQty,
+                minNotional: precision.minNotional
+            });
+            
             return precision;
         }
 
@@ -698,6 +728,211 @@ async function getPrecision(symbol, accountId) {
     } catch (error) {
         console.error(`[API] ERRO GRAVE em getPrecision para ${symbol}:`, error.message);
         throw error;
+    }
+}
+
+/**
+ * Valida se a quantidade atende aos requisitos mínimos do símbolo
+ * @param {string} symbol - Símbolo
+ * @param {number} quantity - Quantidade a ser validada
+ * @param {number} price - Preço para calcular notional
+ * @param {number} accountId - ID da conta
+ * @param {string} orderType - Tipo da ordem (LIMIT, MARKET, etc.)
+ * @returns {Promise<Object>} - Resultado da validação
+ */
+async function validateQuantity(symbol, quantity, price, accountId, orderType = 'LIMIT') {
+    try {
+        console.log(`[API] Validando quantidade para ${symbol}: ${quantity} @ ${price} (tipo: ${orderType})`);
+        
+        const precision = await getPrecisionCached(symbol, accountId);
+        
+        // VALIDAÇÕES BÁSICAS
+        if (!quantity || quantity <= 0 || isNaN(quantity)) {
+            return {
+                isValid: false,
+                reason: 'Quantidade deve ser um número positivo',
+                minRequired: precision.minQty,
+                provided: quantity
+            };
+        }
+        
+        if (!price || price <= 0 || isNaN(price)) {
+            return {
+                isValid: false,
+                reason: 'Preço deve ser um número positivo para validação de notional',
+                minRequired: 0.01,
+                provided: price
+            };
+        }
+        
+        // VALIDAR QUANTIDADE MÍNIMA (diferente para MARKET e LIMIT)
+        let minQtyRequired;
+        let maxQtyAllowed;
+        
+        if (orderType === 'MARKET') {
+            minQtyRequired = precision.marketMinQty || precision.minQty;
+            maxQtyAllowed = precision.marketMaxQty || precision.maxQty;
+        } else {
+            minQtyRequired = precision.minQty;
+            maxQtyAllowed = precision.maxQty;
+        }
+        
+        if (quantity < minQtyRequired) {
+            return {
+                isValid: false,
+                reason: `Quantidade abaixo do mínimo para ${orderType}`,
+                minRequired: minQtyRequired,
+                provided: quantity,
+                suggestion: minQtyRequired
+            };
+        }
+        
+        // VALIDAR QUANTIDADE MÁXIMA
+        if (quantity > maxQtyAllowed) {
+            return {
+                isValid: false,
+                reason: `Quantidade acima do máximo permitido para ${orderType}`,
+                maxAllowed: maxQtyAllowed,
+                provided: quantity,
+                suggestion: maxQtyAllowed
+            };
+        }
+        
+        // VALIDAR STEP SIZE (incremento)
+        const stepSize = precision.stepSize;
+        if (stepSize > 0) {
+            const remainder = (quantity * 1e10) % (stepSize * 1e10);
+            if (Math.abs(remainder) > 1e-10) {
+                const correctedQty = Math.floor(quantity / stepSize) * stepSize;
+                return {
+                    isValid: false,
+                    reason: 'Quantidade não é múltiplo do step size',
+                    stepSize: stepSize,
+                    provided: quantity,
+                    suggestion: parseFloat(correctedQty.toFixed(precision.quantityPrecision))
+                };
+            }
+        }
+        
+        // VALIDAR VALOR NOTIONAL MÍNIMO
+        const notionalValue = quantity * price;
+        if (precision.minNotional > 0 && notionalValue < precision.minNotional) {
+            const minQtyForNotional = precision.minNotional / price;
+            return {
+                isValid: false,
+                reason: 'Valor notional abaixo do mínimo',
+                minNotional: precision.minNotional,
+                currentNotional: notionalValue,
+                minQtyForNotional: parseFloat(minQtyForNotional.toFixed(precision.quantityPrecision)),
+                provided: quantity,
+                suggestion: Math.max(minQtyRequired, minQtyForNotional)
+            };
+        }
+        
+        console.log(`[API] ✅ Quantidade ${quantity} válida para ${symbol} (${orderType})`);
+        return {
+            isValid: true,
+            quantity: quantity,
+            notionalValue: notionalValue,
+            orderType: orderType
+        };
+        
+    } catch (error) {
+        console.error(`[API] Erro ao validar quantidade para ${symbol}:`, error.message);
+        return {
+            isValid: false,
+            reason: `Erro na validação: ${error.message}`,
+            provided: quantity
+        };
+    }
+}
+
+/**
+ * Ajusta automaticamente a quantidade para atender aos requisitos
+ * @param {string} symbol - Símbolo
+ * @param {number} quantity - Quantidade original
+ * @param {number} price - Preço
+ * @param {number} accountId - ID da conta
+ * @param {string} orderType - Tipo da ordem
+ * @returns {Promise<Object>} - Quantidade ajustada
+ */
+async function adjustQuantityToRequirements(symbol, quantity, price, accountId, orderType = 'LIMIT') {
+    try {
+        const validation = await validateQuantity(symbol, quantity, price, accountId, orderType);
+        
+        if (validation.isValid) {
+            return {
+                success: true,
+                originalQuantity: quantity,
+                adjustedQuantity: quantity,
+                wasAdjusted: false
+            };
+        }
+        
+        // SE TEM SUGESTÃO, USAR ELA
+        if (validation.suggestion && validation.suggestion > 0) {
+            const newValidation = await validateQuantity(symbol, validation.suggestion, price, accountId, orderType);
+            
+            if (newValidation.isValid) {
+                console.log(`[API] Quantidade ajustada: ${quantity} → ${validation.suggestion} (${validation.reason})`);
+                return {
+                    success: true,
+                    originalQuantity: quantity,
+                    adjustedQuantity: validation.suggestion,
+                    wasAdjusted: true,
+                    reason: validation.reason
+                };
+            }
+        }
+        
+        // SE NÃO TEM SUGESTÃO OU A SUGESTÃO FALHOU, TENTAR CALCULAR MÍNIMO VÁLIDO
+        const precision = await getPrecisionCached(symbol, accountId);
+        const minQtyRequired = orderType === 'MARKET' ? 
+            (precision.marketMinQty || precision.minQty) : 
+            precision.minQty;
+        
+        // GARANTIR QUE ATENDE TAMBÉM O NOTIONAL MÍNIMO
+        let finalQuantity = minQtyRequired;
+        if (precision.minNotional > 0) {
+            const minQtyForNotional = precision.minNotional / price;
+            finalQuantity = Math.max(minQtyRequired, minQtyForNotional);
+        }
+        
+        // ARREDONDAR PARA O STEP SIZE
+        if (precision.stepSize > 0) {
+            finalQuantity = Math.ceil(finalQuantity / precision.stepSize) * precision.stepSize;
+        }
+        
+        // FORMATAR COM PRECISÃO CORRETA
+        finalQuantity = parseFloat(finalQuantity.toFixed(precision.quantityPrecision));
+        
+        const finalValidation = await validateQuantity(symbol, finalQuantity, price, accountId, orderType);
+        
+        if (finalValidation.isValid) {
+            console.log(`[API] Quantidade calculada automaticamente: ${quantity} → ${finalQuantity}`);
+            return {
+                success: true,
+                originalQuantity: quantity,
+                adjustedQuantity: finalQuantity,
+                wasAdjusted: true,
+                reason: `Ajustada para atender requisitos mínimos de ${symbol}`
+            };
+        } else {
+            return {
+                success: false,
+                originalQuantity: quantity,
+                error: `Não foi possível ajustar quantidade para ${symbol}: ${finalValidation.reason}`,
+                validation: finalValidation
+            };
+        }
+        
+    } catch (error) {
+        console.error(`[API] Erro ao ajustar quantidade para ${symbol}:`, error.message);
+        return {
+            success: false,
+            originalQuantity: quantity,
+            error: error.message
+        };
     }
 }
 
@@ -1610,5 +1845,7 @@ module.exports = {
   newStopOrder,
   editOrder,
   getOrderStatus,
-  cancelOrder
+  cancelOrder,
+  validateQuantity,
+  adjustQuantityToRequirements,
 };

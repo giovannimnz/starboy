@@ -151,6 +151,26 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       throw new Error(`Tamanho da ordem inválido: ${totalEntrySize}`);
     }
     
+    // ✅ VALIDAR QUANTIDADE TOTAL CONTRA REQUISITOS DA BINANCE
+    console.log(`[LIMIT_ENTRY] Validando quantidade total de entrada: ${totalEntrySize}`);
+    const entryValidation = await validateQuantity(signal.symbol, totalEntrySize, currentPriceTrigger, numericAccountId, 'LIMIT');
+    
+    if (!entryValidation.isValid) {
+      console.warn(`[LIMIT_ENTRY] ⚠️ Quantidade de entrada inválida: ${entryValidation.reason}`);
+      
+      // TENTAR AJUSTAR AUTOMATICAMENTE
+      const adjustment = await adjustQuantityToRequirements(signal.symbol, totalEntrySize, currentPriceTrigger, numericAccountId, 'LIMIT');
+      
+      if (adjustment.success) {
+        console.log(`[LIMIT_ENTRY] ✅ Quantidade ajustada: ${totalEntrySize} → ${adjustment.adjustedQuantity}`);
+        totalEntrySize = adjustment.adjustedQuantity;
+      } else {
+        throw new Error(`Quantidade de entrada inválida para ${signal.symbol}: ${entryValidation.reason}. Não foi possível ajustar automaticamente: ${adjustment.error}`);
+      }
+    } else {
+      console.log(`[LIMIT_ENTRY] ✅ Quantidade de entrada válida: ${totalEntrySize}`);
+    }
+    
     binanceSide = signal.side.toUpperCase() === 'COMPRA' || signal.side.toUpperCase() === 'BUY' ? 'BUY' : 'SELL';
     
     await connection.query(
@@ -566,8 +586,9 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
 
     // TENTAR PREENCHER RESTANTE COM ORDEM MARKET
     if (remainingToFillMarket > 0) {
-      console.log(`[LIMIT_ENTRY] Tentando preencher restante (${remainingToFillMarket.toFixed(quantityPrecision)}) com ordem LIMIT MAKER FINAL.`);
+      console.log(`[LIMIT_ENTRY] ⚠️ Chasing não completou totalmente. Iniciando CHASING ATIVO FINAL.`);
       
+      // CANCELAR ORDEM ATIVA SE EXISTIR
       if (activeOrderId) { 
         try {
           const lastOrderStatus = await getOrderStatus(signal.symbol, activeOrderId, numericAccountId);
@@ -576,203 +597,204 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
             console.log(`[LIMIT_ENTRY] Última ordem LIMIT ${activeOrderId} cancelada.`);
           }
         } catch (cancelErr) { 
-          console.warn(`[LIMIT_ENTRY] Falha ao cancelar antes da LIMIT final:`, cancelErr.message); 
+          console.warn(`[LIMIT_ENTRY] Falha ao cancelar antes do chasing final:`, cancelErr.message); 
         }
         activeOrderId = null; 
       }
       
-      try {
-        // CALCULAR PREÇO MAIS AGRESSIVO PARA LIMIT MAKER FINAL
-        let finalLimitPrice;
+      // CHASING ATIVO FINAL: Loop contínuo reposicionando ordem baseado no book atual
+      let finalChasingAttempts = 0;
+      const maxFinalChasingAttempts = 50; // Máximo 50 tentativas
+      const maxFinalChasingTime = 60000; // Máximo 60 segundos
+      const finalChasingStartTime = Date.now();
+      
+      console.log(`[LIMIT_ENTRY] 🎯 Iniciando CHASING ATIVO FINAL - Máx tentativas: ${maxFinalChasingAttempts}, Timeout: ${maxFinalChasingTime/1000}s`);
+      
+      while (totalFilledSize < totalEntrySize && 
+             finalChasingAttempts < maxFinalChasingAttempts && 
+             (Date.now() - finalChasingStartTime) < maxFinalChasingTime) {
+        
+        finalChasingAttempts++;
+        console.log(`[LIMIT_ENTRY] 🔄 Chasing Ativo Final - Tentativa ${finalChasingAttempts}/${maxFinalChasingAttempts}`);
+        
+        // VERIFICAR DADOS ATUAIS DO BOOK
+        const isDepthDataStale = (Date.now() - lastDepthUpdateTimestamp > MAX_DEPTH_STALENESS_MS);
+        if (isDepthDataStale || !currentBestBid || !currentBestAsk) {
+          console.log(`[LIMIT_ENTRY] Dados do book desatualizados, aguardando...`);
+          await new Promise(resolve => setTimeout(resolve, 500));
+          continue;
+        }
+        
+        // CALCULAR PREÇO MAIS AGRESSIVO A CADA ITERAÇÃO
+        let aggressivePrice;
+        const progressRatio = finalChasingAttempts / maxFinalChasingAttempts; // 0.02, 0.04, 0.06...
         
         if (binanceSide === 'BUY') {
-          // Para BUY: usar bid + 1 tick (bem agressivo mas ainda MAKER)
-          finalLimitPrice = currentBestBid + tickSize;
+          // Para BUY: começar no bid e ir subindo em direção ao ask
+          const priceIncrement = (currentBestAsk - currentBestBid) * progressRatio * 0.5; // Até 50% do spread
+          aggressivePrice = currentBestBid + Math.max(tickSize, priceIncrement);
           
-          // Verificar se não ultrapassa o ask (mantém como MAKER)
-          if (finalLimitPrice >= currentBestAsk) {
-            finalLimitPrice = currentBestAsk - tickSize;
+          // Não ultrapassar o ASK menos 1 tick (manter como MAKER)
+          if (aggressivePrice >= currentBestAsk) {
+            aggressivePrice = currentBestAsk - tickSize;
           }
         } else { // SELL
-          // Para SELL: usar ask - 1 tick (bem agressivo mas ainda MAKER)
-          finalLimitPrice = currentBestAsk - tickSize;
+          // Para SELL: começar no ask e ir descendo em direção ao bid
+          const priceDecrement = (currentBestAsk - currentBestBid) * progressRatio * 0.5;
+          aggressivePrice = currentBestAsk - Math.max(tickSize, priceDecrement);
           
-          // Verificar se não ultrapassa o bid (mantém como MAKER)
-          if (finalLimitPrice <= currentBestBid) {
-            finalLimitPrice = currentBestBid + tickSize;
+          // Não ultrapassar o BID mais 1 tick (manter como MAKER)
+          if (aggressivePrice <= currentBestBid) {
+            aggressivePrice = currentBestBid + tickSize;
           }
         }
         
-        // Arredondar preço final
-        finalLimitPrice = await roundPriceToTickSize(signal.symbol, finalLimitPrice, numericAccountId);
+        // ARREDONDAR PREÇO CORRETAMENTE
+        aggressivePrice = await roundPriceToTickSize(signal.symbol, aggressivePrice, numericAccountId);
         
-        console.log(`[LIMIT_ENTRY] Enviando ordem LIMIT MAKER FINAL: ${binanceSide} ${remainingToFillMarket.toFixed(quantityPrecision)} ${signal.symbol} @ ${finalLimitPrice.toFixed(pricePrecision)}`);
-        console.log(`[LIMIT_ENTRY] DEBUG - Book atual: Bid=${currentBestBid?.toFixed(pricePrecision)}, Ask=${currentBestAsk?.toFixed(pricePrecision)}`);
+        const qtyRestante = parseFloat((totalEntrySize - totalFilledSize).toFixed(quantityPrecision));
         
-        const finalLimitOrderResponse = await newLimitMakerOrder(
-          numericAccountId,
-          signal.symbol,
-          remainingToFillMarket,
-          binanceSide,
-          finalLimitPrice
-        );
+        console.log(`[LIMIT_ENTRY] 📍 Tentativa ${finalChasingAttempts}: ${binanceSide} ${qtyRestante} @ ${aggressivePrice.toFixed(pricePrecision)} | Book: Bid=${currentBestBid.toFixed(pricePrecision)}, Ask=${currentBestAsk.toFixed(pricePrecision)}`);
         
-        console.log(`[LIMIT_ENTRY] Resposta ordem LIMIT MAKER FINAL:`, finalLimitOrderResponse);
-        
-        let finalOrderId = null;
-        if (finalLimitOrderResponse && finalLimitOrderResponse.orderId) {
-          finalOrderId = finalLimitOrderResponse.orderId;
-        }
-        
-        if (finalOrderId) {
-          console.log(`[LIMIT_ENTRY] Ordem LIMIT MAKER FINAL criada: ID ${finalOrderId}`);
+        try {
+          const aggressiveOrderResponse = await newLimitMakerOrder(
+            numericAccountId,
+            signal.symbol,
+            qtyRestante,
+            binanceSide,
+            aggressivePrice
+          );
           
-          // AGUARDAR EXECUÇÃO DA ORDEM LIMIT MAKER FINAL
-          let finalOrderStatus = finalLimitOrderResponse;
-          let waitAttempts = 0;
-          const maxWaitAttempts = 30; // Mais tentativas para LIMIT
-          
-          while (finalOrderStatus.status !== 'FILLED' && waitAttempts < maxWaitAttempts) {
-            console.log(`[LIMIT_ENTRY] Aguardando execução LIMIT MAKER FINAL... tentativa ${waitAttempts + 1}/${maxWaitAttempts}, status: ${finalOrderStatus.status}`);
-            await new Promise(resolve => setTimeout(resolve, 2000)); // 2 segundos entre verificações
+          if (aggressiveOrderResponse && aggressiveOrderResponse.orderId) {
+            const aggressiveOrderId = aggressiveOrderResponse.orderId;
+            console.log(`[LIMIT_ENTRY] ✅ Ordem chasing ativa criada: ${aggressiveOrderId} @ ${aggressivePrice.toFixed(pricePrecision)}`);
             
-            try {
-              const statusPromise = api.getOrderStatus(signal.symbol, finalOrderId, numericAccountId);
-              const timeoutPromise = new Promise((_, reject) => 
-                setTimeout(() => reject(new Error('Timeout ao verificar status')), 10000)
-              );
+            // AGUARDAR EXECUÇÃO POR UM TEMPO CURTO (2-3 segundos)
+            let aggressiveWaitTime = 0;
+            const maxAggressiveWaitTime = 3000; // 3 segundos máximo
+            const aggressiveWaitInterval = 300; // Verificar a cada 300ms
+            
+            while (aggressiveWaitTime < maxAggressiveWaitTime) {
+              await new Promise(resolve => setTimeout(resolve, aggressiveWaitInterval));
+              aggressiveWaitTime += aggressiveWaitInterval;
               
-              finalOrderStatus = await Promise.race([statusPromise, timeoutPromise]);
-              console.log(`[LIMIT_ENTRY] Status atualizado LIMIT MAKER FINAL: ${finalOrderStatus.status}, executedQty: ${finalOrderStatus.executedQty}`);
-              
-              // Verificar se teve preenchimento parcial
-              const currentExecutedQty = parseFloat(finalOrderStatus.executedQty || 0);
-              if (currentExecutedQty > 0 && !partialFills.some(fill => fill.orderId === String(finalOrderId))) {
-                const fillPrice = parseFloat(finalOrderStatus.avgPrice || finalOrderStatus.price || finalLimitPrice);
-                partialFills.push({
-                  qty: currentExecutedQty,
-                  price: fillPrice,
-                  orderId: String(finalOrderId)
-                });
-                totalFilledSize = partialFills.reduce((sum, pf) => sum + pf.qty, 0);
-                console.log(`[LIMIT_ENTRY] Preenchimento parcial LIMIT FINAL detectado: ${currentExecutedQty.toFixed(quantityPrecision)} @ ${fillPrice.toFixed(pricePrecision)}`);
-              }
-              
-            } catch (statusError) {
-              console.warn(`[LIMIT_ENTRY] Erro ao verificar status LIMIT MAKER FINAL:`, statusError.message);
-              
-              if (statusError.message.includes('Timeout')) {
-                console.log(`[LIMIT_ENTRY] Timeout na verificação LIMIT MAKER - reposicionando ordem`);
+              try {
+                const aggressiveStatus = await api.getOrderStatus(signal.symbol, aggressiveOrderId, numericAccountId);
                 
-                // TENTAR REPOSICIONAR A ORDEM PARA SER MAIS AGRESSIVA
-                try {
-                  await cancelOrder(signal.symbol, finalOrderId, numericAccountId);
-                  console.log(`[LIMIT_ENTRY] Ordem LIMIT MAKER cancelada para reposicionamento`);
+                if (aggressiveStatus.status === 'FILLED') {
+                  const aggressiveQty = parseFloat(aggressiveStatus.executedQty);
+                  const aggressivePrice = parseFloat(aggressiveStatus.avgPrice || aggressiveStatus.price);
                   
-                  // Recalcular preço mais agressivo
-                  if (binanceSide === 'BUY') {
-                    finalLimitPrice = currentBestBid + (tickSize * 2);
-                  } else {
-                    finalLimitPrice = currentBestAsk - (tickSize * 2);
+                  if (aggressiveQty > 0) {
+                    partialFills.push({
+                      qty: aggressiveQty,
+                      price: aggressivePrice,
+                      orderId: String(aggressiveOrderId)
+                    });
+                    totalFilledSize = partialFills.reduce((sum, pf) => sum + pf.qty, 0);
+                    averageEntryPrice = calculateAveragePrice(partialFills);
+                    
+                    console.log(`[LIMIT_ENTRY] ✅ CHASING ATIVO executou: ${aggressiveQty.toFixed(quantityPrecision)} @ ${aggressivePrice.toFixed(pricePrecision)}`);
+                    console.log(`[LIMIT_ENTRY] 📊 Total preenchido: ${totalFilledSize.toFixed(quantityPrecision)}/${totalEntrySize.toFixed(quantityPrecision)}`);
+                    break; // Sucesso, sair do loop de wait
                   }
-                  
-                  finalLimitPrice = await roundPriceToTickSize(signal.symbol, finalLimitPrice, numericAccountId);
-                  
-                  const newOrderResponse = await newLimitMakerOrder(
-                    numericAccountId,
-                    signal.symbol,
-                    remainingToFillMarket - totalFilledSize,
-                    binanceSide,
-                    finalLimitPrice
-                  );
-                  
-                  if (newOrderResponse && newOrderResponse.orderId) {
-                    finalOrderId = newOrderResponse.orderId;
-                    finalOrderStatus = newOrderResponse;
-                    console.log(`[LIMIT_ENTRY] Nova ordem LIMIT MAKER criada: ${finalOrderId} @ ${finalLimitPrice}`);
+                } else if (aggressiveStatus.status === 'PARTIALLY_FILLED') {
+                  // Contabilizar preenchimento parcial
+                  const partialQty = parseFloat(aggressiveStatus.executedQty || '0');
+                  if (partialQty > 0 && !partialFills.some(fill => fill.orderId === String(aggressiveOrderId))) {
+                    const partialPrice = parseFloat(aggressiveStatus.avgPrice || aggressiveStatus.price || aggressivePrice);
+                    partialFills.push({
+                      qty: partialQty,
+                      price: partialPrice,
+                      orderId: String(aggressiveOrderId)
+                    });
+                    totalFilledSize = partialFills.reduce((sum, pf) => sum + pf.qty, 0);
+                    console.log(`[LIMIT_ENTRY] 📊 Preenchimento parcial chasing: ${partialQty.toFixed(quantityPrecision)} @ ${partialPrice.toFixed(pricePrecision)}`);
                   }
-                  
-                } catch (repositionError) {
-                  console.error(`[LIMIT_ENTRY] Erro ao reposicionar ordem:`, repositionError.message);
-                  break;
                 }
+              } catch (statusError) {
+                console.warn(`[LIMIT_ENTRY] Erro ao verificar status chasing:`, statusError.message);
+                break;
               }
             }
             
-            waitAttempts++;
+            // CANCELAR ORDEM SE NÃO FOI TOTALMENTE EXECUTADA
+            try {
+              const finalAggressiveStatus = await api.getOrderStatus(signal.symbol, aggressiveOrderId, numericAccountId);
+              if (finalAggressiveStatus.status === 'NEW' || finalAggressiveStatus.status === 'PARTIALLY_FILLED') {
+                await cancelOrder(signal.symbol, aggressiveOrderId, numericAccountId);
+                console.log(`[LIMIT_ENTRY] Ordem chasing ${aggressiveOrderId} cancelada (${finalAggressiveStatus.status})`);
+              }
+            } catch (cancelError) {
+              console.warn(`[LIMIT_ENTRY] Erro ao cancelar ordem chasing:`, cancelError.message);
+            }
+            
+          } else {
+            console.warn(`[LIMIT_ENTRY] Falha ao criar ordem chasing - resposta inválida`);
           }
           
-          // PROCESSAR RESULTADO FINAL DA ORDEM LIMIT
-          if (finalOrderStatus.status === 'FILLED') {
-            const limitFilledQty = parseFloat(finalOrderStatus.executedQty);
-            const limitFilledPrice = parseFloat(finalOrderStatus.avgPrice || finalOrderStatus.price || finalLimitPrice);
+        } catch (aggressiveError) {
+          console.warn(`[LIMIT_ENTRY] Tentativa chasing ${finalChasingAttempts} falhou:`, aggressiveError.message);
+          
+          // Se for erro de Post-Only, aguardar um pouco e tentar novamente
+          if (aggressiveError.message && (aggressiveError.message.includes('immediately match') || aggressiveError.message.includes('-2010'))) {
+            console.log(`[LIMIT_ENTRY] Preço muito agressivo (seria taker), aguardando book mudar...`);
+            await new Promise(resolve => setTimeout(resolve, 1000)); // Aguardar 1 segundo
+          }
+        }
+        
+        // VERIFICAR SE JÁ PREENCHEU O SUFICIENTE
+        if (totalFilledSize >= totalEntrySize) {
+          console.log(`[LIMIT_ENTRY] ✅ CHASING ATIVO FINAL concluído - Quantidade total atingida`);
+          break;
+        }
+        
+        // Pequena pausa entre tentativas para não sobrecarregar
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      
+      // RESULTADO DO CHASING ATIVO FINAL
+      const finalFillRatio = totalEntrySize > 0 ? totalFilledSize / totalEntrySize : 0;
+      console.log(`[LIMIT_ENTRY] 📊 CHASING ATIVO FINAL finalizado:`);
+      console.log(`  - Tentativas: ${finalChasingAttempts}/${maxFinalChasingAttempts}`);
+      console.log(`  - Preenchido: ${totalFilledSize.toFixed(quantityPrecision)}/${totalEntrySize.toFixed(quantityPrecision)} (${(finalFillRatio * 100).toFixed(1)}%)`);
+      console.log(`  - Tempo gasto: ${Date.now() - finalChasingStartTime}ms`);
+      
+      // SE AINDA NÃO PREENCHEU COMPLETAMENTE E NÃO TEM NENHUM PREENCHIMENTO
+      if (totalFilledSize === 0 && finalChasingAttempts >= maxFinalChasingAttempts) {
+        console.log(`[LIMIT_ENTRY] 🚨 ÚLTIMO RECURSO: CHASING ATIVO falhou completamente, usando MARKET...`);
+        try {
+          const emergencyMarketResponse = await api.newMarketOrder(
+            numericAccountId,
+            signal.symbol,
+            remainingToFillMarket,
+            binanceSide
+          );
+          
+          if (emergencyMarketResponse && emergencyMarketResponse.orderId) {
+            console.log(`[LIMIT_ENTRY] ✅ Ordem MARKET de último recurso executada: ${emergencyMarketResponse.orderId}`);
             
-            if (limitFilledQty > 0 && !partialFills.some(fill => fill.orderId === String(finalOrderId))) {
-              partialFills.push({ 
-                qty: limitFilledQty, 
-                price: limitFilledPrice, 
-                orderId: String(finalOrderId) 
+            // Aguardar um pouco e verificar execução
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            const marketStatus = await api.getOrderStatus(signal.symbol, emergencyMarketResponse.orderId, numericAccountId);
+            
+            if (marketStatus.status === 'FILLED') {
+              const marketQty = parseFloat(marketStatus.executedQty);
+              const marketPrice = parseFloat(marketStatus.avgPrice || marketStatus.price);
+              
+              partialFills.push({
+                qty: marketQty,
+                price: marketPrice,
+                orderId: String(emergencyMarketResponse.orderId)
               });
               totalFilledSize = partialFills.reduce((sum, pf) => sum + pf.qty, 0);
               averageEntryPrice = calculateAveragePrice(partialFills);
               
-              console.log(`[LIMIT_ENTRY] ✅ Ordem LIMIT MAKER FINAL executada: ${limitFilledQty.toFixed(quantityPrecision)} @ ${limitFilledPrice.toFixed(pricePrecision)}`);
-              console.log(`[LIMIT_ENTRY] ✅ Total preenchido: ${totalFilledSize.toFixed(quantityPrecision)}`);
-            }
-          } else {
-            console.warn(`[LIMIT_ENTRY] ⚠️ Ordem LIMIT MAKER FINAL não foi totalmente executada. Status final: ${finalOrderStatus.status}`);
-            
-            // Cancelar ordem não executada
-            try {
-              await cancelOrder(signal.symbol, finalOrderId, numericAccountId);
-              console.log(`[LIMIT_ENTRY] Ordem LIMIT MAKER FINAL não executada cancelada: ${finalOrderId}`);
-            } catch (cancelError) {
-              console.warn(`[LIMIT_ENTRY] Erro ao cancelar ordem não executada:`, cancelError.message);
+              console.log(`[LIMIT_ENTRY] ✅ MARKET de último recurso preenchida: ${marketQty.toFixed(quantityPrecision)} @ ${marketPrice.toFixed(pricePrecision)}`);
             }
           }
-        } else {
-          throw new Error('Resposta da ordem LIMIT MAKER FINAL não contém orderId válido');
-        }
-        
-      } catch (limitError) {
-        console.error(`[LIMIT_ENTRY] ❌ Erro ao executar ordem LIMIT MAKER FINAL:`, limitError.response?.data || limitError.message);
-        
-        // APENAS EM CASO EXTREMO, usar MARKET como último recurso
-        if (totalFilledSize === 0) {
-          console.log(`[LIMIT_ENTRY] 🚨 ÚLTIMO RECURSO: Nenhum preenchimento ainda, usando MARKET...`);
-          try {
-            const emergencyMarketResponse = await api.newMarketOrder(
-              numericAccountId,
-              signal.symbol,
-              remainingToFillMarket,
-              binanceSide
-            );
-            
-            if (emergencyMarketResponse && emergencyMarketResponse.orderId) {
-              console.log(`[LIMIT_ENTRY] ✅ Ordem MARKET de último recurso executada: ${emergencyMarketResponse.orderId}`);
-              
-              // Aguardar um pouco e verificar execução
-              await new Promise(resolve => setTimeout(resolve, 1000));
-              const marketStatus = await api.getOrderStatus(signal.symbol, emergencyMarketResponse.orderId, numericAccountId);
-              
-              if (marketStatus.status === 'FILLED') {
-                const marketQty = parseFloat(marketStatus.executedQty);
-                const marketPrice = parseFloat(marketStatus.avgPrice || marketStatus.price);
-                
-                partialFills.push({
-                  qty: marketQty,
-                  price: marketPrice,
-                  orderId: String(emergencyMarketResponse.orderId)
-                });
-                totalFilledSize = partialFills.reduce((sum, pf) => sum + pf.qty, 0);
-                averageEntryPrice = calculateAveragePrice(partialFills);
-                
-                console.log(`[LIMIT_ENTRY] ✅ MARKET de último recurso preenchida: ${marketQty.toFixed(quantityPrecision)} @ ${marketPrice.toFixed(pricePrecision)}`);
-              }
-            }
-          } catch (marketFallbackError) {
-            console.error(`[LIMIT_ENTRY] ❌ Falha no MARKET de último recurso:`, marketFallbackError.message);
-          }
+        } catch (marketFallbackError) {
+          console.error(`[LIMIT_ENTRY] ❌ Falha no MARKET de último recurso:`, marketFallbackError.message);
         }
       }
     }
@@ -954,86 +976,199 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       const reductionPercentages = [0.25, 0.30, 0.25, 0.10];
       let cumulativeQtyForRps = 0;
       
-      // AJUSTAR QUANTIDADE MÍNIMA BASEADA NO TOTAL PREENCHIDO
+      // ✅ OBTER QUANTIDADE MÍNIMA DO EXCHANGE INFO EM VEZ DE VALOR FIXO
+      const precisionForRps = await getPrecisionCached(signal.symbol, numericAccountId);
+      const exchangeMinQty = precisionForRps.minQty || 0.001; // Fallback se não conseguir obter
+      
+      console.log(`[LIMIT_ENTRY] Quantidade mínima do exchange para ${signal.symbol}: ${exchangeMinQty}`);
+      
+      // AJUSTAR QUANTIDADE MÍNIMA BASEADA NO TOTAL PREENCHIDO E NO EXCHANGE
       let minQtyForRp;
-      if (totalFilledSize >= 0.004) {
-        minQtyForRp = 0.001; // Mínimo padrão
+      if (totalFilledSize >= (exchangeMinQty * 4)) { // Se a posição total permite pelo menos 4 RPs
+        minQtyForRp = exchangeMinQty; // Usar mínimo do exchange
       } else {
         // Para posições muito pequenas, reduzir o mínimo proporcionalmente
-        minQtyForRp = totalFilledSize * 0.20; // 20% da posição total como mínimo por RP
+        minQtyForRp = Math.max(exchangeMinQty, totalFilledSize * 0.20); // 20% da posição total como mínimo por RP, mas nunca menor que o exchange
       }
       
-      console.log(`[LIMIT_ENTRY] Total preenchido para RPs: ${totalFilledSize}, Quantidade mínima ajustada por RP: ${minQtyForRp.toFixed(quantityPrecision)}`);
+      console.log(`[LIMIT_ENTRY] Total preenchido para RPs: ${totalFilledSize}, Quantidade mínima ajustada por RP: ${minQtyForRp.toFixed(quantityPrecision)}, Exchange minQty: ${exchangeMinQty}`);
       
-      // SE A POSIÇÃO FOR MUITO PEQUENA, CRIAR RPs ALTERNATIVAS
-      if (totalFilledSize < 0.004) {
-        console.log(`[LIMIT_ENTRY] ⚠️ Posição muito pequena (${totalFilledSize}), criando apenas 2 RPs maiores em vez de 4 pequenas`);
+      // ✅ USAR exchangeMinQty EM VEZ DE 0.004
+      if (totalFilledSize < (exchangeMinQty * 4)) {
+        console.log(`[LIMIT_ENTRY] ⚠️ Posição muito pequena (${totalFilledSize}) comparada ao mínimo do exchange (${exchangeMinQty}), criando apenas 2 RPs maiores em vez de 4 pequenas`);
         
         // ESTRATÉGIA ALTERNATIVA: 2 RPs de 40% cada, deixando 20% para TP final
-        const rp1Qty = parseFloat((totalFilledSize * 0.4).toFixed(quantityPrecision));
-        const rp2Qty = parseFloat((totalFilledSize * 0.4).toFixed(quantityPrecision));
+        let rp1Qty = parseFloat((totalFilledSize * 0.4).toFixed(quantityPrecision));
+        let rp2Qty = parseFloat((totalFilledSize * 0.4).toFixed(quantityPrecision));
         
-        // RP1 (40% no TP1)
-        if (targetPrices.tp1 && targetPrices.tp1 > 0 && rp1Qty >= minQtyForRp) {
-          try {
-            console.log(`[LIMIT_ENTRY] Criando RP1 alternativa (40%): ${rp1Qty} ${signal.symbol} @ ${targetPrices.tp1}`);
+        console.log(`[LIMIT_ENTRY] Quantidades calculadas - RP1: ${rp1Qty}, RP2: ${rp2Qty}, Mínimo: ${minQtyForRp}`);
+        
+        // ✅ VALIDAR E AJUSTAR RP1
+        if (targetPrices.tp1 && targetPrices.tp1 > averageEntryPrice) {
+          const rp1Validation = await validateQuantity(signal.symbol, rp1Qty, targetPrices.tp1, numericAccountId, 'LIMIT');
+          
+          if (!rp1Validation.isValid) {
+            console.warn(`[LIMIT_ENTRY] RP1 quantidade inválida: ${rp1Validation.reason}`);
             
-            const rp1Response = await newReduceOnlyOrder(
-              numericAccountId, 
-              signal.symbol, 
-              rp1Qty, 
-              binanceOppositeSide, 
-              targetPrices.tp1
-            );
+            const rp1Adjustment = await adjustQuantityToRequirements(signal.symbol, rp1Qty, targetPrices.tp1, numericAccountId, 'LIMIT');
             
-            if (rp1Response && rp1Response.data && rp1Response.data.orderId) {
-              cumulativeQtyForRps += rp1Qty;
-              console.log(`[LIMIT_ENTRY] RP1 alternativa criada: ${rp1Response.data.orderId}`);
-              // Salvar no banco...
+            if (rp1Adjustment.success) {
+              rp1Qty = rp1Adjustment.adjustedQuantity;
+              console.log(`[LIMIT_ENTRY] RP1 quantidade ajustada: ${rp1Adjustment.originalQuantity} → ${rp1Qty}`);
+            } else {
+              console.warn(`[LIMIT_ENTRY] RP1 não pode ser ajustada: ${rp1Adjustment.error}. Pulando RP1.`);
+              rp1Qty = 0;
             }
-          } catch (rp1Error) {
-            console.error(`[LIMIT_ENTRY] Erro ao criar RP1 alternativa:`, rp1Error.message);
           }
+          
+          if (rp1Qty > 0) {
+            try {
+              console.log(`[LIMIT_ENTRY] Criando RP1 alternativa (40%): ${rp1Qty} ${signal.symbol} @ ${targetPrices.tp1}`);
+              
+              const rp1Response = await newReduceOnlyOrder(
+                numericAccountId, 
+                signal.symbol, 
+                rp1Qty, 
+                binanceOppositeSide, 
+                targetPrices.tp1
+              );
+              
+              if (rp1Response && rp1Response.data && rp1Response.data.orderId) {
+                cumulativeQtyForRps += rp1Qty;
+                console.log(`[LIMIT_ENTRY] RP1 alternativa criada: ${rp1Response.data.orderId}`);
+                
+                // SALVAR NO BANCO
+                const rp1OrderData = { 
+                  tipo_ordem: 'LIMIT', 
+                  preco: targetPrices.tp1, 
+                  quantidade: rp1Qty, 
+                  id_posicao: positionId, 
+                  status: 'NEW',
+                  data_hora_criacao: formatDateForMySQL(new Date()), 
+                  id_externo: String(rp1Response.data.orderId).substring(0,90), 
+                  side: binanceOppositeSide,
+                  simbolo: signal.symbol, 
+                  tipo_ordem_bot: 'REDUCAO_PARCIAL', 
+                  target: 1, 
+                  reduce_only: true, 
+                  close_position: false, 
+                  orign_sig: `WEBHOOK_${signal.id}`,
+                  last_update: formatDateForMySQL(new Date())
+                };
+                await insertNewOrder(connection, rp1OrderData);
+                
+              } else {
+                console.warn(`[LIMIT_ENTRY] RP1 alternativa falhou - resposta inválida:`, rp1Response);
+              }
+            } catch (rp1Error) {
+              console.error(`[LIMIT_ENTRY] Erro ao criar RP1 alternativa:`, rp1Error.message);
+            }
+          }
+        } else {
+          console.log(`[LIMIT_ENTRY] RP1 alternativa pulada - TP1: ${targetPrices.tp1}, EntryPrice: ${averageEntryPrice}`);
         }
         
-        // RP2 (40% no TP2)
-        if (targetPrices.tp2 && targetPrices.tp2 > 0 && rp2Qty >= minQtyForRp) {
-          try {
-            console.log(`[LIMIT_ENTRY] Criando RP2 alternativa (40%): ${rp2Qty} ${signal.symbol} @ ${targetPrices.tp2}`);
+        // ✅ VALIDAR E AJUSTAR RP2
+        if (targetPrices.tp2 && targetPrices.tp2 > averageEntryPrice) {
+          const rp2Validation = await validateQuantity(signal.symbol, rp2Qty, targetPrices.tp2, numericAccountId, 'LIMIT');
+          
+          if (!rp2Validation.isValid) {
+            console.warn(`[LIMIT_ENTRY] RP2 quantidade inválida: ${rp2Validation.reason}`);
             
-            const rp2Response = await newReduceOnlyOrder(
-              numericAccountId, 
-              signal.symbol, 
-              rp2Qty, 
-              binanceOppositeSide, 
-              targetPrices.tp2
-            );
+            const rp2Adjustment = await adjustQuantityToRequirements(signal.symbol, rp2Qty, targetPrices.tp2, numericAccountId, 'LIMIT');
             
-            if (rp2Response && rp2Response.data && rp2Response.data.orderId) {
-              cumulativeQtyForRps += rp2Qty;
-              console.log(`[LIMIT_ENTRY] RP2 alternativa criada: ${rp2Response.data.orderId}`);
-              // Salvar no banco...
+            if (rp2Adjustment.success) {
+              rp2Qty = rp2Adjustment.adjustedQuantity;
+              console.log(`[LIMIT_ENTRY] RP2 quantidade ajustada: ${rp2Adjustment.originalQuantity} → ${rp2Qty}`);
+            } else {
+              console.warn(`[LIMIT_ENTRY] RP2 não pode ser ajustada: ${rp2Adjustment.error}. Pulando RP2.`);
+              rp2Qty = 0;
             }
-          } catch (rp2Error) {
-            console.error(`[LIMIT_ENTRY] Erro ao criar RP2 alternativa:`, rp2Error.message);
           }
+          
+          if (rp2Qty > 0) {
+            try {
+              console.log(`[LIMIT_ENTRY] Criando RP2 alternativa (40%): ${rp2Qty} ${signal.symbol} @ ${targetPrices.tp2}`);
+              
+              const rp2Response = await newReduceOnlyOrder(
+                numericAccountId, 
+                signal.symbol, 
+                rp2Qty, 
+                binanceOppositeSide, 
+                targetPrices.tp2
+              );
+              
+              if (rp2Response && rp2Response.data && rp2Response.data.orderId) {
+                cumulativeQtyForRps += rp2Qty;
+                console.log(`[LIMIT_ENTRY] RP2 alternativa criada: ${rp2Response.data.orderId}`);
+                
+                // SALVAR NO BANCO
+                const rp2OrderData = { 
+                  tipo_ordem: 'LIMIT', 
+                  preco: targetPrices.tp2, 
+                  quantidade: rp2Qty, 
+                  id_posicao: positionId, 
+                  status: 'NEW',
+                  data_hora_criacao: formatDateForMySQL(new Date()), 
+                  id_externo: String(rp2Response.data.orderId).substring(0,90), 
+                  side: binanceOppositeSide,
+                  simbolo: signal.symbol, 
+                  tipo_ordem_bot: 'REDUCAO_PARCIAL', 
+                  target: 2, 
+                  reduce_only: true, 
+                  close_position: false, 
+                  orign_sig: `WEBHOOK_${signal.id}`,
+                  last_update: formatDateForMySQL(new Date())
+                };
+                await insertNewOrder(connection, rp2OrderData);
+                
+              } else {
+                console.warn(`[LIMIT_ENTRY] RP2 alternativa falhou - resposta inválida:`, rp2Response);
+              }
+            } catch (rp2Error) {
+              console.error(`[LIMIT_ENTRY] Erro ao criar RP2 alternativa:`, rp2Error.message);
+            }
+          }
+        } else {
+          console.log(`[LIMIT_ENTRY] RP2 alternativa pulada - TP2: ${targetPrices.tp2}, EntryPrice: ${averageEntryPrice}`);
         }
+        
+        console.log(`[LIMIT_ENTRY] RPs alternativas finalizadas. Total para RPs: ${cumulativeQtyForRps.toFixed(quantityPrecision)}`);
         
       } else {
-        // ESTRATÉGIA PADRÃO PARA POSIÇÕES GRANDES
+        // ✅ ESTRATÉGIA PADRÃO COM VALIDAÇÃO (PARA POSIÇÕES GRANDES)
+        console.log(`[LIMIT_ENTRY] Posição grande (${totalFilledSize} ≥ ${(exchangeMinQty * 4).toFixed(quantityPrecision)}), criando 4 RPs padrão`);
+        
         for (let i = 0; i < rpTargetKeys.length; i++) {
           const rpKey = rpTargetKeys[i];
           const rpPrice = targetPrices[rpKey];
           
           if (rpPrice && rpPrice > 0 && i < reductionPercentages.length) {
             const reductionPercent = reductionPercentages[i];
-            const reductionQtyRaw = totalFilledSize * reductionPercent;
-            const reductionQty = parseFloat(reductionQtyRaw.toFixed(quantityPrecision));
+            let reductionQtyRaw = totalFilledSize * reductionPercent;
+            let reductionQty = parseFloat(reductionQtyRaw.toFixed(quantityPrecision));
             
             console.log(`[LIMIT_ENTRY] Calculando RP${i+1}: ${reductionPercent*100}% de ${totalFilledSize} = ${reductionQtyRaw} → ${reductionQty}`);
             
-            if (reductionQty <= 0 || reductionQty < minQtyForRp) {
-              console.log(`[LIMIT_ENTRY] RP${i+1} quantidade muito pequena (${reductionQty}), mínimo: ${minQtyForRp.toFixed(quantityPrecision)}. Pulando.`);
+            // ✅ VALIDAR QUANTIDADE DA RP
+            const rpValidation = await validateQuantity(signal.symbol, reductionQty, rpPrice, numericAccountId, 'LIMIT');
+            
+            if (!rpValidation.isValid) {
+              console.warn(`[LIMIT_ENTRY] RP${i+1} quantidade inválida: ${rpValidation.reason}`);
+              
+              const rpAdjustment = await adjustQuantityToRequirements(signal.symbol, reductionQty, rpPrice, numericAccountId, 'LIMIT');
+              
+              if (rpAdjustment.success) {
+                reductionQty = rpAdjustment.adjustedQuantity;
+                console.log(`[LIMIT_ENTRY] RP${i+1} quantidade ajustada: ${rpAdjustment.originalQuantity} → ${reductionQty}`);
+              } else {
+                console.warn(`[LIMIT_ENTRY] RP${i+1} não pode ser ajustada: ${rpAdjustment.error}. Pulando.`);
+                continue;
+              }
+            }
+            
+            if (reductionQty <= 0) {
+              console.log(`[LIMIT_ENTRY] RP${i+1} quantidade zero após validação. Pulando.`);
               continue;
             }
             
@@ -1051,8 +1186,28 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
               );
               
               if (rpResponse && rpResponse.data && rpResponse.data.orderId) {
-                // Salvar no banco...
                 console.log(`[LIMIT_ENTRY] RP${i+1} criada: ${rpResponse.data.orderId}`);
+                
+                // SALVAR NO BANCO
+                const rpOrderData = { 
+                  tipo_ordem: 'LIMIT', 
+                  preco: rpPrice, 
+                  quantidade: reductionQty, 
+                  id_posicao: positionId, 
+                  status: 'NEW',
+                  data_hora_criacao: formatDateForMySQL(new Date()), 
+                  id_externo: String(rpResponse.data.orderId).substring(0,90), 
+                  side: binanceOppositeSide,
+                  simbolo: signal.symbol, 
+                  tipo_ordem_bot: 'REDUCAO_PARCIAL', 
+                  target: i + 1, 
+                  reduce_only: true, 
+                  close_position: false, 
+                  orign_sig: `WEBHOOK_${signal.id}`,
+                  last_update: formatDateForMySQL(new Date())
+                };
+                await insertNewOrder(connection, rpOrderData);
+                
               }
             } catch (rpError) { 
               console.error(`[LIMIT_ENTRY] Erro ao criar RP${i+1}:`, rpError.response?.data || rpError.message); 
