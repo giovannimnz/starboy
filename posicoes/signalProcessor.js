@@ -58,7 +58,7 @@ async function processSignal(signal, db, accountId) {
     console.log(`[SIGNAL] ✅ Status atualizado para PROCESSANDO para sinal ${signalId}`);
     
     // Verificar se já existe posição aberta para este símbolo
-    console.log(`[SIGNAL] 🔍 Verificando posições existentes para ${signal.symbol}...`);
+    //console.log(`[SIGNAL] 🔍 Verificando posições existentes para ${signal.symbol}...`);
     
     // CORREÇÃO CRÍTICA: Usar getAllOpenPositions corretamente
     const openPositions = await getAllOpenPositions(accountId);
@@ -280,7 +280,7 @@ async function checkNewTrades(accountId) {
       LIMIT 10
     `, [accountId]);
     
-    console.log(`[SIGNAL] 📊 Encontrados ${pendingSignals.length} sinais pendentes para conta ${accountId}`);
+    //console.log(`[SIGNAL] 📊 Encontrados ${pendingSignals.length} sinais pendentes para conta ${accountId}`);
     
     if (pendingSignals.length === 0) {
       return 0;
