@@ -9,13 +9,13 @@ require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
 /**
  * Executa entrada usando Limit Maker
- * @param {Object} db - Conexão com o banco de dados
  * @param {Object} signal - Sinal a ser processado
  * @param {number} currentPrice - Preço atual do mercado
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} Resultado da operação
  */
-async function executeLimitMakerEntry(db, signal, currentPrice, accountId) {
+// CORREÇÃO: Removido o parâmetro 'db' que causava erro de sintaxe.
+async function executeLimitMakerEntry(signal, currentPrice, accountId) {
   console.log(`[LIMIT_ENTRY] 🚀 Executando entrada para sinal ${signal.id}: ${signal.symbol} ${signal.side} a ${signal.entry_price}`);
   
   let connection = null;
@@ -62,6 +62,7 @@ async function executeLimitMakerEntry(db, signal, currentPrice, accountId) {
     console.log(`[LIMIT_ENTRY] Iniciando LIMIT MAKER para Sinal ID ${signal.id} (${signal.symbol}) na conta ${accountId}`);
     
     // OBTER CONEXÃO DO BANCO PARA A CONTA ESPECÍFICA
+    // CORREÇÃO: A variável 'db' agora é declarada sem conflito com parâmetros.
     const db = await getDatabaseInstance(accountId);
     if (!db) {
       throw new Error(`Não foi possível obter conexão com banco para conta ${accountId}`);
@@ -229,6 +230,10 @@ async function executeLimitMakerEntry(db, signal, currentPrice, accountId) {
         throw new Error(`Não foi possível obter dados de preço válidos nem via WebSocket nem via REST API para ${signal.symbol}`);
       }
     }
+    
+    // OTIMIZAÇÃO: Chamada para obter o tickSize movida para fora do loop para evitar requisições repetidas.
+    const tickSizeData = await getTickSize(signal.symbol, numericAccountId);
+    const tickSize = parseFloat(tickSizeData.tickSize);
 
     // LOOP PRINCIPAL DE CHASING
     while (totalFilledSize < totalEntrySize && 
@@ -281,9 +286,6 @@ async function executeLimitMakerEntry(db, signal, currentPrice, accountId) {
 
       const bestBid = currentBestBid;
       const bestAsk = currentBestAsk;
-
-      const tickSizeData = await getTickSize(signal.symbol, numericAccountId);
-      const tickSize = parseFloat(tickSizeData.tickSize);
       
       // CALCULAR PREÇO MAKER MELHORADO
       let currentLocalMakerPrice;
@@ -773,9 +775,7 @@ async function executeLimitMakerEntry(db, signal, currentPrice, accountId) {
       partialWarning: !slTpRpsCreated && totalFilledSize > 0 && fillRatio < ENTRY_COMPLETE_THRESHOLD_RATIO
     };
 
-  } catch (error) { 
-    const originalErrorMessage = error.message || String(error);
-    console.error(`[LIMIT_ENTRY] ERRO FATAL DURANTE ENTRADA (Sinal ID ${signal.id}): ${originalErrorMessage}`);
+  } 
     
     if (connection) {
       try {
@@ -847,6 +847,7 @@ async function getAvailableBalance(accountId) {
         return 1000;
     }
 }
+
 
 // FUNÇÃO AUXILIAR PARA CALCULAR TAMANHO DA ORDEM
 function calculateOrderSize(availableBalance, capitalPercentage, entryPrice, leverage, precision) {
