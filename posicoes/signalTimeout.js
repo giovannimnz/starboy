@@ -2,24 +2,31 @@ const { getDatabaseInstance } = require('../db/conexao');
 const { sendTelegramMessage } = require('./telegramBot');
 
 /**
- * Converte timeframe para milissegundos
+ * ✅ CONVERSÃO MELHORADA DE TIMEFRAME PARA MILISSEGUNDOS
  */
 function timeframeToMs(timeframe) {
   if (!timeframe) return 0;
 
-  const match = timeframe.match(/^(\d+)([mhdwM])$/);
-  if (!match) return 0;
+  // Aceitar diferentes formatos: 15m, 1h, 4h, 1d, etc.
+  const match = timeframe.match(/^(\d+)([mhdwMy])$/i);
+  if (!match) {
+    console.warn(`[TIMEOUT] Formato de timeframe inválido: ${timeframe}`);
+    return 0;
+  }
 
   const [_, value, unit] = match;
   const numValue = parseInt(value, 10);
 
-  switch(unit) {
-    case 'm': return numValue * 60 * 1000;
-    case 'h': return numValue * 60 * 60 * 1000;
-    case 'd': return numValue * 24 * 60 * 60 * 1000;
-    case 'w': return numValue * 7 * 24 * 60 * 60 * 1000;
-    case 'M': return numValue * 30 * 24 * 60 * 60 * 1000;
-    default: return 0;
+  switch(unit.toLowerCase()) {
+    case 'm': return numValue * 60 * 1000;                    // minutos
+    case 'h': return numValue * 60 * 60 * 1000;               // horas
+    case 'd': return numValue * 24 * 60 * 60 * 1000;          // dias
+    case 'w': return numValue * 7 * 24 * 60 * 60 * 1000;      // semanas
+    case 'M': return numValue * 30 * 24 * 60 * 60 * 1000;     // meses (aprox.)
+    case 'y': return numValue * 365 * 24 * 60 * 60 * 1000;    // anos (aprox.)
+    default: 
+      console.warn(`[TIMEOUT] Unidade de timeframe desconhecida: ${unit}`);
+      return 0;
   }
 }
 
@@ -76,7 +83,8 @@ async function cancelSignal(db, signalId, status, reason, accountId) {
 }
 
 /**
- * Verifica sinais expirados por timeout
+ * ✅ VERIFICAÇÃO MELHORADA DE SINAIS EXPIRADOS
+ * Usa a regra: timeframe * 3 como tempo máximo de vida
  */
 async function checkExpiredSignals(accountId) {
   try {
@@ -92,37 +100,89 @@ async function checkExpiredSignals(accountId) {
     }
     
     // Buscar sinais que podem ter expirado
-    const [expiredSignals] = await db.query(`
-      SELECT id, symbol, timeframe, created_at, status
+    const [potentialExpiredSignals] = await db.query(`
+      SELECT 
+        id, symbol, timeframe, created_at, status, entry_price, sl_price, side,
+        timeout_at, max_lifetime_minutes
       FROM webhook_signals 
       WHERE conta_id = ? 
-      AND status IN ('PENDING', 'AGUARDANDO_ACIONAMENTO', 'ENTRADA_EM_PROGRESSO')
-      AND created_at < DATE_SUB(NOW(), INTERVAL 30 MINUTE)
+        AND status IN ('PENDING', 'AGUARDANDO_ACIONAMENTO', 'ENTRADA_EM_PROGRESSO')
+        AND created_at < DATE_SUB(NOW(), INTERVAL 5 MINUTE)
+      ORDER BY created_at ASC
     `, [accountId]);
     
-    let canceledCount = 0;
+    if (potentialExpiredSignals.length === 0) {
+      return 0;
+    }
     
-    for (const signal of expiredSignals) {
-      const signalAge = Date.now() - new Date(signal.created_at).getTime();
-      const timeframeMs = timeframeToMs(signal.timeframe) || (15 * 60 * 1000); // 15 min default
-      const maxAge = Math.max(timeframeMs * 2, 30 * 60 * 1000); // Mín 30 min
+    console.log(`[TIMEOUT] 🔍 Verificando ${potentialExpiredSignals.length} sinais para expiração (conta ${accountId})`);
+    
+    let canceledCount = 0;
+    const now = new Date();
+    
+    for (const signal of potentialExpiredSignals) {
+      const createdAt = new Date(signal.created_at);
+      const signalAge = now.getTime() - createdAt.getTime();
+      const signalAgeMinutes = Math.round(signalAge / 60000);
       
-      if (signalAge > maxAge) {
-        await cancelSignal(db, signal.id, 'CANCELED', 
-          `Sinal expirado após ${Math.round(signalAge / 60000)} minutos (timeframe: ${signal.timeframe})`, 
-          accountId);
+      let shouldExpire = false;
+      let expireReason = '';
+      
+      // ✅ REGRA 1: TIMEFRAME * 3 (PRINCIPAL)
+      if (signal.timeframe) {
+        const timeframeMs = timeframeToMs(signal.timeframe);
+        if (timeframeMs > 0) {
+          const maxLifetime = timeframeMs * 3; // 3x o timeframe
+          const maxLifetimeMinutes = Math.round(maxLifetime / 60000);
+          
+          if (signalAge > maxLifetime) {
+            shouldExpire = true;
+            expireReason = `Timeframe expirado (${signal.timeframe} * 3 = ${maxLifetimeMinutes}min, idade: ${signalAgeMinutes}min)`;
+          }
+        }
+      }
+      
+      // ✅ REGRA 2: timeout_at específico
+      if (!shouldExpire && signal.timeout_at) {
+        const timeoutAt = new Date(signal.timeout_at);
+        if (now >= timeoutAt) {
+          shouldExpire = true;
+          expireReason = `timeout_at atingido (${timeoutAt.toLocaleString('pt-BR')})`;
+        }
+      }
+      
+      // ✅ REGRA 3: max_lifetime_minutes
+      if (!shouldExpire && signal.max_lifetime_minutes) {
+        const maxLifetimeMs = signal.max_lifetime_minutes * 60 * 1000;
+        if (signalAge > maxLifetimeMs) {
+          shouldExpire = true;
+          expireReason = `max_lifetime_minutes atingido (${signal.max_lifetime_minutes}min, idade: ${signalAgeMinutes}min)`;
+        }
+      }
+      
+      // ✅ REGRA 4: Fallback para sinais muito antigos (6 horas)
+      if (!shouldExpire && signalAge > (6 * 60 * 60 * 1000)) {
+        shouldExpire = true;
+        expireReason = `Sinal muito antigo (${signalAgeMinutes}min > 360min)`;
+      }
+      
+      // ✅ CANCELAR SINAL SE EXPIRADO
+      if (shouldExpire) {
+        console.log(`[TIMEOUT] ⏰ Cancelando sinal ${signal.id} (${signal.symbol}): ${expireReason}`);
+        
+        await cancelSignal(db, signal.id, 'TIMEOUT_ENTRY', expireReason, accountId);
         canceledCount++;
       }
     }
     
     if (canceledCount > 0) {
-      console.log(`[TIMEOUT] ${canceledCount} sinais expirados cancelados para conta ${accountId}`);
+      console.log(`[TIMEOUT] ✅ ${canceledCount} sinais expirados cancelados para conta ${accountId}`);
     }
     
     return canceledCount;
     
   } catch (error) {
-    console.error(`[TIMEOUT] Erro ao verificar sinais expirados para conta ${accountId}:`, error.message);
+    console.error(`[TIMEOUT] ❌ Erro ao verificar sinais expirados para conta ${accountId}:`, error.message);
     return 0;
   }
 }

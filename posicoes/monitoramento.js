@@ -409,16 +409,43 @@ try {
       }
     });
 
-    // NOVO: Job de verificação de sinais expirados a cada 2 minutos
-    accountJobs.checkExpiredSignals = schedule.scheduleJob('*/2 * * * *', async () => {
+    // ✅ NOVO: Job de verificação de sinais expirados a cada 1 minuto (mais frequente)
+    accountJobs.checkExpiredSignals = schedule.scheduleJob('*/1 * * * *', async () => {
       if (isShuttingDown) return;
       try {
         const expiredCount = await checkExpiredSignals(accountId);
         if (expiredCount > 0) {
-          console.log(`[MONITOR] ${expiredCount} sinais expirados cancelados para conta ${accountId}`);
+          console.log(`[MONITOR] ⏰ ${expiredCount} sinais expirados cancelados para conta ${accountId}`);
         }
       } catch (error) {
         console.error(`[MONITOR] ⚠️ Erro na verificação de sinais expirados para conta ${accountId}:`, error.message);
+      }
+    });
+
+    // ✅ NOVO: Job de verificação de trailing stops a cada 30 segundos
+    accountJobs.checkTrailingStops = schedule.scheduleJob('*/30 * * * * *', async () => {
+      if (isShuttingDown) return;
+      try {
+        const db = await getDatabaseInstance();
+        const [openPositions] = await db.query(`
+          SELECT * FROM posicoes 
+          WHERE status = 'OPEN' AND conta_id = ?
+        `, [accountId]);
+        
+        for (const position of openPositions) {
+          try {
+            // Obter preço atual para a posição
+            const currentPrice = await api.getPrice(position.simbolo, accountId);
+            if (currentPrice && currentPrice > 0) {
+              const { checkOrderTriggers } = require('./trailingStopLoss');
+              await checkOrderTriggers(db, position, currentPrice, accountId);
+            }
+          } catch (posError) {
+            console.error(`[MONITOR] ⚠️ Erro ao verificar trailing para ${position.simbolo}:`, posError.message);
+          }
+        }
+      } catch (error) {
+        console.error(`[MONITOR] ⚠️ Erro na verificação de trailing stops para conta ${accountId}:`, error.message);
       }
     });
 
@@ -747,7 +774,7 @@ if (require.main === module) {
       console.log(`[MONITOR] 📊 Jobs agendados: ${Object.keys(jobsResult).length}`);
       console.log(`[MONITOR] 🔄 Sistema entrando em modo de operação contínua...`);
       
-      // Manter o processo vivo sem recursão
+      // Manter o processo vivo без recursão
       let heartbeatCounter = 0;
       const heartbeatInterval = setInterval(() => {
         heartbeatCounter++;
