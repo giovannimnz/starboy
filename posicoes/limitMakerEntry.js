@@ -367,7 +367,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
     console.log(`[LIMIT_ENTRY] ✅ Dados iniciais prontos. Iniciando loop de chasing...`);
     console.log(`[LIMIT_ENTRY] Configuração: tickSize=${tickSize}, totalEntrySize=${totalEntrySize.toFixed(quantityPrecision)}`);
 
-    // ===== FLUXO SIMPLIFICADO DE ENTRADA - APENAS UMA ORDEM POR VEZ =====
+    // ===== FLUXO OTIMIZADO DE ENTRADA - APENAS UMA ORDEM POR VEZ =====
     console.log(`[LIMIT_ENTRY] 🔄 Iniciando fluxo de entrada com UMA ÚNICA ORDEM - Quantidade: ${totalEntrySize.toFixed(quantityPrecision)}`);
 
     let entryCompleted = false;
@@ -383,23 +383,63 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
     while (!entryCompleted && entryAttemptCount < MAX_ENTRY_ATTEMPTS) {
       entryAttemptCount++;
       console.log(`[LIMIT_ENTRY] 🔄 Tentativa ${entryAttemptCount}/${MAX_ENTRY_ATTEMPTS} - Quantidade restante: ${(totalEntrySize - totalFilledSize).toFixed(quantityPrecision)}`);
-
+      
       // Calcular preço ideal para esta tentativa
       let targetPrice;
-
+      
       // Aguardar dados válidos do book
       const waitStartTime = Date.now();
       while ((!currentBestBid || !currentBestAsk) && Date.now() - waitStartTime < 5000) {
         console.log(`[LIMIT_ENTRY] Aguardando dados válidos do book...`);
         await new Promise(resolve => setTimeout(resolve, 500));
       }
-
-      // Definir o preço com base nos dados disponíveis
+      
+      // ===== NOVA LÓGICA DE CÁLCULO DE PREÇO MELHORADA =====
+      // Inspirada no código do starboy_dev para posicionar ordens de forma mais eficiente
       if (currentBestBid && currentBestAsk) {
+        const spread = currentBestAsk - currentBestBid;
+        
         if (binanceSide === 'BUY') {
-          targetPrice = currentBestBid; // Para compra, usar o bid
-        } else {
-          targetPrice = currentBestAsk; // Para venda, usar o ask
+          // Para compras (BUY), verificar se podemos posicionar ordem dentro do spread
+          const spreadSize = currentBestAsk - currentBestBid;
+          const moreBidPrice = currentBestBid + tickSize;
+          
+          // Verificar se há espaço suficiente no spread para posicionar a ordem
+          if (spreadSize > tickSize && moreBidPrice < currentBestAsk) {
+            // Posicionar ordem 1 tick acima do melhor bid (mais agressivo, mas ainda MAKER)
+            targetPrice = moreBidPrice;
+            console.log(`[LIMIT_ENTRY] Estratégia agressiva: Ordem BUY posicionada DENTRO do spread a ${targetPrice.toFixed(pricePrecision)} (1 tick acima do bid ${currentBestBid.toFixed(pricePrecision)})`);
+          } else {
+            // Spread muito estreito, usar o bid atual como base
+            targetPrice = currentBestBid;
+            console.log(`[LIMIT_ENTRY] Spread estreito (${spreadSize.toFixed(pricePrecision)}). Posicionando ordem BUY no bid: ${targetPrice.toFixed(pricePrecision)}`);
+          }
+          
+          // Verificação final para garantir que a ordem será MAKER
+          if (targetPrice >= currentBestAsk - tickSize) {
+            targetPrice = currentBestAsk - tickSize;
+            console.log(`[LIMIT_ENTRY] Ajuste: preço BUY ajustado para garantir ordem maker: ${targetPrice.toFixed(pricePrecision)} (1 tick abaixo do ask)`);
+          }
+        } else { // SELL
+          // Para vendas, verificar se podemos posicionar dentro do spread
+          const spreadSize = currentBestAsk - currentBestBid;
+          const lessAskPrice = currentBestAsk - tickSize;
+          
+          if (spreadSize > tickSize && lessAskPrice > currentBestBid) {
+            // Posicionar ordem 1 tick abaixo do melhor ask
+            targetPrice = lessAskPrice;
+            console.log(`[LIMIT_ENTRY] Estratégia agressiva: Ordem SELL posicionada DENTRO do spread a ${targetPrice.toFixed(pricePrecision)} (1 tick abaixo do ask ${currentBestAsk.toFixed(pricePrecision)})`);
+          } else {
+            // Spread estreito, usar o ask atual
+            targetPrice = currentBestAsk;
+            console.log(`[LIMIT_ENTRY] Spread estreito (${spreadSize.toFixed(pricePrecision)}). Posicionando ordem SELL no ask: ${targetPrice.toFixed(pricePrecision)}`);
+          }
+          
+          // Verificação final para garantir ordem MAKER
+          if (targetPrice <= currentBestBid + tickSize) {
+            targetPrice = currentBestBid + tickSize;
+            console.log(`[LIMIT_ENTRY] Ajuste: preço SELL ajustado para garantir ordem maker: ${targetPrice.toFixed(pricePrecision)} (1 tick acima do bid)`);
+          }
         }
       } else {
         // Fallback caso não tenhamos dados do book
@@ -410,7 +450,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       // Arredondar preço para tick size
       targetPrice = await roundPriceToTickSize(signal.symbol, targetPrice, numericAccountId);
       console.log(`[LIMIT_ENTRY] 🎯 Preço alvo calculado: ${targetPrice.toFixed(pricePrecision)}`);
-
+      
       // Calcular quantidade restante
       const remainingQty = totalEntrySize - totalFilledSize;
       if (remainingQty <= 0.000001) {
@@ -418,17 +458,15 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
         entryCompleted = true;
         break;
       }
-
-      // Validar e ajustar quantidade
-      const formattedQty = parseFloat(remainingQty.toFixed(quantityPrecision));
-
+      
       // VALIDAR QUANTIDADE
+      const formattedQty = parseFloat(remainingQty.toFixed(quantityPrecision));
       const orderValidation = await validateQuantity(signal.symbol, formattedQty, targetPrice, numericAccountId, 'LIMIT');
       let quantityToOrder = formattedQty;
-
+      
       if (!orderValidation.isValid) {
         console.warn(`[LIMIT_ENTRY] ⚠️ Quantidade inválida (${formattedQty}): ${orderValidation.reason}`);
-
+        
         const adjustment = await adjustQuantityToRequirements(signal.symbol, formattedQty, targetPrice, numericAccountId, 'LIMIT');
         if (adjustment.success) {
           quantityToOrder = adjustment.adjustedQuantity;
@@ -438,208 +476,368 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
           break;
         }
       }
-
-      // CRIAR UMA ÚNICA ORDEM
-      console.log(`[LIMIT_ENTRY] ⭐ Enviando UMA ÚNICA ordem: ${binanceSide} ${quantityToOrder} ${signal.symbol} @ ${targetPrice}`);
-
-      try {
-        // Limpar registro de ordem ativa
-        activeOrderId = null;
-
-        // Enviar uma única ordem
-        const orderResponse = await newLimitMakerOrder(
-          numericAccountId,
-          signal.symbol,
-          quantityToOrder,
-          binanceSide,
-          targetPrice
-        );
-
-        if (!orderResponse || !orderResponse.orderId) {
-          console.error(`[LIMIT_ENTRY] ❌ Resposta inválida ao criar ordem:`, orderResponse);
-          await new Promise(resolve => setTimeout(resolve, 2000));
-          continue;
-        }
-
-        // Registrar a ordem criada
-        activeOrderId = String(orderResponse.orderId);
-        console.log(`[LIMIT_ENTRY] ✅ Ordem criada com ID: ${activeOrderId}`);
-
-        // Registrar para rastreamento
-        sentOrders.set(activeOrderId, {
-          orderId: activeOrderId,
-          symbol: signal.symbol,
-          side: binanceSide,
-          quantity: quantityToOrder,
-          price: targetPrice,
-          status: 'NEW',
-          executedQty: 0,
-          creationTime: Date.now(),
-          lastUpdateTime: Date.now()
-        });
-
-        // AGUARDAR CONFIRMAÇÃO VIA WEBSOCKET (30 segundos no máximo)
-        console.log(`[LIMIT_ENTRY] ⏱️ Aguardando confirmação WebSocket para ordem ${activeOrderId}...`);
-
-        const waitOrderStartTime = Date.now();
-        const maxWaitTime = 30000; // 30 segundos
-        let orderFilled = false;
-
-        while (Date.now() - waitOrderStartTime < maxWaitTime) {
-          // Verificar mapa de ordens atualizado pelo WebSocket
-          const orderInfo = sentOrders.get(activeOrderId);
-
-          if (orderInfo && orderInfo.status === 'FILLED') {
-            console.log(`[LIMIT_ENTRY] ✅ WebSocket confirmou ordem ${activeOrderId} como FILLED`);
-            orderFilled = true;
-
-            // Recalcular quantidade preenchida
-            totalFilledSize += parseFloat(orderInfo.executedQty || 0);
-
-            // Recalcular preço médio se necessário
-            if (partialFills.length > 0) {
+      
+      // ===== VERIFICAÇÃO CRÍTICA: SE JÁ EXISTE ORDEM ATIVA =====
+      if (activeOrderId) {
+        console.log(`[LIMIT_ENTRY] ⚠️ Já existe ordem ativa ${activeOrderId}. Verificando status...`);
+        
+        // Verificar status na corretora via REST API
+        try {
+          const existingOrderStatus = await getOrderStatus(signal.symbol, activeOrderId, numericAccountId);
+          
+          // Se ordem está preenchida
+          if (existingOrderStatus.status === 'FILLED') {
+            console.log(`[LIMIT_ENTRY] ✅ Ordem existente ${activeOrderId} está FILLED`);
+            
+            // Contabilizar preenchimento
+            const filledQty = parseFloat(existingOrderStatus.executedQty);
+            const avgPrice = parseFloat(existingOrderStatus.avgPrice || existingOrderStatus.price);
+            
+            // Adicionar aos preenchimentos se ainda não estiver
+            if (!partialFills.some(f => f.orderId === activeOrderId)) {
+              partialFills.push({
+                qty: filledQty,
+                price: avgPrice,
+                orderId: activeOrderId
+              });
+              
+              // Recalcular totais
+              totalFilledSize = partialFills.reduce((sum, fill) => sum + fill.qty, 0);
               averageEntryPrice = calculateAveragePrice(partialFills);
             }
-
-            console.log(`[LIMIT_ENTRY] Total preenchido: ${totalFilledSize.toFixed(quantityPrecision)} @ ${averageEntryPrice.toFixed(pricePrecision)}`);
-            break;
+            
+            // Resetar ordem ativa
+            activeOrderId = null;
+            continue;
           }
-
-          if (orderInfo && orderInfo.status === 'PARTIALLY_FILLED') {
-            console.log(`[LIMIT_ENTRY] WebSocket: Ordem ${activeOrderId} parcialmente preenchida: ${orderInfo.executedQty}/${quantityToOrder}`);
-
-            // Verificar se já passou tempo suficiente para cancelar ordem parcial
-            const orderAge = Date.now() - orderInfo.creationTime;
-            if (orderAge > 10000) { // 10 segundos
-              console.log(`[LIMIT_ENTRY] Cancelando ordem parcialmente preenchida para recriar...`);
-
+          // Se ordem está parcialmente preenchida
+          else if (existingOrderStatus.status === 'PARTIALLY_FILLED') {
+            console.log(`[LIMIT_ENTRY] Ordem existente ${activeOrderId} está PARTIALLY_FILLED (${existingOrderStatus.executedQty}/${existingOrderStatus.origQty})`);
+            
+            // Se o preço alvo mudou significativamente, cancelar e recriar
+            const currentOrderPrice = parseFloat(existingOrderStatus.price);
+            const priceDifference = Math.abs(currentOrderPrice - targetPrice) / currentOrderPrice;
+            
+            if (priceDifference > 0.0005) { // Diferença de 0.05%
+              console.log(`[LIMIT_ENTRY] Preço mudou significativamente (${(priceDifference*100).toFixed(4)}%). Cancelando ordem atual.`);
+              
               try {
                 await cancelOrder(signal.symbol, activeOrderId, numericAccountId);
-                console.log(`[LIMIT_ENTRY] ✅ Ordem parcial cancelada`);
-
-                // Recalcular quantidade preenchida
-                totalFilledSize += parseFloat(orderInfo.executedQty || 0);
-
-                // Recalcular preço médio
-                if (partialFills.length > 0) {
+                console.log(`[LIMIT_ENTRY] ✅ Ordem ${activeOrderId} cancelada com sucesso`);
+                
+                // Contabilizar preenchimento parcial
+                const partiallyFilledQty = parseFloat(existingOrderStatus.executedQty);
+                if (partiallyFilledQty > 0) {
+                  partialFills.push({
+                    qty: partiallyFilledQty,
+                    price: parseFloat(existingOrderStatus.avgPrice || existingOrderStatus.price),
+                    orderId: activeOrderId
+                  });
+                  
+                  // Recalcular totais
+                  totalFilledSize = partialFills.reduce((sum, fill) => sum + fill.qty, 0);
                   averageEntryPrice = calculateAveragePrice(partialFills);
                 }
-
-                break; // Sair e criar nova ordem com quantidade restante
+                
+                // Resetar ordem ativa
+                activeOrderId = null;
               } catch (cancelError) {
+                console.warn(`[LIMIT_ENTRY] Erro ao cancelar ordem: ${cancelError.message}`);
+                
+                // Verificar novamente o status após erro
+                try {
+                  const statusAfterError = await getOrderStatus(signal.symbol, activeOrderId, numericAccountId);
+                  
+                  if (statusAfterError.status === 'FILLED') {
+                    console.log(`[LIMIT_ENTRY] ✅ Ordem foi preenchida durante tentativa de cancelamento`);
+                    
+                    // Contabilizar preenchimento
+                    partialFills.push({
+                      qty: parseFloat(statusAfterError.executedQty),
+                      price: parseFloat(statusAfterError.avgPrice || statusAfterError.price),
+                      orderId: activeOrderId
+                    });
+                    
+                    totalFilledSize = partialFills.reduce((sum, fill) => sum + fill.qty, 0);
+                    averageEntryPrice = calculateAveragePrice(partialFills);
+                    
+                    // Resetar ordem ativa
+                    activeOrderId = null;
+                  }
+                } catch (recheckError) {
+                  console.error(`[LIMIT_ENTRY] Erro ao verificar status após falha de cancelamento: ${recheckError.message}`);
+                }
+              }
+            } else {
+              console.log(`[LIMIT_ENTRY] Preço não mudou significativamente. Mantendo ordem atual.`);
+              
+              // Aguardar mais tempo para preenchimento
+              await new Promise(resolve => setTimeout(resolve, 5000));
+              continue;
+            }
+          }
+          // Se ordem ainda está aberta (NEW)
+          else if (existingOrderStatus.status === 'NEW') {
+            // Se preço ideal mudou significativamente, cancelar e recriar
+            const currentOrderPrice = parseFloat(existingOrderStatus.price);
+            const priceDifference = Math.abs(currentOrderPrice - targetPrice) / currentOrderPrice;
+            
+            if (priceDifference > 0.0005) { // Diferença de 0.05%
+              console.log(`[LIMIT_ENTRY] Preço ideal mudou ${(priceDifference*100).toFixed(4)}%. Cancelando ordem atual.`);
+              
+              try {
+                await cancelOrder(signal.symbol, activeOrderId, numericAccountId);
+                console.log(`[LIMIT_ENTRY] ✅ Ordem ${activeOrderId} cancelada com sucesso`);
+                activeOrderId = null;
+              } catch (cancelError) {
+                console.warn(`[LIMIT_ENTRY] Erro ao cancelar ordem: ${cancelError.message}`);
+                
                 // Verificar se o erro é porque a ordem já foi preenchida
                 if (cancelError.message && cancelError.message.includes("Unknown order")) {
-                  console.log(`[LIMIT_ENTRY] Ordem já não existe, verificando status final...`);
-
+                  console.log(`[LIMIT_ENTRY] Ordem possivelmente já executada. Verificando...`);
+                  
                   try {
-                    const finalStatus = await getOrderStatus(signal.symbol, activeOrderId, numericAccountId);
-                    if (finalStatus.status === 'FILLED') {
-                      console.log(`[LIMIT_ENTRY] ✅ Ordem confirmada como FILLED via REST`);
-                      orderFilled = true;
-                      totalFilledSize += parseFloat(finalStatus.executedQty || 0);
-
-                      // Adicionar aos preenchimentos se não foi via WebSocket
+                    const statusAfterError = await getOrderStatus(signal.symbol, activeOrderId, numericAccountId);
+                    
+                    if (statusAfterError.status === 'FILLED') {
+                      console.log(`[LIMIT_ENTRY] ✅ Ordem foi preenchida`);
+                      
+                      // Contabilizar preenchimento
                       partialFills.push({
-                        qty: parseFloat(finalStatus.executedQty),
+                        qty: parseFloat(statusAfterError.executedQty),
+                        price: parseFloat(statusAfterError.avgPrice || statusAfterError.price),
+                        orderId: activeOrderId
+                      });
+                      
+                      totalFilledSize = partialFills.reduce((sum, fill) => sum + fill.qty, 0);
+                      averageEntryPrice = calculateAveragePrice(partialFills);
+                    }
+                  } catch (recheckError) {
+                    console.error(`[LIMIT_ENTRY] Erro ao verificar status: ${recheckError.message}`);
+                  }
+                }
+                
+                activeOrderId = null;
+              }
+            } else {
+              console.log(`[LIMIT_ENTRY] Preço não mudou significativamente. Mantendo ordem atual.`);
+              
+              // Aguardar mais tempo para preenchimento
+              await new Promise(resolve => setTimeout(resolve, 5000));
+              continue;
+            }
+          }
+          // Outros status (CANCELED, REJECTED, etc.)
+          else {
+            console.log(`[LIMIT_ENTRY] Ordem ${activeOrderId} está em estado ${existingOrderStatus.status}. Resetando.`);
+            activeOrderId = null;
+          }
+        } catch (statusError) {
+          console.warn(`[LIMIT_ENTRY] Erro ao verificar status da ordem ${activeOrderId}: ${statusError.message}`);
+          
+          // Por segurança, resetar ordem ativa
+          activeOrderId = null;
+        }
+      }
+      
+      // ===== CRIAR NOVA ORDEM APENAS SE NÃO EXISTE ORDEM ATIVA =====
+      if (!activeOrderId) {
+        console.log(`[LIMIT_ENTRY] ⭐ Enviando UMA ÚNICA ordem: ${binanceSide} ${quantityToOrder} ${signal.symbol} @ ${targetPrice}`);
+        
+        try {
+          // Enviar uma única ordem
+          const orderResponse = await newLimitMakerOrder(
+            numericAccountId,
+            signal.symbol,
+            quantityToOrder,
+            binanceSide,
+            targetPrice
+          );
+          
+          if (!orderResponse || !orderResponse.orderId) {
+            console.error(`[LIMIT_ENTRY] ❌ Resposta inválida ao criar ordem:`, orderResponse);
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            continue;
+          }
+          
+          // Registrar a ordem criada
+          activeOrderId = String(orderResponse.orderId);
+          console.log(`[LIMIT_ENTRY] ✅ Ordem criada com ID: ${activeOrderId}`);
+          
+          // Registrar para rastreamento
+          sentOrders.set(activeOrderId, {
+            orderId: activeOrderId,
+            symbol: signal.symbol,
+            side: binanceSide,
+            quantity: quantityToOrder,
+            price: targetPrice,
+            status: 'NEW',
+            executedQty: 0,
+            creationTime: Date.now(),
+            lastUpdateTime: Date.now()
+          });
+          
+          // AGUARDAR CONFIRMAÇÃO VIA WEBSOCKET OU REST API (30 segundos no máximo)
+          console.log(`[LIMIT_ENTRY] ⏱️ Aguardando confirmação para ordem ${activeOrderId}...`);
+          
+          const waitOrderStartTime = Date.now();
+          const maxWaitTime = 30000; // 30 segundos
+          let orderFilled = false;
+          let lastCheckTime = Date.now();
+          
+          while (Date.now() - waitOrderStartTime < maxWaitTime) {
+            // Verificar mapa de ordens atualizado pelo WebSocket
+            const orderInfo = sentOrders.get(activeOrderId);
+            
+            if (orderInfo && orderInfo.status === 'FILLED') {
+              console.log(`[LIMIT_ENTRY] ✅ WebSocket confirmou ordem ${activeOrderId} como FILLED`);
+              orderFilled = true;
+              
+              // Recalcular quantidade preenchida
+              totalFilledSize += parseFloat(orderInfo.executedQty || 0);
+              
+              // Recalcular preço médio
+              if (partialFills.length > 0) {
+                averageEntryPrice = calculateAveragePrice(partialFills);
+              }
+              
+              console.log(`[LIMIT_ENTRY] Total preenchido: ${totalFilledSize.toFixed(quantityPrecision)} @ ${averageEntryPrice.toFixed(pricePrecision)}`);
+              break;
+            }
+            
+            // Verificar via REST API a cada 5 segundos (caso WebSocket falhe)
+            if (Date.now() - lastCheckTime > 5000) {
+              lastCheckTime = Date.now();
+              console.log(`[LIMIT_ENTRY] Verificando status via REST API (WebSocket pode estar lento)...`);
+              
+              try {
+                const restStatus = await getOrderStatus(signal.symbol, activeOrderId, numericAccountId);
+                
+                if (restStatus.status === 'FILLED') {
+                  console.log(`[LIMIT_ENTRY] ✅ REST API confirmou ordem ${activeOrderId} como FILLED`);
+                  orderFilled = true;
+                  
+                  // Contabilizar preenchimento
+                  partialFills.push({
+                    qty: parseFloat(restStatus.executedQty),
+                    price: parseFloat(restStatus.avgPrice || restStatus.price),
+                    orderId: activeOrderId
+                  });
+                  
+                  totalFilledSize = partialFills.reduce((sum, fill) => sum + fill.qty, 0);
+                  averageEntryPrice = calculateAveragePrice(partialFills);
+                  
+                  break;
+                }
+                else if (restStatus.status === 'PARTIALLY_FILLED') {
+                  console.log(`[LIMIT_ENTRY] REST API: Ordem ${activeOrderId} parcialmente preenchida: ${restStatus.executedQty}/${restStatus.origQty}`);
+                  
+                  // Atualizar informação no mapa
+                  if (sentOrders.has(activeOrderId)) {
+                    const orderInfo = sentOrders.get(activeOrderId);
+                    orderInfo.status = 'PARTIALLY_FILLED';
+                    orderInfo.executedQty = parseFloat(restStatus.executedQty);
+                    orderInfo.lastUpdateTime = Date.now();
+                  }
+                }
+              } catch (restError) {
+                console.warn(`[LIMIT_ENTRY] Erro ao verificar status via REST: ${restError.message}`);
+              }
+            }
+            
+            // Verificar a cada 200ms
+            await new Promise(resolve => setTimeout(resolve, 200));
+          }
+          
+          // Se a ordem foi totalmente preenchida, a entrada está completa
+          if (orderFilled && Math.abs(totalFilledSize - totalEntrySize) <= 0.000001) {
+            console.log(`[LIMIT_ENTRY] ✅ Entrada completa após ${entryAttemptCount} tentativa(s)`);
+            entryCompleted = true;
+            break;
+          }
+          
+          // Se timeout, cancelar ordem ativa se ainda estiver aberta
+          if (Date.now() - waitOrderStartTime >= maxWaitTime && activeOrderId) {
+            console.log(`[LIMIT_ENTRY] Timeout aguardando preenchimento. Verificando status final...`);
+            
+            try {
+              const finalStatus = await getOrderStatus(signal.symbol, activeOrderId, numericAccountId);
+              
+              if (finalStatus.status === 'NEW' || finalStatus.status === 'PARTIALLY_FILLED') {
+                console.log(`[LIMIT_ENTRY] Cancelando ordem após timeout (status: ${finalStatus.status})...`);
+                
+                try {
+                  await cancelOrder(signal.symbol, activeOrderId, numericAccountId);
+                  console.log(`[LIMIT_ENTRY] ✅ Ordem ${activeOrderId} cancelada após timeout`);
+                  
+                  // Se estava parcialmente preenchida, contabilizar
+                  if (finalStatus.status === 'PARTIALLY_FILLED') {
+                    const executedQty = parseFloat(finalStatus.executedQty);
+                    if (executedQty > 0) {
+                      partialFills.push({
+                        qty: executedQty,
                         price: parseFloat(finalStatus.avgPrice || finalStatus.price),
                         orderId: activeOrderId
                       });
-
-                      // Recalcular preço médio
+                      
+                      totalFilledSize = partialFills.reduce((sum, fill) => sum + fill.qty, 0);
                       averageEntryPrice = calculateAveragePrice(partialFills);
                     }
-                  } catch (statusError) {
-                    console.warn(`[LIMIT_ENTRY] Erro ao verificar status final:`, statusError.message);
                   }
-                } else {
-                  console.warn(`[LIMIT_ENTRY] Erro ao cancelar ordem:`, cancelError.message);
+                } catch (cancelError) {
+                  console.warn(`[LIMIT_ENTRY] Erro ao cancelar após timeout: ${cancelError.message}`);
+                  
+                  // Verificar se erro é porque a ordem já foi preenchida
+                  if (cancelError.message && cancelError.message.includes("Unknown order")) {
+                    console.log(`[LIMIT_ENTRY] Ordem possivelmente já executada. Verificando status final...`);
+                    try {
+                      const statusAfterError = await getOrderStatus(signal.symbol, activeOrderId, numericAccountId);
+                      
+                      if (statusAfterError.status === 'FILLED') {
+                        console.log(`[LIMIT_ENTRY] ✅ Ordem foi preenchida durante cancelamento`);
+                        
+                        partialFills.push({
+                          qty: parseFloat(statusAfterError.executedQty),
+                          price: parseFloat(statusAfterError.avgPrice || statusAfterError.price),
+                          orderId: activeOrderId
+                        });
+                        
+                        totalFilledSize = partialFills.reduce((sum, fill) => sum + fill.qty, 0);
+                        averageEntryPrice = calculateAveragePrice(partialFills);
+                      }
+                    } catch (recheckError) {
+                      console.error(`[LIMIT_ENTRY] Erro ao verificar status: ${recheckError.message}`);
+                    }
+                  }
                 }
-                break;
               }
-            }
-          }
-
-          // Verificar a cada 500ms
-          await new Promise(resolve => setTimeout(resolve, 500));
-        }
-
-        // Se a ordem foi totalmente preenchida, a entrada está completa
-        if (orderFilled && Math.abs(totalFilledSize - totalEntrySize) <= 0.000001) {
-          console.log(`[LIMIT_ENTRY] ✅ Entrada completa após ${entryAttemptCount} tentativa(s)`);
-          entryCompleted = true;
-          break;
-        }
-
-        // Se timeout, verificar via REST API
-        if (Date.now() - waitOrderStartTime >= maxWaitTime) {
-          console.log(`[LIMIT_ENTRY] Timeout aguardando WebSocket, verificando via REST...`);
-
-          try {
-            const orderStatus = await getOrderStatus(signal.symbol, activeOrderId, numericAccountId);
-
-            if (orderStatus.status === 'FILLED') {
-              console.log(`[LIMIT_ENTRY] ✅ Ordem confirmada como FILLED via REST`);
-              totalFilledSize += parseFloat(orderStatus.executedQty || 0);
-
-              // Adicionar aos preenchimentos se não foi via WebSocket
-              partialFills.push({
-                qty: parseFloat(orderStatus.executedQty),
-                price: parseFloat(orderStatus.avgPrice || orderStatus.price),
-                orderId: activeOrderId
-              });
-
-              // Recalcular preço médio
-              averageEntryPrice = calculateAveragePrice(partialFills);
-
-              // Verificar se entrada foi completa
-              if (Math.abs(totalFilledSize - totalEntrySize) <= 0.000001) {
-                entryCompleted = true;
-                break;
-              }
-            } else if (orderStatus.status === 'PARTIALLY_FILLED') {
-              console.log(`[LIMIT_ENTRY] Ordem parcialmente preenchida via REST: ${orderStatus.executedQty}/${quantityToOrder}`);
-
-              // Cancelar para criar nova com quantidade restante
-              try {
-                await cancelOrder(signal.symbol, activeOrderId, numericAccountId);
-
-                // Contabilizar o que foi preenchido
-                totalFilledSize += parseFloat(orderStatus.executedQty || 0);
-
-                // Adicionar aos preenchimentos
+              else if (finalStatus.status === 'FILLED') {
+                console.log(`[LIMIT_ENTRY] ✅ Ordem já estava preenchida na verificação final`);
+                
                 partialFills.push({
-                  qty: parseFloat(orderStatus.executedQty),
-                  price: parseFloat(orderStatus.avgPrice || orderStatus.price),
+                  qty: parseFloat(finalStatus.executedQty),
+                  price: parseFloat(finalStatus.avgPrice || finalStatus.price),
                   orderId: activeOrderId
                 });
-
-                // Recalcular preço médio
+                
+                totalFilledSize = partialFills.reduce((sum, fill) => sum + fill.qty, 0);
                 averageEntryPrice = calculateAveragePrice(partialFills);
-
-              } catch (cancelError) {
-                console.warn(`[LIMIT_ENTRY] Erro ao cancelar ordem parcial:`, cancelError.message);
               }
-            } else if (orderStatus.status === 'NEW') {
-              console.log(`[LIMIT_ENTRY] Ordem ainda está ativa, cancelando...`);
-
-              try {
-                await cancelOrder(signal.symbol, activeOrderId, numericAccountId);
-              } catch (cancelError) {
-                console.warn(`[LIMIT_ENTRY] Erro ao cancelar ordem:`, cancelError.message);
-              }
+            } catch (finalCheckError) {
+              console.warn(`[LIMIT_ENTRY] Erro na verificação final: ${finalCheckError.message}`);
             }
-          } catch (statusError) {
-            console.warn(`[LIMIT_ENTRY] Erro ao verificar status via REST:`, statusError.message);
+            
+            // Resetar ordem ativa
+            activeOrderId = null;
           }
+        } catch (orderError) {
+          console.error(`[LIMIT_ENTRY] ❌ Erro ao criar ordem:`, orderError.message);
+          await new Promise(resolve => setTimeout(resolve, 2000));
         }
-
-        // Aguardar um pouco antes da próxima tentativa
-        await new Promise(resolve => setTimeout(resolve, 2000));
-
-      } catch (orderError) {
-        console.error(`[LIMIT_ENTRY] ❌ Erro ao criar ordem:`, orderError.message);
-        await new Promise(resolve => setTimeout(resolve, 2000));
       }
+      
+      // Aguardar antes da próxima tentativa
+      await new Promise(resolve => setTimeout(resolve, 1000));
     }
 
     // VERIFICAR RESULTADO FINAL
