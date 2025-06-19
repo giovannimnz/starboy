@@ -46,14 +46,19 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
   let quantityPrecision;
   let pricePrecision;
   let numericAccountId;
-  
+  let precision = null; // Inicializar precision para evitar erro de referência
+
+  // ✅ CONTROLE DE ORDENS ENVIADAS
+  const sentOrders = new Map(); // Mapa para controlar ordens já enviadas
+  let isEntryComplete = false; // Flag para saber se a entrada foi completada
+
   // Constantes de configuração
   const MAX_CHASE_ATTEMPTS = 100;
   const CHASE_TIMEOUT_MS = 180000; // 3 minutos
-  const WAIT_FOR_EXECUTION_TIMEOUT_MS = 5000;
+  const WAIT_FOR_ORDER_CONFIRMATION_MS = 15000; // ✅ 15 segundos para aguardar confirmação WebSocket
   const EDIT_WAIT_TIMEOUT_MS = 3000;
   const MAX_DEPTH_STALENESS_MS = 3000;
-  const ENTRY_COMPLETE_THRESHOLD_RATIO = 0.999;
+  const ENTRY_COMPLETE_THRESHOLD_RATIO = 0.98;
   
   let chaseAttempts = 0;
   let totalEntrySize = 0;
@@ -68,7 +73,63 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
   let lastDepthUpdateTimestamp = 0;
   let wsUpdateErrorCount = 0;
 
+  // ✅ HANDLER PARA RECEBER UPDATES DE ORDENS VIA WEBSOCKET
+  const orderUpdateHandler = (orderMsg) => {
+    if (!orderMsg || !orderMsg.o || !orderMsg.o.i) return;
+    
+    const order = orderMsg.o;
+    const orderId = String(order.i);
+    const executionType = order.x; // NEW, CANCELED, TRADE, etc.
+    const orderStatus = order.X; // NEW, FILLED, PARTIALLY_FILLED, etc.
+    
+    // Atualizar ordem no mapa se já estiver sendo rastreada
+    if (sentOrders.has(orderId)) {
+      const orderInfo = sentOrders.get(orderId);
+      orderInfo.status = orderStatus;
+      orderInfo.executedQty = parseFloat(order.z || '0');
+      orderInfo.lastUpdateTime = Date.now();
+      
+      if (executionType === 'TRADE' && (orderStatus === 'FILLED' || orderStatus === 'PARTIALLY_FILLED')) {
+        const executedQty = parseFloat(order.l || '0'); // quantidade executada nesta atualização
+        const price = parseFloat(order.L || '0'); // preço desta execução
+        
+        if (executedQty > 0 && price > 0) {
+          // Adicionar ao array de preenchimentos
+          partialFills.push({
+            qty: executedQty,
+            price: price,
+            orderId: orderId
+          });
+          
+          // Recalcular total preenchido
+          totalFilledSize = partialFills.reduce((sum, fill) => sum + fill.qty, 0);
+          
+          // Recalcular preço médio
+          if (partialFills.length > 0) {
+            averageEntryPrice = calculateAveragePrice(partialFills);
+          }
+          
+          console.log(`[LIMIT_ENTRY] ✅ WebSocket: Ordem ${orderId} executada: ${executedQty} @ ${price} (Total: ${totalFilledSize}/${totalEntrySize})`);
+        }
+      }
+    }
+  };
+
   try {
+    // Registrar o handler para WebSocket
+    const websockets = require('../websockets');
+    const existingHandlers = websockets.getHandlers(accountId) || {};
+    const updatedHandlers = {
+      ...existingHandlers,
+      handleOrderUpdate: async (msg, db) => {
+        if (existingHandlers.handleOrderUpdate) {
+          await existingHandlers.handleOrderUpdate(msg, db);
+        }
+        orderUpdateHandler(msg);
+      }
+    };
+    websockets.setMonitoringCallbacks(updatedHandlers, accountId);
+    
     // VALIDAÇÃO INICIAL CRÍTICA
     if (!accountId || typeof accountId !== 'number') {
       throw new Error(`AccountId inválido em executeLimitMakerEntry: ${accountId} (tipo: ${typeof accountId})`);
@@ -788,65 +849,65 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       const slPriceVal = signal.sl_price ? parseFloat(signal.sl_price) : null;
       
       // VERIFICAR SE JÁ EXISTE ORDEM SL PARA ESTA POSIÇÃO
-      const [existingStopOrders] = await connection.query(
-        `SELECT id, id_externo FROM ordens 
-         WHERE id_posicao = ? 
-         AND tipo_ordem_bot = 'STOP_LOSS' 
-         AND status IN ('NEW', 'PARTIALLY_FILLED')`,
-        [positionId]
-      );
+const [existingStopOrders] = await connection.query(
+  `SELECT id, id_externo FROM ordens 
+   WHERE id_posicao = ? 
+   AND tipo_ordem_bot = 'STOP_LOSS' 
+   AND status IN ('NEW', 'PARTIALLY_FILLED')`,
+  [positionId]
+);
 
-      // CRIAR STOP LOSS APENAS SE NÃO EXISTIR
-      if (existingStopOrders.length === 0) {
-        if (slPriceVal && slPriceVal > 0) {
-          try {
-            console.log(`[LIMIT_ENTRY] Criando SL: ${totalFilledSize} ${signal.symbol} @ ${slPriceVal}`);
-            
-            const stopOrderResult = await newStopOrder(
-              numericAccountId,
-              signal.symbol,
-              totalFilledSize,
-              binanceOppositeSide,
-              slPriceVal,
-              null,
-              true
-            );
-            
-            if (stopOrderResult && (stopOrderResult.data?.orderId || stopOrderResult.orderId)) {
-              const slOrderId = stopOrderResult.data?.orderId || stopOrderResult.orderId;
-              console.log(`[LIMIT_ENTRY] SL criado com ID: ${slOrderId}`);
-              
-              // Inserir no banco de dados
-              const slOrderData = { 
-                tipo_ordem: 'STOP_MARKET', 
-                preco: slPriceVal, 
-                quantidade: totalFilledSize, 
-                id_posicao: positionId, 
-                status: 'NEW',
-                data_hora_criacao: formatDateForMySQL(new Date()), 
-                id_externo: String(slOrderId).substring(0,90), 
-                side: binanceOppositeSide,
-                simbolo: signal.symbol, 
-                tipo_ordem_bot: 'STOP_LOSS', 
-                target: null, 
-                reduce_only: true, 
-                close_position: false, 
-                orign_sig: `WEBHOOK_${signal.id}`,
-                last_update: formatDateForMySQL(new Date())
-              };
-              
-              const slOrderInsertId = await insertNewOrder(connection, slOrderData);
-              console.log(`Ordem de STOP_LOSS inserida com sucesso: ${slOrderInsertId}`);
-            }
-          } catch (slError) {
-            console.error(`[LIMIT_ENTRY] Erro ao criar SL:`, slError.message);
-          }
-        } else {
-          console.log(`[LIMIT_ENTRY] ⚠️ SL não configurado para esta posição (preço SL não definido)`);
-        }
-      } else {
-        console.log(`[LIMIT_ENTRY] ℹ️ SL já existe para esta posição (ID: ${existingStopOrders[0].id_externo}), não criando novamente`);
+// CRIAR STOP LOSS APENAS SE NÃO EXISTIR
+if (existingStopOrders.length === 0) {
+  if (slPriceVal && slPriceVal > 0) {
+    try {
+      console.log(`[LIMIT_ENTRY] Criando SL: ${totalFilledSize} ${signal.symbol} @ ${slPriceVal}`);
+      
+      const stopOrderResult = await newStopOrder(
+        numericAccountId,
+        signal.symbol,
+        totalFilledSize,
+        binanceOppositeSide,
+        slPriceVal,
+        null,
+        true
+      );
+      
+      if (stopOrderResult && (stopOrderResult.data?.orderId || stopOrderResult.orderId)) {
+        const slOrderId = stopOrderResult.data?.orderId || stopOrderResult.orderId;
+        console.log(`[LIMIT_ENTRY] SL criado com ID: ${slOrderId}`);
+        
+        // Inserir no banco de dados
+        const slOrderData = { 
+          tipo_ordem: 'STOP_MARKET', 
+          preco: slPriceVal, 
+          quantidade: totalFilledSize, 
+          id_posicao: positionId, 
+          status: 'NEW',
+          data_hora_criacao: formatDateForMySQL(new Date()), 
+          id_externo: String(slOrderId).substring(0,90), 
+          side: binanceOppositeSide,
+          simbolo: signal.symbol, 
+          tipo_ordem_bot: 'STOP_LOSS', 
+          target: null, 
+          reduce_only: true, 
+          close_position: false, 
+          orign_sig: `WEBHOOK_${signal.id}`,
+          last_update: formatDateForMySQL(new Date())
+        };
+        
+        await insertNewOrder(connection, slOrderData);
+        console.log(`[LIMIT_ENTRY] Ordem de STOP_LOSS inserida com sucesso`);
       }
+    } catch (slError) {
+      console.error(`[LIMIT_ENTRY] Erro ao criar SL:`, slError.message);
+    }
+  } else {
+    console.log(`[LIMIT_ENTRY] ⚠️ SL não configurado para esta posição (preço SL não definido)`);
+  }
+} else {
+  console.log(`[LIMIT_ENTRY] ℹ️ SL já existe para esta posição (ID: ${existingStopOrders[0].id_externo}), não criando novamente`);
+}
 
       // ✅ CORREÇÃO: OBTER PREÇOS CORRETOS DOS TPs
       const targetPrices = {
@@ -1034,54 +1095,68 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
     
     console.log(`[LIMIT_ENTRY_RECOVERY] Usando recoveryAccountId: ${recoveryAccountId}`);
     
-    if (positionId && totalFilledSize > 0 && averageEntryPrice > 0) {
-      console.warn(`[LIMIT_ENTRY_RECOVERY] Tentando SALVAR POSIÇÃO ${positionId} (${totalFilledSize.toFixed(recoveryQuantityPrecision)} ${signal.symbol} @ ${averageEntryPrice.toFixed(recoveryPricePrecision)}) apesar do erro: ${originalErrorMessage}`);
+if (positionId && totalFilledSize > 0 && averageEntryPrice > 0) {
+  console.warn(`[LIMIT_ENTRY_RECOVERY] Tentando SALVAR POSIÇÃO ${positionId}...`);
+  
+  try {
+    // VERIFICAR SE JÁ EXISTE SL PARA ESTA POSIÇÃO
+    const [existingStopOrders] = await connection.query(
+      `SELECT id, id_externo FROM ordens 
+       WHERE id_posicao = ? 
+       AND tipo_ordem_bot = 'STOP_LOSS' 
+       AND status IN ('NEW', 'PARTIALLY_FILLED')`,
+      [positionId]
+    );
+    
+    const binanceOppositeSide = recoveryBinanceSide === 'BUY' ? 'SELL' : 'BUY';
+    const slPriceVal = signal.sl_price ? parseFloat(signal.sl_price) : null;
+    
+    // CRIAR SL DE EMERGÊNCIA APENAS SE NÃO EXISTIR
+    if (existingStopOrders.length === 0 && slPriceVal && slPriceVal > 0) {
+      console.log(`[LIMIT_ENTRY_RECOVERY] Criando SL de emergência: ${totalFilledSize.toFixed(recoveryQuantityPrecision)} @ ${slPriceVal}`);
       
       try {
-        const binanceOppositeSide = recoveryBinanceSide === 'BUY' ? 'SELL' : 'BUY';
-        const slPriceVal = signal.sl_price ? parseFloat(signal.sl_price) : null;
+        const stopOrderResult = await newStopOrder(
+          recoveryAccountId,
+          signal.symbol,
+          totalFilledSize,
+          binanceOppositeSide,
+          slPriceVal,
+          null,
+          true
+        );
         
-        if (slPriceVal && slPriceVal > 0) {
-          console.log(`[LIMIT_ENTRY_RECOVERY] Criando SL de emergência: ${totalFilledSize.toFixed(recoveryQuantityPrecision)} @ ${slPriceVal.toFixed(recoveryPricePrecision)}`);
+        if (stopOrderResult && (stopOrderResult.data?.orderId || stopOrderResult.orderId)) {
+          const slOrderId = stopOrderResult.data?.orderId || stopOrderResult.orderId;
           
-          // ✅ USAR recoveryAccountId que está garantidamente definido
-          const slResponse = await newStopOrder(
-            recoveryAccountId,
-            signal.symbol,
-            totalFilledSize,
-            binanceOppositeSide,
-            slPriceVal,
-            null,
-            true
-          );
+          // Inserir no banco de dados
+          const slOrderData = { 
+            tipo_ordem: 'STOP_MARKET', 
+            preco: slPriceVal, 
+            quantidade: totalFilledSize, 
+            id_posicao: positionId, 
+            status: 'NEW',
+            data_hora_criacao: formatDateForMySQL(new Date()), 
+            id_externo: String(slOrderId).substring(0,90), 
+            side: binanceOppositeSide,
+            simbolo: signal.symbol, 
+            tipo_ordem_bot: 'STOP_LOSS', 
+            target: null, 
+            reduce_only: true, 
+            close_position: false, 
+            orign_sig: `WEBHOOK_${signal.id}_RECOVERY`,
+            last_update: formatDateForMySQL(new Date())
+          };
           
-          if (slResponse && slResponse.data && slResponse.data.orderId) {
-            console.log(`[LIMIT_ENTRY_RECOVERY] ✅ SL de emergência criado: ${slResponse.data.orderId}`);
-            
-            const slOrderData = {
-              tipo_ordem: 'STOP_MARKET',
-              preco: slPriceVal,
-              quantidade: totalFilledSize,
-              id_posicao: positionId,
-              status: 'NEW',
-              data_hora_criacao: formatDateForMySQL(new Date()),
-              id_externo: String(slResponse.data.orderId),
-              side: binanceOppositeSide,
-              simbolo: signal.symbol,
-              tipo_ordem_bot: 'STOP_LOSS',
-              target: null,
-              reduce_only: true,
-              close_position: false,
-              last_update: formatDateForMySQL(new Date()),
-              orign_sig: `WEBHOOK_${signal.id}_RECOVERY`
-            };
-            
-            // ✅ VERIFICAR SE CONNECTION EXISTE ANTES DE USAR
-            if (connection) {
-              await insertNewOrder(connection, slOrderData);
-            }
-          }
+          await insertNewOrder(connection, slOrderData);
+          console.log(`[LIMIT_ENTRY_RECOVERY] SL de emergência criado com ID: ${slOrderId}`);
         }
+      } catch (slError) {
+        console.error(`[LIMIT_ENTRY_RECOVERY] Erro ao criar SL de emergência:`, slError.message);
+      }
+    } else if (existingStopOrders.length > 0) {
+      console.log(`[LIMIT_ENTRY_RECOVERY] SL já existe (ID: ${existingStopOrders[0].id_externo}), não criando novamente`);
+    }
         
         // CRIAR TP DE EMERGÊNCIA SE DISPONÍVEL
         const finalTpPriceVal = signal.tp_price ? parseFloat(signal.tp_price) : (signal.tp5_price ? parseFloat(signal.tp5_price) : null);
