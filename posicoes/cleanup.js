@@ -6,7 +6,12 @@ const { getAllOpenPositions, cancelOrder } = require('../api');
  */
 async function cleanupOrphanSignals(accountId) {
   try {
-    const db = await getDatabaseInstance(accountId);
+    if (!accountId || typeof accountId !== 'number') {
+      console.error(`[CLEANUP] AccountId inválido: ${accountId}`);
+      return;
+    }
+    
+    const db = await getDatabaseInstance();
     
     // Resetar sinais em PROCESSANDO há mais de 5 minutos
     const [resetResult] = await db.query(`
@@ -28,15 +33,13 @@ async function cleanupOrphanSignals(accountId) {
       UPDATE webhook_signals 
       SET status = 'ERROR', 
           error_message = CONCAT(IFNULL(error_message, ''), ' | Limpo durante cleanup') 
-      WHERE status = 'PENDING' 
-        AND error_message LIKE '%not defined%'
+      WHERE error_message LIKE '%not defined%' 
         AND conta_id = ?
+        AND status NOT IN ('ERROR', 'CANCELED')
     `, [accountId]);
 
-    return true;
   } catch (error) {
-    console.error(`[CLEANUP] Erro ao limpar sinais órfãos:`, error.message);
-    return false;
+    console.error(`[CLEANUP] Erro na limpeza de sinais órfãos para conta ${accountId}:`, error.message);
   }
 }
 
@@ -45,50 +48,50 @@ async function cleanupOrphanSignals(accountId) {
  */
 async function forceCloseGhostPositions(accountId) {
   try {
-    const db = await getDatabaseInstance(accountId);
+    if (!accountId || typeof accountId !== 'number') {
+      console.error(`[CLEANUP] AccountId inválido: ${accountId}`);
+      return 0;
+    }
     
-    // Obter posições do banco
+    const db = await getDatabaseInstance();
+    
+    // Obter posições abertas no banco
     const [dbPositions] = await db.query(`
       SELECT id, simbolo, quantidade FROM posicoes 
       WHERE status = 'OPEN' AND conta_id = ?
     `, [accountId]);
-
-    // Obter posições da corretora
+    
+    if (dbPositions.length === 0) {
+      return 0;
+    }
+    
+    // Obter posições abertas na corretora
     const exchangePositions = await getAllOpenPositions(accountId);
-    const exchangePositionsMap = {};
-    exchangePositions.forEach(pos => {
-      exchangePositionsMap[pos.simbolo] = pos;
-    });
-
+    
     let closedCount = 0;
+    
     for (const dbPos of dbPositions) {
-      if (!exchangePositionsMap[dbPos.simbolo]) {
-        console.log(`[CLEANUP] Posição fantasma detectada: ${dbPos.simbolo} (ID: ${dbPos.id})`);
+      const exchangePos = exchangePositions.find(p => p.simbolo === dbPos.simbolo);
+      
+      if (!exchangePos || Math.abs(parseFloat(exchangePos.quantidade)) <= 0.000001) {
+        // Posição não existe na corretora ou tem quantidade zero
+        await db.query(`
+          UPDATE posicoes 
+          SET status = 'CLOSED', 
+              data_hora_fechamento = NOW(),
+              observacao = 'Fechada via cleanup - não encontrada na corretora'
+          WHERE id = ?
+        `, [dbPos.id]);
         
-        // Verificação adicional via API
-        try {
-          const positionDetails = await getPositionDetails(accountId, dbPos.simbolo);
-          const hasOpenPosition = positionDetails && 
-                                 positionDetails.some(pos => parseFloat(pos.quantidade) > 0);
-          
-          if (!hasOpenPosition) {
-            await movePositionToHistory(db, dbPos.id, 'CLOSED', 'Fechada na corretora (detectado por cleanup)');
-            console.log(`[CLEANUP] Posição ${dbPos.simbolo} movida para histórico`);
-            closedCount++;
-          }
-        } catch (detailsError) {
-          console.error(`[CLEANUP] Erro ao verificar detalhes de ${dbPos.simbolo}:`, detailsError.message);
-        }
+        console.log(`[CLEANUP] Posição fantasma ${dbPos.simbolo} fechada para conta ${accountId} (ID: ${dbPos.id})`);
+        closedCount++;
       }
     }
-
-    if (closedCount > 0) {
-      console.log(`[CLEANUP] ${closedCount} posições fantasma fechadas para conta ${accountId}`);
-    }
-
+    
     return closedCount;
+    
   } catch (error) {
-    console.error(`[CLEANUP] Erro ao forçar fechamento de posições fantasma:`, error.message);
+    console.error(`[CLEANUP] Erro ao fechar posições fantasma para conta ${accountId}:`, error.message);
     return 0;
   }
 }
@@ -98,42 +101,49 @@ async function forceCloseGhostPositions(accountId) {
  */
 async function cancelOrphanOrders(accountId) {
   try {
-    const db = await getDatabaseInstance(accountId);
+    if (!accountId || typeof accountId !== 'number') {
+      console.error(`[CLEANUP] AccountId inválido: ${accountId}`);
+      return 0;
+    }
     
-    // Buscar símbolos com posições fechadas mas ordens ainda ativas
+    const db = await getDatabaseInstance();
+    
+    // Buscar ordens em estado inconsistente há mais de 10 minutos
     const [orphanOrders] = await db.query(`
-      SELECT DISTINCT o.simbolo, o.id_externo
-      FROM ordens o
-      LEFT JOIN posicoes p ON o.id_posicao = p.id
-      WHERE o.status = 'NEW' 
-        AND (p.status != 'OPEN' OR p.id IS NULL)
-        AND o.conta_id = ?
+      SELECT id_externo, simbolo 
+      FROM ordens 
+      WHERE status IN ('NEW', 'PENDING_CANCEL')
+        AND conta_id = ?
+        AND last_update < DATE_SUB(NOW(), INTERVAL 10 MINUTE)
     `, [accountId]);
-
+    
     let canceledCount = 0;
+    
     for (const order of orphanOrders) {
       try {
-        await cancelOrder(accountId, order.simbolo, order.id_externo);
+        await cancelOrder(order.simbolo, order.id_externo, accountId);
         
+        // Atualizar status no banco
         await db.query(`
-          UPDATE ordens SET status = 'CANCELED_CLEANUP', last_update = NOW() 
-          WHERE id_externo = ?
-        `, [order.id_externo]);
+          UPDATE ordens 
+          SET status = 'CANCELED', 
+              observacao = 'Cancelada via cleanup',
+              last_update = NOW()
+          WHERE id_externo = ? AND conta_id = ?
+        `, [order.id_externo, accountId]);
         
-        console.log(`[CLEANUP] Ordem órfã cancelada: ${order.id_externo}`);
+        console.log(`[CLEANUP] Ordem órfã cancelada: ${order.id_externo} para conta ${accountId}`);
         canceledCount++;
+        
       } catch (cancelError) {
-        console.error(`[CLEANUP] Erro ao cancelar ordem órfã ${order.id_externo}:`, cancelError.message);
+        console.warn(`[CLEANUP] Erro ao cancelar ordem órfã ${order.id_externo}:`, cancelError.message);
       }
     }
-
-    if (canceledCount > 0) {
-      console.log(`[CLEANUP] ${canceledCount} ordens órfãs canceladas para conta ${accountId}`);
-    }
-
+    
     return canceledCount;
+    
   } catch (error) {
-    console.error(`[CLEANUP] Erro ao cancelar ordens órfãs:`, error.message);
+    console.error(`[CLEANUP] Erro ao cancelar ordens órfãs para conta ${accountId}:`, error.message);
     return 0;
   }
 }

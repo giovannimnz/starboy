@@ -221,40 +221,99 @@ async function startWebSocketApi(accountId) {
 }
 
 /**
- * Processa mensagens recebidas via WebSocket API
+ * Processa mensagens recebidas via WebSocket API - VERSÃO MELHORADA
  */
 function handleWebSocketApiMessage(message, accountId) {
   try {
-    const accountState = getAccountConnectionState(accountId);
+    const accountState = api.getAccountConnectionState(accountId);
     if (!accountState) {
-      console.error(`[WS-API] Estado da conta ${accountId} não encontrado`);
+      console.error(`[WS-API] Estado da conta ${accountId} não encontrado ao processar mensagem`);
       return;
     }
     
-    if (message.id) {
-      const callbackEntry = accountState.wsApiRequestCallbacks.get(message.id);
-      if (callbackEntry) {
-        if (typeof callbackEntry === 'function') {
-          callbackEntry(message);
-        } else if (typeof callbackEntry === 'object' && callbackEntry.resolve) {
-          clearTimeout(callbackEntry.timer);
-          if (message.error) {
-            callbackEntry.reject(message);
-          } else {
-            callbackEntry.resolve(message);
-          }
+    // Parse da mensagem se for string
+    let parsedMessage;
+    try {
+      parsedMessage = typeof message === 'string' ? JSON.parse(message) : message;
+    } catch (parseError) {
+      console.error(`[WS-API] Erro ao fazer parse da mensagem para conta ${accountId}:`, parseError.message);
+      return;
+    }
+    
+    // Processar diferentes tipos de mensagem
+    if (parsedMessage.id) {
+      // Resposta de requisição específica
+      if (accountState.wsApiRequestCallbacks && accountState.wsApiRequestCallbacks.has(parsedMessage.id)) {
+        const callback = accountState.wsApiRequestCallbacks.get(parsedMessage.id);
+        accountState.wsApiRequestCallbacks.delete(parsedMessage.id);
+        
+        if (callback && typeof callback === 'function') {
+          callback(parsedMessage);
+        } else if (callback && callback.resolve) {
+          callback.resolve(parsedMessage);
         }
-        accountState.wsApiRequestCallbacks.delete(message.id);
       }
-    } else if (message.method === 'ping') {
-      console.log(`[WS-API] Ping recebido do servidor para conta ${accountId}`);
-      sendPong(message.id, accountId); 
-    } else if (message.method === 'pong') {
-      console.log(`[WS-API] Pong recebido do servidor para conta ${accountId}`);
-      accountState.lastPongTime = Date.now();
+    } else if (parsedMessage.method === 'ping') {
+      // Responder a ping
+      sendPong(parsedMessage.id, accountId);
+    } else if (parsedMessage.stream) {
+      // Stream data
+      console.log(`[WS-API] Dados de stream recebidos para conta ${accountId}: ${parsedMessage.stream}`);
+    } else {
+      console.log(`[WS-API] Mensagem não processada para conta ${accountId}:`, parsedMessage);
     }
   } catch (error) {
     console.error(`[WS-API] Erro ao processar mensagem para conta ${accountId}:`, error.message);
+  }
+}
+
+/**
+ * Envia pong em resposta a ping - VERSÃO CORRIGIDA
+ */
+function sendPong(pingId, accountId) {
+  const accountState = api.getAccountConnectionState(accountId);
+  if (!accountState || !accountState.wsApiConnection) {
+    console.warn(`[WS-API] Não foi possível enviar pong para conta ${accountId}: conexão não disponível`);
+    return;
+  }
+  
+  try {
+    const pongRequest = { 
+      method: 'pong',
+      id: pingId || uuidv4()
+    };
+    
+    accountState.wsApiConnection.send(JSON.stringify(pongRequest));
+    console.log(`[WS-API] Pong enviado para conta ${accountId}`);
+  } catch (error) {
+    console.error(`[WS-API] Erro ao enviar pong para conta ${accountId}:`, error.message);
+  }
+}
+
+/**
+ * Carrega credenciais do banco para uma conta específica
+ */
+async function loadCredentialsFromDatabase(accountId) {
+  try {
+    console.log(`[WEBSOCKETS] Carregando credenciais para conta ${accountId}...`);
+    
+    if (!accountId || typeof accountId !== 'number') {
+      throw new Error(`AccountId inválido: ${accountId}`);
+    }
+    
+    // Usar api.loadCredentialsFromDatabase que é mais robusto
+    const credentials = await api.loadCredentialsFromDatabase(accountId);
+    
+    if (!credentials) {
+      throw new Error(`Não foi possível carregar credenciais para conta ${accountId}`);
+    }
+    
+    console.log(`[WEBSOCKETS] ✅ Credenciais carregadas para conta ${accountId}`);
+    return credentials;
+    
+  } catch (error) {
+    console.error(`[WEBSOCKETS] Erro ao carregar credenciais para conta ${accountId}:`, error.message);
+    throw error;
   }
 }
 
@@ -286,24 +345,6 @@ function cleanupWebSocketApi(accountId) {
   
   if (accountState.wsApiRequestCallbacks) {
     accountState.wsApiRequestCallbacks.clear();
-  }
-}
-
-/**
- * Envia pong em resposta a ping
- */
-function sendPong(pingId, accountId) {
-  const accountState = getAccountConnectionState(accountId);
-  if (!accountState || !accountState.wsApiConnection) {
-    return;
-  }
-  
-  try {
-    const pongRequest = { method: 'pong' };
-    if (pingId) pongRequest.id = pingId;
-    accountState.wsApiConnection.send(JSON.stringify(pongRequest));
-  } catch (error) {
-    console.error(`[WS-API] Erro ao enviar pong para conta ${accountId}:`, error);
   }
 }
 

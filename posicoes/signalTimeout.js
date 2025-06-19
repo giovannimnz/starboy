@@ -26,35 +26,29 @@ function timeframeToMs(timeframe) {
 /**
  * Cancela um sinal com notificação
  */
-async function cancelSignal(db, signalId, statusParam, reason, accountId) {
+async function cancelSignal(db, signalId, status, reason, accountId) {
   try {
-    console.log(`[TIMEOUT] Cancelando sinal ${signalId}: ${reason}`);
+    console.log(`[TIMEOUT] Cancelando sinal ${signalId} para conta ${accountId}: ${reason}`);
     
     await db.query(`
       UPDATE webhook_signals
-      SET status = 'CANCELED',
-          error_message = ?
-      WHERE id = ?
-    `, [reason, signalId]);
-
-    // Buscar dados para notificação
-    const [signalInfo] = await db.query(`
-      SELECT symbol, chat_id, registry_message_id
-      FROM webhook_signals
-      WHERE id = ?
-    `, [signalId]);
-
-    if (signalInfo.length > 0 && signalInfo[0].chat_id) {
-      const signal = signalInfo[0];
-      const message = `⚠️ Sinal para ${signal.symbol} Cancelado ⚠️\n(ID: ${signalId})\n\nMotivo: ${reason}`;
-      
-      await sendTelegramMessage(accountId, signal.chat_id, message);
+      SET status = ?,
+          error_message = ?,
+          updated_at = NOW()
+      WHERE id = ? AND conta_id = ?
+    `, [status, reason, signalId, accountId]);
+    
+    // Enviar notificação via Telegram se configurado
+    try {
+      await sendTelegramMessage(accountId, null, 
+        `⚠️ Sinal #${signalId} cancelado\n📝 Motivo: ${reason}`
+      );
+    } catch (telegramError) {
+      console.warn(`[TIMEOUT] Erro ao enviar notificação Telegram para conta ${accountId}:`, telegramError.message);
     }
-
-    return true;
+    
   } catch (error) {
-    console.error(`[TIMEOUT] Erro ao cancelar sinal ${signalId}:`, error.message);
-    return false;
+    console.error(`[TIMEOUT] Erro ao cancelar sinal ${signalId} para conta ${accountId}:`, error.message);
   }
 }
 
@@ -63,57 +57,49 @@ async function cancelSignal(db, signalId, statusParam, reason, accountId) {
  */
 async function checkExpiredSignals(accountId) {
   try {
-    const db = await getDatabaseInstance(accountId);
+    if (!accountId || typeof accountId !== 'number') {
+      console.error(`[TIMEOUT] AccountId inválido: ${accountId}`);
+      return 0;
+    }
     
-    const [pendingSignals] = await db.query(`
-      SELECT id, symbol, side, entry_price, timeframe, created_at, 
-             chat_id, timeout_at, max_lifetime_minutes
-      FROM webhook_signals
-      WHERE status = 'AGUARDANDO_ACIONAMENTO' OR status = 'PENDING'
-        AND conta_id = ?
+    const db = await getDatabaseInstance();
+    if (!db) {
+      console.error(`[TIMEOUT] Não foi possível conectar ao banco para conta ${accountId}`);
+      return 0;
+    }
+    
+    // Buscar sinais que podem ter expirado
+    const [expiredSignals] = await db.query(`
+      SELECT id, symbol, timeframe, created_at, status
+      FROM webhook_signals 
+      WHERE conta_id = ? 
+      AND status IN ('PENDING', 'AGUARDANDO_ACIONAMENTO', 'ENTRADA_EM_PROGRESSO')
+      AND created_at < DATE_SUB(NOW(), INTERVAL 30 MINUTE)
     `, [accountId]);
-
-    const now = new Date();
-    let cancelCount = 0;
-
-    for (const signal of pendingSignals) {
-      let shouldCancel = false;
-      let cancelReason = '';
-
-      // Verificar timeout direto (campo timeout_at)
-      if (signal.timeout_at && new Date(signal.timeout_at) < now) {
-        shouldCancel = true;
-        cancelReason = `Timeout: sinal expirou em ${signal.timeout_at}`;
-      }
-      // Verificar timeout por timeframe (fallback)
-      else if (signal.timeframe) {
-        const timeframeMs = timeframeToMs(signal.timeframe);
-        const maxLifetimeMs = timeframeMs * 3;
-
-        if (maxLifetimeMs > 0) {
-          const createdAt = new Date(signal.created_at);
-          const signalAgeMs = now.getTime() - createdAt.getTime();
-
-          if (signalAgeMs > maxLifetimeMs) {
-            shouldCancel = true;
-            cancelReason = `Timeout: sinal ativo por ${(signalAgeMs / 60000).toFixed(1)} min (máx: ${(maxLifetimeMs / 60000).toFixed(1)} min)`;
-          }
-        }
-      }
-
-      if (shouldCancel) {
-        await cancelSignal(db, signal.id, 'TIMEOUT', cancelReason, accountId);
-        cancelCount++;
+    
+    let canceledCount = 0;
+    
+    for (const signal of expiredSignals) {
+      const signalAge = Date.now() - new Date(signal.created_at).getTime();
+      const timeframeMs = timeframeToMs(signal.timeframe) || (15 * 60 * 1000); // 15 min default
+      const maxAge = Math.max(timeframeMs * 2, 30 * 60 * 1000); // Mín 30 min
+      
+      if (signalAge > maxAge) {
+        await cancelSignal(db, signal.id, 'CANCELED', 
+          `Sinal expirado após ${Math.round(signalAge / 60000)} minutos (timeframe: ${signal.timeframe})`, 
+          accountId);
+        canceledCount++;
       }
     }
-
-    if (cancelCount > 0) {
-      console.log(`[TIMEOUT] ${cancelCount} sinais cancelados por timeout para conta ${accountId}`);
+    
+    if (canceledCount > 0) {
+      console.log(`[TIMEOUT] ${canceledCount} sinais expirados cancelados para conta ${accountId}`);
     }
-
-    return cancelCount;
+    
+    return canceledCount;
+    
   } catch (error) {
-    console.error(`[TIMEOUT] Erro ao verificar sinais expirados:`, error.message);
+    console.error(`[TIMEOUT] Erro ao verificar sinais expirados para conta ${accountId}:`, error.message);
     return 0;
   }
 }

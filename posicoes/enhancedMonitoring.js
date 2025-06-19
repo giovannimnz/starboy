@@ -2,52 +2,42 @@ const { getDatabaseInstance } = require('../db/conexao');
 const { checkOrderTriggers } = require('./trailingStopLoss');
 const { checkExpiredSignals } = require('./signalTimeout');
 const { cleanupOrphanSignals, forceCloseGhostPositions } = require('./cleanup');
-
-// Cache de preços para evitar logs excessivos
-const lastPriceLogTime = {};
-const PRICE_LOG_INTERVAL = 60000; // 1 minuto
+const websockets = require('../websockets');
 
 /**
  * Atualiza preços das posições com trailing stop
  */
 async function updatePositionPricesWithTrailing(db, symbol, currentPrice, accountId) {
   try {
-    // Atualizar preços das posições
-    const [positions] = await db.query(
-      'SELECT * FROM posicoes WHERE simbolo = ? AND status = "OPEN" AND conta_id = ?',
-      [symbol, accountId]
-    );
-
-    if (positions.length === 0) {
+    if (!accountId || typeof accountId !== 'number') {
+      console.error(`[ENHANCED] AccountId inválido: ${accountId}`);
       return;
     }
-
-    // Log de preço com controle de frequência
-    const logKey = `${symbol}_${accountId}`;
-    const currentTime = Date.now();
-    const shouldLog = !lastPriceLogTime[logKey] || 
-                      (currentTime - lastPriceLogTime[logKey] >= PRICE_LOG_INTERVAL);
     
-    if (shouldLog) {
-      console.log(`[PRICE] ${symbol}: ${currentPrice} (${positions.length} posições)`);
-      lastPriceLogTime[logKey] = currentTime;
-    }
-
-    // Atualizar cada posição
+    // Buscar posições abertas para o símbolo
+    const [positions] = await db.query(`
+      SELECT * FROM posicoes 
+      WHERE simbolo = ? AND status = 'OPEN' AND conta_id = ?
+    `, [symbol, accountId]);
+    
     for (const position of positions) {
-      await db.query(
-        `UPDATE posicoes SET 
-         preco_corrente = ?, 
-         data_hora_ultima_atualizacao = ? 
-         WHERE id = ?`,
-        [currentPrice, new Date(), position.id]
-      );
+      // Atualizar preço corrente
+      await db.query(`
+        UPDATE posicoes 
+        SET preco_corrente = ?, data_hora_ultima_atualizacao = NOW()
+        WHERE id = ?
+      `, [currentPrice, position.id]);
       
       // Verificar trailing stops
-      await checkOrderTriggers(db, position, currentPrice, accountId);
+      try {
+        await checkOrderTriggers(db, position, currentPrice, accountId);
+      } catch (trailingError) {
+        console.error(`[ENHANCED] Erro no trailing stop para posição ${position.id}:`, trailingError.message);
+      }
     }
+    
   } catch (error) {
-    console.error(`[PRICE] Erro ao atualizar preços para ${symbol}:`, error.message);
+    console.error(`[ENHANCED] Erro ao atualizar preços para ${symbol} conta ${accountId}:`, error.message);
   }
 }
 
@@ -56,6 +46,11 @@ async function updatePositionPricesWithTrailing(db, symbol, currentPrice, accoun
  */
 async function runPeriodicCleanup(accountId) {
   try {
+    if (!accountId || typeof accountId !== 'number') {
+      console.error(`[CLEANUP] AccountId inválido: ${accountId}`);
+      return;
+    }
+    
     //console.log(`[CLEANUP] Executando limpeza periódica para conta ${accountId}...`);
     
     // Verificar sinais expirados
@@ -72,7 +67,7 @@ async function runPeriodicCleanup(accountId) {
     
     //console.log(`[CLEANUP] ✅ Limpeza periódica concluída para conta ${accountId}`);
   } catch (error) {
-    console.error(`[CLEANUP] Erro na limpeza periódica:`, error.message);
+    console.error(`[CLEANUP] Erro na limpeza periódica para conta ${accountId}:`, error.message);
   }
 }
 
@@ -80,22 +75,31 @@ async function runPeriodicCleanup(accountId) {
  * Monitora saúde dos WebSockets
  */
 function monitorWebSocketHealth(accountId) {
-  const websockets = require('../websockets');
-  
   try {
-    const activeConnections = websockets.getActiveConnections(accountId);
-    console.log(`[HEALTH] WebSockets ativos para conta ${accountId}: ${activeConnections.length}`);
-    
-    // Verificar conexões com problemas
-    for (const ws of activeConnections) {
-      if (ws.readyState !== 1) { // WebSocket.OPEN
-        console.warn(`[HEALTH] WebSocket ${ws.symbol} não está aberto (state: ${ws.readyState})`);
-        // Tentar reconectar
-        websockets.ensurePriceWebsocketExists(ws.symbol, accountId);
-      }
+    if (!accountId || typeof accountId !== 'number') {
+      console.error(`[HEALTH] AccountId inválido: ${accountId}`);
+      return;
     }
+    
+    console.log(`[HEALTH] Verificando saúde dos WebSockets para conta ${accountId}...`);
+    
+    const isApiConnected = websockets.isWebSocketApiConnected(accountId);
+    const isApiAuthenticated = websockets.isWebSocketApiAuthenticated(accountId);
+    
+    console.log(`[HEALTH] Conta ${accountId}:`);
+    console.log(`  - WebSocket API conectado: ${isApiConnected ? '✅' : '❌'}`);
+    console.log(`  - WebSocket API autenticado: ${isApiAuthenticated ? '✅' : '❌'}`);
+    
+    // Reconectar se necessário
+    if (!isApiConnected || !isApiAuthenticated) {
+      console.log(`[HEALTH] ⚠️ Problemas detectados na conta ${accountId}, tentando reconectar...`);
+      websockets.startWebSocketApi(accountId).catch(error => {
+        console.error(`[HEALTH] Erro ao reconectar conta ${accountId}:`, error.message);
+      });
+    }
+    
   } catch (error) {
-    console.error(`[HEALTH] Erro ao monitorar WebSockets:`, error.message);
+    console.error(`[HEALTH] Erro ao monitorar WebSockets para conta ${accountId}:`, error.message);
   }
 }
 
