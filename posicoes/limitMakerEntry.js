@@ -528,7 +528,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
         try {
           // ALTERADO: Usar WebSocket API para verificar status da ordem
           // NOTE: getOrderStatusViaWebSocket is a placeholder and needs to be implemented
-          currentOrderDataFromExchange = await getOrderStatusViaWebSocket(signal.symbol, activeOrderId);
+          currentOrderDataFromExchange = await getOrderStatusViaWebSocket(signal.symbol, activeOrderId, numericAccountId); // ✅ ADICIONAR accountId
         } catch (e) {
           if (e.errorCode === -2013 || e.errorCode === -2011) {
             console.log(`[LIMIT_ENTRY] Ordem ${activeOrderId} não encontrada/cancelada na corretora (${e.errorCode}). Resetando activeOrderId.`);
@@ -577,7 +577,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
               try {
                 // Cancelar ordem parcial
                 // NOTE: cancelOrderByIdViaWebSocket is a placeholder and needs to be implemented
-                await cancelOrderByIdViaWebSocket(signal.symbol, activeOrderId);
+                await cancelOrderByIdViaWebSocket(signal.symbol, activeOrderId, numericAccountId); // ✅ ADICIONAR accountId
                 console.log(`[LIMIT_ENTRY] Ordem parcial ${activeOrderId} cancelada.`);
                 
                 // Aguardar um pouco antes de criar nova ordem
@@ -610,7 +610,9 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
                   activeOrderId, 
                   currentLocalMakerPrice,
                   binanceSide,
-                  remainingQtyToOrder
+                  remainingQtyToOrder,
+                  true, // retryIfPartiallyFilled
+                  numericAccountId // ✅ ADICIONAR accountId
                 );
                 
                 if (editResponse && editResponse.orderId) {
@@ -631,7 +633,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
                 // Em caso de erro, cancelar e resetar para criar nova ordem
                 try {
                   // NOTE: cancelOrderByIdViaWebSocket is a placeholder and needs to be implemented
-                  await cancelOrderByIdViaWebSocket(signal.symbol, activeOrderId);
+                  await cancelOrderByIdViaWebSocket(signal.symbol, activeOrderId, numericAccountId);
                   activeOrderId = null;
                   console.log(`[LIMIT_ENTRY] Ordem ${activeOrderId} cancelada após erro de edição.`);
                 } catch (cancelError) {
@@ -658,7 +660,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
           // ALTERADO: Usar WebSocket API para enviar ordem LIMIT MAKER
           // NOTE: placeLimitMakerOrderViaWebSocket is a placeholder and needs to be implemented
           const orderResponse = await placeLimitMakerOrderViaWebSocket(
-            signal.symbol, newOrderQty, binanceSide, currentLocalMakerPrice
+            signal.symbol, newOrderQty, binanceSide, currentLocalMakerPrice, numericAccountId // ✅ ADICIONAR accountId
           );
           
           if (orderResponse.status === 'REJECTED_POST_ONLY' || 
