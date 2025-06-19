@@ -1710,3 +1710,57 @@ async function newStopOrder(accountId, symbol, quantity, side, stopPrice, price 
     throw error;
   }
 }
+
+// ✅ MODULE.EXPORTS COMPLETO
+module.exports = {
+  // Gerenciamento de Estados
+  setAccountState,
+  getAccountState,
+  getAccountStatesMap,
+  debugAccountStates,
+  getAccountConnectionState,
+  getAllAccountConnections,
+  
+  // Autenticação e Credenciais
+  loadCredentialsFromDatabase,
+  makeAuthenticatedRequest,
+  verifyAndFixEnvironmentConsistency,
+  
+  // Informações de Mercado
+  getPrice,
+  getPrecision,
+  getPrecisionCached,
+  getTickSize,
+  roundPriceToTickSize,
+  
+  // Formatação
+  formatQuantityCorrect,
+  formatPrice,
+  
+  // Validação
+  validateQuantity,
+  adjustQuantityToRequirements,
+  
+  // Posições e Saldos
+  getAllOpenPositions,
+  getFuturesAccountBalanceDetails,
+  
+  // Configurações de Conta
+  getCurrentLeverage,
+  changeInitialLeverage,
+  getCurrentMarginType,
+  changeMarginType,
+  
+  // Ordens
+  newLimitMakerOrder,
+  newMarketOrder,
+  newReduceOnlyOrder,
+  newStopOrder,
+  editOrder,
+  getOrderStatus,
+  cancelOrder,
+  getRecentOrders,
+  
+  // WebSocket
+  getListenKey
+};
