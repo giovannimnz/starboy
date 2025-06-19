@@ -1636,24 +1636,25 @@ async function newStopOrder(accountId, symbol, quantity, side, stopPrice, price 
     };
     
     // ✅ IMPORTANTE: NÃO ADICIONAR 'price' para STOP_MARKET/TAKE_PROFIT_MARKET
-    // Segundo a documentação, estes tipos usam apenas 'stopPrice'
     if (price !== null) {
       console.warn(`[API] ⚠️ Parâmetro 'price' ignorado para ${orderType} - usa apenas 'stopPrice'`);
     }
     
-    // ✅ CORREÇÃO CRÍTICA: Para SL/TP sempre usar closePosition=true e reduceOnly=false
+    // ✅ CORREÇÃO CRÍTICA: Para closePosition=true, NÃO enviar reduceOnly
     if (closePosition) {
-      console.log(`[API] ✅ Usando closePosition=true, reduceOnly=false (fecha toda a posição)`);
+      console.log(`[API] ✅ Usando closePosition=true (fecha toda a posição)`);
       orderParams.closePosition = 'true'; // ✅ CORREÇÃO: sempre string para API
-      // ✅ CORREÇÃO CRÍTICA: Para closePosition=true, usar reduceOnly=false
-      orderParams.reduceOnly = 'false'; // ✅ NOVO: false quando closePosition = true
+      // ✅ CORREÇÃO CRÍTICA: NÃO ENVIAR reduceOnly quando closePosition=true
+      // A Binance não aceita ambos os parâmetros simultaneamente
     } else if (quantity && quantity > 0) {
       console.log(`[API] ✅ Usando quantidade específica: ${quantity}`);
       const formattedQuantity = formatQuantityCorrect(quantity, precision.quantityPrecision, symbol);
       orderParams.quantity = formattedQuantity;
       
-      // ✅ USAR O PARÂMETRO reduceOnly CONFORME PASSADO
-      orderParams.reduceOnly = reduceOnly ? 'true' : 'false';
+      // ✅ APENAS AQUI enviar reduceOnly se especificado
+      if (reduceOnly) {
+        orderParams.reduceOnly = 'true'; // ✅ CORREÇÃO: string
+      }
     } else {
       throw new Error('Deve fornecer quantity OU closePosition=true');
     }
@@ -1665,8 +1666,8 @@ async function newStopOrder(accountId, symbol, quantity, side, stopPrice, price 
       stopPrice: orderParams.stopPrice, // ✅ ÚNICO PREÇO USADO
       quantity: orderParams.quantity || 'N/A (closePosition)',
       closePosition: orderParams.closePosition || 'false',
-      reduceOnly: orderParams.reduceOnly || 'false',
-      note: 'closePosition=true sempre usa reduceOnly=false'
+      reduceOnly: orderParams.reduceOnly || 'N/A (não enviado com closePosition)',
+      note: 'closePosition=true NÃO usa reduceOnly (conflito na API)'
     });
     
     // ENVIAR ORDEM
@@ -1700,6 +1701,9 @@ async function newStopOrder(accountId, symbol, quantity, side, stopPrice, price 
         console.error(`[API] ❌ Erro -2010: Ordem seria rejeitada pela corretora`);
       } else if (apiError.code === -1102) {
         console.error(`[API] ❌ Erro -1102: Parâmetro obrigatório ausente ou inválido`);
+      } else if (apiError.msg && apiError.msg.includes('reduceonly')) {
+        console.error(`[API] ❌ Erro reduceOnly: ${apiError.msg}`);
+        console.error(`[API] Dica: Não use reduceOnly=true com closePosition=true`);
       }
     } else {
       console.error(`[API] Erro local:`, error.message);
