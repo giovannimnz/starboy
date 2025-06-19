@@ -49,6 +49,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
   let precision = null; // Inicializar precision para evitar erro de referência
 
   // ✅ CONTROLE DE ORDENS ENVIADAS
+  // Mapa para rastrear ordens enviadas
   const sentOrders = new Map(); // Mapa para controlar ordens já enviadas
   let isEntryComplete = false; // Flag para saber se a entrada foi completada
 
@@ -82,36 +83,47 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
     const executionType = order.x; // NEW, CANCELED, TRADE, etc.
     const orderStatus = order.X; // NEW, FILLED, PARTIALLY_FILLED, etc.
 
-    // Atualizar ordem no mapa se já estiver sendo rastreada
-    if (sentOrders.has(orderId)) {
+    // Atualizar a ordem no mapa de ordens enviadas
+    if (!sentOrders.has(orderId)) {
+      // Se a ordem não estava no mapa, adicionar
+      sentOrders.set(orderId, {
+        orderId: orderId,
+        symbol: order.s,
+        side: order.S,
+        price: parseFloat(order.p || '0'),
+        quantity: parseFloat(order.q || '0'),
+        executedQty: parseFloat(order.z || '0'),
+        avgPrice: parseFloat(order.ap || '0'),
+        status: orderStatus,
+        type: order.o,
+        lastUpdateTime: Date.now(),
+        fills: []
+      });
+    } else {
+      // Atualizar ordem existente
       const orderInfo = sentOrders.get(orderId);
       orderInfo.status = orderStatus;
       orderInfo.executedQty = parseFloat(order.z || '0');
+      orderInfo.avgPrice = parseFloat(order.ap || '0');
       orderInfo.lastUpdateTime = Date.now();
-
-      if (executionType === 'TRADE' && (orderStatus === 'FILLED' || orderStatus === 'PARTIALLY_FILLED')) {
-        const executedQty = parseFloat(order.l || '0'); // quantidade executada nesta atualização
-        const price = parseFloat(order.L || '0'); // preço desta execução
-
-        if (executedQty > 0 && price > 0) {
-          // Adicionar ao array de preenchimentos
-          partialFills.push({
-            qty: executedQty,
-            price: price,
-            orderId: orderId
+      
+      // Se foi uma execução (TRADE), adicionar ao histórico de fills
+      if (executionType === 'TRADE') {
+        const fillQty = parseFloat(order.l || '0'); // quantidade desta execução
+        const fillPrice = parseFloat(order.L || '0'); // preço desta execução
+        
+        if (fillQty > 0) {
+          orderInfo.fills.push({
+            qty: fillQty,
+            price: fillPrice,
+            time: Date.now()
           });
-
-          // Recalcular total preenchido
-          totalFilledSize = partialFills.reduce((sum, fill) => sum + fill.qty, 0);
-
-          // Recalcular preço médio
-          if (partialFills.length > 0) {
-            averageEntryPrice = calculateAveragePrice(partialFills);
-          }
-
-          console.log(`[LIMIT_ENTRY] ✅ WebSocket: Ordem ${orderId} executada: ${executedQty} @ ${price} (Total: ${totalFilledSize}/${totalEntrySize})`);
+          
+          console.log(`[ORDER_WS] Fill recebido para ${orderId}: ${fillQty} @ ${fillPrice}`);
         }
       }
+      
+      sentOrders.set(orderId, orderInfo);
     }
   };
 
@@ -810,8 +822,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
                     }
                   }
                 }
-              }
-              else if (finalStatus.status === 'FILLED') {
+              } else if (finalStatus.status === 'FILLED') {
                 console.log(`[LIMIT_ENTRY] ✅ Ordem já estava preenchida na verificação final`);
                 
                 partialFills.push({
@@ -1559,36 +1570,43 @@ function calculateAveragePrice(fills) {
 }
 
 // FUNÇÃO PARA AGUARDAR EXECUÇÃO DE ORDEM
-async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3000, accountId) {
-    console.log(`[WAIT_ORDER] Aguardando execução da ordem ${orderId} para ${symbol} (conta ${accountId})...`);
-
-    const startTime = Date.now();
-
-    while (Date.now() - startTime < maxWaitMs) {
-        try {
-            const orderStatus = await api.getOrderStatus(symbol, orderId, accountId);
-
-            if (orderStatus.status === 'FILLED' || orderStatus.status === 'PARTIALLY_FILLED') {
-                console.log(`[WAIT_ORDER] ✅ Ordem ${orderId} executada: ${orderStatus.status}`);
-                return orderStatus;
-            }
-
-            await new Promise(resolve => setTimeout(resolve, 200));
-        } catch (error) {
-            console.log(`[WAIT_ORDER] Erro ao verificar ordem ${orderId}: ${error.message}`);
-            await new Promise(resolve => setTimeout(resolve, 200));
-        }
+async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3000) {
+  // Primeiro verificar se já temos a ordem no mapa (via WebSocket)
+  if (sentOrders.has(orderId)) {
+    const orderInfo = sentOrders.get(orderId);
+    if (orderInfo.status === 'FILLED' || orderInfo.status === 'PARTIALLY_FILLED') {
+      console.log(`[WAIT_ORDER] Ordem ${orderId} já confirmada via WebSocket: ${orderInfo.status}`);
+      return orderInfo;
     }
-
-    // Última tentativa
-    try {
-        const finalStatus = await api.getOrderStatus(symbol, orderId, accountId);
-        console.log(`[WAIT_ORDER] Status final da ordem ${orderId}: ${finalStatus.status}`);
-        return finalStatus;
-    } catch (error) {
-        console.log(`[WAIT_ORDER] Erro na verificação final da ordem ${orderId}: ${error.message}`);
-        return { status: 'UNKNOWN', executedQty: '0', avgPrice: '0' };
+  }
+  
+  // Tentar REST API, mas não falhar se não encontrar
+  try {
+    const orderStatus = await api.getOrderStatus(symbol, orderId, accountId);
+    if (orderStatus && orderStatus.status === 'FILLED') {
+      return orderStatus;
     }
+  } catch (error) {
+    console.log(`[WAIT_ORDER] REST API não encontrou ordem ${orderId}, continuando monitoramento WebSocket`);
+  }
+  
+  // Continuar aguardando atualizações do WebSocket
+  const startTime = Date.now();
+  while (Date.now() - startTime < maxWaitMs) {
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    if (sentOrders.has(orderId)) {
+      const orderInfo = sentOrders.get(orderId);
+      if (orderInfo.status === 'FILLED' || orderInfo.status === 'PARTIALLY_FILLED') {
+        return orderInfo;
+      }
+    }
+  }
+  
+  // Última tentativa via REST API
+  return await api.getOrderStatus(symbol, orderId, accountId).catch(() => {
+    return { status: 'UNKNOWN', executedQty: '0', avgPrice: '0' };
+  });
 }
 
 module.exports = {
