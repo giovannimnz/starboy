@@ -1610,11 +1610,14 @@ async function newStopOrder(accountId, symbol, quantity, side, stopPrice, price 
       throw new Error(`AccountId deve ser um número válido: ${accountId}`);
     }
     
-    const orderType = price !== null ? "TAKE_PROFIT_MARKET" : "STOP_MARKET";
-    const roundedStopPrice = await roundPriceToTickSize(symbol, stopPrice, accountId);
     const precision = await getPrecisionCached(symbol, accountId);
+    const orderType = price !== null ? "TAKE_PROFIT_MARKET" : "STOP_MARKET";
     
-    // ✅ FORMATAÇÃO SIMPLES SEM VALIDAÇÃO
+    console.log(`[API] Preço original de stop antes de arredondar: ${stopPrice}`);
+    const roundedStopPrice = await roundPriceToTickSize(symbol, stopPrice, accountId);
+    console.log(`[API] Preço de stop após arredondar: ${roundedStopPrice}`);
+    
+    // ✅ FORMATAÇÃO SIMPLES SEM VALIDAÇÃO DE MÍNIMO
     const formattedQuantity = parseFloat(quantity.toFixed(precision.quantityPrecision)).toString();
     
     const orderParams = {
@@ -1664,8 +1667,8 @@ async function newReduceOnlyOrder(accountId, symbol, quantity, side, price) {
       throw new Error(`AccountId deve ser um número válido: ${accountId}`);
     }
     
-    const roundedPrice = await roundPriceToTickSize(symbol, price, accountId);
     const precision = await getPrecisionCached(symbol, accountId);
+    const roundedPrice = await roundPriceToTickSize(symbol, price, accountId);
     
     // ✅ FORMATAÇÃO SIMPLES SEM VALIDAÇÃO
     const formattedQuantity = parseFloat(quantity.toFixed(precision.quantityPrecision)).toString();
