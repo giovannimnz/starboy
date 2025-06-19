@@ -778,11 +778,8 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       [positionId, (partialFills.length > 0 ? partialFills[0].orderId : null), averageEntryPrice, signal.id]
     );
 
-    // === DEPOIS DE COMPLETAR A ENTRADA COM SUCESSO ===
     // CRIAR SL/TP/RPS SE ENTRADA FOI COMPLETA
     let slTpRpsCreated = false;
-    let slOrderId = null; // Para rastrear o ID da ordem SL criada
-    
     if (fillRatio >= ENTRY_COMPLETE_THRESHOLD_RATIO) {
       console.log(`[LIMIT_ENTRY] Entrada considerada COMPLETA (${(fillRatio * 100).toFixed(1)}%). Criando SL/TP/RPs.`);
       slTpRpsCreated = true;
@@ -801,53 +798,54 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
 
       // CRIAR STOP LOSS APENAS SE NÃO EXISTIR
       if (existingStopOrders.length === 0) {
-        if (slPriceVal) {
-          console.log(`[LIMIT_ENTRY] Criando SL: ${totalFilledSize} ${symbol} @ ${slPriceVal}`);
+        if (slPriceVal && slPriceVal > 0) {
           try {
-            const slResponse = await newStopOrder(
-              accountId,
-              symbol,
+            console.log(`[LIMIT_ENTRY] Criando SL: ${totalFilledSize} ${signal.symbol} @ ${slPriceVal}`);
+            
+            const stopOrderResult = await newStopOrder(
+              numericAccountId,
+              signal.symbol,
               totalFilledSize,
               binanceOppositeSide,
               slPriceVal,
               null,
               true
             );
-
-            if (slResponse && slResponse.data && slResponse.data.orderId) {
-              slOrderId = String(slResponse.data.orderId);
+            
+            if (stopOrderResult && (stopOrderResult.data?.orderId || stopOrderResult.orderId)) {
+              const slOrderId = stopOrderResult.data?.orderId || stopOrderResult.orderId;
               console.log(`[LIMIT_ENTRY] SL criado com ID: ${slOrderId}`);
               
-              // Registrar no banco de dados
-              await insertNewOrder(connection, {
-                tipo_ordem: 'STOP_MARKET',
-                preco: slPriceVal,
-                quantidade: totalFilledSize,
-                id_posicao: positionId,
+              // Inserir no banco de dados
+              const slOrderData = { 
+                tipo_ordem: 'STOP_MARKET', 
+                preco: slPriceVal, 
+                quantidade: totalFilledSize, 
+                id_posicao: positionId, 
                 status: 'NEW',
-                data_hora_criacao: formatDateForMySQL(new Date()),
-                id_externo: slOrderId,
+                data_hora_criacao: formatDateForMySQL(new Date()), 
+                id_externo: String(slOrderId).substring(0,90), 
                 side: binanceOppositeSide,
-                simbolo: signal.symbol,
-                tipo_ordem_bot: 'STOP_LOSS',
-                target: null,
-                reduce_only: true,
-                close_position: false,
-                last_update: formatDateForMySQL(new Date()),
+                simbolo: signal.symbol, 
+                tipo_ordem_bot: 'STOP_LOSS', 
+                target: null, 
+                reduce_only: true, 
+                close_position: false, 
                 orign_sig: `WEBHOOK_${signal.id}`,
-                preco_executado: 0,
-                quantidade_executada: 0
-              });
+                last_update: formatDateForMySQL(new Date())
+              };
+              
+              const slOrderInsertId = await insertNewOrder(connection, slOrderData);
+              console.log(`Ordem de STOP_LOSS inserida com sucesso: ${slOrderInsertId}`);
             }
           } catch (slError) {
-            console.error(`[LIMIT_ENTRY] Erro ao criar SL: ${slError.message}`);
+            console.error(`[LIMIT_ENTRY] Erro ao criar SL:`, slError.message);
           }
         } else {
-          console.log(`[LIMIT_ENTRY] Preço SL não definido, pulando criação de SL`);
+          console.log(`[LIMIT_ENTRY] ⚠️ SL não configurado para esta posição (preço SL não definido)`);
         }
       } else {
-        console.log(`[LIMIT_ENTRY] SL já existe para esta posição: ${existingStopOrders[0].id_externo}`);
-        slOrderId = existingStopOrders[0].id_externo;
+        console.log(`[LIMIT_ENTRY] ℹ️ SL já existe para esta posição (ID: ${existingStopOrders[0].id_externo}), não criando novamente`);
       }
 
       // ✅ CORREÇÃO: OBTER PREÇOS CORRETOS DOS TPs
@@ -877,55 +875,77 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       console.log(`[LIMIT_ENTRY] Criando reduções parciais com porcentagens: ${reductionPercentages.map(p => (p*100)+'%').join(', ')}`);
       
       for (let i = 0; i < rpTargetKeys.length && i < reductionPercentages.length; i++) {
-        const targetKey = rpTargetKeys[i];
-        const targetPrice = targetPrices[targetKey];
+        const rpKey = rpTargetKeys[i];
+        const rpPrice = targetPrices[rpKey];
+        const reductionPercent = reductionPercentages[i];
         
-        if (targetPrice) {
-          // Usar as variáveis já definidas anteriormente
-          const qtyForThisRp = totalFilledSize * reductionPercentages[i];
-          const formattedQty = parseFloat(qtyForThisRp.toFixed(quantityPrecision));
+        // ✅ VALIDAR SE PREÇO É VÁLIDO PARA A DIREÇÃO DO TRADE
+        if (!rpPrice || rpPrice <= 0) {
+          console.log(`[LIMIT_ENTRY] RP${i+1} pulada - preço inválido: ${rpPrice}`);
+          continue;
+        }
+        
+        // ✅ VALIDAR DIREÇÃO DO PREÇO (BUY deve ter TP > entry, SELL deve ter TP < entry)
+        const isPriceValidForDirection = binanceSide === 'BUY' ? 
+          rpPrice > averageEntryPrice : 
+          rpPrice < averageEntryPrice;
           
-          console.log(`[LIMIT_ENTRY] Calculando RP${i+1}: ${reductionPercentages[i]*100}% de ${totalFilledSize} = ${formattedQty}`);
-          console.log(`[LIMIT_ENTRY] Criando RP${i+1}: ${formattedQty} ${symbol} @ ${targetPrice.toFixed(pricePrecision)}`);
+        if (!isPriceValidForDirection) {
+          console.log(`[LIMIT_ENTRY] RP${i+1} pulada - preço ${rpPrice} inválido para ${binanceSide} (entry: ${averageEntryPrice})`);
+          continue;
+        }
+        
+        // ✅ CALCULAR QUANTIDADE SEM VALIDAÇÃO DE MÍNIMO
+        let reductionQty = totalFilledSize * reductionPercent;
+        const precision = await getPrecisionCached(signal.symbol, numericAccountId);
+        reductionQty = parseFloat(reductionQty.toFixed(precision.quantityPrecision));
+        
+        console.log(`[LIMIT_ENTRY] Calculando RP${i+1}: ${reductionPercent*100}% de ${totalFilledSize} = ${reductionQty}`);
+        
+        if (reductionQty <= 0) {
+          console.log(`[LIMIT_ENTRY] RP${i+1} pulada - quantidade zero: ${reductionQty}`);
+          continue;
+        }
+        
+        try {
+          console.log(`[LIMIT_ENTRY] Criando RP${i+1}: ${reductionQty.toFixed(precision.quantityPrecision)} ${signal.symbol} @ ${rpPrice.toFixed(precision.pricePrecision)}`);
           
-          try {
-            const rpResponse = await newReduceOnlyOrder(
-              numericAccountId, 
-              signal.symbol, 
-              formattedQty, 
-              binanceOppositeSide, 
-              targetPrice
-            );
+          const rpResponse = await newReduceOnlyOrder(
+            numericAccountId, 
+            signal.symbol, 
+            reductionQty, 
+            binanceOppositeSide, 
+            rpPrice
+          );
+          
+          if (rpResponse && rpResponse.data && rpResponse.data.orderId) {
+            cumulativeQtyForRps += reductionQty;
+            console.log(`[LIMIT_ENTRY] RP${i+1} criada com sucesso: ${rpResponse.data.orderId}`);
             
-            if (rpResponse && rpResponse.data && rpResponse.data.orderId) {
-              cumulativeQtyForRps += formattedQty;
-              console.log(`[LIMIT_ENTRY] RP${i+1} criada com sucesso: ${rpResponse.data.orderId}`);
-              
-              const rpOrderData = { 
-                tipo_ordem: 'LIMIT', 
-                preco: targetPrice, 
-                quantidade: formattedQty, 
-                id_posicao: positionId, 
-                status: 'NEW',
-                data_hora_criacao: formatDateForMySQL(new Date()), 
-                id_externo: String(rpResponse.data.orderId).substring(0,90), 
-                side: binanceOppositeSide,
-                simbolo: signal.symbol, 
-                tipo_ordem_bot: 'REDUCAO_PARCIAL', 
-                target: i + 1, 
-                reduce_only: true, 
-                close_position: false, 
-                orign_sig: `WEBHOOK_${signal.id}`,
-                last_update: formatDateForMySQL(new Date())
-              };
-              await insertNewOrder(connection, rpOrderData);
-              
-            } else {
-              console.warn(`[LIMIT_ENTRY] RP${i+1} falhou - resposta inválida:`, rpResponse);
-            }
-          } catch (rpError) {
-            console.error(`[LIMIT_ENTRY] Erro ao criar RP${i+1}:`, rpError.message);
+            const rpOrderData = { 
+              tipo_ordem: 'LIMIT', 
+              preco: rpPrice, 
+              quantidade: reductionQty, 
+              id_posicao: positionId, 
+              status: 'NEW',
+              data_hora_criacao: formatDateForMySQL(new Date()), 
+              id_externo: String(rpResponse.data.orderId).substring(0,90), 
+              side: binanceOppositeSide,
+              simbolo: signal.symbol, 
+              tipo_ordem_bot: 'REDUCAO_PARCIAL', 
+              target: i + 1, 
+              reduce_only: true, 
+              close_position: false, 
+              orign_sig: `WEBHOOK_${signal.id}`,
+              last_update: formatDateForMySQL(new Date())
+            };
+            await insertNewOrder(connection, rpOrderData);
+            
+          } else {
+            console.warn(`[LIMIT_ENTRY] RP${i+1} falhou - resposta inválida:`, rpResponse);
           }
+        } catch (rpError) {
+          console.error(`[LIMIT_ENTRY] Erro ao criar RP${i+1}:`, rpError.message);
         }
       }
       
@@ -933,54 +953,61 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       const remainingQtyForFinalTp = totalFilledSize - cumulativeQtyForRps;
       
       if (remainingQtyForFinalTp > 0.000001 && targetPrices.tp5) {
-        // CORRIGIR AQUI: Use pricePrecision e quantityPrecision em vez de precision
-        console.log(`[LIMIT_ENTRY] Criando TP final: ${remainingQtyForFinalTp.toFixed(quantityPrecision)} ${symbol} @ ${targetPrices.tp5.toFixed(pricePrecision)}`);
-        
-        try {
-          const finalTpResponse = await newReduceOnlyOrder(
-            numericAccountId, 
-            signal.symbol, 
-            remainingQtyForFinalTp, 
-            binanceOppositeSide, 
-            targetPrices.tp5
-          );
+        // ✅ VALIDAR DIREÇÃO DO TP FINAL
+        const isFinalTpValidForDirection = binanceSide === 'BUY' ? 
+          targetPrices.tp5 > averageEntryPrice : 
+          targetPrices.tp5 < averageEntryPrice;
           
-          if (finalTpResponse && finalTpResponse.data && finalTpResponse.data.orderId) {
-            console.log(`[LIMIT_ENTRY] TP FINAL criado com sucesso: ${finalTpResponse.data.orderId}`);
+        if (isFinalTpValidForDirection) {
+          try {
+            console.log(`[LIMIT_ENTRY] Criando TP FINAL: ${remainingQtyForFinalTp.toFixed(precision.quantityPrecision)} ${signal.symbol} @ ${targetPrices.tp5.toFixed(precision.pricePrecision)}`);
             
-            const finalTpOrderData = { 
-              tipo_ordem: 'LIMIT', 
-              preco: targetPrices.tp5, 
-              quantidade: remainingQtyForFinalTp, 
-              id_posicao: positionId, 
-              status: 'NEW',
-              data_hora_criacao: formatDateForMySQL(new Date()), 
-              id_externo: String(finalTpResponse.data.orderId).substring(0,90), 
-              side: binanceOppositeSide,
-              simbolo: signal.symbol, 
-              tipo_ordem_bot: 'TAKE_PROFIT', 
-              target: 5, 
-              reduce_only: true, 
-              close_position: false, 
-              orign_sig: `WEBHOOK_${signal.id}`,
-              last_update: formatDateForMySQL(new Date())
-            };
-            await insertNewOrder(connection, finalTpOrderData);
+            const finalTpResponse = await newReduceOnlyOrder(
+              numericAccountId, 
+              signal.symbol, 
+              remainingQtyForFinalTp, 
+              binanceOppositeSide, 
+              targetPrices.tp5
+            );
             
-          } else {
-            console.warn(`[LIMIT_ENTRY] TP FINAL falhou - resposta inválida:`, finalTpResponse);
+            if (finalTpResponse && finalTpResponse.data && finalTpResponse.data.orderId) {
+              console.log(`[LIMIT_ENTRY] TP FINAL criado com sucesso: ${finalTpResponse.data.orderId}`);
+              
+              const finalTpOrderData = { 
+                tipo_ordem: 'LIMIT', 
+                preco: targetPrices.tp5, 
+                quantidade: remainingQtyForFinalTp, 
+                id_posicao: positionId, 
+                status: 'NEW',
+                data_hora_criacao: formatDateForMySQL(new Date()), 
+                id_externo: String(finalTpResponse.data.orderId).substring(0,90), 
+                side: binanceOppositeSide,
+                simbolo: signal.symbol, 
+                tipo_ordem_bot: 'TAKE_PROFIT', 
+                target: 5, 
+                reduce_only: true, 
+                close_position: false, 
+                orign_sig: `WEBHOOK_${signal.id}`,
+                last_update: formatDateForMySQL(new Date())
+              };
+              await insertNewOrder(connection, finalTpOrderData);
+              
+            } else {
+              console.warn(`[LIMIT_ENTRY] TP FINAL falhou - resposta inválida:`, finalTpResponse);
+            }
+          } catch (finalTpError) {
+            console.error(`[LIMIT_ENTRY] Erro ao criar TP FINAL:`, finalTpError.message);
           }
-        } catch (finalTpError) {
-          console.error(`[LIMIT_ENTRY] Erro ao criar TP final:`, finalTpError.message);
+        } else {
+          console.log(`[LIMIT_ENTRY] TP FINAL pulado - preço ${targetPrices.tp5} inválido para ${binanceSide} (entry: ${averageEntryPrice})`);
         }
       } else {
-        console.log(`[LIMIT_ENTRY] Pulando TP final: quantidade restante = ${remainingQtyForFinalTp.toFixed(quantityPrecision)}, tp5 = ${targetPrices.tp5}`);
+        console.log(`[LIMIT_ENTRY] TP FINAL pulado - quantidade restante: ${remainingQtyForFinalTp}, TP5: ${targetPrices.tp5}`);
       }
       
       console.log(`[LIMIT_ENTRY] Resumo das ordens criadas:`);
       console.log(`  - SL: ${slPriceVal ? 'Criado' : 'Não configurado'}`);
-      console.log(`  - RPs criadas: quantidade total = ${cumulativeQtyForRps.toFixed(quantityPrecision)}`);
-      // CORRIGIR AQUI: Use quantityPrecision em vez de precision
+      console.log(`  - RPs criadas: quantidade total = ${cumulativeQtyForRps.toFixed(precision.quantityPrecision)}`);
       console.log(`  - TP Final: ${remainingQtyForFinalTp > 0.000001 && targetPrices.tp5 ? 'Criado' : 'Não criado'}`);
     }
 
@@ -1011,69 +1038,111 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       console.warn(`[LIMIT_ENTRY_RECOVERY] Tentando SALVAR POSIÇÃO ${positionId} (${totalFilledSize.toFixed(recoveryQuantityPrecision)} ${signal.symbol} @ ${averageEntryPrice.toFixed(recoveryPricePrecision)}) apesar do erro: ${originalErrorMessage}`);
       
       try {
-        // VERIFICAR SE JÁ EXISTE ORDEM SL PARA ESTA POSIÇÃO
-        const [existingStopOrders] = await connection.query(
-          `SELECT id, id_externo FROM ordens 
-           WHERE id_posicao = ? 
-           AND tipo_ordem_bot = 'STOP_LOSS' 
-           AND status IN ('NEW', 'PARTIALLY_FILLED')`,
-          [positionId]
-        );
+        const binanceOppositeSide = recoveryBinanceSide === 'BUY' ? 'SELL' : 'BUY';
+        const slPriceVal = signal.sl_price ? parseFloat(signal.sl_price) : null;
         
-        // CRIAR SL DE EMERGÊNCIA APENAS SE NÃO EXISTIR NENHUM
-        if (existingStopOrders.length === 0) {
-          // Criar SL de emergência
-          const slPrice = signal.sl_price ? parseFloat(signal.sl_price) : (averageEntryPrice * 0.97);
-          console.log(`[LIMIT_ENTRY_RECOVERY] Criando SL de emergência: ${totalFilledSize.toFixed(recoveryQuantityPrecision)} @ ${slPrice.toFixed(recoveryPricePrecision)}`);
+        if (slPriceVal && slPriceVal > 0) {
+          console.log(`[LIMIT_ENTRY_RECOVERY] Criando SL de emergência: ${totalFilledSize.toFixed(recoveryQuantityPrecision)} @ ${slPriceVal.toFixed(recoveryPricePrecision)}`);
           
-          const recoverySide = recoveryBinanceSide === 'BUY' ? 'SELL' : 'BUY';
+          // ✅ USAR recoveryAccountId que está garantidamente definido
+          const slResponse = await newStopOrder(
+            recoveryAccountId,
+            signal.symbol,
+            totalFilledSize,
+            binanceOppositeSide,
+            slPriceVal,
+            null,
+            true
+          );
           
-          try {
-            const slResponse = await newStopOrder(
-              recoveryAccountId,
-              signal.symbol,
-              totalFilledSize,
-              recoverySide,
-              slPrice,
-              null,
-              true
-            );
+          if (slResponse && slResponse.data && slResponse.data.orderId) {
+            console.log(`[LIMIT_ENTRY_RECOVERY] ✅ SL de emergência criado: ${slResponse.data.orderId}`);
             
-            if (slResponse && slResponse.data && slResponse.data.orderId) {
-              console.log(`[LIMIT_ENTRY_RECOVERY] ✅ SL de emergência criado: ${slResponse.data.orderId}`);
-              
-              await insertNewOrder(connection, {
-                tipo_ordem: 'STOP_MARKET',
-                preco: slPrice,
-                quantidade: totalFilledSize,
-                id_posicao: positionId,
-                status: 'NEW',
-                data_hora_criacao: formatDateForMySQL(new Date()),
-                id_externo: String(slResponse.data.orderId),
-                side: recoverySide,
-                simbolo: signal.symbol,
-                tipo_ordem_bot: 'STOP_LOSS',
-                target: null,
-                reduce_only: true,
-                close_position: false,
-                last_update: formatDateForMySQL(new Date()),
-                orign_sig: `WEBHOOK_${signal.id}_RECOVERY`,
-                preco_executado: 0,
-                quantidade_executada: 0
-              });
+            const slOrderData = {
+              tipo_ordem: 'STOP_MARKET',
+              preco: slPriceVal,
+              quantidade: totalFilledSize,
+              id_posicao: positionId,
+              status: 'NEW',
+              data_hora_criacao: formatDateForMySQL(new Date()),
+              id_externo: String(slResponse.data.orderId),
+              side: binanceOppositeSide,
+              simbolo: signal.symbol,
+              tipo_ordem_bot: 'STOP_LOSS',
+              target: null,
+              reduce_only: true,
+              close_position: false,
+              last_update: formatDateForMySQL(new Date()),
+              orign_sig: `WEBHOOK_${signal.id}_RECOVERY`
+            };
+            
+            // ✅ VERIFICAR SE CONNECTION EXISTE ANTES DE USAR
+            if (connection) {
+              await insertNewOrder(connection, slOrderData);
             }
-          } catch (slError) {
-            console.error(`[LIMIT_ENTRY_RECOVERY] Erro ao criar SL de emergência: ${slError.message}`);
           }
-        } else {
-          console.log(`[LIMIT_ENTRY_RECOVERY] ✅ SL já existe (ID: ${existingStopOrders[0].id_externo}), não criando outro`);
         }
         
-        // Criar TP de emergência
-        // ... restante do código de recuperação ...
+        // CRIAR TP DE EMERGÊNCIA SE DISPONÍVEL
+        const finalTpPriceVal = signal.tp_price ? parseFloat(signal.tp_price) : (signal.tp5_price ? parseFloat(signal.tp5_price) : null);
+        if (finalTpPriceVal && finalTpPriceVal > 0) {
+          console.log(`[LIMIT_ENTRY_RECOVERY] Criando TP de emergência: ${totalFilledSize.toFixed(recoveryQuantityPrecision)} @ ${finalTpPriceVal.toFixed(recoveryPricePrecision)}`);
+          
+          const tpResponse = await newStopOrder(
+            recoveryAccountId,
+            signal.symbol,
+            totalFilledSize,
+            binanceOppositeSide,
+            finalTpPriceVal,
+            finalTpPriceVal,
+            true,
+            true
+          );
+          
+          if (tpResponse && tpResponse.data && tpResponse.data.orderId) {
+            console.log(`[LIMIT_ENTRY_RECOVERY] ✅ TP de emergência criado: ${tpResponse.data.orderId}`);
+            
+            const tpOrderData = {
+              tipo_ordem: 'TAKE_PROFIT_MARKET',
+              preco: finalTpPriceVal,
+              quantidade: totalFilledSize,
+              id_posicao: positionId,
+              status: 'NEW',
+              data_hora_criacao: formatDateForMySQL(new Date()),
+              id_externo: String(tpResponse.data.orderId),
+              side: binanceOppositeSide,
+              simbolo: signal.symbol,
+              tipo_ordem_bot: 'TAKE_PROFIT',
+              target: null,
+              reduce_only: true,
+              close_position: false,
+              last_update: formatDateForMySQL(new Date()),
+              orign_sig: `WEBHOOK_${signal.id}_RECOVERY`
+            };
+            
+            // ✅ VERIFICAR SE CONNECTION EXISTE ANTES DE USAR
+            if (connection) {
+              await insertNewOrder(connection, tpOrderData);
+            }
+          }
+        }
+        
+        // ✅ VERIFICAR SE CONNECTION EXISTE ANTES DE COMMIT
+        if (connection) {
+          await connection.commit();
+        }
+        console.warn(`[LIMIT_ENTRY_RECOVERY] ✅ Posição ${positionId} SALVA com SL/TP de emergência. Erro original: ${originalErrorMessage}`);
+        
+        return {
+          success: true,
+          positionId,
+          averagePrice: averageEntryPrice,
+          filledQuantity: totalFilledSize,
+          warning: `Erro durante entrada: ${originalErrorMessage}. Posição salva com SL/TP de emergência.`
+        };
         
       } catch (recoveryError) {
-        console.error(`[LIMIT_ENTRY_RECOVERY] Erro durante tentativa de salvar posição: ${recoveryError.message}`);
+        console.error(`[LIMIT_ENTRY_RECOVERY] ❌ ERRO na recuperação:`, recoveryError.message);
       }
     }
     
