@@ -3,7 +3,7 @@ const {
   listActiveBots, 
   validateTelegramToken,
   clearBotWebhook 
-} = require('./posicoes/telegramBot');
+} = require('../posicoes/telegramBot');
 
 async function runTelegramTests() {
   console.log('🧪 ========== TESTE COMPLETO DO TELEGRAM BOT ==========');
