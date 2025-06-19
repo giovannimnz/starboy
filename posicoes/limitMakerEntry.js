@@ -3,25 +3,7 @@ const websockets = require('../websockets');
 const api = require('../api');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
-const {
-  getRecentOrders,
-  editOrder,
-  roundPriceToTickSize,
-  newMarketOrder,
-  newLimitMakerOrder,
-  newReduceOnlyOrder,
-  cancelOrder,
-  newStopOrder,
-  getOpenOrders,
-  getOrderStatus,
-  getAllOpenPositions,
-  getFuturesAccountBalanceDetails,
-  getPrecision,
-  getTickSize,
-  getPrecisionCached,
-  validateQuantity,
-  adjustQuantityToRequirements,
-} = require('../api');
+const {  getRecentOrders, editOrder, roundPriceToTickSize, newMarketOrder, newLimitMakerOrder, newReduceOnlyOrder, cancelOrder, newStopOrder, getOpenOrders, getOrderStatus, getAllOpenPositions, getFuturesAccountBalanceDetails, getPrecision, getTickSize, getPrecisionCached, validateQuantity, adjustQuantityToRequirements,} = require('../api');
 
 // ✅ CORREÇÃO: Declarar sentOrders no escopo correto e com Map melhorado
 async function executeLimitMakerEntry(signal, currentPrice, accountId) {
@@ -117,6 +99,17 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
     }
   };
 
+  let connection = null;
+  let activeOrderId = null;
+  let depthWs = null;
+  let positionId = null;
+  let totalFilledSize = 0;
+  let averageEntryPrice = 0;
+  let binanceSide;
+  let quantityPrecision;
+  let pricePrecision;
+  let numericAccountId;
+
   try { // This is the main try block for the executeLimitMakerEntry function
     // ✅ REGISTRAR HANDLER PARA WEBSOCKET COM BACKUP DO ORIGINAL
     const existingHandlers = websockets.getHandlers(accountId) || {};
@@ -144,17 +137,6 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
     
     websockets.setMonitoringCallbacks(updatedHandlers, accountId);
     console.log(`[LIMIT_ENTRY] ✅ Handler WebSocket registrado com backup para conta ${accountId}`);
-
-    let connection = null;
-    let activeOrderId = null;
-    let depthWs = null;
-    let positionId = null;
-    let totalFilledSize = 0;
-    let averageEntryPrice = 0;
-    let binanceSide;
-    let quantityPrecision;
-    let pricePrecision;
-    let numericAccountId;
 
     // ✅ CONSTANTES CORRIGIDAS PARA MAIS EFICIÊNCIA
     const MAX_CHASE_ATTEMPTS = 50; // Reduzido de 100
@@ -1012,13 +994,13 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
             const adjustedSlPrice = averageEntryPrice * slAdjustment;
             slPriceVal = await api.roundPriceToTickSize(signal.symbol, adjustedSlPrice, numericAccountId); // Reassign to `slPriceVal`
             
-            console.log(`[LIMIT_ENTRY] 🔧 SL ajustado: ${slPriceVal} → ${slPriceVal}`); // Corrected log here
+            console.log(`[LIMIT_ENTRY] 🔧 SL ajustado: ${slPriceVal}`);
           }
           
           console.log(`[LIMIT_ENTRY] 🛡️ Criando SL: STOP_MARKET ${binanceOppositeSide} @ stopPrice=${slPriceVal} (closePosition=true)`);
           
           // ✅ CORREÇÃO: STOP_MARKET sem reduceOnly (será ignorado pela API)
-          const slResponse = await api.newStopOrder(
+          const slResponse = await newStopOrder(
             numericAccountId,
             signal.symbol,
             null,           // ✅ quantity = null (closePosition = true)
@@ -1085,7 +1067,8 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
           if (rpQty > 0) {
             try {
               console.log(`[LIMIT_ENTRY] 📊 Calculando RP${i+1}: ${(rpPercentage*100)}% de ${totalFilledSize.toFixed(quantityPrecision)} = ${rawRpQty.toFixed(quantityPrecision)} → ${rpQty.toFixed(quantityPrecision)}`);
-              console.log(`[LIMIT_ENTRY] 🎯 Criando RP${i+1}: ${rpQty.toFixed(quantityPrecision)} ${signal.symbol} @ ${rpPrice.toFixed(pricePrecision)} (${side})`);
+              // CORREÇÃO: `side` não estava definido neste escopo, corrigido para `binanceSide`
+              console.log(`[LIMIT_ENTRY] 🎯 Criando RP${i+1}: ${rpQty.toFixed(quantityPrecision)} ${signal.symbol} @ ${rpPrice.toFixed(pricePrecision)} (${binanceSide})`);
               
               const rpResponse = await newReduceOnlyOrder(
                 numericAccountId,
@@ -1136,6 +1119,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
           }
         }
       }
+    } // <-- **ERRO CORRIGIDO 1: A CHAVE '}' FALTANTE FOI ADICIONADA AQUI**
 
     await connection.commit();
     console.log(`[LIMIT_ENTRY] Transação COMMITADA. Sucesso para Sinal ID ${signal.id}`);
@@ -1145,7 +1129,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       positionId,
       averagePrice: averageEntryPrice,
       filledQuantity: totalFilledSize,
-      partialWarning: !slTpRpsCreated && totalFilledSize > 0 && fillRatio < ENTRY_COMPLETE_THRESHOLD_RATIO
+      partialWarning: !slTpRpsCreated && totalFilledSize > 0 && fillRatiocatch < ENTRY_COMPLETE_THRESHOLD_RATIO
     };
 
   } catch (error) { // This is the catch block for the main try
@@ -1176,7 +1160,8 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
     }
 
     try {
-      await connection.query( // Corrected from `db.query` to `connection.query`
+      // CORREÇÃO: Usar `connection.query` em vez de `db.query` que poderia não estar definido aqui
+      await connection.query(
         `UPDATE webhook_signals SET status = 'ERROR', error_message = ? WHERE id = ?`,
         [String(originalErrorMessage).substring(0, 250), signal.id]
       );
@@ -1203,7 +1188,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       }
     }
     
-    // ✅ LIMPEZA ADICIONAL: Remover callbacks temporários
+    // ✅ LIMPEZA ADICIONAL: Remover callbacks temporários e liberar conexão
     try {
       if (numericAccountId && signal?.symbol) {
         console.log(`[LIMIT_ENTRY] Limpando recursos WebSocket para ${signal.symbol} (conta ${numericAccountId})`);
@@ -1228,33 +1213,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
         console.error(`[LIMIT_ENTRY] Erro ao liberar conexão:`, releaseError.message);
       }
     }
-  
-    
-    // ✅ LIMPEZA ADICIONAL: Remover callbacks temporários
-    try {
-      if (numericAccountId && signal?.symbol) {
-        console.log(`[LIMIT_ENTRY] Limpando recursos WebSocket para ${signal.symbol} (conta ${numericAccountId})`);
-        
-        // Restaurar handlers originais se necessário
-        const originalHandlers = websockets.getHandlers(numericAccountId) || {};
-        if (originalHandlers.originalHandleOrderUpdate) {
-          originalHandlers.handleOrderUpdate = originalHandlers.originalHandleOrderUpdate;
-          delete originalHandlers.originalHandleOrderUpdate;
-          websockets.setMonitoringCallbacks(originalHandlers, numericAccountId);
-        }
-      }
-    } catch (cleanupError) {
-      console.error(`[LIMIT_ENTRY] Erro na limpeza de recursos:`, cleanupError.message);
-    }
-    
-    if (connection) {
-      try {
-        connection.release();
-        console.log(`[LIMIT_ENTRY] Conexão de banco liberada para sinal ${signal?.id || 'unknown'}`);
-      } catch (releaseError) {
-        console.error(`[LIMIT_ENTRY] Erro ao liberar conexão:`, releaseError.message);
-      }
-    }
+    // **ERRO CORRIGIDO 2: O BLOCO DE LIMPEZA DUPLICADO FOI REMOVIDO DAQUI**
   }
 }
 
@@ -1418,18 +1377,6 @@ function calculateAveragePrice(fills) {
     });
 
     return totalQty > 0 ? totalCost / totalQty : 0;
-}
-
-// ✅ FUNÇÃO AUXILIAR PARA TELEGRAM - MELHORADA
-async function sendTelegramMessage(accountId, message) {
-  try {
-    const { sendTelegramMessage } = require('./telegramBot');
-    await sendTelegramMessage(accountId, null, message);
-    return true;
-  } catch (error) {
-    console.error(`[LIMIT_ENTRY] Erro ao enviar mensagem Telegram:`, error.message);
-    return false;
-  }
 }
 
 module.exports = {
