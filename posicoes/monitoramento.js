@@ -409,16 +409,6 @@ try {
       }
     });
 
-    // Job de sincronização de saldo a cada 5 minutos
-    accountJobs.syncBalance = schedule.scheduleJob('*/5 * * * *', async () => {
-      if (isShuttingDown) return;
-      try {
-        await syncAccountBalance(accountId);
-      } catch (error) {
-        console.error(`[MONITOR] ⚠️ Erro na sincronização periódica de saldo para conta ${accountId}:`, error.message);
-      }
-    });
-
     // NOVO: Job de verificação de sinais expirados a cada 2 minutos
     accountJobs.checkExpiredSignals = schedule.scheduleJob('*/2 * * * *', async () => {
       if (isShuttingDown) return;
@@ -452,19 +442,6 @@ try {
       }
     });
 
-    // NOVO: Job de cancelamento de ordens órfãs a cada hora
-    accountJobs.cancelOrphanOrders = schedule.scheduleJob('0 * * * *', async () => {
-      if (isShuttingDown) return;
-      try {
-        const canceledCount = await cancelOrphanOrders(accountId);
-        if (canceledCount > 0) {
-          console.log(`[MONITOR] ${canceledCount} ordens órfãs canceladas para conta ${accountId}`);
-        }
-      } catch (error) {
-        console.error(`[MONITOR] ⚠️ Erro ao cancelar ordens órfãs para conta ${accountId}:`, error.message);
-      }
-    });
-
     // Armazenar jobs para cleanup no shutdown
     scheduledJobs[accountId] = accountJobs;
 
@@ -491,7 +468,7 @@ async function gracefulShutdown(accountIdToShutdown) {
   }
   
   isShuttingDown = true;
-  console.log(`\n[MONITOR] 🛑 === INICIANDO GRACEFUL SHUTDOWN PARA CONTA ${accountIdToShutdown} ===`);
+  console.log(`\n[MONITOR] 🛑 === INICIANDO SHUTDOWN PARA CONTA ${accountIdToShutdown} ===`);
   
   try {
     console.log(`[MONITOR] 📅 1/7 - Cancelando jobs agendados para conta ${accountIdToShutdown}...`);
