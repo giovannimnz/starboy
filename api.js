@@ -1711,6 +1711,160 @@ async function newStopOrder(accountId, symbol, quantity, side, stopPrice, price 
   }
 }
 
+/**
+ * Cria ordem market
+ * @param {number} accountId - ID da conta
+ * @param {string} symbol - Símbolo
+ * @param {number} quantity - Quantidade
+ * @param {string} side - Lado (BUY/SELL)
+ * @returns {Promise<Object>} - Resultado da ordem
+ */
+async function newMarketOrder(accountId, symbol, quantity, side) {
+  try {
+    console.log(`[API] Criando ordem MARKET: ${side} ${quantity} ${symbol} (conta ${accountId})`);
+    
+    // VALIDAÇÃO DE ACCOUNTID
+    if (!accountId || typeof accountId !== 'number') {
+      throw new Error(`AccountId deve ser um número válido: ${accountId}`);
+    }
+    
+    // OBTER PRECISÃO
+    const precision = await getPrecisionCached(symbol, accountId);
+    const formattedQuantity = formatQuantityCorrect(quantity, precision.quantityPrecision, symbol);
+    
+    console.log(`[API] Enviando Ordem MARKET: ${symbol}, Qtd: ${formattedQuantity}, Lado: ${side}`);
+    
+    const orderParams = {
+      symbol: symbol,
+      side: side,
+      type: "MARKET",
+      quantity: formattedQuantity,
+      newOrderRespType: "RESULT"
+    };
+    
+    const response = await makeAuthenticatedRequest(accountId, 'POST', '/v1/order', orderParams);
+    
+    console.log(`[API] ✅ Ordem MARKET criada com sucesso: ${response.orderId}`);
+    return response;
+    
+  } catch (error) {
+    console.error(`[API] ❌ Erro ao criar ordem MARKET para ${symbol}:`, error.response?.data || error.message);
+    throw error;
+  }
+}
+
+/**
+ * Cria ordem reduce-only
+ * @param {number} accountId - ID da conta
+ * @param {string} symbol - Símbolo
+ * @param {number} quantity - Quantidade
+ * @param {string} side - Lado (BUY/SELL)
+ * @param {number} price - Preço
+ * @returns {Promise<Object>} - Resultado da ordem
+ */
+async function newReduceOnlyOrder(accountId, symbol, quantity, side, price) {
+  try {
+    console.log(`[API] Criando ordem REDUCE-ONLY: ${side} ${quantity} ${symbol} @ ${price} (conta ${accountId})`);
+    
+    // VALIDAÇÃO DE ACCOUNTID
+    if (!accountId || typeof accountId !== 'number') {
+      throw new Error(`AccountId deve ser um número válido: ${accountId}`);
+    }
+    
+    // OBTER PRECISÃO E ARREDONDAR PREÇO
+    const precision = await getPrecisionCached(symbol, accountId);
+    const roundedPrice = await roundPriceToTickSize(symbol, price, accountId);
+    
+    // FORMATAR QUANTIDADE E PREÇO
+    const formattedQuantity = formatQuantityCorrect(quantity, precision.quantityPrecision, symbol);
+    const formattedPrice = roundedPrice.toFixed(precision.pricePrecision);
+    
+    console.log(`[API] Enviando Ordem REDUCE-ONLY: ${symbol}, Qtd: ${formattedQuantity}, Lado: ${side}, Preço: ${formattedPrice}`);
+    
+    const orderParams = {
+      symbol: symbol,
+      side: side,
+      type: "LIMIT",
+      quantity: formattedQuantity,
+      price: formattedPrice,
+      timeInForce: "GTC",
+      reduceOnly: "true",
+      newOrderRespType: "RESULT"
+    };
+    
+    const response = await makeAuthenticatedRequest(accountId, 'POST', '/v1/order', orderParams);
+    
+    console.log(`[API] ✅ Ordem REDUCE-ONLY criada com sucesso: ${response.orderId}`);
+    return response;
+    
+  } catch (error) {
+    console.error(`[API] ❌ Erro ao criar ordem REDUCE-ONLY para ${symbol}:`, error.response?.data || error.message);
+    throw error;
+  }
+}
+
+/**
+ * Obtém status de uma ordem específica
+ * @param {string} symbol - Símbolo
+ * @param {string|number} orderId - ID da ordem
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Status da ordem
+ */
+async function getOrderStatus(symbol, orderId, accountId) {
+  try {
+    console.log(`[API] Obtendo status da ordem ${orderId} para ${symbol} (conta ${accountId})...`);
+    
+    const params = {
+      symbol: symbol,
+      orderId: String(orderId)
+    };
+    
+    const response = await makeAuthenticatedRequest(accountId, 'GET', '/v1/order', params);
+    
+    if (response) {
+      console.log(`[API] ✅ Status da ordem ${orderId}: ${response.status}`);
+      return response;
+    } else {
+      console.error(`[API] Resposta inválida ao obter status da ordem ${orderId}`);
+      return null;
+    }
+  } catch (error) {
+    console.error(`[API] Erro ao obter status da ordem ${orderId} (conta ${accountId}):`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Cancela uma ordem
+ * @param {string} symbol - Símbolo
+ * @param {string|number} orderId - ID da ordem
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Resultado do cancelamento
+ */
+async function cancelOrder(symbol, orderId, accountId) {
+  try {
+    console.log(`[API] Cancelando ordem ${orderId} para ${symbol} (conta ${accountId})...`);
+    
+    const params = {
+      symbol: symbol,
+      orderId: String(orderId)
+    };
+    
+    const response = await makeAuthenticatedRequest(accountId, 'DELETE', '/v1/order', params);
+    
+    if (response) {
+      console.log(`[API] ✅ Ordem ${orderId} cancelada com sucesso`);
+      return response;
+    } else {
+      console.error(`[API] Resposta inválida ao cancelar ordem ${orderId}`);
+      return null;
+    }
+  } catch (error) {
+    console.error(`[API] Erro ao cancelar ordem ${orderId} (conta ${accountId}):`, error.message);
+    throw error;
+  }
+}
+
 // ✅ MODULE.EXPORTS COMPLETO
 module.exports = {
   // Gerenciamento de Estados
