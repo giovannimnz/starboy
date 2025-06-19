@@ -1,462 +1,350 @@
 const { Telegraf } = require("telegraf");
 const { getDatabaseInstance } = require('../db/conexao');
 
-// Mapa para armazenar instâncias de bots por conta
-const telegramBots = new Map();
-
-// ✅ CONSTANTES PARA CONTROLE OTIMIZADAS
-const BOT_TIMEOUT = 15000; // Reduzido para 15 segundos
-const MAX_RETRY_ATTEMPTS = 3;
-const RETRY_DELAY = 3000; // Reduzido para 3 segundos
-const POLLING_TIMEOUT = 10; // Timeout do polling em segundos
+// Mapa simples para bots
+const activeBots = new Map();
 
 /**
- * ✅ FUNÇÃO PARA LIMPAR WEBHOOK (resolve conflitos)
+ * ✅ INICIALIZAÇÃO SIMPLIFICADA BASEADA NO STARBOY_DEV
  */
-async function clearBotWebhook(token) {
+async function initializeTelegramBot(accountId, forceRestart = false) {
   try {
-    console.log(`[TELEGRAM] 🧹 Limpando webhook para token...`);
+    console.log(`[TELEGRAM] 🚀 Inicializando bot SIMPLIFICADO para conta ${accountId}...`);
     
-    const response = await fetch(`https://api.telegram.org/bot${token}/deleteWebhook`, {
+    // Validar accountId
+    if (!accountId || typeof accountId !== 'number') {
+      throw new Error(`AccountId inválido: ${accountId} (tipo: ${typeof accountId})`);
+    }
+    
+    // Limpar bot existente se necessário
+    if (forceRestart && activeBots.has(accountId)) {
+      const existingBot = activeBots.get(accountId);
+      try {
+        if (existingBot && typeof existingBot.stop === 'function') {
+          await existingBot.stop();
+        }
+      } catch (stopError) {
+        console.warn(`[TELEGRAM] ⚠️ Erro ao parar bot existente:`, stopError.message);
+      }
+      activeBots.delete(accountId);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    
+    // Verificar se já existe e está funcional
+    if (!forceRestart && activeBots.has(accountId)) {
+      const existingBot = activeBots.get(accountId);
+      try {
+        await existingBot.telegram.getMe();
+        console.log(`[TELEGRAM] ♻️ Bot existente funcional para conta ${accountId}`);
+        return existingBot;
+      } catch (testError) {
+        console.warn(`[TELEGRAM] ⚠️ Bot existente não funcional, recriando...`);
+        activeBots.delete(accountId);
+      }
+    }
+    
+    // Obter configurações do banco
+    console.log(`[TELEGRAM] 📊 Obtendo configurações para conta ${accountId}...`);
+    const db = await getDatabaseInstance();
+    const [rows] = await db.query(
+      'SELECT telegram_bot_token, telegram_chat_id, nome FROM contas WHERE id = ? AND ativa = 1',
+      [accountId]
+    );
+    
+    if (rows.length === 0) {
+      throw new Error(`Conta ${accountId} não encontrada ou inativa`);
+    }
+    
+    const { telegram_bot_token: token, telegram_chat_id: chatId, nome: accountName } = rows[0];
+    
+    if (!token || token.trim() === '') {
+      console.warn(`[TELEGRAM] ⚠️ Token não configurado para conta ${accountId} (${accountName})`);
+      return null;
+    }
+    
+    console.log(`[TELEGRAM] 📋 Conta: ${accountName}, Chat ID: ${chatId || 'não configurado'}`);
+    
+    // Validar token primeiro
+    console.log(`[TELEGRAM] 🔍 Validando token...`);
+    const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+    const result = await response.json();
+    
+    if (!result.ok) {
+      throw new Error(`Token inválido: ${result.description}`);
+    }
+    
+    console.log(`[TELEGRAM] ✅ Token válido: @${result.result.username}`);
+    
+    // Limpar webhook
+    try {
+      await fetch(`https://api.telegram.org/bot${token}/deleteWebhook`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ drop_pending_updates: true })
+      });
+      console.log(`[TELEGRAM] 🧹 Webhook limpo`);
+    } catch (webhookError) {
+      console.warn(`[TELEGRAM] ⚠️ Erro ao limpar webhook:`, webhookError.message);
+    }
+    
+    // ✅ CRIAR BOT SEM POLLING AUTOMÁTICO (COMO NO _DEV)
+    const bot = new Telegraf(token);
+    
+    // Configurar handlers básicos
+    bot.start(async (ctx) => {
+      try {
+        const welcomeMsg = `🤖 Bot da conta ${accountName} ativo!\n\n` +
+                         `📊 Conta ID: ${accountId}\n` +
+                         `👤 Usuário: ${ctx.from.username || ctx.from.first_name}\n` +
+                         `🆔 Chat ID: ${ctx.chat.id}\n\n` +
+                         `Digite /help para comandos disponíveis.`;
+        
+        await ctx.reply(welcomeMsg);
+        
+        // Salvar chat ID se necessário
+        if (!chatId) {
+          await db.query(
+            'UPDATE contas SET telegram_chat_id = ? WHERE id = ?',
+            [ctx.chat.id, accountId]
+          );
+          console.log(`[TELEGRAM] ✅ Chat ID salvo: ${ctx.chat.id}`);
+        }
+      } catch (error) {
+        console.error(`[TELEGRAM] Erro no /start:`, error.message);
+      }
+    });
+    
+    bot.command('ping', (ctx) => ctx.reply('🏓 Pong!'));
+    bot.command('status', (ctx) => {
+      const statusMsg = `✅ Bot ativo - Conta ${accountName}\n⏰ ${new Date().toLocaleString('pt-BR')}`;
+      ctx.reply(statusMsg);
+    });
+    
+    bot.catch((err) => {
+      console.error(`[TELEGRAM] Bot error:`, err.message);
+    });
+    
+    // ✅ IMPLEMENTAR POLLING MANUAL COMO FALLBACK
+    let isPolling = false;
+    let offset = 0;
+    
+    const startManualPolling = async () => {
+      if (isPolling) return;
+      isPolling = true;
+      
+      console.log(`[TELEGRAM] 🔄 Iniciando polling manual...`);
+      
+      while (isPolling) {
+        try {
+          const updates = await bot.telegram.getUpdates({
+            offset: offset,
+            limit: 10,
+            timeout: 3
+          });
+          
+          for (const update of updates) {
+            offset = update.update_id + 1;
+            
+            try {
+              await bot.handleUpdate(update);
+            } catch (updateError) {
+              console.error(`[TELEGRAM] Erro ao processar update:`, updateError.message);
+            }
+          }
+          
+          // Pequena pausa
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          
+        } catch (pollingError) {
+          if (isPolling) {
+            console.error(`[TELEGRAM] Erro no polling manual:`, pollingError.message);
+            await new Promise(resolve => setTimeout(resolve, 5000));
+          }
+        }
+      }
+    };
+    
+    // Adicionar método para parar o polling
+    bot.stopManualPolling = () => {
+      console.log(`[TELEGRAM] 🛑 Parando polling manual...`);
+      isPolling = false;
+    };
+    
+    // ✅ TENTAR POLLING PADRÃO PRIMEIRO, COM FALLBACK PARA MANUAL
+    try {
+      console.log(`[TELEGRAM] 🚀 Tentando polling padrão...`);
+      
+      await Promise.race([
+        bot.launch({
+          polling: {
+            timeout: 2,
+            limit: 5
+          }
+        }),
+        new Promise((_, reject) => 
+          setTimeout(() => reject(new Error('Timeout padrão')), 5000)
+        )
+      ]);
+      
+      console.log(`[TELEGRAM] ✅ Polling padrão funcionando!`);
+      
+    } catch (launchError) {
+      console.log(`[TELEGRAM] ⚠️ Polling padrão falhou, usando manual: ${launchError.message}`);
+      
+      // Iniciar polling manual em background
+      startManualPolling().catch(err => {
+        console.error(`[TELEGRAM] Erro no polling manual:`, err.message);
+      });
+    }
+    
+    // Testar se bot está respondendo
+    try {
+      const botInfo = await bot.telegram.getMe();
+      console.log(`[TELEGRAM] ✅ Bot ativo: @${botInfo.username}`);
+    } catch (testError) {
+      throw new Error(`Bot não está respondendo: ${testError.message}`);
+    }
+    
+    // Salvar no mapa
+    activeBots.set(accountId, bot);
+    
+    console.log(`[TELEGRAM] 🎉 Bot inicializado para conta ${accountId} (${accountName})`);
+    
+    return bot;
+    
+  } catch (error) {
+    console.error(`[TELEGRAM] ❌ Erro na inicialização para conta ${accountId}:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * ✅ ENVIO DIRETO VIA API (MAIS CONFIÁVEL)
+ */
+async function sendTelegramMessage(accountId, message, chatId = null) {
+  try {
+    console.log(`[TELEGRAM] 📤 Enviando mensagem para conta ${accountId}...`);
+    
+    // Obter configurações
+    const db = await getDatabaseInstance();
+    const [rows] = await db.query(
+      'SELECT telegram_bot_token, telegram_chat_id FROM contas WHERE id = ?',
+      [accountId]
+    );
+    
+    if (rows.length === 0) {
+      throw new Error('Conta não encontrada');
+    }
+    
+    const { telegram_bot_token: token, telegram_chat_id: dbChatId } = rows[0];
+    const finalChatId = chatId || dbChatId;
+    
+    if (!token || !finalChatId) {
+      throw new Error('Token ou Chat ID não configurado');
+    }
+    
+    // ✅ ENVIO DIRETO VIA API (MAIS ESTÁVEL QUE VIA BOT)
+    const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ drop_pending_updates: true })
+      body: JSON.stringify({
+        chat_id: finalChatId,
+        text: message,
+        parse_mode: 'HTML',
+        disable_web_page_preview: true
+      })
     });
     
     const result = await response.json();
     
     if (result.ok) {
-      console.log(`[TELEGRAM] ✅ Webhook limpo com sucesso`);
+      console.log(`[TELEGRAM] ✅ Mensagem enviada com sucesso`);
       return true;
     } else {
-      console.warn(`[TELEGRAM] ⚠️ Falha ao limpar webhook:`, result.description);
+      console.error(`[TELEGRAM] ❌ Erro da API:`, result.description);
       return false;
     }
+    
   } catch (error) {
-    console.error(`[TELEGRAM] ❌ Erro ao limpar webhook:`, error.message);
+    console.error(`[TELEGRAM] ❌ Erro no envio:`, error.message);
     return false;
   }
 }
 
 /**
- * ✅ FUNÇÃO PARA VALIDAR TOKEN
+ * ✅ PARAR BOT
  */
-async function validateTelegramToken(token) {
+async function stopTelegramBot(accountId) {
   try {
-    console.log(`[TELEGRAM] 🔍 Validando token...`);
+    console.log(`[TELEGRAM] 🛑 Parando bot para conta ${accountId}...`);
     
-    const response = await fetch(`https://api.telegram.org/bot${token}/getMe`, {
-      method: 'GET'
-    });
-    
-    const result = await response.json();
-    
-    if (result.ok) {
-      console.log(`[TELEGRAM] ✅ Token válido - Bot: ${result.result.username} (${result.result.first_name})`);
-      return {
-        valid: true,
-        botInfo: result.result
-      };
-    } else {
-      console.error(`[TELEGRAM] ❌ Token inválido:`, result.description);
-      return {
-        valid: false,
-        error: result.description
-      };
-    }
-  } catch (error) {
-    console.error(`[TELEGRAM] ❌ Erro na validação do token:`, error.message);
-    return {
-      valid: false,
-      error: error.message
-    };
-  }
-}
-
-/**
- * ✅ FUNÇÃO PARA PARAR BOT EXISTENTE (evita conflitos)
- */
-async function forceStopExistingBot(accountId) {
-  try {
-    if (telegramBots.has(accountId)) {
-      console.log(`[TELEGRAM] 🛑 Parando bot existente para conta ${accountId}...`);
-      
-      const existingBot = telegramBots.get(accountId);
-      
-      // Tentar parar graciosamente
+    const bot = activeBots.get(accountId);
+    if (bot) {
       try {
-        if (existingBot && typeof existingBot.stop === 'function') {
+        // Parar polling manual se existir
+        if (typeof bot.stopManualPolling === 'function') {
+          bot.stopManualPolling();
+        }
+        
+        // Parar bot
+        if (typeof bot.stop === 'function') {
           await Promise.race([
-            existingBot.stop(),
+            bot.stop(),
             new Promise((_, reject) => 
               setTimeout(() => reject(new Error('Stop timeout')), 3000)
             )
           ]);
         }
       } catch (stopError) {
-        console.warn(`[TELEGRAM] ⚠️ Erro ao parar bot graciosamente:`, stopError.message);
+        console.warn(`[TELEGRAM] ⚠️ Erro ao parar bot:`, stopError.message);
       }
       
-      // Remover do mapa
-      telegramBots.delete(accountId);
-      
-      console.log(`[TELEGRAM] ✅ Bot existente removido para conta ${accountId}`);
-      
-      // Aguardar um pouco para limpeza completa
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-  } catch (error) {
-    console.error(`[TELEGRAM] ❌ Erro ao parar bot existente:`, error.message);
-    // Continuar mesmo com erro
-  }
-}
-
-/**
- * ✅ INICIALIZA BOT COM POLLING E DEBUGGING COMPLETO
- */
-async function initializeTelegramBot(accountId, forceRestart = false) {
-  let attempt = 0;
-  
-  while (attempt < MAX_RETRY_ATTEMPTS) {
-    attempt++;
-    
-    try {
-      console.log(`[TELEGRAM] 🚀 Tentativa ${attempt}/${MAX_RETRY_ATTEMPTS} - Inicializando bot para conta ${accountId}...`);
-      
-      // ✅ VALIDAÇÃO DE ENTRADA
-      if (!accountId || typeof accountId !== 'number') {
-        throw new Error(`AccountId inválido: ${accountId} (tipo: ${typeof accountId})`);
-      }
-      
-      // ✅ VERIFICAR SE JÁ EXISTE (e não é restart forçado)
-      if (!forceRestart && telegramBots.has(accountId)) {
-        const existingBot = telegramBots.get(accountId);
-        console.log(`[TELEGRAM] ♻️ Bot já existe para conta ${accountId}, testando conexão...`);
-        
-        try {
-          // Testar se o bot ainda está funcional
-          const botInfo = await existingBot.telegram.getMe();
-          console.log(`[TELEGRAM] ✅ Bot existente funcional: ${botInfo.username}`);
-          return existingBot;
-        } catch (testError) {
-          console.warn(`[TELEGRAM] ⚠️ Bot existente não funcional, recriando...`);
-          await forceStopExistingBot(accountId);
-        }
-      } else if (forceRestart) {
-        await forceStopExistingBot(accountId);
-      }
-      
-      // ✅ OBTER CONFIGURAÇÕES DO BANCO
-      console.log(`[TELEGRAM] 📊 Obtendo configurações para conta ${accountId}...`);
-      const db = await getDatabaseInstance();
-      const [rows] = await db.query(
-        'SELECT telegram_bot_token, telegram_chat_id, nome FROM contas WHERE id = ? AND ativa = 1',
-        [accountId]
-      );
-      
-      if (rows.length === 0) {
-        throw new Error(`Conta ${accountId} não encontrada ou inativa`);
-      }
-      
-      const { telegram_bot_token: token, telegram_chat_id: chatId, nome: accountName } = rows[0];
-      
-      if (!token || token.trim() === '') {
-        console.warn(`[TELEGRAM] ⚠️ Token não configurado para conta ${accountId} (${accountName})`);
-        return null;
-      }
-      
-      console.log(`[TELEGRAM] 📋 Configurações obtidas - Conta: ${accountName}, Chat ID: ${chatId || 'não configurado'}`);
-      
-      // ✅ VALIDAR TOKEN
-      const tokenValidation = await validateTelegramToken(token);
-      if (!tokenValidation.valid) {
-        throw new Error(`Token inválido: ${tokenValidation.error}`);
-      }
-      
-      // ✅ LIMPAR WEBHOOK (evita conflitos)
-      await clearBotWebhook(token);
-      
-      // ✅ CRIAR BOT COM CONFIGURAÇÕES OTIMIZADAS
-      console.log(`[TELEGRAM] 🤖 Criando instância do bot com polling...`);
-      const bot = new Telegraf(token);
-      
-      // ✅ CONFIGURAR HANDLERS BÁSICOS
-      bot.start(async (ctx) => {
-        try {
-          const welcomeMsg = `🤖 <b>Bot da conta ${accountName} iniciado!</b>\n\n` +
-                           `📊 Conta ID: ${accountId}\n` +
-                           `👤 Usuario: ${ctx.from.username || ctx.from.first_name}\n` +
-                           `🆔 Chat ID: ${ctx.chat.id}\n\n` +
-                           `Digite /help para ver os comandos disponíveis.`;
-          
-          await ctx.reply(welcomeMsg, { parse_mode: 'HTML' });
-          
-          // Salvar chat ID se não estiver configurado
-          if (!chatId) {
-            await db.query(
-              'UPDATE contas SET telegram_chat_id = ? WHERE id = ?',
-              [ctx.chat.id, accountId]
-            );
-            console.log(`[TELEGRAM] ✅ Chat ID salvo: ${ctx.chat.id} para conta ${accountId}`);
-          }
-          
-        } catch (error) {
-          console.error(`[TELEGRAM] Erro no handler /start:`, error.message);
-        }
-      });
-      
-      bot.help(async (ctx) => {
-        try {
-          const helpMsg = `📋 <b>Comandos disponíveis:</b>\n\n` +
-                         `🔸 /status - Status do sistema\n` +
-                         `🔸 /test - Teste de conexão\n` +
-                         `🔸 /ping - Teste simples`;
-          
-          await ctx.reply(helpMsg, { parse_mode: 'HTML' });
-        } catch (error) {
-          console.error(`[TELEGRAM] Erro no handler /help:`, error.message);
-        }
-      });
-      
-      bot.command('status', async (ctx) => {
-        try {
-          const statusMsg = `✅ <b>Sistema operacional</b>\n\n` +
-                           `🏦 Conta: ${accountName} (ID: ${accountId})\n` +
-                           `🤖 Bot: ${tokenValidation.botInfo.username}\n` +
-                           `⏰ ${new Date().toLocaleString('pt-BR')}`;
-          
-          await ctx.reply(statusMsg, { parse_mode: 'HTML' });
-        } catch (error) {
-          console.error(`[TELEGRAM] Erro no handler /status:`, error.message);
-        }
-      });
-      
-      bot.command('test', async (ctx) => {
-        try {
-          await ctx.reply(`🧪 <b>Teste de conexão</b>\n\n✅ Bot funcionando corretamente!\n⏰ ${new Date().toLocaleString('pt-BR')}`, { parse_mode: 'HTML' });
-        } catch (error) {
-          console.error(`[TELEGRAM] Erro no handler /test:`, error.message);
-        }
-      });
-      
-      bot.command('ping', async (ctx) => {
-        try {
-          await ctx.reply('🏓 Pong!');
-        } catch (error) {
-          console.error(`[TELEGRAM] Erro no handler /ping:`, error.message);
-        }
-      });
-      
-      // ✅ HANDLER GLOBAL DE ERROS
-      bot.catch((err, ctx) => {
-        console.error(`[TELEGRAM] Erro no bot da conta ${accountId}:`, err);
-        try {
-          if (ctx && ctx.reply) {
-            ctx.reply(`❌ Erro interno do bot. Tente novamente.`);
-          }
-        } catch (replyError) {
-          console.error(`[TELEGRAM] Erro ao enviar mensagem de erro:`, replyError.message);
-        }
-      });
-      
-      // ✅ INICIAR BOT COM POLLING E TIMEOUT
-      console.log(`[TELEGRAM] 🚀 Iniciando bot com polling (timeout: ${POLLING_TIMEOUT}s)...`);
-      
-      // ✅ CONFIGURAÇÃO DE POLLING OTIMIZADA
-      const launchOptions = {
-        polling: {
-          timeout: POLLING_TIMEOUT,
-          limit: 100,
-          allowed_updates: ['message', 'callback_query']
-        }
-      };
-      
-      await Promise.race([
-        bot.launch(launchOptions),
-        new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Timeout na inicialização do polling')), BOT_TIMEOUT)
-        )
-      ]);
-      
-      // ✅ AGUARDAR UM MOMENTO PARA ESTABILIZAR
-      console.log(`[TELEGRAM] ⏳ Aguardando estabilização do polling...`);
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      // ✅ TESTAR CONEXÃO
-      console.log(`[TELEGRAM] 🧪 Testando conexão do bot...`);
-      const botInfo = await bot.telegram.getMe();
-      console.log(`[TELEGRAM] ✅ Bot conectado: @${botInfo.username} (${botInfo.first_name})`);
-      
-      // ✅ SALVAR NO MAPA
-      telegramBots.set(accountId, bot);
-      
-      console.log(`[TELEGRAM] 🎉 Bot inicializado com sucesso para conta ${accountId} (${accountName})`);
-      
-      return bot;
-      
-    } catch (error) {
-      console.error(`[TELEGRAM] ❌ Tentativa ${attempt} falhou para conta ${accountId}:`, error.message);
-      
-      // Limpar bot com falha
-      if (telegramBots.has(accountId)) {
-        await forceStopExistingBot(accountId);
-      }
-      
-      if (attempt < MAX_RETRY_ATTEMPTS) {
-        console.log(`[TELEGRAM] ⏳ Aguardando ${RETRY_DELAY/1000}s antes da próxima tentativa...`);
-        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
-      } else {
-        console.error(`[TELEGRAM] 💥 Falha definitiva na inicialização do bot para conta ${accountId}`);
-        throw error;
-      }
-    }
-  }
-  
-  return null;
-}
-
-/**
- * ✅ FUNÇÃO MELHORADA PARA OBTER BOT
- */
-function getTelegramBot(accountId) {
-  const bot = telegramBots.get(accountId);
-  if (bot) {
-    console.log(`[TELEGRAM] ✅ Bot encontrado para conta ${accountId}`);
-  } else {
-    console.warn(`[TELEGRAM] ⚠️ Bot não encontrado para conta ${accountId}`);
-  }
-  return bot || null;
-}
-
-/**
- * ✅ FUNÇÃO MELHORADA PARA ENVIAR MENSAGENS
- */
-async function sendTelegramMessage(accountId, chatId = null, message) {
-  try {
-    console.log(`[TELEGRAM] 📤 Enviando mensagem para conta ${accountId}...`);
-    
-    let bot = getTelegramBot(accountId);
-    if (!bot) {
-      console.warn(`[TELEGRAM] ⚠️ Bot não encontrado para conta ${accountId}, tentando inicializar...`);
-      bot = await initializeTelegramBot(accountId);
-      if (!bot) {
-        console.error(`[TELEGRAM] ❌ Falha ao inicializar bot para conta ${accountId}`);
-        return false;
-      }
-    }
-    
-    // Se chatId não fornecido, obter do banco
-    if (!chatId) {
-      console.log(`[TELEGRAM] 🔍 Obtendo chat ID do banco...`);
-      const db = await getDatabaseInstance();
-      const [rows] = await db.query(
-        'SELECT telegram_chat_id FROM contas WHERE id = ?',
-        [accountId]
-      );
-      
-      if (rows.length === 0 || !rows[0].telegram_chat_id) {
-        console.warn(`[TELEGRAM] ⚠️ Chat ID não configurado para conta ${accountId}`);
-        return false;
-      }
-      
-      chatId = rows[0].telegram_chat_id;
-    }
-    
-    console.log(`[TELEGRAM] 📨 Enviando para chat ${chatId}...`);
-    
-    await bot.telegram.sendMessage(chatId, message, {
-      parse_mode: 'HTML',
-      disable_web_page_preview: true
-    });
-    
-    console.log(`[TELEGRAM] ✅ Mensagem enviada com sucesso para conta ${accountId}`);
-    return true;
-    
-  } catch (error) {
-    console.error(`[TELEGRAM] ❌ Erro ao enviar mensagem para conta ${accountId}:`, error.message);
-    return false;
-  }
-}
-
-/**
- * ✅ FUNÇÃO MELHORADA PARA PARAR BOT
- */
-async function stopTelegramBot(accountId) {
-  try {
-    console.log(`[TELEGRAM] 🛑 Parando bot para conta ${accountId}...`);
-    
-    const bot = telegramBots.get(accountId);
-    if (bot) {
-      try {
-        await Promise.race([
-          bot.stop(),
-          new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Stop timeout')), 5000)
-          )
-        ]);
-      } catch (stopError) {
-        console.warn(`[TELEGRAM] ⚠️ Timeout ao parar bot, forçando remoção...`);
-      }
-      
-      telegramBots.delete(accountId);
+      activeBots.delete(accountId);
       console.log(`[TELEGRAM] ✅ Bot parado para conta ${accountId}`);
     } else {
       console.log(`[TELEGRAM] ℹ️ Nenhum bot ativo para conta ${accountId}`);
     }
   } catch (error) {
-    console.error(`[TELEGRAM] ❌ Erro ao parar bot para conta ${accountId}:`, error.message);
+    console.error(`[TELEGRAM] ❌ Erro ao parar bot:`, error.message);
   }
 }
 
 /**
- * ✅ FUNÇÃO DE TESTE COMPLETO
+ * ✅ TESTE SIMPLIFICADO
  */
-async function testTelegramBot(accountId) {
-  console.log(`[TELEGRAM_TEST] 🧪 Iniciando teste completo para conta ${accountId}...`);
+async function testTelegramBotFixed(accountId) {
+  console.log(`[TELEGRAM_TEST] 🧪 Testando versão corrigida para conta ${accountId}...`);
   
   try {
-    // 1. Parar bot existente
+    // Parar bot existente
     await stopTelegramBot(accountId);
     
-    // 2. Inicializar novo
+    // Inicializar novo
     const bot = await initializeTelegramBot(accountId, true);
     
     if (!bot) {
       throw new Error('Falha na inicialização');
     }
     
-    // 3. Testar envio de mensagem (só se houver chat_id configurado)
-    console.log(`[TELEGRAM_TEST] 🧪 Verificando se há chat_id configurado...`);
-    const db = await getDatabaseInstance();
-    const [rows] = await db.query(
-      'SELECT telegram_chat_id FROM contas WHERE id = ?',
-      [accountId]
-    );
+    // Aguardar um momento
+    await new Promise(resolve => setTimeout(resolve, 2000));
     
-    let messageSent = false;
-    if (rows.length > 0 && rows[0].telegram_chat_id) {
-      console.log(`[TELEGRAM_TEST] 📨 Chat ID encontrado, testando envio...`);
-      
-      const testMessage = `🧪 <b>Teste de Bot</b>\n\n` +
-                         `🏦 Conta: ${accountId}\n` +
-                         `⏰ ${new Date().toLocaleString('pt-BR')}\n\n` +
-                         `✅ Bot funcionando corretamente!`;
-      
-      messageSent = await sendTelegramMessage(accountId, null, testMessage);
-    } else {
-      console.log(`[TELEGRAM_TEST] ⚠️ Chat ID não configurado - mensagem de teste não enviada`);
-      console.log(`[TELEGRAM_TEST] 💡 Para testar envio, inicie o bot no Telegram com /start`);
-    }
+    // Testar envio direto
+    const testMessage = `🧪 <b>Teste Bot Corrigido</b>\n\n` +
+                       `🏦 Conta: ${accountId}\n` +
+                       `⏰ ${new Date().toLocaleString('pt-BR')}\n\n` +
+                       `✅ Sistema funcionando!`;
     
-    console.log(`[TELEGRAM_TEST] 📊 Resultado do teste:`);
+    const messageSent = await sendTelegramMessage(accountId, testMessage);
+    
+    console.log(`[TELEGRAM_TEST] 📊 Resultados:`);
     console.log(`[TELEGRAM_TEST] ✅ Inicialização: Sucesso`);
-    console.log(`[TELEGRAM_TEST] ${messageSent ? '✅' : 'ℹ️'} Envio de mensagem: ${messageSent ? 'Sucesso' : 'Chat ID não configurado'}`);
+    console.log(`[TELEGRAM_TEST] ${messageSent ? '✅' : '❌'} Envio direto: ${messageSent ? 'Sucesso' : 'Falha'}`);
     
     return {
       success: true,
       bot: bot,
-      messageSent: messageSent,
-      chatConfigured: rows.length > 0 && rows[0].telegram_chat_id
+      messageSent: messageSent
     };
     
   } catch (error) {
@@ -469,23 +357,35 @@ async function testTelegramBot(accountId) {
 }
 
 /**
- * ✅ FUNÇÃO PARA LISTAR TODOS OS BOTS ATIVOS
+ * ✅ FUNÇÃO PARA PARAR TODOS OS BOTS (PARA GRACEFUL SHUTDOWN)
+ */
+async function stopAllTelegramBots() {
+  console.log(`[TELEGRAM] 🛑 Parando todos os bots...`);
+  
+  const accounts = Array.from(activeBots.keys());
+  for (const accountId of accounts) {
+    await stopTelegramBot(accountId);
+  }
+  
+  console.log(`[TELEGRAM] ✅ Todos os bots parados`);
+}
+
+/**
+ * ✅ LISTAR BOTS ATIVOS
  */
 function listActiveBots() {
-  console.log(`[TELEGRAM] 📋 Bots ativos: ${telegramBots.size}`);
-  for (const [accountId, bot] of telegramBots) {
+  console.log(`[TELEGRAM] 📋 Bots ativos: ${activeBots.size}`);
+  for (const [accountId, bot] of activeBots) {
     console.log(`[TELEGRAM] - Conta ${accountId}: ${bot ? 'Ativo' : 'Inativo'}`);
   }
-  return Array.from(telegramBots.keys());
+  return Array.from(activeBots.keys());
 }
 
 module.exports = {
   initializeTelegramBot,
-  getTelegramBot,
   sendTelegramMessage,
   stopTelegramBot,
-  testTelegramBot,
-  listActiveBots,
-  clearBotWebhook,
-  validateTelegramToken
+  testTelegramBotFixed,
+  stopAllTelegramBots,
+  listActiveBots
 };

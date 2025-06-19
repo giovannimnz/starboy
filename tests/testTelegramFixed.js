@@ -1,4 +1,4 @@
-const { testTelegramBotFixed } = require('../posicoes/telegramBotFixed');
+const { testTelegramBotFixed } = require('../posicoes/telegramBot');
 
 async function runFixedTest() {
   console.log('🧪 ========== TESTE BOT TELEGRAM CORRIGIDO ==========');

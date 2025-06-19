@@ -6,7 +6,7 @@ const websockets = require('../websockets');
 const api = require('../api');
 
 // NOVOS IMPORTS
-const { initializeTelegramBot, stopAllTelegramBots } = require('./telegramBotFixed');
+const { initializeTelegramBot, stopAllTelegramBots } = require('./telegramBot');
 const { startPriceMonitoring, onPriceUpdate } = require('./priceMonitoring');
 const { checkNewTrades } = require('./signalProcessor');
 const { syncPositionsWithExchange, logOpenPositionsAndOrders } = require('./positionSync');
