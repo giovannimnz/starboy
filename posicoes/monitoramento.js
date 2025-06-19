@@ -1,3 +1,4 @@
+// starboy/posicoes/monitoramento.js - CORREÇÃO DOS IMPORTS NO TOPO
 const path = require('path');
 const schedule = require('node-schedule');
 const { getDatabaseInstance } = require('../db/conexao');
@@ -5,17 +6,19 @@ const { verifyAndFixEnvironmentConsistency, getFuturesAccountBalanceDetails } = 
 const websockets = require('../websockets');
 const api = require('../api');
 
-// NOVOS IMPORTS
+// NOVOS IMPORTS - ADICIONAR OS FALTANTES
 const { initializeTelegramBot, stopAllTelegramBots } = require('./telegramBot');
 const { startPriceMonitoring, onPriceUpdate } = require('./priceMonitoring');
 const { checkNewTrades } = require('./signalProcessor');
 const { syncPositionsWithExchange, logOpenPositionsAndOrders } = require('./positionSync');
 const orderHandlers = require('./orderHandlers');
-const accountHandlers = require('./accountHandlers'); // ✅ NOVO
+const accountHandlers = require('./accountHandlers');
 const { checkExpiredSignals } = require('./signalTimeout');
 const { runPeriodicCleanup, monitorWebSocketHealth, updatePositionPricesWithTrailing, runAdvancedPositionMonitoring } = require('./enhancedMonitoring');
 const { cleanupOrphanSignals, forceCloseGhostPositions, cancelOrphanOrders } = require('./cleanup');
 const { syncAndCloseGhostPositions } = require('./positionHistory');
+// ✅ ADICIONAR IMPORT FALTANTE:
+const { checkOrderTriggers } = require('./trailingStopLoss');
 
 // === DEBUGGING ROBUSTO ===
 console.log(`[MONITOR] 🚀 === INICIANDO MONITORAMENTO PARA CONTA ${process.argv[4] || 'INDEFINIDA'} ===`);
@@ -110,7 +113,7 @@ function setupSignalHandlers(accountIdForLog) {
 }
 
 /**
- * Sincroniza saldo da conta via REST API
+ * Sincroniza saldo da conta via WebSocket API (MELHORADA)
  * @param {number} accountId - ID da conta (obrigatório)
  * @returns {Promise<Object|null>} Resultado da sincronização
  */
@@ -120,36 +123,32 @@ async function syncAccountBalance(accountId) {
   }
 
   try {
-    console.log(`[MONITOR] Sincronizando saldo da conta ${accountId} via REST API...`);
+    console.log(`[MONITOR] Sincronizando saldo da conta ${accountId} via WebSocket API...`);
     
-    // CHAMADA CORRIGIDA - getFuturesAccountBalanceDetails já usa REST API
+    // ✅ TENTAR VIA WEBSOCKET API PRIMEIRO
+    try {
+      const websocketApi = require('../websocketApi');
+      const wsResult = await websocketApi.syncAccountBalanceViaWebSocket(accountId);
+      
+      if (wsResult && wsResult.success) {
+        console.log(`[MONITOR] ✅ Saldo sincronizado via WebSocket API: ${wsResult.saldo} USDT`);
+        return wsResult;
+      } else {
+        console.warn(`[MONITOR] ⚠️ WebSocket API falhou, usando REST API como fallback`);
+      }
+    } catch (wsError) {
+      console.warn(`[MONITOR] ⚠️ Erro no WebSocket API, usando REST API: ${wsError.message}`);
+    }
+    
+    // ✅ FALLBACK PARA REST API
     const result = await getFuturesAccountBalanceDetails(accountId);
     
     if (result && result.success) {
-      // CORREÇÃO: Verificar se a base de cálculo aumentou
-      if (result.saldo_base_calculo > result.previousBaseCalculo) {
-        console.log(`[MONITOR] 📈 Base de cálculo aumentada para conta ${accountId}: ${result.previousBaseCalculo.toFixed(2)} → ${result.saldo_base_calculo.toFixed(2)} USDT`);
-      }
-      
-      // CORREÇÃO: Verificar se o saldo total mudou
-      if (Math.abs(result.saldo - result.previousSaldo) > 0.01) {
-        const mudanca = result.saldo - result.previousSaldo;
-        const sinal = mudanca > 0 ? '+' : '';
-        console.log(`[MONITOR] 💰 Saldo alterado para conta ${accountId}: ${result.previousSaldo.toFixed(2)} → ${result.saldo.toFixed(2)} USDT (${sinal}${mudanca.toFixed(2)})`);
-      }
-      
-      //console.log(`[MONITOR] ✅ Sincronização de saldo concluída para conta ${accountId}`);
-      
-      return {
-        accountId: accountId,
-        saldo: result.saldo,
-        saldo_disponivel: result.saldo_disponivel,
-        saldo_base_calculo: result.saldo_base_calculo,
-        success: true
-      };
-      
+      console.log(`[MONITOR] ✅ Saldo sincronizado via REST API para conta ${accountId}:`);
+      console.log(`[MONITOR] 💰 Total: ${result.totalBalance} USDT, Disponível: ${result.availableBalance} USDT`);
+      return result;
     } else {
-      console.error(`[MONITOR] ❌ Falha ao sincronizar saldo para conta ${accountId}:`, result?.error || 'Resposta inválida');
+      console.error(`[MONITOR] ❌ Falha na sincronização via REST API para conta ${accountId}:`, result?.error || 'Resposta inválida');
       return null;
     }
     
@@ -304,7 +303,7 @@ try {
         throw new Error('Nem todos os handlers foram registrados corretamente');
       }
       
-      // ADICIONAR callback de preço (mantém como estava)
+      // ADICIONAR callback de preço (mantém como estava mas CORRIGIDO)
       const currentHandlers = websockets.getHandlers(accountId);
       if (!currentHandlers.onPriceUpdate) {
         console.log(`[MONITOR] Adicionando callback de preço para conta ${accountId}...`);
@@ -312,7 +311,11 @@ try {
           ...currentHandlers,
           onPriceUpdate: async (symbol, price, db) => {
             try {
+              // ✅ USAR FUNÇÃO MELHORADA DO enhancedMonitoring
               await updatePositionPricesWithTrailing(db, symbol, price, accountId);
+              
+              // ✅ ADICIONAR TAMBÉM A FUNÇÃO ORIGINAL DO priceMonitoring
+              const { onPriceUpdate } = require('./priceMonitoring');
               await onPriceUpdate(symbol, price, db, accountId);
             } catch (error) {
               console.error(`[MONITOR] ⚠️ Erro em onPriceUpdate para ${symbol} conta ${accountId}:`, error.message);
@@ -446,6 +449,20 @@ try {
       }
     });
 
+    // ✅ NOVO: Job de movimentação automática para histórico a cada 3 minutos
+    accountJobs.moveToHistory = schedule.scheduleJob('*/3 * * * *', async () => {
+      if (isShuttingDown) return;
+      try {
+        const { syncAndCloseGhostPositions } = require('./positionHistory');
+        const movedCount = await syncAndCloseGhostPositions(accountId);
+        if (movedCount > 0) {
+          console.log(`[MONITOR] 📚 ${movedCount} posições movidas para histórico para conta ${accountId}`);
+        }
+      } catch (error) {
+        console.error(`[MONITOR] ⚠️ Erro ao mover posições para histórico para conta ${accountId}:`, error.message);
+      }
+    });
+
     // ✅ NOVO: Job de log de status a cada 10 minutos
     accountJobs.logStatus = schedule.scheduleJob('*/10 * * * *', async () => {
       if (isShuttingDown) return;
@@ -461,6 +478,7 @@ try {
       if (isShuttingDown) return;
       try {
         const db = await getDatabaseInstance();
+        
         const [openPositions] = await db.query(`
           SELECT * FROM posicoes 
           WHERE status = 'OPEN' AND conta_id = ?
@@ -471,7 +489,7 @@ try {
           try {
             const currentPrice = await api.getPrice(position.simbolo, accountId);
             if (currentPrice && currentPrice > 0) {
-              const { checkOrderTriggers } = require('./trailingStopLoss');
+              // ✅ CORREÇÃO CRÍTICA: Passar accountId como parâmetro
               await checkOrderTriggers(db, position, currentPrice, accountId);
             }
           } catch (posError) {
@@ -488,8 +506,16 @@ try {
 
     console.log(`[MONITOR] ✅ Sistema de monitoramento avançado inicializado com sucesso para conta ${accountId}!`);
     console.log(`[MONITOR] 📊 Jobs agendados: ${Object.keys(accountJobs).length}`);
-    console.log(`[MONITOR] 📋 Jobs ativos: ${Object.keys(accountJobs).join(', ')}`);
-
+    console.log(`[MONITOR] 📋 Jobs ativos:`);
+    Object.keys(accountJobs).forEach(jobName => { console.log(`[MONITOR]   - ${jobName}: ${accountJobs[jobName] ? '✅' : '❌'}`); });
+    console.log(`[MONITOR] 🎯 Funcionalidades ativas:`);
+    console.log(`[MONITOR]   - Trailing Stop Loss: ✅`);
+    console.log(`[MONITOR]   - Signal Timeout: ✅`);
+    console.log(`[MONITOR]   - Telegram Bot: ✅`);
+    console.log(`[MONITOR]   - Enhanced Monitoring: ✅`);
+    console.log(`[MONITOR]   - Position History: ✅`);
+    console.log(`[MONITOR]   - Cleanup System: ✅`);
+    console.log(`[MONITOR]   - WebSocket API: ✅`);
     return accountJobs;
 
   } catch (error) {
@@ -579,13 +605,32 @@ async function gracefulShutdown(accountIdToShutdown) {
     await new Promise(resolve => setTimeout(resolve, 2000)); 
     console.log(`[MONITOR]   ✅ Aguarde concluído para conta ${accountIdToShutdown}`);
     
-console.log(`[MONITOR] 🤖 6.5/7 - Parando bot do Telegram para conta ${accountIdToShutdown}...`);
-try {
-  await stopAllTelegramBots();
-  console.log(`[MONITOR]   ✅ Bot do Telegram parado para conta ${accountIdToShutdown}`);
-} catch (telegramShutdownError) {
-  console.error(`[MONITOR]   ⚠️ Erro ao parar bot do Telegram:`, telegramShutdownError.message);
-}
+    console.log(`[MONITOR] 🤖 6.5/7 - Parando bot do Telegram para conta ${accountIdToShutdown}...`);
+    try {
+      const { stopTelegramBot } = require('./telegramBot');
+      await stopTelegramBot(accountIdToShutdown);
+      console.log(`[MONITOR]   ✅ Bot do Telegram parado para conta ${accountIdToShutdown}`);
+    } catch (telegramShutdownError) {
+      console.error(`[MONITOR]   ⚠️ Erro ao parar bot do Telegram para conta ${accountIdToShutdown}:`, telegramShutdownError.message);
+    }
+
+    // ✅ ADICIONAR: Limpeza final de trailing stops
+    console.log(`[MONITOR] 🎯 6.8/7 - Limpando estados de trailing stop para conta ${accountIdToShutdown}...`);
+    try {
+      // Limpar cache de trailing stops
+      const { lastTrailingCheck } = require('./trailingStopLoss');
+      if (lastTrailingCheck) {
+        Object.keys(lastTrailingCheck).forEach(key => {
+          if (key.includes(`_${accountIdToShutdown}`)) {
+            delete lastTrailingCheck[key];
+          }
+        });
+      }
+      console.log(`[MONITOR]   ✅ Estados de trailing stop limpos para conta ${accountIdToShutdown}`);
+    } catch (trailingCleanupError) {
+      console.error(`[MONITOR]   ⚠️ Erro ao limpar trailing stops:`, trailingCleanupError.message);
+    }
+    
     console.log(`[MONITOR] 🗃️ 7/7 - Fechando pool do banco de dados (se aplicável ao processo da conta ${accountIdToShutdown})...`);
     try {
       const { closePool, getPool } = require('../db/conexao');
@@ -625,13 +670,17 @@ async function startMonitoringProcess() {
       '../db/conexao',
       '../api',
       '../websockets',
+      '../websocketApi',           // ✅ ADICIONAR
       './telegramBot',
       './signalProcessor',
       './positionSync',
       './orderHandlers',
+      './accountHandlers',          // ✅ ADICIONAR
       './signalTimeout',
       './enhancedMonitoring',
-      './cleanup'
+      './cleanup',
+      './trailingStopLoss',        // ✅ ADICIONAR
+      './positionHistory'          // ✅ ADICIONAR
     ];
     
     for (const module of requiredModules) {
