@@ -398,7 +398,7 @@ def initialize_bracket_scheduler():
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] ❌ Erro ao inicializar scheduler: {e}")
 
 # Chaveamento para ativar/desativar verificação DIVAP
-ENABLE_DIVAP_VERIFICATION = False  # True = verificação ativada, False = todos os sinais passam sem verificar
+ENABLE_DIVAP_VERIFICATION = True  # True = verificação ativada, False = todos os sinais passam sem verificar
 
 # Parâmetros para cálculo de capital alocado baseado em risco
 PREJUIZO_MAXIMO_PERCENTUAL_DO_CAPITAL_TOTAL = 4.90  # 4.90% do capital total
