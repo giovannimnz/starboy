@@ -6,7 +6,7 @@ const websockets = require('../websockets');
 const api = require('../api');
 
 // NOVOS IMPORTS
-const { initializeTelegramBot } = require('./telegramBot');
+const { initializeTelegramBot, stopAllTelegramBots } = require('./telegramBotFixed');
 const { startPriceMonitoring, onPriceUpdate } = require('./priceMonitoring');
 const { checkNewTrades } = require('./signalProcessor');
 const { syncPositionsWithExchange, logOpenPositionsAndOrders } = require('./positionSync');
@@ -215,23 +215,23 @@ async function initializeMonitoring(accountId) {
     }
 
 // === ETAPA 3.5: Inicializar Bot do Telegram ===
-//console.log(`🤖 ETAPA 3.5: Inicializando bot do Telegram para conta ${accountId}...`);
-//try {
-//  const telegramBotInstance = await initializeTelegramBot(accountId);
-//  if (telegramBotInstance) {
-//    console.log(`✅ Bot do Telegram inicializado para conta ${accountId}`);
-//    console.log(`📋 Detalhes do bot:`);
-//    console.log(`   - Nome da conta: ${telegramBotInstance.accountName}`);
-//    console.log(`   - Chat ID: ${telegramBotInstance.chatId}`);
-//    console.log(`   - Token: ${telegramBotInstance.token.substring(0, 8)}...`);
-//  } else {
-//    console.log(`⚠️ Bot do Telegram não foi inicializado para conta ${accountId}`);
-//  }
-//} catch (telegramError) {
-//  console.error(`❌ Erro crítico ao inicializar bot do Telegram para conta ${accountId}:`, telegramError.message);
+console.log(`🤖 ETAPA 3.5: Inicializando bot do Telegram para conta ${accountId}...`);
+try {
+  const telegramBotInstance = await initializeTelegramBot(accountId);
+  if (telegramBotInstance) {
+    console.log(`✅ Bot do Telegram inicializado para conta ${accountId}`);
+    console.log(`📋 Detalhes do bot:`);
+    console.log(`   - Nome da conta: ${telegramBotInstance.accountName}`);
+    console.log(`   - Chat ID: ${telegramBotInstance.chatId}`);
+    console.log(`   - Token: ${telegramBotInstance.token.substring(0, 8)}...`);
+  } else {
+    console.log(`⚠️ Bot do Telegram não foi inicializado para conta ${accountId}`);
+  }
+} catch (telegramError) {
+  console.error(`❌ Erro crítico ao inicializar bot do Telegram para conta ${accountId}:`, telegramError.message);
   // Não bloquear a inicialização por causa do Telegram
-//  console.log(`⚠️ Continuando inicialização sem bot do Telegram...`);
-//}
+  console.log(`⚠️ Continuando inicialização sem bot do Telegram...`);
+}
     
     // === ETAPA 4: Verificar estado da conexão ===
     console.log(`🔗 ETAPA 4: Verificando estado da conexão da conta ${accountId}...`);
@@ -538,9 +538,8 @@ async function gracefulShutdown(accountIdToShutdown) {
     await new Promise(resolve => setTimeout(resolve, 2000)); 
     console.log(`[MONITOR]   ✅ Aguarde concluído para conta ${accountIdToShutdown}`);
     
-    console.log(`[MONITOR] 🤖 6.5/7 - Parando bot do Telegram para conta ${accountIdToShutdown}...`);
+console.log(`[MONITOR] 🤖 6.5/7 - Parando bot do Telegram para conta ${accountIdToShutdown}...`);
 try {
-  const { stopAllTelegramBots } = require('./telegramBot');
   await stopAllTelegramBots();
   console.log(`[MONITOR]   ✅ Bot do Telegram parado para conta ${accountIdToShutdown}`);
 } catch (telegramShutdownError) {
