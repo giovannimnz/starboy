@@ -342,7 +342,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
         
         // DEBUG: Log apenas a cada 10 atualizações para não poluir
         if (Math.random() < 0.1) {
-          console.log(`[LIMIT_ENTRY_DEPTH_WS] ${signal.symbol}: Bid=${bid.toFixed(pricePrecision)}, Ask=${ask.toFixed(pricePrecision)}, Spread=${spread.toFixed(pricePrecision)}`);
+          //console.log(`[LIMIT_ENTRY_DEPTH_WS] ${signal.symbol}: Bid=${bid.toFixed(pricePrecision)}, Ask=${ask.toFixed(pricePrecision)}, Spread=${spread.toFixed(pricePrecision)}`);
         }
       } else {
         wsUpdateErrorCount++;
