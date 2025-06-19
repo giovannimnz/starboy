@@ -421,8 +421,8 @@ DB_PASSWORD = os.getenv('DB_PASSWORD')
 DB_NAME = os.getenv('DB_NAME')
 
 # IDs dos grupos - USANDO OS IDs INTERNOS CORRETOS COM SINAL NEGATIVO
-#GRUPOS_ORIGEM_IDS = [-1002444455075]  # Lista com os IDs dos grupos de origem
-GRUPOS_ORIGEM_IDS = [-4192806079]  # Lista com os IDs dos grupos de origem
+#GRUPOS_ORIGEM_IDS = [-4192806079]  # Lista com os IDs dos grupos de origem
+GRUPOS_ORIGEM_IDS = [-1002444455075]  # Lista com os IDs dos grupos de origem
 GRUPO_DESTINO_ID = -1002016807368  # ID do grupo de destino
 CONTA_ID = 1
 
