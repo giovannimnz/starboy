@@ -987,201 +987,193 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       console.log(`  - TP4: ${targetPrices.tp4 || 'N/A'}`);
       console.log(`  - TP5: ${targetPrices.tp5 || 'N/A'}`);
 
-      // ✅ CRIAR STOP LOSS - VERSÃO CORRIGIDA COM STOP_MARKET
-      if (slPriceVal && slPriceVal > 0) {
-        try {
-          // VALIDAR SE O PREÇO DE SL FAZ SENTIDO
-          const isValidSlPrice = (binanceSide === 'BUY' && slPriceVal < averageEntryPrice) || 
-                                (binanceSide === 'SELL' && slPriceVal > averageEntryPrice);
-          
-          if (!isValidSlPrice) {
-            console.warn(`[LIMIT_ENTRY] ⚠️ Preço de SL inválido: ${slPriceVal} para ${binanceSide} @ ${averageEntryPrice}. Ajustando...`);
-            const slAdjustment = binanceSide === 'BUY' ? 0.98 : 1.02;
-            const adjustedSlPrice = averageEntryPrice * slAdjustment;
-            const roundedSlPrice = await roundPriceToTickSize(signal.symbol, adjustedSlPrice, numericAccountId);
-            
-            console.log(`[LIMIT_ENTRY] 🔧 SL ajustado: ${slPriceVal} → ${roundedSlPrice}`);
-            slPriceVal = roundedSlPrice;
-          }
-          
-          console.log(`[LIMIT_ENTRY] 🛡️ Criando SL: STOP_MARKET ${binanceOppositeSide} @ stopPrice=${slPriceVal} (closePosition=true)`);
-          
-          // ✅ CORREÇÃO: STOP_MARKET com apenas stopPrice
-          const slResponse = await newStopOrder(
-            numericAccountId,
-            signal.symbol,
-            null,           // ✅ quantity = null (closePosition = true)
-            binanceOppositeSide,
-            slPriceVal,     // ✅ stopPrice (preço de gatilho)
-            null,           // ✅ price = null (NÃO usado para STOP_MARKET)
-            true,           // ✅ reduceOnly = true
-            true,           // ✅ closePosition = true
-            'STOP_MARKET'   // ✅ Tipo explícito
-          );
-          
-          if (slResponse && (slResponse.data?.orderId || slResponse.orderId)) {
-            const slOrderId = slResponse.data?.orderId || slResponse.orderId;
-            console.log(`[LIMIT_ENTRY] ✅ SL STOP_MARKET criado: ${slOrderId} @ stopPrice=${slPriceVal}`);
-            
-            await connection.query(
-              `UPDATE webhook_signals SET sl_order_id = ? WHERE id = ?`,
-              [String(slOrderId), signal.id]
-            );
-          }
-        } catch (slError) {
-          console.error(`[LIMIT_ENTRY] ❌ Erro ao criar SL STOP_MARKET:`, slError.response?.data || slError.message);
-        }
-      } else {
-        console.warn(`[LIMIT_ENTRY] ⚠️ Preço de SL inválido ou não fornecido (${slPriceVal}). SL não será criado.`);
-      }
+// ✅ CRIAR STOP LOSS - VERSÃO CORRIGIDA COM reduceOnly=false e closePosition=true
+if (slPriceVal && slPriceVal > 0) {
+  try {
+    // VALIDAR SE O PREÇO DE SL FAZ SENTIDO
+    const isValidSlPrice = (binanceSide === 'BUY' && slPriceVal < averageEntryPrice) || 
+                          (binanceSide === 'SELL' && slPriceVal > averageEntryPrice);
+    
+    if (!isValidSlPrice) {
+      console.warn(`[LIMIT_ENTRY] ⚠️ Preço de SL inválido: ${slPriceVal} para ${binanceSide} @ ${averageEntryPrice}. Ajustando...`);
+      const slAdjustment = binanceSide === 'BUY' ? 0.98 : 1.02;
+      const adjustedSlPrice = averageEntryPrice * slAdjustment;
+      const roundedSlPrice = await roundPriceToTickSize(signal.symbol, adjustedSlPrice, numericAccountId);
+      
+      console.log(`[LIMIT_ENTRY] 🔧 SL ajustado: ${slPriceVal} → ${roundedSlPrice}`);
+      slPriceVal = roundedSlPrice;
+    }
+    
+    console.log(`[LIMIT_ENTRY] 🛡️ Criando SL: STOP_MARKET ${binanceOppositeSide} @ stopPrice=${slPriceVal} (reduceOnly=false, closePosition=true)`);
+    
+    // ✅ CORREÇÃO: STOP_MARKET com reduceOnly=false e closePosition=true
+    const slResponse = await newStopOrder(
+      numericAccountId,
+      signal.symbol,
+      null,           // ✅ quantity = null (closePosition = true)
+      binanceOppositeSide,
+      slPriceVal,     // ✅ stopPrice (preço de gatilho)
+      null,           // ✅ price = null (NÃO usado para STOP_MARKET)
+      false,          // ✅ CORREÇÃO: reduceOnly = false
+      true,           // ✅ closePosition = true
+      'STOP_MARKET'   // ✅ Tipo explícito
+    );
+    
+    if (slResponse && (slResponse.data?.orderId || slResponse.orderId)) {
+      const slOrderId = slResponse.data?.orderId || slResponse.orderId;
+      console.log(`[LIMIT_ENTRY] ✅ SL STOP_MARKET criado: ${slOrderId} @ stopPrice=${slPriceVal} (reduceOnly=false, closePosition=true)`);
+      
+      const slOrderData = {
+        tipo_ordem: 'STOP_MARKET',
+        preco: slPriceVal,
+        quantidade: 0, // ✅ quantidade = 0 quando closePosition = true
+        id_posicao: positionId,
+        status: 'NEW',
+        data_hora_criacao: formatDateForMySQL(new Date()),
+        id_externo: String(slOrderId).substring(0, 90),
+        side: binanceOppositeSide,
+        simbolo: signal.symbol,
+        tipo_ordem_bot: 'STOP_LOSS',
+        target: null,
+        reduce_only: false,  // ✅ CORREÇÃO: false
+        close_position: true, // ✅ true (fecha toda a posição)
+        orign_sig: `WEBHOOK_${signal.id}`,
+        last_update: formatDateForMySQL(new Date()),
+        conta_id: accountId
+      };
+      
+      await insertNewOrder(connection, slOrderData);
+      
+      await connection.query(
+        `UPDATE webhook_signals SET sl_order_id = ? WHERE id = ?`,
+        [String(slOrderId), signal.id]
+      );
+    }
+  } catch (slError) {
+    console.error(`[LIMIT_ENTRY] ❌ Erro ao criar SL STOP_MARKET:`, slError.response?.data || slError.message);
+  }
+} else {
+  console.warn(`[LIMIT_ENTRY] ⚠️ Preço de SL inválido ou não fornecido (${slPriceVal}). SL não será criado.`);
+}
 
-      // ✅ CRIAR REDUÇÕES PARCIAIS - CORRIGIDO
-      const reductionPercentages = [0.25, 0.30, 0.25, 0.10]; // 25%, 30%, 25%, 10%
-      let cumulativeQtyForRps = 0;
-      const minQtyForRp = 0.001; // Quantidade mínima para RP
+// ✅ CRIAR TP FINAL - VERSÃO CORRIGIDA COM reduceOnly=false e closePosition=true
+if (finalTpPrice && finalTpPrice > 0) {
+  // VALIDAR SE O PREÇO TP É RAZOÁVEL
+  const isValidTpPrice = (binanceSide === 'BUY' && finalTpPrice > averageEntryPrice) || 
+                        (binanceSide === 'SELL' && finalTpPrice < averageEntryPrice);
+  
+  if (!isValidTpPrice) {
+    console.warn(`[LIMIT_ENTRY] ⚠️ Preço TP final inválido: ${finalTpPrice} para ${binanceSide} @ ${averageEntryPrice}. Ajustando...`);
+    
+    // Ajustar TP para 5% de lucro
+    const tpAdjustment = binanceSide === 'BUY' ? 1.05 : 0.95;
+    const adjustedTpPrice = averageEntryPrice * tpAdjustment;
+    const roundedTpPrice = await roundPriceToTickSize(signal.symbol, adjustedTpPrice, numericAccountId);
+    
+    console.log(`[LIMIT_ENTRY] 🔧 TP ajustado: ${finalTpPrice} → ${roundedTpPrice}`);
+    finalTpPrice = roundedTpPrice;
+  }
+  
+  try {
+    console.log(`[LIMIT_ENTRY] 🎯 Criando TP Final: TAKE_PROFIT_MARKET ${binanceOppositeSide} @ stopPrice=${finalTpPrice} (reduceOnly=false, closePosition=true)`);
+    
+    // ✅ CORREÇÃO: TAKE_PROFIT_MARKET com reduceOnly=false e closePosition=true
+    const tpResponse = await newStopOrder(
+      numericAccountId,
+      signal.symbol,
+      null,                    // ✅ quantity = null (closePosition = true)
+      binanceOppositeSide,
+      finalTpPrice,            // ✅ stopPrice (preço de gatilho)
+      null,                    // ✅ price = null (NÃO usado para TAKE_PROFIT_MARKET)
+      false,                   // ✅ CORREÇÃO: reduceOnly = false
+      true,                    // ✅ closePosition = true
+      'TAKE_PROFIT_MARKET'     // ✅ Tipo explícito
+    );
+    
+    if (tpResponse && (tpResponse.data?.orderId || tpResponse.orderId)) {
+      const tpOrderId = tpResponse.data?.orderId || tpResponse.orderId;
+      console.log(`[LIMIT_ENTRY] ✅ TP Final TAKE_PROFIT_MARKET criado: ${tpOrderId} @ stopPrice=${finalTpPrice} (reduceOnly=false, closePosition=true)`);
       
-      console.log(`[LIMIT_ENTRY] 📊 Criando RPs com percentuais: ${reductionPercentages.map(p => (p*100).toFixed(0) + '%').join(', ')}`);
+      const tpOrderData = {
+        tipo_ordem: 'TAKE_PROFIT_MARKET',
+        preco: finalTpPrice,
+        quantidade: 0, // ✅ quantidade = 0 quando closePosition = true
+        id_posicao: positionId,
+        status: 'NEW',
+        data_hora_criacao: formatDateForMySQL(new Date()),
+        id_externo: String(tpOrderId).substring(0, 90),
+        side: binanceOppositeSide,
+        simbolo: signal.symbol,
+        tipo_ordem_bot: 'TAKE_PROFIT',
+        target: 5,
+        reduce_only: false,  // ✅ CORREÇÃO: false
+        close_position: true, // ✅ true (fecha toda a posição restante)
+        orign_sig: `WEBHOOK_${signal.id}`,
+        last_update: formatDateForMySQL(new Date()),
+        conta_id: accountId
+      };
       
-      for (let i = 0; i < rpTargetKeys.length; i++) {
-        const rpKey = rpTargetKeys[i];
-        const rpPrice = targetPrices[rpKey];
+      await insertNewOrder(connection, tpOrderData);
+      
+      await connection.query(
+        `UPDATE webhook_signals SET tp_order_id = ? WHERE id = ?`,
+        [String(tpOrderId), signal.id]
+      );
+    }
+  } catch (tpError) {
+    console.error(`[LIMIT_ENTRY] ❌ Erro ao criar TP Final TAKE_PROFIT_MARKET:`, tpError.response?.data || tpError.message);
+    
+    // ✅ FALLBACK: Se TAKE_PROFIT_MARKET falhar, tentar LIMIT reduce-only
+    if (qtyForFinalTp > 0) {
+      console.log(`[LIMIT_ENTRY] 🔄 FALLBACK: Tentando TP como LIMIT reduce-only...`);
+      
+      try {
+        const tpFallbackResponse = await newReduceOnlyOrder(
+          numericAccountId,
+          signal.symbol,
+          qtyForFinalTp,
+          binanceOppositeSide,
+          finalTpPrice
+        );
         
-        if (rpPrice && rpPrice > 0 && i < reductionPercentages.length) {
-          const reductionPercent = reductionPercentages[i];
-          const reductionQtyRaw = totalFilledSize * reductionPercent;
-          const reductionQty = parseFloat(reductionQtyRaw.toFixed(quantityPrecision));
+        if (tpFallbackResponse && (tpFallbackResponse.data?.orderId || tpFallbackResponse.orderId)) {
+          const tpFallbackOrderId = tpFallbackResponse.data?.orderId || tpFallbackResponse.orderId;
+          console.log(`[LIMIT_ENTRY] ✅ TP Final criado como LIMIT reduce-only (fallback): ${tpFallbackOrderId}`);
           
-          console.log(`[LIMIT_ENTRY] 📊 Calculando RP${i+1}: ${(reductionPercent*100).toFixed(0)}% de ${totalFilledSize.toFixed(quantityPrecision)} = ${reductionQtyRaw.toFixed(quantityPrecision)} → ${reductionQty.toFixed(quantityPrecision)}`);
+          const tpFallbackOrderData = {
+            tipo_ordem: 'LIMIT',
+            preco: finalTpPrice,
+            quantidade: qtyForFinalTp,
+            id_posicao: positionId,
+            status: 'NEW',
+            data_hora_criacao: formatDateForMySQL(new Date()),
+            id_externo: String(tpFallbackOrderId).substring(0, 90),
+            side: binanceOppositeSide,
+            simbolo: signal.symbol,
+            tipo_ordem_bot: 'TAKE_PROFIT',
+            target: 5,
+            reduce_only: true,    // ✅ true para LIMIT reduce-only
+            close_position: false, // ✅ false porque usamos quantidade específica
+            orign_sig: `WEBHOOK_${signal.id}`,
+            last_update: formatDateForMySQL(new Date()),
+            conta_id: accountId
+          };
           
-          // VALIDAR SE O PREÇO DE RP FAZ SENTIDO
-          const isValidRpPrice = (binanceSide === 'BUY' && rpPrice > averageEntryPrice) || 
-                                (binanceSide === 'SELL' && rpPrice < averageEntryPrice);
+          await insertNewOrder(connection, tpFallbackOrderData);
           
-          if (!isValidRpPrice) {
-            console.warn(`[LIMIT_ENTRY] ⚠️ Preço de RP${i+1} inválido: ${rpPrice} para ${binanceSide} @ ${averageEntryPrice}. Pulando.`);
-            continue;
-          }
-          
-          if (reductionQty > 0 && reductionQty >= minQtyForRp) {
-            cumulativeQtyForRps += reductionQty;
-            
-            try {
-              console.log(`[LIMIT_ENTRY] 🎯 Criando RP${i+1}: ${reductionQty.toFixed(quantityPrecision)} ${signal.symbol} @ ${rpPrice.toFixed(pricePrecision)} (${binanceOppositeSide})`);
-              
-              const rpResponse = await newReduceOnlyOrder(
-                numericAccountId,
-                signal.symbol,
-                reductionQty,
-                binanceOppositeSide,
-                rpPrice
-              );
-              
-              if (rpResponse && (rpResponse.data?.orderId || rpResponse.orderId)) {
-                const rpOrderId = rpResponse.data?.orderId || rpResponse.orderId;
-                console.log(`[LIMIT_ENTRY] ✅ RP${i+1} criada: ${rpOrderId} (${(reductionPercent*100).toFixed(0)}%)`);
-                
-                await connection.query(
-                  `UPDATE webhook_signals SET rp_order_id_${i+1} = ? WHERE id = ?`,
-                  [String(rpOrderId), signal.id]
-                );
-              }
-            } catch (rpError) {
-              console.error(`[LIMIT_ENTRY] ❌ Erro ao criar RP${i+1}:`, rpError.response?.data || rpError.message);
-              // NÃO SOMAR SE FALHOU
-              cumulativeQtyForRps -= reductionQty;
-            }
-          } else {
-            console.log(`[LIMIT_ENTRY] ⏭️ RP${i+1} quantidade muito pequena (${reductionQty.toFixed(quantityPrecision)}) < mínimo: ${minQtyForRp}. Pulando.`);
-          }
-        } else {
-          console.log(`[LIMIT_ENTRY] ⏭️ RP${i+1} não tem preço válido: ${rpPrice}`);
-        }
-      }
-
-      // ✅ CRIAR TP FINAL - VERSÃO CORRIGIDA COM TAKE_PROFIT_MARKET
-      const finalTpPrice = targetPrices.tp5;
-      const qtyForFinalTpRaw = totalFilledSize - cumulativeQtyForRps;
-      const qtyForFinalTp = parseFloat(qtyForFinalTpRaw.toFixed(quantityPrecision));
-      
-      console.log(`[LIMIT_ENTRY] 📊 TP Final calculado:`);
-      console.log(`  - Preço: ${finalTpPrice || 'N/A'}`);
-      console.log(`  - Quantidade restante: ${qtyForFinalTp.toFixed(quantityPrecision)} (Total: ${totalFilledSize.toFixed(quantityPrecision)} - RPs: ${cumulativeQtyForRps.toFixed(quantityPrecision)})`);
-      
-      if (finalTpPrice && finalTpPrice > 0) {
-        // VALIDAR SE O PREÇO TP É RAZOÁVEL
-        const isValidTpPrice = (binanceSide === 'BUY' && finalTpPrice > averageEntryPrice) || 
-                              (binanceSide === 'SELL' && finalTpPrice < averageEntryPrice);
-        
-        if (!isValidTpPrice) {
-          console.warn(`[LIMIT_ENTRY] ⚠️ Preço TP final inválido: ${finalTpPrice} para ${binanceSide} @ ${averageEntryPrice}. Ajustando...`);
-          
-          // Ajustar TP para 5% de lucro
-          const tpAdjustment = binanceSide === 'BUY' ? 1.05 : 0.95;
-          const adjustedTpPrice = averageEntryPrice * tpAdjustment;
-          const roundedTpPrice = await roundPriceToTickSize(signal.symbol, adjustedTpPrice, numericAccountId);
-          
-          console.log(`[LIMIT_ENTRY] 🔧 TP ajustado: ${finalTpPrice} → ${roundedTpPrice}`);
-          finalTpPrice = roundedTpPrice;
-        }
-        
-        try {
-          console.log(`[LIMIT_ENTRY] 🎯 Criando TP Final: TAKE_PROFIT_MARKET ${binanceOppositeSide} @ stopPrice=${finalTpPrice} (closePosition=true)`);
-          
-          // ✅ CORREÇÃO: TAKE_PROFIT_MARKET com apenas stopPrice
-          const tpResponse = await newStopOrder(
-            numericAccountId,
-            signal.symbol,
-            null,                    // ✅ quantity = null (closePosition = true)
-            binanceOppositeSide,
-            finalTpPrice,            // ✅ stopPrice (preço de gatilho)
-            null,                    // ✅ price = null (NÃO usado para TAKE_PROFIT_MARKET)
-            true,                    // ✅ reduceOnly = true
-            true,                    // ✅ closePosition = true
-            'TAKE_PROFIT_MARKET'     // ✅ Tipo explícito
+          await connection.query(
+            `UPDATE webhook_signals SET tp_order_id = ? WHERE id = ?`,
+            [String(tpFallbackOrderId), signal.id]
           );
-          
-          if (tpResponse && (tpResponse.data?.orderId || tpResponse.orderId)) {
-            const tpOrderId = tpResponse.data?.orderId || tpResponse.orderId;
-            console.log(`[LIMIT_ENTRY] ✅ TP Final TAKE_PROFIT_MARKET criado: ${tpOrderId} @ stopPrice=${finalTpPrice}`);
-            
-            await connection.query(
-              `UPDATE webhook_signals SET tp_order_id = ? WHERE id = ?`,
-              [String(tpOrderId), signal.id]
-            );
-          }
-        } catch (tpError) {
-          console.error(`[LIMIT_ENTRY] ❌ Erro ao criar TP Final TAKE_PROFIT_MARKET:`, tpError.response?.data || tpError.message);
-          
-          // ✅ FALLBACK: Se TAKE_PROFIT_MARKET falhar, tentar LIMIT reduce-only
-          if (qtyForFinalTp > 0) {
-            console.log(`[LIMIT_ENTRY] 🔄 FALLBACK: Tentando TP como LIMIT reduce-only...`);
-            
-            try {
-              const tpFallbackResponse = await newReduceOnlyOrder(
-                numericAccountId,
-                signal.symbol,
-                qtyForFinalTp,
-                binanceOppositeSide,
-                finalTpPrice
-              );
-              
-              if (tpFallbackResponse && (tpFallbackResponse.data?.orderId || tpFallbackResponse.orderId)) {
-                const tpFallbackOrderId = tpFallbackResponse.data?.orderId || tpFallbackResponse.orderId;
-                console.log(`[LIMIT_ENTRY] ✅ TP Final criado como LIMIT reduce-only (fallback): ${tpFallbackOrderId}`);
-                
-                await connection.query(
-                  `UPDATE webhook_signals SET tp_order_id = ? WHERE id = ?`,
-                  [String(tpFallbackOrderId), signal.id]
-                );
-              }
-            } catch (fallbackError) {
-              console.error(`[LIMIT_ENTRY] ❌ Erro no fallback do TP Final:`, fallbackError.response?.data || fallbackError.message);
-            }
-          }
         }
-      } else {
-        console.warn(`[LIMIT_ENTRY] ⚠️ TP Final não criado - Preço: ${finalTpPrice}, Quantidade restante: ${qtyForFinalTp.toFixed(quantityPrecision)}`);
+      } catch (fallbackError) {
+        console.error(`[LIMIT_ENTRY] ❌ Erro no fallback do TP Final:`, fallbackError.response?.data || fallbackError.message);
       }
+    }
+  }
+} else {
+  console.warn(`[LIMIT_ENTRY] ⚠️ TP Final não criado - Preço: ${finalTpPrice}, Quantidade restante: ${qtyForFinalTp.toFixed(quantityPrecision)}`);
+}
       
     } else {
       console.log(`[LIMIT_ENTRY] ⚠️ Entrada incompleta (${(fillRatio * 100).toFixed(1)}% < ${(ENTRY_COMPLETE_THRESHOLD_RATIO*100).toFixed(1)}%). SL/TP/RPs não serão criados.`);

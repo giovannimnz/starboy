@@ -1591,7 +1591,7 @@ async function editOrder(accountId, symbol, orderId, newPrice, side, quantity = 
 }
 
 /**
- * Cria ordem STOP_MARKET/TAKE_PROFIT_MARKET (VERSÃO CORRIGIDA CONFORME DOCUMENTAÇÃO BINANCE)
+ * Cria ordem STOP_MARKET/TAKE_PROFIT_MARKET (VERSÃO CORRIGIDA)
  * @param {number} accountId - ID da conta
  * @param {string} symbol - Símbolo
  * @param {number|null} quantity - Quantidade (null se closePosition = true)
@@ -1641,21 +1641,19 @@ async function newStopOrder(accountId, symbol, quantity, side, stopPrice, price 
       console.warn(`[API] ⚠️ Parâmetro 'price' ignorado para ${orderType} - usa apenas 'stopPrice'`);
     }
     
-    // ✅ LÓGICA CORRIGIDA: closePosition OU quantity, nunca ambos
+    // ✅ CORREÇÃO CRÍTICA: Para SL/TP sempre usar closePosition=true e reduceOnly=false
     if (closePosition) {
-      console.log(`[API] ✅ Usando closePosition=true (fecha toda a posição)`);
+      console.log(`[API] ✅ Usando closePosition=true, reduceOnly=false (fecha toda a posição)`);
       orderParams.closePosition = 'true'; // ✅ CORREÇÃO: sempre string para API
-      // ✅ IMPORTANTE: quando closePosition=true, reduceOnly é implícito
-      // Mas vamos adicionar explicitamente para garantir
-      orderParams.reduceOnly = 'true';
+      // ✅ CORREÇÃO CRÍTICA: Para closePosition=true, usar reduceOnly=false
+      orderParams.reduceOnly = 'false'; // ✅ NOVO: false quando closePosition = true
     } else if (quantity && quantity > 0) {
       console.log(`[API] ✅ Usando quantidade específica: ${quantity}`);
       const formattedQuantity = formatQuantityCorrect(quantity, precision.quantityPrecision, symbol);
       orderParams.quantity = formattedQuantity;
       
-      if (reduceOnly) {
-        orderParams.reduceOnly = 'true'; // ✅ CORREÇÃO: string
-      }
+      // ✅ USAR O PARÂMETRO reduceOnly CONFORME PASSADO
+      orderParams.reduceOnly = reduceOnly ? 'true' : 'false';
     } else {
       throw new Error('Deve fornecer quantity OU closePosition=true');
     }
@@ -1668,7 +1666,7 @@ async function newStopOrder(accountId, symbol, quantity, side, stopPrice, price 
       quantity: orderParams.quantity || 'N/A (closePosition)',
       closePosition: orderParams.closePosition || 'false',
       reduceOnly: orderParams.reduceOnly || 'false',
-      note: 'price parâmetro NÃO usado conforme documentação Binance'
+      note: 'closePosition=true sempre usa reduceOnly=false'
     });
     
     // ENVIAR ORDEM
