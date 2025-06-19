@@ -689,30 +689,29 @@ function setupBookDepthWebsocket(symbol, callback, accountId) {
  * Para o monitoramento de preço
  */
 function stopPriceMonitoring(symbol, accountId) {
-  console.log(`[WEBSOCKET-DEBUG] setupBookDepthWebsocket chamado com:`);
-  console.log(`  - symbol: ${arguments[0]} (tipo: ${typeof arguments[0]})`);
-  console.log(`  - accountId: ${arguments[1]} (tipo: ${typeof arguments[1]})`);
-  console.log(`  - Total argumentos: ${arguments.length}`);
+  // ✅ CORREÇÃO: Remover código de debug duplicado e conflitante
+  console.log(`[WEBSOCKET] Parando monitoramento de preço para ${symbol} (conta ${accountId})`);
   
-  if (!arguments[1] || typeof arguments[1] !== 'number') {
-    console.error(`[WEBSOCKET-DEBUG] ❌ ERRO: accountId inválido!`);
-    console.error(`[WEBSOCKET-DEBUG] Stack trace:`);
-    console.error(new Error().stack);
-    throw new Error(`setupBookDepthWebsocket: accountId é obrigatório (recebido: ${arguments[1]})`);
-  }
   // Validação do accountId
   if (!accountId || typeof accountId !== 'number') {
-    console.error(`[WEBSOCKET] AccountId inválido para setupBookDepthWebsocket: ${accountId} (tipo: ${typeof accountId})`);
+    console.error(`[WEBSOCKET] AccountId inválido para stopPriceMonitoring: ${accountId} (tipo: ${typeof accountId})`);
     throw new Error(`AccountId é obrigatório e deve ser um número, recebido: ${accountId}`);
   }
-  
-  console.log(`[WEBSOCKET] setupBookDepthWebsocket chamado para conta ${accountId}`);
 
   const priceWebsockets = getPriceWebsockets(accountId);
   if (priceWebsockets && priceWebsockets.has(symbol)) {
-    priceWebsockets.get(symbol).close();
-    priceWebsockets.delete(symbol);
-    return true;
+    const ws = priceWebsockets.get(symbol);
+    try {
+      if (ws && ws.readyState !== WebSocket.CLOSED) {
+        ws.close(1000, 'Monitoring stopped');
+      }
+      priceWebsockets.delete(symbol);
+      console.log(`[WEBSOCKET] ✅ Monitoramento parado para ${symbol} (conta ${accountId})`);
+      return true;
+    } catch (error) {
+      console.error(`[WEBSOCKET] Erro ao parar monitoramento de ${symbol}:`, error.message);
+      return false;
+    }
   }
   return false;
 }

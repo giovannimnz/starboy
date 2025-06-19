@@ -118,18 +118,32 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
   };
 
   try { // This is the main try block for the executeLimitMakerEntry function
-    // ✅ REGISTRAR HANDLER PARA WEBSOCKET (MANTIDO)
+    // ✅ REGISTRAR HANDLER PARA WEBSOCKET COM BACKUP DO ORIGINAL
     const existingHandlers = websockets.getHandlers(accountId) || {};
+    
+    // ✅ BACKUP do handler original para restaurar depois
+    if (existingHandlers.handleOrderUpdate) {
+      existingHandlers.originalHandleOrderUpdate = existingHandlers.handleOrderUpdate;
+    }
+    
     const updatedHandlers = {
       ...existingHandlers,
       handleOrderUpdate: async (msg, db) => {
-        if (existingHandlers.handleOrderUpdate) {
-          await existingHandlers.handleOrderUpdate(msg, db);
+        try {
+          // Executar handler original primeiro
+          if (existingHandlers.originalHandleOrderUpdate) {
+            await existingHandlers.originalHandleOrderUpdate(msg, db);
+          }
+          // Depois executar nosso handler específico
+          orderUpdateHandler(msg);
+        } catch (handlerError) {
+          console.error(`[LIMIT_ENTRY] Erro no handler de ordem:`, handlerError.message);
         }
-        orderUpdateHandler(msg);
       }
     };
+    
     websockets.setMonitoringCallbacks(updatedHandlers, accountId);
+    console.log(`[LIMIT_ENTRY] ✅ Handler WebSocket registrado com backup para conta ${accountId}`);
 
     let connection = null;
     let activeOrderId = null;
@@ -142,13 +156,13 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
     let pricePrecision;
     let numericAccountId;
 
-    // ✅ CONSTANTES CORRIGIDAS DA VERSÃO DEV
-    const MAX_CHASE_ATTEMPTS = 100;
-    const CHASE_TIMEOUT_MS = 180000; // 3 minutos (CORRIGIDO da versão dev)
-    const WAIT_FOR_ORDER_CONFIRMATION_MS = 15000;
-    const EDIT_WAIT_TIMEOUT_MS = 3000;
-    const MAX_DEPTH_STALENESS_MS = 3000;
-    const ENTRY_COMPLETE_THRESHOLD_RATIO = 0.98; // CORRIGIDO: 98% em vez de 99.9%
+    // ✅ CONSTANTES CORRIGIDAS PARA MAIS EFICIÊNCIA
+    const MAX_CHASE_ATTEMPTS = 50; // Reduzido de 100
+    const CHASE_TIMEOUT_MS = 120000; // 2 minutos em vez de 3
+    const WAIT_FOR_ORDER_CONFIRMATION_MS = 10000; // Reduzido de 15s
+    const EDIT_WAIT_TIMEOUT_MS = 2000; // Reduzido de 3s
+    const MAX_DEPTH_STALENESS_MS = 2000; // Reduzido de 3s
+    const ENTRY_COMPLETE_THRESHOLD_RATIO = 0.95; // 95% em vez de 98%
 
     let chaseAttempts = 0;
     let totalEntrySize = 0;
@@ -338,9 +352,9 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
         lastDepthUpdateTimestamp = Date.now();
         wsUpdateErrorCount = 0;
         
-        // DEBUG: Log apenas a cada 10 atualizações para não poluir
-        if (Math.random() < 0.1) {
-          //console.log(`[LIMIT_ENTRY_DEPTH_WS] ${signal.symbol}: Bid=${bid.toFixed(pricePrecision)}, Ask=${ask.toFixed(pricePrecision)}, Spread=${spread.toFixed(pricePrecision)}`);
+        // DEBUG: Log apenas a cada 20 atualizações para não poluir
+        if (Math.random() < 0.05) { // 5% de chance = ~1 a cada 20 mensagens
+          console.log(`[LIMIT_ENTRY_DEPTH_WS] ${signal.symbol}: Bid=${bid.toFixed(pricePrecision)}, Ask=${ask.toFixed(pricePrecision)}, Spread=${spread.toFixed(pricePrecision)}`);
         }
       } else {
         wsUpdateErrorCount++;
@@ -364,10 +378,10 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       if (currentMarketPrice && currentMarketPrice > 0) {
         // ✅ CORREÇÃO: Spread mais realista baseado no tick size
         const tickSizeInfo = await getTickSize(signal.symbol, numericAccountId);
-        const tickSize = parseFloat(tickSizeInfo.tickSize) || (currentMarketPrice * 0.0001);
+        const tickSize = parseFloat(tickSizeInfo) || (currentMarketPrice * 0.0001); // ✅ CORREÇÃO: tickSizeInfo já é number
         
         fallbackBid = currentMarketPrice - tickSize;
-        fallbackAsk = currentPrice - tickSize; // Corrected: should be currentPrice + tickSize for ask
+        fallbackAsk = currentMarketPrice + tickSize; // ✅ CORREÇÃO: + tickSize para ask
         console.log(`[LIMIT_ENTRY] Dados de fallback: Bid=${fallbackBid.toFixed(pricePrecision)}, Ask=${fallbackAsk.toFixed(pricePrecision)} (tick=${tickSize})`);
       }
     } catch (priceError) {
@@ -1346,21 +1360,74 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
 
     return { success: false, error: originalErrorMessage };
 
-  } finally { // This is the finally block for the main try
-    // ✅ CORREÇÃO CRÍTICA: Verificar se depthWs existe antes de usar
-    if (typeof depthWs !== 'undefined' && depthWs) {
+  } finally {
+    // ✅ CORREÇÃO CRÍTICA: Verificar se depthWs existe e é um WebSocket válido
+    if (typeof depthWs !== 'undefined' && depthWs !== null) {
       console.log(`[LIMIT_ENTRY] Fechando WebSocket de profundidade para ${signal?.symbol || 'unknown'} no bloco finally.`);
       try {
-        if (depthWs.readyState === 1) { // WebSocket.OPEN
-          depthWs.close();
+        // Verificar se é um WebSocket válido antes de tentar fechar
+        if (depthWs && typeof depthWs.close === 'function' && depthWs.readyState !== undefined) {
+          if (depthWs.readyState === 1) { // WebSocket.OPEN
+            depthWs.close(1000, 'Execution completed');
+          }
         }
         depthWs = null;
       } catch (wsCloseError) {
         console.error(`[LIMIT_ENTRY] Erro ao fechar WebSocket:`, wsCloseError.message);
       }
     }
+    
+    // ✅ LIMPEZA ADICIONAL: Remover callbacks temporários
+    try {
+      if (numericAccountId && signal?.symbol) {
+        console.log(`[LIMIT_ENTRY] Limpando recursos WebSocket para ${signal.symbol} (conta ${numericAccountId})`);
+        
+        // Restaurar handlers originais se necessário
+        const originalHandlers = websockets.getHandlers(numericAccountId) || {};
+        if (originalHandlers.originalHandleOrderUpdate) {
+          originalHandlers.handleOrderUpdate = originalHandlers.originalHandleOrderUpdate;
+          delete originalHandlers.originalHandleOrderUpdate;
+          websockets.setMonitoringCallbacks(originalHandlers, numericAccountId);
+        }
+      }
+    } catch (cleanupError) {
+      console.error(`[LIMIT_ENTRY] Erro na limpeza de recursos:`, cleanupError.message);
+    }
+    
     if (connection) {
-      connection.release();
+      try {
+        connection.release();
+        console.log(`[LIMIT_ENTRY] Conexão de banco liberada para sinal ${signal?.id || 'unknown'}`);
+      } catch (releaseError) {
+        console.error(`[LIMIT_ENTRY] Erro ao liberar conexão:`, releaseError.message);
+      }
+    }
+  
+    
+    // ✅ LIMPEZA ADICIONAL: Remover callbacks temporários
+    try {
+      if (numericAccountId && signal?.symbol) {
+        console.log(`[LIMIT_ENTRY] Limpando recursos WebSocket para ${signal.symbol} (conta ${numericAccountId})`);
+        
+        // Restaurar handlers originais se necessário
+        const originalHandlers = websockets.getHandlers(numericAccountId) || {};
+        if (originalHandlers.originalHandleOrderUpdate) {
+          originalHandlers.handleOrderUpdate = originalHandlers.originalHandleOrderUpdate;
+          delete originalHandlers.originalHandleOrderUpdate;
+          websockets.setMonitoringCallbacks(originalHandlers, numericAccountId);
+        }
+      }
+    } catch (cleanupError) {
+      console.error(`[LIMIT_ENTRY] Erro na limpeza de recursos:`, cleanupError.message);
+    }
+    
+    if (connection) {
+      try {
+        connection.release();
+        console.log(`[LIMIT_ENTRY] Conexão de banco liberada para sinal ${signal?.id || 'unknown'}`);
+      } catch (releaseError) {
+        console.error(`[LIMIT_ENTRY] Erro ao liberar conexão:`, releaseError.message);
+      }
     }
   }
 }
@@ -1443,25 +1510,17 @@ async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3000, accountI
             console.log(`[WAIT_ORDER] ✅ Ordem ${orderId} confirmada via REST durante espera: ${orderStatus.status}`);
             return orderStatus;
           }
-        } catch (error) {
-          // Ignorar erros durante o loop
+        } catch (restError) {
+          console.log(`[WAIT_ORDER] ⚠️ Erro REST durante espera: ${restError.message}`);
         }
       }
     }
     
-    // VERIFICAÇÃO FINAL VIA REST
-    try {
-      const finalStatus = await getOrderStatus(symbol, orderId, accountId);
-      console.log(`[WAIT_ORDER] Status final da ordem ${orderId}: ${finalStatus?.status || 'UNKNOWN'}`);
-      return finalStatus || { status: 'UNKNOWN', executedQty: '0', avgPrice: '0' };
-    } catch (error) {
-      console.log(`[WAIT_ORDER] ❌ Erro final ao verificar ordem ${orderId}: ${error.message}`);
-      return { status: 'UNKNOWN', executedQty: '0', avgPrice: '0' };
-    }
-    
+    console.warn(`[WAIT_ORDER] ⏰ Tempo limite atingido (${maxWaitMs}ms) para a ordem ${orderId}. Status atual pode ser: FILLED, PARTIALLY_FILLED ou ainda NEW.`);
+    return { status: 'PENDING' };
   } catch (error) {
-    console.error(`[WAIT_ORDER] ❌ Erro crítico em waitForOrderExecution:`, error);
-    return { status: 'ERROR', executedQty: '0', avgPrice: '0' };
+    console.error(`[WAIT_ORDER] ERRO:`, error.message);
+    return { status: 'ERROR' };
   }
 }
 
