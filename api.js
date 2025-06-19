@@ -1626,29 +1626,34 @@ async function newStopOrder(accountId, symbol, quantity, side, stopPrice, price 
     
     // OBTER PRECISÃO PARA FORMATAÇÃO
     const precision = await getPrecisionCached(symbol, accountId);
-    const formattedQuantity = formatQuantityCorrect(quantity, precision.quantityPrecision, symbol);
     
     // PREPARAR DADOS BASE DA ORDEM
     const orderParams = {
       symbol: symbol,
       side: side,
       type: orderType,
-      quantity: formattedQuantity,
       stopPrice: parseFloat(roundedStopPrice),
       newOrderRespType: "RESULT" // Mudado de ACK para RESULT para mais detalhes
     };
     
-    // ADICIONAR closePosition OU reduceOnly, mas nunca ambos
+    // NOVA LÓGICA: Se closePosition for true, não adicionar quantidade
     if (closePosition) {
       orderParams.closePosition = true;
-      // Não adicionar reduceOnly quando closePosition é true
       console.log(`[API] Usando closePosition=true para ordem ${orderType}`);
-    } else if (reduceOnly) {
-      orderParams.reduceOnly = true;
-      console.log(`[API] Usando reduceOnly=true para ordem ${orderType}`);
+    } else {
+      // Apenas adicionar quantidade se não estiver usando closePosition
+      if (quantity) {
+        const formattedQuantity = formatQuantityCorrect(quantity, precision.quantityPrecision, symbol);
+        orderParams.quantity = formattedQuantity;
+      }
+      
+      if (reduceOnly) {
+        orderParams.reduceOnly = true;
+        console.log(`[API] Usando reduceOnly=true para ordem ${orderType}`);
+      }
     }
     
-    console.log(`[API] Enviando ordem ${orderType}: ${symbol}, ${formattedQuantity}, ${side}, ${roundedStopPrice}, closePosition: ${closePosition}, reduceOnly: ${reduceOnly}`);
+    console.log(`[API] Enviando ordem ${orderType}: ${symbol}, ${orderParams.quantity || 'closePosition'}, ${side}, ${roundedStopPrice}, closePosition: ${closePosition}, reduceOnly: ${reduceOnly}`);
     
     // USAR makeAuthenticatedRequest EM VEZ DE CREDENCIAIS GLOBAIS
     const response = await makeAuthenticatedRequest(accountId, 'POST', '/v1/order', orderParams);
