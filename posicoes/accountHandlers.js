@@ -1,5 +1,6 @@
 const { getDatabaseInstance, insertPosition, formatDateForMySQL } = require('../db/conexao');
 const websockets = require('../websockets');
+const { sendTelegramMessage, formatBalanceMessage, formatAlertMessage } = require('./telegramBot');
 
 /**
  * Processa atualizações de conta via WebSocket (ACCOUNT_UPDATE)
@@ -90,12 +91,12 @@ async function handleBalanceUpdates(connection, balances, accountId, reason) {
       // ATUALIZAR SALDO USDT NA TABELA CONTAS
       if (asset === 'USDT' && Math.abs(balanceChange) > 0.001) {
         try {
-          // CALCULAR NOVA BASE DE CÁLCULO (manter o maior entre 5% do disponível e base anterior)
           const [currentData] = await connection.query(
-            'SELECT saldo_base_calculo FROM contas WHERE id = ?',
+            'SELECT saldo, saldo_base_calculo FROM contas WHERE id = ?',
             [accountId]
           );
           
+          const previousBalance = currentData.length > 0 ? parseFloat(currentData[0].saldo || '0') : 0;
           const previousBaseCalculo = currentData.length > 0 ? parseFloat(currentData[0].saldo_base_calculo || '0') : 0;
           const calculoBasadaEm5Porcento = crossWalletBalance * 0.05;
           const novaBaseCalculo = Math.max(calculoBasadaEm5Porcento, previousBaseCalculo);
@@ -110,6 +111,17 @@ async function handleBalanceUpdates(connection, balances, accountId, reason) {
           );
           
           console.log(`[ACCOUNT] ✅ Saldo USDT atualizado: ${walletBalance.toFixed(2)} (base: ${novaBaseCalculo.toFixed(2)})`);
+          
+          // ✅ NOTIFICAÇÃO TELEGRAM PARA MUDANÇAS SIGNIFICATIVAS
+          if (Math.abs(balanceChange) > 10 || reason === 'REALIZED_PNL') { // Mudanças > $10 ou PnL realizado
+            try {
+              const message = formatBalanceMessage(accountId, previousBalance, walletBalance, reason);
+              await sendTelegramMessage(accountId, message);
+              console.log(`[ACCOUNT] 📱 Notificação de saldo enviada`);
+            } catch (telegramError) {
+              console.warn(`[ACCOUNT] ⚠️ Erro ao enviar notificação de saldo:`, telegramError.message);
+            }
+          }
           
         } catch (updateError) {
           console.error(`[ACCOUNT] ❌ Erro ao atualizar saldo USDT para conta ${accountId}:`, updateError.message);

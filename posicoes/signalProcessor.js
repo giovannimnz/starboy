@@ -136,14 +136,15 @@ async function processSignal(signal, db, accountId) {
         if (signal.chat_id) {
           try {
             const { sendTelegramMessage, formatEntryMessage } = require('./telegramBot');
+            const totalValue = entryResult.filledQuantity * entryResult.averagePrice;
             const message = formatEntryMessage(
               signalForEntry, 
               entryResult.filledQuantity || 0, 
               entryResult.averagePrice || currentPrice, 
-              entryResult.totalValue || 0
+              totalValue || 0
             );
             
-            await sendTelegramMessage(accountId, signal.chat_id, message);
+            await sendTelegramMessage(accountId, message);
             console.log(`[SIGNAL] 📱 Notificação enviada via Telegram para sinal ${signalId}`);
           } catch (telegramError) {
             console.warn(`[SIGNAL] ⚠️ Erro ao enviar notificação Telegram para sinal ${signalId}:`, telegramError.message);
@@ -167,7 +168,7 @@ async function processSignal(signal, db, accountId) {
           try {
             const { sendTelegramMessage, formatErrorMessage } = require('./telegramBot');
             const errorMessage = formatErrorMessage(signalForEntry, errorMsg);
-            await sendTelegramMessage(accountId, signal.chat_id, errorMessage);
+            await sendTelegramMessage(accountId, errorMessage);
           } catch (telegramError) {
             console.warn(`[SIGNAL] ⚠️ Erro ao enviar notificação de erro via Telegram:`, telegramError.message);
           }

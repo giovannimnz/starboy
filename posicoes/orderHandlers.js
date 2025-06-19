@@ -1,5 +1,6 @@
 const { getDatabaseInstance, insertPosition, insertNewOrder, formatDateForMySQL } = require('../db/conexao');
 const websockets = require('../websockets');
+const { sendTelegramMessage, formatOrderMessage, formatPositionClosedMessage } = require('./telegramBot');
 
 /**
  * Processa atualizações de ordens via WebSocket USER_DATA_STREAM
@@ -219,6 +220,34 @@ async function handleTradeExecution(connection, order, accountId, existingOrder)
     // SE ORDEM FOI TOTALMENTE PREENCHIDA, VERIFICAR SE PRECISA CRIAR/ATUALIZAR POSIÇÃO
     if (order.X === 'FILLED' && !order.R) { // Se não é reduce only
       await handlePositionFromOrder(connection, order, accountId);
+    }
+
+    // ✅ NOTIFICAÇÃO TELEGRAM PARA ORDENS IMPORTANTES
+    if (order.X === 'FILLED' && existingOrder) {
+      try {
+        // Verificar se é ordem importante (SL, TP, ou entrada grande)
+        const orderType = existingOrder.tipo_ordem_bot;
+        const shouldNotify = orderType === 'STOP_LOSS' || 
+                           orderType === 'TAKE_PROFIT' || 
+                           orderType === 'REDUCAO_PARCIAL' ||
+                           (orderType === 'ENTRADA' && executedQty * avgPrice > 100); // Entradas > $100
+        
+        if (shouldNotify) {
+          const message = formatOrderMessage(
+            symbol, 
+            order.S, 
+            orderType, 
+            executedQty.toFixed(6), 
+            avgPrice.toFixed(4), 
+            'FILLED'
+          );
+          
+          await sendTelegramMessage(accountId, message);
+          console.log(`[ORDER] 📱 Notificação de ordem ${orderType} enviada`);
+        }
+      } catch (telegramError) {
+        console.warn(`[ORDER] ⚠️ Erro ao enviar notificação de ordem:`, telegramError.message);
+      }
     }
 
     console.log(`[ORDER] Trade executado: ${orderId} - ${lastFilledQty} @ ${lastFilledPrice} (Total: ${executedQty}) - Comissão: ${commission} ${commissionAsset}`);

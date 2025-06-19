@@ -30,6 +30,13 @@ async function cancelSignal(db, signalId, status, reason, accountId) {
   try {
     console.log(`[TIMEOUT] Cancelando sinal ${signalId} para conta ${accountId}: ${reason}`);
     
+    // Obter dados do sinal antes de cancelar
+    const [signalData] = await db.query(`
+      SELECT symbol, side, leverage, entry_price
+      FROM webhook_signals
+      WHERE id = ? AND conta_id = ?
+    `, [signalId, accountId]);
+    
     await db.query(`
       UPDATE webhook_signals
       SET status = ?,
@@ -38,13 +45,29 @@ async function cancelSignal(db, signalId, status, reason, accountId) {
       WHERE id = ? AND conta_id = ?
     `, [status, reason, signalId, accountId]);
     
-    // Enviar notificação via Telegram se configurado
+    // ✅ NOTIFICAÇÃO TELEGRAM MELHORADA
     try {
-      await sendTelegramMessage(accountId, null, 
-        `⚠️ Sinal #${signalId} cancelado\n📝 Motivo: ${reason}`
-      );
+      const { sendTelegramMessage, formatAlertMessage } = require('./telegramBot');
+      
+      let message;
+      if (signalData.length > 0) {
+        const signal = signalData[0];
+        const side = signal.side === 'BUY' ? '🟢 COMPRA' : '🔴 VENDA';
+        message = `⏰ <b>SINAL CANCELADO</b>\n\n` +
+                 `📊 <b>${signal.symbol}</b>\n` +
+                 `${side} | ${signal.leverage}x\n` +
+                 `💰 Entrada: $${signal.entry_price}\n\n` +
+                 `📝 <b>Motivo:</b>\n${reason}\n\n` +
+                 `🆔 Sinal: #${signalId}\n` +
+                 `⏰ ${new Date().toLocaleString('pt-BR')}`;
+      } else {
+        message = formatAlertMessage('SINAL CANCELADO', `Sinal #${signalId}: ${reason}`, 'WARNING');
+      }
+      
+      await sendTelegramMessage(accountId, message);
+      console.log(`[TIMEOUT] 📱 Notificação de cancelamento enviada`);
     } catch (telegramError) {
-      console.warn(`[TIMEOUT] Erro ao enviar notificação Telegram para conta ${accountId}:`, telegramError.message);
+      console.warn(`[TIMEOUT] ⚠️ Erro ao enviar notificação Telegram para conta ${accountId}:`, telegramError.message);
     }
     
   } catch (error) {

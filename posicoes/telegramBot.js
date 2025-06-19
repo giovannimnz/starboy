@@ -381,11 +381,122 @@ function listActiveBots() {
   return Array.from(activeBots.keys());
 }
 
+/**
+ * Formata mensagem de entrada executada
+ */
+function formatEntryMessage(signal, filledQuantity, averagePrice, totalValue) {
+  const side = signal.side.toUpperCase() === 'BUY' || signal.side.toUpperCase() === 'COMPRA' ? '🟢 COMPRA' : '🔴 VENDA';
+  const leverage = signal.leverage || 1;
+  
+  return `🎯 <b>ENTRADA EXECUTADA</b>\n\n` +
+         `📊 <b>${signal.symbol}</b>\n` +
+         `${side} | ${leverage}x\n\n` +
+         `💰 <b>Execução:</b>\n` +
+         `├ Quantidade: ${filledQuantity.toFixed(6)}\n` +
+         `├ Preço médio: $${averagePrice.toFixed(4)}\n` +
+         `└ Valor total: $${totalValue.toFixed(2)}\n\n` +
+         `🎯 <b>Alvos:</b>\n` +
+         `├ 🟢 TP1: $${signal.tp1_price || 'N/A'}\n` +
+         `├ 🟢 TP2: $${signal.tp2_price || 'N/A'}\n` +
+         `├ 🟢 TP3: $${signal.tp3_price || 'N/A'}\n` +
+         `└ 🔴 SL: $${signal.sl_price || 'N/A'}\n\n` +
+         `⏰ ${new Date().toLocaleString('pt-BR')}`;
+}
+
+/**
+ * Formata mensagem de erro
+ */
+function formatErrorMessage(signal, errorMsg) {
+  const side = signal.side.toUpperCase() === 'BUY' || signal.side.toUpperCase() === 'COMPRA' ? '🟢 COMPRA' : '🔴 VENDA';
+  
+  return `❌ <b>ERRO NA ENTRADA</b>\n\n` +
+         `📊 <b>${signal.symbol}</b>\n` +
+         `${side} | ${signal.leverage || 1}x\n\n` +
+         `🚫 <b>Motivo:</b>\n` +
+         `${errorMsg}\n\n` +
+         `⏰ ${new Date().toLocaleString('pt-BR')}`;
+}
+
+/**
+ * Formata mensagem de ordem executada
+ */
+function formatOrderMessage(symbol, side, orderType, quantity, price, status) {
+  const sideIcon = side === 'BUY' ? '🟢' : '🔴';
+  const statusIcon = status === 'FILLED' ? '✅' : status === 'PARTIALLY_FILLED' ? '🔄' : '📋';
+  
+  return `${statusIcon} <b>ORDEM ${status}</b>\n\n` +
+         `📊 <b>${symbol}</b>\n` +
+         `${sideIcon} ${side} ${orderType}\n\n` +
+         `💰 <b>Detalhes:</b>\n` +
+         `├ Quantidade: ${quantity}\n` +
+         `└ Preço: $${price}\n\n` +
+         `⏰ ${new Date().toLocaleString('pt-BR')}`;
+}
+
+/**
+ * Formata mensagem de mudança de saldo
+ */
+function formatBalanceMessage(accountId, oldBalance, newBalance, reason) {
+  const change = newBalance - oldBalance;
+  const changeIcon = change >= 0 ? '📈' : '📉';
+  const changeColor = change >= 0 ? '🟢' : '🔴';
+  
+  return `${changeIcon} <b>SALDO ATUALIZADO</b>\n\n` +
+         `🏦 Conta: ${accountId}\n\n` +
+         `💰 <b>Mudança:</b>\n` +
+         `├ Anterior: $${oldBalance.toFixed(2)}\n` +
+         `├ Atual: $${newBalance.toFixed(2)}\n` +
+         `└ ${changeColor} ${change >= 0 ? '+' : ''}$${change.toFixed(2)}\n\n` +
+         `📝 Motivo: ${reason}\n` +
+         `⏰ ${new Date().toLocaleString('pt-BR')}`;
+}
+
+/**
+ * Formata mensagem de posição fechada
+ */
+function formatPositionClosedMessage(symbol, side, quantity, entryPrice, exitPrice, pnl) {
+  const pnlIcon = pnl >= 0 ? '💰' : '💸';
+  const pnlColor = pnl >= 0 ? '🟢' : '🔴';
+  const sideIcon = side === 'BUY' ? '🟢' : '🔴';
+  
+  return `${pnlIcon} <b>POSIÇÃO FECHADA</b>\n\n` +
+         `📊 <b>${symbol}</b>\n` +
+         `${sideIcon} ${side}\n\n` +
+         `💰 <b>Resultado:</b>\n` +
+         `├ Quantidade: ${quantity}\n` +
+         `├ Entrada: $${entryPrice.toFixed(4)}\n` +
+         `├ Saída: $${exitPrice.toFixed(4)}\n` +
+         `└ ${pnlColor} PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}\n\n` +
+         `⏰ ${new Date().toLocaleString('pt-BR')}`;
+}
+
+/**
+ * Formata mensagem de alerta
+ */
+function formatAlertMessage(title, message, level = 'INFO') {
+  const icons = {
+    'INFO': 'ℹ️',
+    'WARNING': '⚠️',
+    'ERROR': '❌',
+    'SUCCESS': '✅'
+  };
+  
+  return `${icons[level] || 'ℹ️'} <b>${title}</b>\n\n${message}\n\n⏰ ${new Date().toLocaleString('pt-BR')}`;
+}
+
+// ✅ ATUALIZAR module.exports PARA INCLUIR AS NOVAS FUNÇÕES:
 module.exports = {
   initializeTelegramBot,
   sendTelegramMessage,
   stopTelegramBot,
   testTelegramBotFixed,
   stopAllTelegramBots,
-  listActiveBots
+  listActiveBots,
+  // ✅ NOVAS FUNÇÕES DE FORMATAÇÃO:
+  formatEntryMessage,
+  formatErrorMessage,
+  formatOrderMessage,
+  formatBalanceMessage,
+  formatPositionClosedMessage,
+  formatAlertMessage
 };

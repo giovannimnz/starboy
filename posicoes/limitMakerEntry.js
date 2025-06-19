@@ -4,6 +4,7 @@ const api = require('../api');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 const {  getRecentOrders, editOrder, roundPriceToTickSize, newMarketOrder, newLimitMakerOrder, newReduceOnlyOrder, cancelOrder, newStopOrder, getOpenOrders, getOrderStatus, getAllOpenPositions, getFuturesAccountBalanceDetails, getPrecision, getTickSize, getPrecisionCached, validateQuantity, adjustQuantityToRequirements,} = require('../api');
+const { sendTelegramMessage, formatEntryMessage, formatErrorMessage, formatAlertMessage } = require('./telegramBot');
 
 // ✅ CORREÇÃO: Declarar sentOrders no escopo correto e com Map melhorado
 async function executeLimitMakerEntry(signal, currentPrice, accountId) {
@@ -1124,17 +1125,39 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
     await connection.commit();
     console.log(`[LIMIT_ENTRY] Transação COMMITADA. Sucesso para Sinal ID ${signal.id}`);
 
+    // ✅ NOTIFICAÇÃO TELEGRAM DE SUCESSO
+    try {
+      const totalValue = totalFilledSize * averageEntryPrice;
+      const message = formatEntryMessage(signal, totalFilledSize, averageEntryPrice, totalValue);
+      
+      const messageSent = await sendTelegramMessage(accountId, message);
+      if (messageSent) {
+        console.log(`[LIMIT_ENTRY] 📱 Notificação de sucesso enviada via Telegram`);
+      }
+    } catch (telegramError) {
+      console.warn(`[LIMIT_ENTRY] ⚠️ Erro ao enviar notificação de sucesso:`, telegramError.message);
+    }
+
     return {
       success: true,
       positionId,
       averagePrice: averageEntryPrice,
       filledQuantity: totalFilledSize,
-      partialWarning: !slTpRpsCreated && totalFilledSize > 0 && fillRatiocatch < ENTRY_COMPLETE_THRESHOLD_RATIO
+      partialWarning: !slTpRpsCreated && totalFilledSize > 0 && fillRatio < ENTRY_COMPLETE_THRESHOLD_RATIO
     };
 
   } catch (error) { // This is the catch block for the main try
     const originalErrorMessage = error.message || String(error);
     console.error(`[LIMIT_ENTRY] ERRO FATAL DURANTE ENTRADA (Sinal ID ${signal.id}): ${originalErrorMessage}`, error.stack || error);
+
+    // ✅ NOTIFICAÇÃO TELEGRAM DE ERRO
+    try {
+      const errorMessage = formatErrorMessage(signal, originalErrorMessage);
+      await sendTelegramMessage(accountId, errorMessage);
+      console.log(`[LIMIT_ENTRY] 📱 Notificação de erro enviada via Telegram`);
+    } catch (telegramError) {
+      console.warn(`[LIMIT_ENTRY] ⚠️ Erro ao enviar notificação de erro:`, telegramError.message);
+    }
 
     // CANCELAR ORDEM ATIVA SE EXISTIR USANDO API.JS
     if (activeOrderId) {
