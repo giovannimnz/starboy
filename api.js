@@ -1606,42 +1606,28 @@ async function newStopOrder(accountId, symbol, quantity, side, stopPrice, price 
   try {
     console.log(`[API] Criando ordem STOP: ${side} ${quantity} ${symbol} @ stop=${stopPrice} (conta ${accountId})`);
     
-    // VALIDAÇÃO DE ACCOUNTID
     if (!accountId || typeof accountId !== 'number') {
       throw new Error(`AccountId deve ser um número válido: ${accountId}`);
     }
     
-    // DEFINIR TIPO DE ORDEM BASEADO NO PARÂMETRO PRICE
-    let orderType;
-    if (price !== null) {
-      orderType = "TAKE_PROFIT_MARKET";
-    } else {
-      orderType = "STOP_MARKET";
-    }
-    
-    // ARREDONDAR PREÇO DE STOP
-    console.log(`[API] Preço original de stop antes de arredondar: ${stopPrice}`);
+    const orderType = price !== null ? "TAKE_PROFIT_MARKET" : "STOP_MARKET";
     const roundedStopPrice = await roundPriceToTickSize(symbol, stopPrice, accountId);
-    console.log(`[API] Preço de stop após arredondar: ${roundedStopPrice}`);
-    
-    // OBTER PRECISÃO PARA FORMATAÇÃO
     const precision = await getPrecisionCached(symbol, accountId);
-    const formattedQuantity = formatQuantityCorrect(quantity, precision.quantityPrecision, symbol);
     
-    // PREPARAR DADOS BASE DA ORDEM
+    // ✅ FORMATAÇÃO SIMPLES SEM VALIDAÇÃO
+    const formattedQuantity = parseFloat(quantity.toFixed(precision.quantityPrecision)).toString();
+    
     const orderParams = {
       symbol: symbol,
       side: side,
       type: orderType,
       quantity: formattedQuantity,
       stopPrice: parseFloat(roundedStopPrice),
-      newOrderRespType: "RESULT" // Mudado de ACK para RESULT para mais detalhes
+      newOrderRespType: "RESULT"
     };
     
-    // ADICIONAR closePosition OU reduceOnly, mas nunca ambos
     if (closePosition) {
       orderParams.closePosition = true;
-      // Não adicionar reduceOnly quando closePosition é true
       console.log(`[API] Usando closePosition=true para ordem ${orderType}`);
     } else if (reduceOnly) {
       orderParams.reduceOnly = true;
@@ -1650,15 +1636,13 @@ async function newStopOrder(accountId, symbol, quantity, side, stopPrice, price 
     
     console.log(`[API] Enviando ordem ${orderType}: ${symbol}, ${formattedQuantity}, ${side}, ${roundedStopPrice}, closePosition: ${closePosition}, reduceOnly: ${reduceOnly}`);
     
-    // USAR makeAuthenticatedRequest EM VEZ DE CREDENCIAIS GLOBAIS
     const response = await makeAuthenticatedRequest(accountId, 'POST', '/v1/order', orderParams);
     
     console.log(`[API] ✅ Resposta da ordem ${orderType}:`, response);
-    return { data: response }; // Garantir estrutura consistente { data: {...} }
+    return { data: response };
     
   } catch (error) {
-    console.error(`[API] ❌ Erro ao enviar ordem ${price ? 'TAKE_PROFIT_MARKET' : 'STOP_MARKET'}:`,
-        error.response ? error.response.data : error.message);
+    console.error(`[API] ❌ Erro ao enviar ordem ${price ? 'TAKE_PROFIT_MARKET' : 'STOP_MARKET'}:`, error.message);
     throw error;
   }
 }
@@ -1676,21 +1660,18 @@ async function newReduceOnlyOrder(accountId, symbol, quantity, side, price) {
   try {
     console.log(`[API] Criando ordem LIMIT reduce-only: ${side} ${quantity} ${symbol} @ ${price} (conta ${accountId})`);
     
-    // VALIDAÇÃO DE ACCOUNTID
     if (!accountId || typeof accountId !== 'number') {
       throw new Error(`AccountId deve ser um número válido: ${accountId}`);
     }
     
-    // ARREDONDAR PREÇO E OBTER PRECISÃO
     const roundedPrice = await roundPriceToTickSize(symbol, price, accountId);
     const precision = await getPrecisionCached(symbol, accountId);
     
-    // GARANTIR QUE A QUANTIDADE ESTEJA NO FORMATO CORRETO
-    const formattedQuantity = formatQuantityCorrect(quantity, precision.quantityPrecision, symbol);
+    // ✅ FORMATAÇÃO SIMPLES SEM VALIDAÇÃO
+    const formattedQuantity = parseFloat(quantity.toFixed(precision.quantityPrecision)).toString();
     
     console.log(`[API] Enviando ordem LIMIT reduce-only: ${symbol}, ${side}, qty=${formattedQuantity}, price=${roundedPrice}`);
     
-    // DADOS DA ORDEM
     const orderParams = {
       symbol: symbol,
       side: side,
@@ -1699,27 +1680,16 @@ async function newReduceOnlyOrder(accountId, symbol, quantity, side, price) {
       price: parseFloat(roundedPrice),
       timeInForce: "GTC",
       reduceOnly: true,
-      newOrderRespType: "RESULT" // Para obter mais detalhes
+      newOrderRespType: "RESULT"
     };
     
-    // USAR makeAuthenticatedRequest EM VEZ DE CREDENCIAIS GLOBAIS
     const response = await makeAuthenticatedRequest(accountId, 'POST', '/v1/order', orderParams);
     
     console.log(`[API] ✅ Ordem LIMIT reduce-only criada com sucesso: orderId=${response.orderId}`);
-    return { data: response }; // Manter estrutura consistente
+    return { data: response };
     
   } catch (error) {
     console.error(`[API] ❌ Erro ao criar ordem LIMIT reduce-only:`, error.message);
-    
-    if (error.response && error.response.data) {
-      console.error(`[API] Resposta da API: ${JSON.stringify(error.response.data)}`);
-      
-      // Se o erro for relacionado à quantidade, tornar mais claro
-      if (error.response.data.code === -1013) {
-        console.error(`[API] Quantidade inválida (${quantity}) para ${symbol}. A quantidade é menor que o mínimo ou não tem a precisão correta.`);
-      }
-    }
-    
     throw error;
   }
 }
