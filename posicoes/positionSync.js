@@ -203,7 +203,115 @@ async function logOpenPositionsAndOrders(accountId) {
   }
 }
 
+/**
+ * ✅ SINCRONIZAÇÃO AVANÇADA COM MOVIMENTAÇÃO AUTOMÁTICA
+ * Baseada na versão do _dev
+ */
+async function syncPositionsWithAutoClose(accountId) {
+  try {
+    if (!accountId || typeof accountId !== 'number') {
+      throw new Error(`AccountId inválido em syncPositionsWithAutoClose: ${accountId}`);
+    }
+
+    console.log(`[SYNC_AUTO] 🔄 Iniciando sincronização avançada para conta ${accountId}...`);
+    
+    const db = await getDatabaseInstance();
+    const { movePositionToHistory } = require('./positionHistory');
+    
+    // Obter posições do banco e corretora
+    const [dbPositions] = await db.query(`
+      SELECT id, simbolo, quantidade, side, status, preco_entrada, preco_corrente
+      FROM posicoes 
+      WHERE status = 'OPEN' AND conta_id = ?
+      ORDER BY simbolo
+    `, [accountId]);
+
+    const exchangePositions = await getAllOpenPositions(accountId);
+    
+    console.log(`[SYNC_AUTO] 📊 Banco: ${dbPositions.length} posições | Corretora: ${exchangePositions.length} posições`);
+
+    let syncResults = {
+      checked: dbPositions.length,
+      movedToHistory: 0,
+      updatedPrices: 0,
+      errors: []
+    };
+
+    // Criar mapa de posições da corretora para busca rápida
+    const exchangeMap = new Map();
+    exchangePositions.forEach(pos => {
+      exchangeMap.set(pos.simbolo, pos);
+    });
+
+    // Verificar cada posição do banco
+    for (const dbPos of dbPositions) {
+      const exchangePos = exchangeMap.get(dbPos.simbolo);
+      
+      if (!exchangePos || Math.abs(parseFloat(exchangePos.quantidade)) <= 0.000001) {
+        // POSIÇÃO NÃO EXISTE MAIS NA CORRETORA - MOVER PARA HISTÓRICO
+        console.log(`[SYNC_AUTO] 🔄 Posição ${dbPos.simbolo} fechada na corretora, movendo para histórico...`);
+        
+        try {
+          const moved = await movePositionToHistory(
+            db, 
+            dbPos.id, 
+            'CLOSED', 
+            'Sincronização automática - posição não encontrada na corretora',
+            accountId
+          );
+          
+          if (moved) {
+            syncResults.movedToHistory++;
+            console.log(`[SYNC_AUTO] ✅ Posição ${dbPos.simbolo} movida para histórico`);
+          } else {
+            syncResults.errors.push(`Falha ao mover ${dbPos.simbolo} para histórico`);
+          }
+          
+        } catch (moveError) {
+          console.error(`[SYNC_AUTO] ❌ Erro ao mover ${dbPos.simbolo}:`, moveError.message);
+          syncResults.errors.push(`Erro ao mover ${dbPos.simbolo}: ${moveError.message}`);
+        }
+        
+      } else {
+        // POSIÇÃO EXISTE - ATUALIZAR PREÇO CORRENTE SE NECESSÁRIO
+        const currentExchangePrice = parseFloat(exchangePos.precoAtual);
+        const dbCurrentPrice = parseFloat(dbPos.preco_corrente || 0);
+        
+        if (Math.abs(currentExchangePrice - dbCurrentPrice) > 0.001) {
+          try {
+            await db.query(`
+              UPDATE posicoes 
+              SET preco_corrente = ?, data_hora_ultima_atualizacao = NOW()
+              WHERE id = ?
+            `, [currentExchangePrice, dbPos.id]);
+            
+            syncResults.updatedPrices++;
+            console.log(`[SYNC_AUTO] 📊 Preço atualizado para ${dbPos.simbolo}: ${dbCurrentPrice} → ${currentExchangePrice}`);
+            
+          } catch (updateError) {
+            console.error(`[SYNC_AUTO] ❌ Erro ao atualizar preço ${dbPos.simbolo}:`, updateError.message);
+            syncResults.errors.push(`Erro ao atualizar preço ${dbPos.simbolo}: ${updateError.message}`);
+          }
+        }
+      }
+    }
+
+    console.log(`[SYNC_AUTO] ✅ Sincronização avançada concluída para conta ${accountId}:`);
+    console.log(`[SYNC_AUTO]   - Posições verificadas: ${syncResults.checked}`);
+    console.log(`[SYNC_AUTO]   - Movidas para histórico: ${syncResults.movedToHistory}`);
+    console.log(`[SYNC_AUTO]   - Preços atualizados: ${syncResults.updatedPrices}`);
+    console.log(`[SYNC_AUTO]   - Erros: ${syncResults.errors.length}`);
+
+    return syncResults;
+
+  } catch (error) {
+    console.error(`[SYNC_AUTO] ❌ Erro crítico na sincronização avançada para conta ${accountId}:`, error.message);
+    throw error;
+  }
+}
+
 module.exports = {
   syncPositionsWithExchange,
-  logOpenPositionsAndOrders
+  logOpenPositionsAndOrders,
+  syncPositionsWithAutoClose // ✅ NOVA FUNÇÃO
 };

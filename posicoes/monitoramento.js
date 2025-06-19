@@ -13,8 +13,9 @@ const { syncPositionsWithExchange, logOpenPositionsAndOrders } = require('./posi
 const orderHandlers = require('./orderHandlers');
 const accountHandlers = require('./accountHandlers'); // ✅ NOVO
 const { checkExpiredSignals } = require('./signalTimeout');
-const { runPeriodicCleanup, monitorWebSocketHealth, updatePositionPricesWithTrailing } = require('./enhancedMonitoring');
+const { runPeriodicCleanup, monitorWebSocketHealth, updatePositionPricesWithTrailing, runAdvancedPositionMonitoring } = require('./enhancedMonitoring');
 const { cleanupOrphanSignals, forceCloseGhostPositions, cancelOrphanOrders } = require('./cleanup');
+const { syncAndCloseGhostPositions } = require('./positionHistory');
 
 // === DEBUGGING ROBUSTO ===
 console.log(`[MONITOR] 🚀 === INICIANDO MONITORAMENTO PARA CONTA ${process.argv[4] || 'INDEFINIDA'} ===`);
@@ -422,7 +423,40 @@ try {
       }
     });
 
-    // ✅ NOVO: Job de verificação de trailing stops a cada 30 segundos
+    // ✅ NOVO: Job avançado de monitoramento de posições a cada 2 minutos
+    accountJobs.advancedPositionMonitoring = schedule.scheduleJob('*/2 * * * *', async () => {
+      if (isShuttingDown) return;
+      try {
+        await runAdvancedPositionMonitoring(accountId);
+      } catch (error) {
+        console.error(`[MONITOR] ⚠️ Erro no monitoramento avançado para conta ${accountId}:`, error.message);
+      }
+    });
+
+    // ✅ MELHORADO: Job de sincronização com fechamento a cada 5 minutos
+    accountJobs.syncAndCloseGhosts = schedule.scheduleJob('*/5 * * * *', async () => {
+      if (isShuttingDown) return;
+      try {
+        const closedCount = await syncAndCloseGhostPositions(accountId);
+        if (closedCount > 0) {
+          console.log(`[MONITOR] 📊 ${closedCount} posições fantasma fechadas para conta ${accountId}`);
+        }
+      } catch (error) {
+        console.error(`[MONITOR] ⚠️ Erro na sincronização com fechamento para conta ${accountId}:`, error.message);
+      }
+    });
+
+    // ✅ NOVO: Job de log de status a cada 10 minutos
+    accountJobs.logStatus = schedule.scheduleJob('*/10 * * * *', async () => {
+      if (isShuttingDown) return;
+      try {
+        await logOpenPositionsAndOrders(accountId);
+      } catch (error) {
+        console.error(`[MONITOR] ⚠️ Erro no log de status para conta ${accountId}:`, error.message);
+      }
+    });
+
+    // ✅ MELHORADO: Job de verificação de trailing stops mais inteligente
     accountJobs.checkTrailingStops = schedule.scheduleJob('*/30 * * * * *', async () => {
       if (isShuttingDown) return;
       try {
@@ -430,11 +464,11 @@ try {
         const [openPositions] = await db.query(`
           SELECT * FROM posicoes 
           WHERE status = 'OPEN' AND conta_id = ?
+          AND data_hora_ultima_atualizacao > DATE_SUB(NOW(), INTERVAL 10 MINUTE)
         `, [accountId]);
         
         for (const position of openPositions) {
           try {
-            // Obter preço atual para a posição
             const currentPrice = await api.getPrice(position.simbolo, accountId);
             if (currentPrice && currentPrice > 0) {
               const { checkOrderTriggers } = require('./trailingStopLoss');
@@ -446,26 +480,6 @@ try {
         }
       } catch (error) {
         console.error(`[MONITOR] ⚠️ Erro na verificação de trailing stops para conta ${accountId}:`, error.message);
-      }
-    });
-
-    // NOVO: Job de limpeza periódica a cada 10 minutos
-    accountJobs.periodicCleanup = schedule.scheduleJob('*/10 * * * *', async () => {
-      if (isShuttingDown) return;
-      try {
-        await runPeriodicCleanup(accountId);
-      } catch (error) {
-        console.error(`[MONITOR] ⚠️ Erro na limpeza periódica para conta ${accountId}:`, error.message);
-      }
-    });
-
-    // NOVO: Job de monitoramento de saúde dos WebSockets a cada 5 minutos
-    accountJobs.monitorWebSocketHealth = schedule.scheduleJob('*/5 * * * *', async () => {
-      if (isShuttingDown) return;
-      try {
-        monitorWebSocketHealth(accountId);
-      } catch (error) {
-        console.error(`[MONITOR] ⚠️ Erro no monitoramento de WebSockets para conta ${accountId}:`, error.message);
       }
     });
 

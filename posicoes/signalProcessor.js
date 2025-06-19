@@ -364,9 +364,40 @@ async function forceProcessPendingSignals(accountId) {
   }
 }
 
+/**
+ * ✅ PROCESSAR SINAL - FUNÇÃO FALTANTE SE NÃO EXISTIR
+ */
+async function processSignal(signal, db, accountId) {
+  try {
+    console.log(`[SIGNAL_PROCESSOR] 🚀 Processando sinal ${signal.id} para conta ${accountId}...`);
+    
+    // Implementar lógica de processamento do sinal
+    // Esta função deve chamar a entrada (limitMakerEntry ou similar)
+    
+    const { executeLimitMakerEntry } = require('./limitMakerEntry');
+    
+    // Obter preço atual
+    const currentPrice = await api.getPrice(signal.symbol, accountId);
+    
+    // Executar entrada
+    const result = await executeLimitMakerEntry(signal, currentPrice, accountId);
+    
+    if (result.success) {
+      console.log(`[SIGNAL_PROCESSOR] ✅ Sinal ${signal.id} processado com sucesso`);
+    } else {
+      console.error(`[SIGNAL_PROCESSOR] ❌ Falha ao processar sinal ${signal.id}:`, result.error);
+    }
+    
+    return result;
+    
+  } catch (error) {
+    console.error(`[SIGNAL_PROCESSOR] ❌ Erro ao processar sinal ${signal.id}:`, error.message);
+    throw error;
+  }
+}
+
+// ✅ ADICIONAR AO module.exports SE NÃO EXISTIR:
 module.exports = {
-  processSignal,
   checkNewTrades,
-  forceProcessPendingSignals,
-  normalizeSide
+  processSignal  // ✅ ADICIONAR SE FALTANTE
 };

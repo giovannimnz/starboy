@@ -158,8 +158,175 @@ function monitorWebSocketHealth(accountId) {
   }
 }
 
+/**
+ * ✅ FUNÇÃO COMPLETA DE MONITORAMENTO COMO NO _DEV
+ * Combina trailing stops, verificação de posições fechadas e limpeza
+ */
+async function runAdvancedPositionMonitoring(accountId) {
+  try {
+    if (!accountId || typeof accountId !== 'number') {
+      console.error(`[ADVANCED_MONITOR] AccountId inválido: ${accountId}`);
+      return;
+    }
+    
+    console.log(`[ADVANCED_MONITOR] 🔄 Executando monitoramento avançado para conta ${accountId}...`);
+    
+    const db = await getDatabaseInstance();
+    const api = require('../api');
+    const { movePositionToHistory } = require('./positionHistory');
+    
+    // ✅ 1. VERIFICAR POSIÇÕES ABERTAS NO BANCO
+    const [openPositions] = await db.query(`
+      SELECT * FROM posicoes 
+      WHERE status = 'OPEN' AND conta_id = ?
+    `, [accountId]);
+    
+    if (openPositions.length === 0) {
+      console.log(`[ADVANCED_MONITOR] ℹ️ Nenhuma posição aberta para conta ${accountId}`);
+      return;
+    }
+    
+    console.log(`[ADVANCED_MONITOR] 📊 Monitorando ${openPositions.length} posições para conta ${accountId}`);
+    
+    // ✅ 2. OBTER POSIÇÕES DA CORRETORA PARA COMPARAÇÃO
+    const exchangePositions = await api.getAllOpenPositions(accountId);
+    const exchangePositionsMap = new Map();
+    exchangePositions.forEach(pos => {
+      exchangePositionsMap.set(pos.simbolo, pos);
+    });
+    
+    let checkedCount = 0;
+    let closedCount = 0;
+    
+    // ✅ 3. VERIFICAR CADA POSIÇÃO
+    for (const position of openPositions) {
+      try {
+        checkedCount++;
+        
+        // Verificar se posição ainda existe na corretora
+        const exchangePos = exchangePositionsMap.get(position.simbolo);
+        
+        if (!exchangePos || Math.abs(parseFloat(exchangePos.quantidade)) <= 0.000001) {
+          console.log(`[ADVANCED_MONITOR] 🔄 Posição ${position.simbolo} fechada na corretora, movendo para histórico...`);
+          
+          const moved = await movePositionToHistory(
+            db, 
+            position.id, 
+            'CLOSED', 
+            'Monitoramento automático - posição fechada na corretora',
+            accountId
+          );
+          
+          if (moved) {
+            closedCount++;
+          }
+          
+          continue; // Pular verificações de trailing para posição fechada
+        }
+        
+        // ✅ 4. OBTER PREÇO ATUAL E VERIFICAR TRAILING STOPS
+        const currentPrice = await api.getPrice(position.simbolo, accountId);
+        
+        if (currentPrice && currentPrice > 0) {
+          // Atualizar preço corrente no banco
+          await db.query(`
+            UPDATE posicoes 
+            SET preco_corrente = ?, data_hora_ultima_atualizacao = NOW()
+            WHERE id = ?
+          `, [currentPrice, position.id]);
+          
+          // Verificar trailing stops
+          const { checkOrderTriggers } = require('./trailingStopLoss');
+          await checkOrderTriggers(db, position, currentPrice, accountId);
+          
+          console.log(`[ADVANCED_MONITOR] ✅ ${position.simbolo} @ ${currentPrice} - trailing verificado`);
+        }
+        
+        // Pequena pausa entre verificações
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+      } catch (posError) {
+        console.error(`[ADVANCED_MONITOR] ❌ Erro ao verificar posição ${position.simbolo}:`, posError.message);
+      }
+    }
+    
+    console.log(`[ADVANCED_MONITOR] ✅ Monitoramento concluído para conta ${accountId}:`);
+    console.log(`[ADVANCED_MONITOR]   - Posições verificadas: ${checkedCount}`);
+    console.log(`[ADVANCED_MONITOR]   - Posições movidas para histórico: ${closedCount}`);
+    
+  } catch (error) {
+    console.error(`[ADVANCED_MONITOR] ❌ Erro no monitoramento avançado para conta ${accountId}:`, error.message);
+  }
+}
+
+/**
+ * ✅ VERIFICAÇÃO ESPECÍFICA DE ORDERS E POSIÇÕES COMO NO _DEV
+ */
+async function logOpenPositionsAndOrders(accountId) {
+  try {
+    const db = await getDatabaseInstance();
+    const api = require('../api');
+    
+    if (!db) {
+      console.error(`[LOG_STATUS] Não foi possível conectar ao banco para conta ${accountId}`);
+      return;
+    }
+
+    // Obter posições abertas do banco
+    const [dbPositions] = await db.query(`
+      SELECT id, simbolo, quantidade, preco_entrada, preco_corrente, side 
+      FROM posicoes WHERE status = 'OPEN' AND conta_id = ?
+    `, [accountId]);
+    
+    // Obter ordens pendentes
+    const [pendingOrders] = await db.query(`
+      SELECT simbolo, tipo_ordem_bot, tipo_ordem, preco, quantidade, status, side 
+      FROM ordens 
+      WHERE status IN ('NEW', 'PARTIALLY_FILLED') AND conta_id = ?
+      ORDER BY simbolo, tipo_ordem_bot
+    `, [accountId]);
+
+    // Obter posições abertas da corretora para comparação
+    const exchangePositions = await api.getAllOpenPositions(accountId);
+    
+    console.log('\n=== POSIÇÕES ABERTAS E ORDENS PENDENTES ===');
+    console.log(`[MONITOR] Posições no banco: ${dbPositions.length} | Posições na corretora: ${exchangePositions.length}`);
+    
+    // Mostrar posições do banco
+    if (dbPositions.length > 0) {
+      console.log('\n📊 Posições no Banco:');
+      dbPositions.forEach(pos => {
+        console.log(`  ${pos.simbolo}: ${pos.quantidade} (${pos.side}) @ ${pos.preco_entrada} | Atual: ${pos.preco_corrente}`);
+      });
+    }
+    
+    // Mostrar posições da corretora
+    if (exchangePositions.length > 0) {
+      console.log('\n🏦 Posições na Corretora:');
+      exchangePositions.forEach(pos => {
+        console.log(`  ${pos.simbolo}: ${pos.quantidade} (${pos.lado}) @ ${pos.precoEntrada} | Mark: ${pos.precoAtual}`);
+      });
+    }
+    
+    // Mostrar ordens pendentes
+    if (pendingOrders.length > 0) {
+      console.log('\n📋 Ordens Pendentes:');
+      pendingOrders.forEach(order => {
+        console.log(`  ${order.simbolo}: ${order.tipo_ordem_bot} ${order.side} ${order.quantidade} @ ${order.preco} (${order.status})`);
+      });
+    }
+    
+    console.log('===========================================\n');
+  } catch (error) {
+    console.error(`[LOG_STATUS] Erro ao obter posições e ordens para conta ${accountId}:`, error);
+  }
+}
+
+// ✅ ATUALIZAR module.exports:
 module.exports = {
   updatePositionPricesWithTrailing,
   runPeriodicCleanup,
-  monitorWebSocketHealth
+  monitorWebSocketHealth,
+  runAdvancedPositionMonitoring, // ✅ NOVA
+  logOpenPositionsAndOrders       // ✅ NOVA
 };

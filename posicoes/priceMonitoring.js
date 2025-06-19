@@ -1,6 +1,7 @@
 const axios = require('axios');
 const { getDatabaseInstance } = require('../db/conexao');
 const websockets = require('../websockets');
+const api = require('../api');
 
 // Cache de preços por símbolo
 const latestPrices = new Map();
@@ -17,6 +18,92 @@ const MAX_EMPTY_CHECKS = 10;
 
 // Contador para verificar quando fechar websockets sem atividade
 const websocketEmptyCheckCounter = {};
+
+/**
+ * ✅ CACHE DE PREÇOS GLOBAL
+ */
+const PRICE_CACHE_TTL = 30000; // 30 segundos
+
+/**
+ * ✅ FUNÇÃO DE CACHE DE PREÇOS - ADICIONAR FUNÇÃO FALTANTE
+ */
+function updatePriceCache(symbol, price, accountId) {
+  try {
+    if (!symbol || !price || price <= 0) {
+      console.warn(`[PRICE_CACHE] Dados inválidos: symbol=${symbol}, price=${price}`);
+      return false;
+    }
+    
+    const cacheKey = `${symbol}_${accountId || 'global'}`;
+    const cacheData = {
+      price: parseFloat(price),
+      timestamp: Date.now(),
+      symbol: symbol,
+      accountId: accountId
+    };
+    
+    priceCache.set(cacheKey, cacheData);
+    
+    // Limpeza automática de entradas antigas a cada 100 atualizações
+    if (priceCache.size % 100 === 0) {
+      cleanupPriceCache();
+    }
+    
+    return true;
+  } catch (error) {
+    console.error(`[PRICE_CACHE] Erro ao atualizar cache:`, error.message);
+    return false;
+  }
+}
+
+/**
+ * ✅ FUNÇÃO PARA OBTER PREÇO DO CACHE - ADICIONAR FUNÇÃO FALTANTE
+ */
+function getPriceFromCache(symbol, accountId = null, maxAge = PRICE_CACHE_TTL) {
+  try {
+    const cacheKey = `${symbol}_${accountId || 'global'}`;
+    const cacheData = priceCache.get(cacheKey);
+    
+    if (!cacheData) {
+      return null;
+    }
+    
+    const age = Date.now() - cacheData.timestamp;
+    if (age > maxAge) {
+      priceCache.delete(cacheKey);
+      return null;
+    }
+    
+    return {
+      price: cacheData.price,
+      age: age,
+      timestamp: cacheData.timestamp,
+      symbol: cacheData.symbol
+    };
+  } catch (error) {
+    console.error(`[PRICE_CACHE] Erro ao obter preço do cache:`, error.message);
+    return null;
+  }
+}
+
+/**
+ * ✅ LIMPEZA DO CACHE DE PREÇOS
+ */
+function cleanupPriceCache() {
+  const now = Date.now();
+  let cleaned = 0;
+  
+  for (const [key, data] of priceCache.entries()) {
+    if (now - data.timestamp > PRICE_CACHE_TTL * 2) { // 2x TTL
+      priceCache.delete(key);
+      cleaned++;
+    }
+  }
+  
+  if (cleaned > 0) {
+    console.log(`[PRICE_CACHE] ${cleaned} entradas antigas removidas do cache`);
+  }
+}
 
 /**
  * Inicia monitoramento de preços para posições abertas
@@ -58,6 +145,8 @@ async function startPriceMonitoring(accountId) {
       WHERE (status = 'AGUARDANDO_ACIONAMENTO' OR status = 'PENDING') AND conta_id = ?
     `, [accountId]);
 
+    console.log(`[PRICE] Encontradas ${pendingEntries.length} entradas pendentes para monitoramento (conta ${accountId})`);
+    console.log(`[PRICE] Encontradas ${openPositions.length} posições abertas para monitoramento (conta ${accountId})`);
     console.log(`[PRICE] Encontrados ${pendingSignals.length} sinais pendentes para monitoramento (conta ${accountId})`);
 
     const symbols = new Set();
@@ -81,24 +170,6 @@ async function startPriceMonitoring(accountId) {
   } catch (error) {
     console.error(`[PRICE] Erro ao iniciar monitoramento de preços para conta ${accountId}:`, error);
     throw error;
-  }
-}
-
-/**
- * Atualiza cache de preços
- * @param {string} symbol - Símbolo
- * @param {number} price - Preço
- */
-function updatePriceCache(symbol, price) {
-  try {
-    priceCache.set(symbol, {
-      price: parseFloat(price),
-      timestamp: Date.now()
-    });
-    
-    latestPrices.set(symbol, parseFloat(price));
-  } catch (error) {
-    console.error(`[PRICE] Erro ao atualizar cache para ${symbol}:`, error);
   }
 }
 
@@ -145,27 +216,18 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
       return;
     }
     
-    // ✅ NOVO: Verificar gatilhos de entrada PRIMEIRO
+    // ✅ Atualizar cache de preços
+    updatePriceCache(symbol, currentPrice, accountId);
+    
+    // ✅ Verificar gatilhos de entrada PRIMEIRO
     await checkSignalTriggers(symbol, currentPrice, db, accountId);
     
-    // RESTO DA FUNÇÃO MANTIDA COMO ESTAVA...
+    // ✅ Atualizar preços das posições com trailing
+    const { updatePositionPricesWithTrailing } = require('./enhancedMonitoring');
     await updatePositionPricesWithTrailing(db, symbol, currentPrice, accountId);
 
     // Verificar se deve fechar WebSocket
-    const [counts] = await db.query(`
-      SELECT 
-        (SELECT COUNT(*) FROM webhook_signals WHERE symbol = ? AND conta_id = ? AND status IN ('PENDING', 'AGUARDANDO_ACIONAMENTO')) as signals,
-        (SELECT COUNT(*) FROM posicoes WHERE simbolo = ? AND conta_id = ? AND status = 'OPEN') as positions,
-        (SELECT COUNT(*) FROM ordens WHERE simbolo = ? AND conta_id = ? AND status = 'NEW') as orders
-    `, [symbol, accountId, symbol, accountId, symbol, accountId]);
-
-    const totalActivity = (counts[0]?.signals || 0) + (counts[0]?.positions || 0) + (counts[0]?.orders || 0);
-
-    if (totalActivity === 0) {
-      const websockets = require('../websockets');
-      websockets.stopPriceMonitoring(symbol, accountId);
-      console.log(`[PRICE] WebSocket fechado para ${symbol} (conta ${accountId}) - sem atividade`);
-    }
+    await checkAndCloseWebsocket(db, symbol, accountId);
 
   } catch (error) {
     console.error(`[PRICE] Erro no processamento para ${symbol} (conta ${accountId}):`, error);
@@ -329,13 +391,40 @@ function timeframeToMs(timeframe) {
   }
 }
 
-// ✅ ADICIONAR AO module.exports:
+/**
+ * Verifica se deve fechar WebSocket
+ * @param {Object} db - Conexão com banco
+ * @param {string} symbol - Símbolo
+ * @param {number} accountId - ID da conta
+ */
+async function checkAndCloseWebsocket(db, symbol, accountId) {
+  try {
+    const [counts] = await db.query(`
+      SELECT 
+        (SELECT COUNT(*) FROM webhook_signals WHERE symbol = ? AND conta_id = ? AND status IN ('PENDING', 'AGUARDANDO_ACIONAMENTO')) as signals,
+        (SELECT COUNT(*) FROM posicoes WHERE simbolo = ? AND conta_id = ? AND status = 'OPEN') as positions,
+        (SELECT COUNT(*) FROM ordens WHERE simbolo = ? AND conta_id = ? AND status = 'NEW') as orders
+    `, [symbol, accountId, symbol, accountId, symbol, accountId]);
+
+    const totalActivity = (counts[0]?.signals || 0) + (counts[0]?.positions || 0) + (counts[0]?.orders || 0);
+
+    if (totalActivity === 0) {
+      websockets.stopPriceMonitoring(symbol, accountId);
+      console.log(`[PRICE] WebSocket fechado para ${symbol} (conta ${accountId}) - sem atividade`);
+    }
+    
+  } catch (error) {
+    console.error(`[PRICE] Erro ao verificar fechamento de WebSocket:`, error.message);
+  }
+}
+
+// ✅ CORRIGIR module.exports - ADICIONAR TODAS AS FUNÇÕES FALTANTES
 module.exports = {
   startPriceMonitoring,
   onPriceUpdate,
-  updatePriceCache,
-  getPriceFromCache,
-  checkAndCloseWebsocket,
-  checkSignalTriggers, // ✅ NOVA FUNÇÃO
-  timeframeToMs        // ✅ NOVA FUNÇÃO
+  updatePriceCache,        // ✅ NOVA FUNÇÃO
+  getPriceFromCache,       // ✅ NOVA FUNÇÃO
+  checkAndCloseWebsocket,  // ✅ NOVA FUNÇÃO
+  checkSignalTriggers,     // ✅ NOVA FUNÇÃO
+  timeframeToMs           // ✅ NOVA FUNÇÃO
 };
