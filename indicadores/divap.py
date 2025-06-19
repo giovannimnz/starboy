@@ -1108,7 +1108,7 @@ async def handle_new_message(event):
     # CORREÇÃO: Garantir que chat_id seja sempre negativo
     if isinstance(incoming_chat_id, int) and incoming_chat_id > 0:
         incoming_chat_id = -incoming_chat_id
-        print(f"[CORREÇÃO] Chat ID convertido para negativo: {incoming_chat_id}")
+        #print(f"[CORREÇÃO] Chat ID convertido para negativo: {incoming_chat_id}")
 
     # Obter a fonte da mensagem com base no chat_id
     message_source = GRUPO_FONTE_MAPEAMENTO.get(incoming_chat_id)
