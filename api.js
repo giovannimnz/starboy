@@ -1591,264 +1591,122 @@ async function editOrder(accountId, symbol, orderId, newPrice, side, quantity = 
 }
 
 /**
- * Cria ordem STOP/TAKE_PROFIT (VERSÃO CORRIGIDA DA STARBOY_DEV)
+ * Cria ordem STOP_MARKET/TAKE_PROFIT_MARKET (VERSÃO CORRIGIDA CONFORME DOCUMENTAÇÃO BINANCE)
  * @param {number} accountId - ID da conta
  * @param {string} symbol - Símbolo
- * @param {number} quantity - Quantidade
+ * @param {number|null} quantity - Quantidade (null se closePosition = true)
  * @param {string} side - Lado
- * @param {number} stopPrice - Preço de stop
- * @param {number} price - Preço (null para STOP_MARKET)
+ * @param {number} stopPrice - Preço de gatilho (OBRIGATÓRIO)
+ * @param {number|null} price - Preço (NÃO usado para STOP_MARKET/TAKE_PROFIT_MARKET)
  * @param {boolean} reduceOnly - Se é reduce only
  * @param {boolean} closePosition - Se é close position
+ * @param {string} orderType - Tipo da ordem ('STOP_MARKET' ou 'TAKE_PROFIT_MARKET')
  * @returns {Promise<Object>} - Resultado da ordem
  */
-async function newStopOrder(accountId, symbol, quantity, side, stopPrice, price = null, reduceOnly = false, closePosition = false) {
+async function newStopOrder(accountId, symbol, quantity, side, stopPrice, price = null, reduceOnly = false, closePosition = false, orderType = 'STOP_MARKET') {
   try {
-    console.log(`[API] Criando ordem STOP: ${side} ${quantity} ${symbol} @ stop=${stopPrice} (conta ${accountId})`);
+    console.log(`[API] Criando ordem ${orderType}: ${side} ${symbol} @ stopPrice=${stopPrice} (conta ${accountId})`);
+    console.log(`[API] Configurações: quantity=${quantity}, reduceOnly=${reduceOnly}, closePosition=${closePosition}`);
     
     // VALIDAÇÃO DE ACCOUNTID
     if (!accountId || typeof accountId !== 'number') {
-      throw new Error(`AccountId deve ser um número válido: ${accountId}`);
+      throw new Error(`AccountId inválido: ${accountId} (tipo: ${typeof accountId})`);
     }
     
-    // DEFINIR TIPO DE ORDEM BASEADO NO PARÂMETRO PRICE
-    let orderType;
-    if (price !== null) {
-      orderType = "TAKE_PROFIT_MARKET";
-    } else {
-      orderType = "STOP_MARKET";
+    // VALIDAÇÃO DO TIPO DE ORDEM
+    const validTypes = ['STOP_MARKET', 'TAKE_PROFIT_MARKET'];
+    if (!validTypes.includes(orderType)) {
+      throw new Error(`Tipo de ordem inválido: ${orderType}. Válidos: ${validTypes.join(', ')}`);
     }
-    
-    // ARREDONDAR PREÇO DE STOP
-    console.log(`[API] Preço original de stop antes de arredondar: ${stopPrice}`);
-    const roundedStopPrice = await roundPriceToTickSize(symbol, stopPrice, accountId);
-    console.log(`[API] Preço de stop após arredondar: ${roundedStopPrice}`);
     
     // OBTER PRECISÃO PARA FORMATAÇÃO
     const precision = await getPrecisionCached(symbol, accountId);
+    const roundedStopPrice = await roundPriceToTickSize(symbol, stopPrice, accountId);
     
-    // PREPARAR DADOS BASE DA ORDEM
+    // FORMATAR APENAS O STOP PRICE (preço de gatilho)
+    const formattedStopPrice = roundedStopPrice.toFixed(precision.pricePrecision);
+    
+    // ✅ CORREÇÃO CRÍTICA: PARÂMETROS OBRIGATÓRIOS CONFORME DOCUMENTAÇÃO BINANCE
     const orderParams = {
       symbol: symbol,
       side: side,
-      type: orderType,
-      stopPrice: parseFloat(roundedStopPrice),
-      newOrderRespType: "RESULT" // Mudado de ACK para RESULT para mais detalhes
+      type: orderType, // 'STOP_MARKET' ou 'TAKE_PROFIT_MARKET'
+      stopPrice: formattedStopPrice, // ✅ ÚNICO PREÇO NECESSÁRIO para estes tipos
+      newOrderRespType: "RESULT"
     };
     
-    // NOVA LÓGICA: Se closePosition for true, não adicionar quantidade
+    // ✅ IMPORTANTE: NÃO ADICIONAR 'price' para STOP_MARKET/TAKE_PROFIT_MARKET
+    // Segundo a documentação, estes tipos usam apenas 'stopPrice'
+    if (price !== null) {
+      console.warn(`[API] ⚠️ Parâmetro 'price' ignorado para ${orderType} - usa apenas 'stopPrice'`);
+    }
+    
+    // ✅ LÓGICA CORRIGIDA: closePosition OU quantity, nunca ambos
     if (closePosition) {
-      orderParams.closePosition = true;
-      console.log(`[API] Usando closePosition=true para ordem ${orderType}`);
-    } else {
-      // Apenas adicionar quantidade se não estiver usando closePosition
-      if (quantity) {
-        const formattedQuantity = formatQuantityCorrect(quantity, precision.quantityPrecision, symbol);
-        orderParams.quantity = formattedQuantity;
-      }
+      console.log(`[API] ✅ Usando closePosition=true (fecha toda a posição)`);
+      orderParams.closePosition = 'true'; // ✅ CORREÇÃO: sempre string para API
+      // ✅ IMPORTANTE: quando closePosition=true, reduceOnly é implícito
+      // Mas vamos adicionar explicitamente para garantir
+      orderParams.reduceOnly = 'true';
+    } else if (quantity && quantity > 0) {
+      console.log(`[API] ✅ Usando quantidade específica: ${quantity}`);
+      const formattedQuantity = formatQuantityCorrect(quantity, precision.quantityPrecision, symbol);
+      orderParams.quantity = formattedQuantity;
       
       if (reduceOnly) {
-        orderParams.reduceOnly = true;
-        console.log(`[API] Usando reduceOnly=true para ordem ${orderType}`);
+        orderParams.reduceOnly = 'true'; // ✅ CORREÇÃO: string
       }
+    } else {
+      throw new Error('Deve fornecer quantity OU closePosition=true');
     }
     
-    console.log(`[API] Enviando ordem ${orderType}: ${symbol}, ${orderParams.quantity || 'closePosition'}, ${side}, ${roundedStopPrice}, closePosition: ${closePosition}, reduceOnly: ${reduceOnly}`);
+    console.log(`[API] ✅ Parâmetros finais da ordem ${orderType}:`, {
+      symbol: orderParams.symbol,
+      side: orderParams.side,
+      type: orderParams.type,
+      stopPrice: orderParams.stopPrice, // ✅ ÚNICO PREÇO USADO
+      quantity: orderParams.quantity || 'N/A (closePosition)',
+      closePosition: orderParams.closePosition || 'false',
+      reduceOnly: orderParams.reduceOnly || 'false',
+      note: 'price parâmetro NÃO usado conforme documentação Binance'
+    });
     
-    // USAR makeAuthenticatedRequest EM VEZ DE CREDENCIAIS GLOBAIS
+    // ENVIAR ORDEM
     const response = await makeAuthenticatedRequest(accountId, 'POST', '/v1/order', orderParams);
     
-    console.log(`[API] ✅ Resposta da ordem ${orderType}:`, response);
-    return { data: response }; // Garantir estrutura consistente { data: {...} }
+    console.log(`[API] ✅ Ordem ${orderType} criada com sucesso:`, {
+      orderId: response.orderId,
+      status: response.status,
+      symbol: response.symbol,
+      side: response.side,
+      type: response.type,
+      stopPrice: response.stopPrice || formattedStopPrice
+    });
+    
+    return response;
     
   } catch (error) {
-    console.error(`[API] ❌ Erro ao enviar ordem ${price ? 'TAKE_PROFIT_MARKET' : 'STOP_MARKET'}:`,
-        error.response ? error.response.data : error.message);
-    throw error;
-  }
-}
-
-/**
- * Cria ordem LIMIT reduce-only (VERSÃO CORRIGIDA DA STARBOY_DEV)
- * @param {number} accountId - ID da conta
- * @param {string} symbol - Símbolo
- * @param {number} quantity - Quantidade
- * @param {string} side - Lado
- * @param {number} price - Preço
- * @returns {Promise<Object>} - Resultado da ordem
- */
-async function newReduceOnlyOrder(accountId, symbol, quantity, side, price) {
-  try {
-    console.log(`[API] Criando ordem LIMIT reduce-only: ${side} ${quantity} ${symbol} @ ${price} (conta ${accountId})`);
+    console.error(`[API] ❌ Erro ao criar ordem ${orderType || 'STOP'} para ${symbol} (conta ${accountId}):`);
     
-    // VALIDAÇÃO DE ACCOUNTID
-    if (!accountId || typeof accountId !== 'number') {
-      throw new Error(`AccountId deve ser um número válido: ${accountId}`);
-    }
-    
-    // ARREDONDAR PREÇO E OBTER PRECISÃO
-    const roundedPrice = await roundPriceToTickSize(symbol, price, accountId);
-    const precision = await getPrecisionCached(symbol, accountId);
-    
-    // GARANTIR QUE A QUANTIDADE ESTEJA NO FORMATO CORRETO
-    const formattedQuantity = formatQuantityCorrect(quantity, precision.quantityPrecision, symbol);
-    
-    console.log(`[API] Enviando ordem LIMIT reduce-only: ${symbol}, ${side}, qty=${formattedQuantity}, price=${roundedPrice}`);
-    
-    // DADOS DA ORDEM
-    const orderParams = {
-      symbol: symbol,
-      side: side,
-      type: "LIMIT",
-      quantity: formattedQuantity,
-      price: parseFloat(roundedPrice),
-      timeInForce: "GTC",
-      reduceOnly: true,
-      newOrderRespType: "RESULT" // Para obter mais detalhes
-    };
-    
-    // USAR makeAuthenticatedRequest EM VEZ DE CREDENCIAIS GLOBAIS
-    const response = await makeAuthenticatedRequest(accountId, 'POST', '/v1/order', orderParams);
-    
-    console.log(`[API] ✅ Ordem LIMIT reduce-only criada com sucesso: orderId=${response.orderId}`);
-    return { data: response }; // Manter estrutura consistente
-    
-  } catch (error) {
-    console.error(`[API] ❌ Erro ao criar ordem LIMIT reduce-only:`, error.message);
-    
-    if (error.response && error.response.data) {
-      console.error(`[API] Resposta da API: ${JSON.stringify(error.response.data)}`);
+    if (error.response?.data) {
+      console.error(`[API] Erro da API:`, error.response.data);
       
-      // Se o erro for relacionado à quantidade, tornar mais claro
-      if (error.response.data.code === -1013) {
-        console.error(`[API] Quantidade inválida (${quantity}) para ${symbol}. A quantidade é menor que o mínimo ou não tem a precisão correta.`);
+      // ✅ TRATAMENTO ESPECÍFICO PARA ERROS COMUNS
+      const apiError = error.response.data;
+      if (apiError.code === -2021) {
+        console.error(`[API] ❌ Erro -2021: stopPrice inválido - ordem executaria imediatamente`);
+        console.error(`[API] Dica: Para ${orderType}, stopPrice deve estar fora do spread atual`);
+      } else if (apiError.code === -1111) {
+        console.error(`[API] ❌ Erro -1111: Precisão inválida no stopPrice`);
+      } else if (apiError.code === -2010) {
+        console.error(`[API] ❌ Erro -2010: Ordem seria rejeitada pela corretora`);
+      } else if (apiError.code === -1102) {
+        console.error(`[API] ❌ Erro -1102: Parâmetro obrigatório ausente ou inválido`);
       }
+    } else {
+      console.error(`[API] Erro local:`, error.message);
     }
     
     throw error;
   }
 }
-
-async function newMarketOrder(accountId, symbol, quantity, side) {
-  try {
-    console.log(`[API] Criando ordem MARKET: ${side} ${quantity} ${symbol} (conta ${accountId})`);
-    const precision = await getPrecisionCached(symbol, accountId);
-    const formattedQuantity = formatQuantityCorrect(quantity, precision.quantityPrecision, symbol);
-
-    const orderParams = {
-      symbol: symbol,
-      side: side,
-      type: 'MARKET',
-      quantity: formattedQuantity
-    };
-
-    const response = await makeAuthenticatedRequest(accountId, 'POST', '/v1/order', orderParams);
-    console.log(`[API] ✅ Ordem MARKET criada com sucesso: ${response.orderId}`);
-    return response;
-  } catch (error) {
-    console.error(`[API] Erro ao criar ordem MARKET para ${symbol}:`, error.message);
-    throw error;
-  }
-}
-
-/**
- * Obtém status de uma ordem via REST API
- * @param {string} symbol - Símbolo (ex: POLUSDT)
- * @param {string|number} orderId - ID da ordem
- * @param {number} accountId - ID da conta
- * @returns {Promise<Object>} - Status da ordem
- */
-async function getOrderStatus(symbol, orderId, accountId) {
-  try {
-    // VALIDAÇÃO CRÍTICA: Verificar tipos e ordem dos parâmetros
-    if (!symbol || typeof symbol !== 'string') {
-      throw new Error(`Symbol deve ser uma string válida. Recebido: ${symbol} (tipo: ${typeof symbol})`);
-    }
-    
-    if (!orderId || (typeof orderId !== 'string' && typeof orderId !== 'number')) {
-      throw new Error(`OrderId deve ser string ou number. Recebido: ${orderId} (tipo: ${typeof orderId})`);
-    }
-    
-    if (!accountId || typeof accountId !== 'number') {
-      throw new Error(`AccountId deve ser um número válido: ${accountId}`);
-    }
-    
-    console.log(`[API] Obtendo status da ordem ${orderId} para ${symbol} (conta ${accountId})...`);
-    
-    const params = {
-      symbol: symbol,
-      orderId: String(orderId)
-    };
-    
-    const response = await makeAuthenticatedRequest(accountId, 'GET', '/v1/order', params);
-    console.log(`[API] ✅ Status da ordem ${orderId}: ${response.status}`);
-    return response;
-    
-  } catch (error) {
-    console.error(`[API] ❌ Erro ao obter status da ordem ${orderId} para ${symbol}: ${error.message}`);
-    throw error;
-  }
-}
-
-
-/**
- * Cancela uma ordem via REST API
- * @param {string} symbol - Símbolo
- * @param {string} orderId - ID da ordem
- * @param {number} accountId - ID da conta
- * @returns {Promise<Object>} - Resultado do cancelamento
- */
-async function cancelOrder(symbol, orderId, accountId) {
-  try {
-    console.log(`[API] Cancelando ordem ${orderId} para ${symbol} (conta ${accountId})...`);
-    
-    const params = {
-      symbol: symbol,
-      orderId: String(orderId) // ✅ CORREÇÃO: Garantir que o ID da ordem seja sempre uma string.
-    };
-    
-    const response = await makeAuthenticatedRequest(accountId, 'DELETE', '/v1/order', params);
-    console.log(`[API] ✅ Ordem ${orderId} cancelada com sucesso`);
-    return response;
-    
-  } catch (error) {
-    console.error(`[API] Erro ao cancelar ordem ${orderId}:`, error.message);
-    throw error;
-  }
-}
-
-module.exports = {
-  setAccountState,
-  getAccountState,
-  debugAccountStates,
-  getAccountStatesMap,
-  setAccountState,
-  getAccountState,
-  getAccountConnectionState,
-  getAllAccountConnections,
-  loadCredentialsFromDatabase,
-  makeAuthenticatedRequest,
-  getPrice,
-  getAllOpenPositions,
-  getListenKey,
-  getPrecision,
-  getPrecisionCached,
-  getCurrentLeverage,
-  changeInitialLeverage,
-  getCurrentMarginType,
-  changeMarginType,
-  verifyAndFixEnvironmentConsistency,
-  getFuturesAccountBalanceDetails,
-  getRecentOrders,
-  getTickSize,
-  roundPriceToTickSize,
-  newLimitMakerOrder,
-  newReduceOnlyOrder,
-  newMarketOrder,
-  newStopOrder,
-  editOrder,
-  getOrderStatus,
-  cancelOrder,
-  validateQuantity,
-  adjustQuantityToRequirements,
-};
