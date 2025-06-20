@@ -428,77 +428,22 @@ try {
 
     // ✅ NOVO: Job avançado de monitoramento de posições a cada 2 minutos
     accountJobs.advancedPositionMonitoring = schedule.scheduleJob('*/2 * * * *', async () => {
-      if (isShuttingDown) return;
-      try {
-        await runAdvancedPositionMonitoring(accountId);
-      } catch (error) {
-        console.error(`[MONITOR] ⚠️ Erro no monitoramento avançado para conta ${accountId}:`, error.message);
-      }
+      await runAdvancedPositionMonitoring(accountId); // ✅ Verifica posições fechadas
     });
 
     // ✅ MELHORADO: Job de sincronização com fechamento a cada 5 minutos
     accountJobs.syncAndCloseGhosts = schedule.scheduleJob('*/5 * * * *', async () => {
-      if (isShuttingDown) return;
-      try {
-        const closedCount = await syncAndCloseGhostPositions(accountId);
-        if (closedCount > 0) {
-          console.log(`[MONITOR] 📊 ${closedCount} posições fantasma fechadas para conta ${accountId}`);
-        }
-      } catch (error) {
-        console.error(`[MONITOR] ⚠️ Erro na sincronização com fechamento para conta ${accountId}:`, error.message);
-      }
+      const closedCount = await syncAndCloseGhostPositions(accountId); // ✅ Fecha posições fantasma
     });
 
     // ✅ NOVO: Job de movimentação automática para histórico a cada 3 minutos
     accountJobs.moveToHistory = schedule.scheduleJob('*/3 * * * *', async () => {
-      if (isShuttingDown) return;
-      try {
-        const { syncAndCloseGhostPositions } = require('./positionHistory');
-        const movedCount = await syncAndCloseGhostPositions(accountId);
-        if (movedCount > 0) {
-          console.log(`[MONITOR] 📚 ${movedCount} posições movidas para histórico para conta ${accountId}`);
-        }
-      } catch (error) {
-        console.error(`[MONITOR] ⚠️ Erro ao mover posições para histórico para conta ${accountId}:`, error.message);
-      }
+      const movedCount = await syncAndCloseGhostPositions(accountId); // ✅ Move para histórico
     });
 
     // ✅ NOVO: Job de log de status a cada 10 minutos
     accountJobs.logStatus = schedule.scheduleJob('*/10 * * * *', async () => {
-      if (isShuttingDown) return;
-      try {
-        await logOpenPositionsAndOrders(accountId);
-      } catch (error) {
-        console.error(`[MONITOR] ⚠️ Erro no log de status para conta ${accountId}:`, error.message);
-      }
-    });
-
-    // ✅ MELHORADO: Job de verificação de trailing stops mais inteligente
-    accountJobs.checkTrailingStops = schedule.scheduleJob('*/30 * * * * *', async () => {
-      if (isShuttingDown) return;
-      try {
-        const db = await getDatabaseInstance();
-        
-        const [openPositions] = await db.query(`
-          SELECT * FROM posicoes 
-          WHERE status = 'OPEN' AND conta_id = ?
-          AND data_hora_ultima_atualizacao > DATE_SUB(NOW(), INTERVAL 10 MINUTE)
-        `, [accountId]);
-        
-        for (const position of openPositions) {
-          try {
-            const currentPrice = await api.getPrice(position.simbolo, accountId);
-            if (currentPrice && currentPrice > 0) {
-              // ✅ CORREÇÃO CRÍTICA: Passar accountId como parâmetro
-              await checkOrderTriggers(db, position, currentPrice, accountId);
-            }
-          } catch (posError) {
-            console.error(`[MONITOR] ⚠️ Erro ao verificar trailing para ${position.simbolo}:`, posError.message);
-          }
-        }
-      } catch (error) {
-        console.error(`[MONITOR] ⚠️ Erro na verificação de trailing stops para conta ${accountId}:`, error.message);
-      }
+      await logOpenPositionsAndOrders(accountId); // ✅ Mostra status atual
     });
 
     // Armazenar jobs para cleanup no shutdown
