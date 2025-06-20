@@ -56,7 +56,7 @@ async function startInstance(accountId) {
     
     // Criar processo separado para esta conta
     const monitorProcess = spawn('node', [
-      path.join(__dirname, 'posicoes', 'monitoramento.js'), 
+      path.join(__dirname, '..', 'exchanges', 'binance', 'services', 'monitoramento.js'), 
       '--account', 
       accountId.toString()
     ], {

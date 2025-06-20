@@ -1,15 +1,8 @@
 const path = require('path');
-require('dotenv').config({ path: path.resolve(__dirname, './.env') });
-const { initializeDatabase, getDatabaseInstance } = require('../core/database/conexao');
+require('dotenv').config({ path: path.resolve(__dirname, '../../config/.env') });
+const { initializeDatabase, getDatabaseInstance, initPool, formatDateForMySQL } = require('../core/database/conexao');
 const readline = require('readline');
-const { spawn } = require('child_process');
-const { initPool, formatDateForMySQL } = require('../core/database/conexao');
-
-// CORREÇÃO: REMOVER esta linha que causa conflito
-// const { gracefulShutdown } = require('../exchanges/binance/services/monitoramento');
-
-// Mapear contas ativas para seus processos
-const activeInstances = new Map();
+const { startInstance, stopInstance, restartInstance, listActiveInstances, startAllInstances, stopAllInstances, isInstanceRunning, getInstanceStats } = require('../processes/instanceManager');
 
 // Cria interface para leitura de comandos
 const rl = readline.createInterface({
@@ -71,7 +64,7 @@ async function startInstance(accountId) {
     
     // Iniciar em processo separado passando accountId
     const monitorProcess = spawn('node', [
-      'posicoes/monitoramento.js', 
+      '../exchanges/binance/services/monitoramento.js', 
       '--account', 
       accountId.toString()
     ], {
