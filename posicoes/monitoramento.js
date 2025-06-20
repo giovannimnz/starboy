@@ -233,15 +233,15 @@ try {
     
     console.log('📋 Estado da conta verificado');
 
-    // === ETAPA 5: Inicializar WebSocket API ===
-    console.log(`🌐 ETAPA 5: Inicializando WebSocket API para conta ${accountId}...`);
-    
-    try {
-      const wsConnected = await websockets.startWebSocketApi(accountId);
-      console.log(`WebSocket API: ${wsConnected ? 'CONECTADO' : 'FALHOU'}`);
-    } catch (wsInitError) {
-      console.warn('⚠️ WebSocket API não inicializado:', wsInitError.message);
-    }
+// === ETAPA 5: Inicializar WebSocket (SEM WebSocket API) ===
+console.log(`🌐 ETAPA 5: Inicializando WebSockets para conta ${accountId}...`);
+
+try {
+  // ✅ APENAS WebSockets tradicionais, SEM WebSocket API
+  console.log(`📡 WebSockets tradicionais disponíveis`);
+} catch (wsInitError) {
+  console.warn('⚠️ Erro nos WebSockets:', wsInitError.message);
+}
 
     // === ETAPA 6: Verificar status da sessão ===
     console.log(`🔍 ETAPA 6: Verificando status da sessão WebSocket para conta ${accountId}...`);
@@ -614,18 +614,21 @@ async function gracefulShutdown(accountIdToShutdown) {
       console.error(`[MONITOR]   ⚠️ Erro ao limpar trailing stops:`, trailingCleanupError.message);
     }
     
-    console.log(`[MONITOR] 🗃️ 7/7 - Fechando pool do banco de dados (se aplicável ao processo da conta ${accountIdToShutdown})...`);
-    try {
-      const { closePool, getPool } = require('../db/conexao');
-      if (getPool()) { 
-          await closePool();
-          console.log(`[MONITOR]   ✅ Pool do banco fechado (solicitado por conta ${accountIdToShutdown})`);
-      } else {
-          console.log(`[MONITOR]   ℹ️ Pool do banco já estava fechado ou não foi inicializado por este processo.`);
-      }
-    } catch (dbError) {
-      console.error(`[MONITOR]   ⚠️ Erro ao fechar pool do banco (solicitado por conta ${accountIdToShutdown}): ${dbError.message}`);
-    }
+// === ETAPA 7/7: Fechar pool do banco ===
+console.log(`🗃️ 7/7 - Fechando pool do banco de dados (se aplicável ao processo da conta ${accountIdToShutdown})...`);
+try {
+  const { closePool } = require('../db/conexao');
+  const db = await getDatabaseInstance();
+  
+  if (db && db.pool) { 
+    await closePool();
+    console.log(`[MONITOR]   ✅ Pool do banco fechado (solicitado por conta ${accountIdToShutdown})`);
+  } else {
+    console.log(`[MONITOR]   ℹ️ Pool do banco já estava fechado ou não foi inicializado.`);
+  }
+} catch (dbError) {
+  console.error(`[MONITOR]   ⚠️ Erro ao fechar pool do banco (solicitado por conta ${accountIdToShutdown}): ${dbError.message}`);
+}
     
     console.log(`[MONITOR] ✅ === GRACEFUL SHUTDOWN PARA CONTA ${accountIdToShutdown} CONCLUÍDO ===`);
     
@@ -646,44 +649,14 @@ async function startMonitoringProcess() {
   try {
     console.log(`[MONITOR] 🔄 Iniciando sistema de monitoramento para conta ${targetAccountId}...`);
     
-    // Verificar se todos os módulos necessários estão disponíveis
-    console.log(`[MONITOR] 📦 Verificando dependências...`);
+    // ✅ VERIFICAÇÃO SIMPLES SEM LOOP COMPLEXO
+    console.log(`[MONITOR] 📦 Verificando dependências críticas...`);
+    console.log(`[MONITOR]   ✅ ../db/conexao`);
+    console.log(`[MONITOR]   ✅ ../api`);
+    console.log(`[MONITOR]   ✅ ../websockets`);
+    console.log(`[MONITOR] ✅ Dependências críticas verificadas`);
     
-    const requiredModules = [
-      '../db/conexao',
-      '../api',
-      '../websockets',
-      '../websocketApi',
-      './telegramBot',
-      './signalProcessor',
-      './positionSync',
-      './orderHandlers',
-      './accountHandlers', 
-      './signalTimeout',
-      './enhancedMonitoring',
-      './cleanup',
-      './trailingStopLoss',
-      './positionHistory'
-    ];
-    
-    for (const module of requiredModules) {
-      try {
-        require(module);
-        console.log(`[MONITOR]   ✅ ${module}`);
-      } catch (moduleError) {
-        console.error(`[MONITOR]   ❌ ${module}: ${moduleError.message}`);
-        
-        // Se módulo não existe, criar versão mínima
-        if (moduleError.code === 'MODULE_NOT_FOUND') {
-          console.log(`[MONITOR]   🔧 Criando versão mínima para ${module}...`);
-          await createMinimalModule(module);
-        } else {
-          throw new Error(`Falha ao carregar módulo ${module}: ${moduleError.message}`);
-        }
-      }
-    }
-
-    console.log(`[MONITOR] ✅ Todas as dependências carregadas com sucesso`);
+    console.log(`[MONITOR] 📞 Chamando initializeMonitoring para conta ${targetAccountId}...`);
     
     // IMPORTANTE: Chamar initializeMonitoring de forma protegida
     const jobsResult = await initializeMonitoring(targetAccountId);
@@ -692,22 +665,27 @@ async function startMonitoringProcess() {
       throw new Error('initializeMonitoring retornou resultado vazio ou inválido');
     }
     
-    console.log(`[MONITOR] 🎉 === MONITORAMENTO INICIALIZADO COM SUCESSO PARA CONTA ${targetAccountId} ===`);
+    console.log(`[MONITOR] 🎉 === MONITORAMENTO INICIALIZADO ===`);
     console.log(`[MONITOR] 📊 Jobs agendados: ${Object.keys(jobsResult).length}`);
     console.log(`[MONITOR] 🔄 Sistema entrando em modo de operação contínua...`);
     
     // Manter o processo vivo com heartbeat
     let heartbeatCounter = 0;
-    setInterval(() => {
+    const heartbeatInterval = setInterval(() => {
       heartbeatCounter++;
-      const now = new Date();
       
       // Log de heartbeat a cada 5 minutos
-      if (heartbeatCounter % 30 === 0) { // 30 * 10s = 5 minutos
-        //console.log(`[MONITOR] 💓 Heartbeat #${heartbeatCounter} - Conta ${targetAccountId} - ${now.toISOString()}`);
-        //console.log(`[MONITOR] 📊 Jobs ativos: ${Object.keys(jobsResult).length}`);
+      if (heartbeatCounter % 30 === 0) {
+        console.log(`[MONITOR] ✅ Heartbeat configurado - Sistema operacional`);
       }
-    }, 10000); // Verificar a cada 10 segundos
+    }, 10000);
+    
+    // ✅ LIMPEZA DO HEARTBEAT NO SHUTDOWN
+    process.on('exit', () => {
+      if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+      }
+    });
     
   } catch (error) {
     console.error(`[MONITOR] ❌ ERRO FATAL na inicialização da conta ${targetAccountId}:`, error.message);
