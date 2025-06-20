@@ -3,10 +3,10 @@ from telethon import TelegramClient
 from senhas import api_hash, api_id
 
 '''PRODUÇÃO'''
-sessao = 'login'
+sessao = 'divap'
 
 '''DESENVOLVIMENTO
-sessao = 'webhook-dev'
+sessao = 'divap-dev'
 '''
 
 async def main():
