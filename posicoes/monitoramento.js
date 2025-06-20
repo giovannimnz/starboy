@@ -653,17 +653,17 @@ async function startMonitoringProcess() {
       '../db/conexao',
       '../api',
       '../websockets',
-      '../websocketApi',           // ✅ ADICIONAR
+      '../websocketApi',
       './telegramBot',
       './signalProcessor',
       './positionSync',
       './orderHandlers',
-      './accountHandlers',          // ✅ ADICIONAR
+      './accountHandlers', 
       './signalTimeout',
       './enhancedMonitoring',
       './cleanup',
-      './trailingStopLoss',        // ✅ ADICIONAR
-      './positionHistory'          // ✅ ADICIONAR
+      './trailingStopLoss',
+      './positionHistory'
     ];
     
     for (const module of requiredModules) {
