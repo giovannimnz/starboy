@@ -1097,7 +1097,6 @@ async def verify_divap_pattern(trade_info):
         return (True, None)  # Em caso de erro, permitir o sinal como precaução
 
 # Handler para monitorar mensagens em todos os grupos de origem
-@client.on(events.NewMessage())
 async def handle_new_message(event):
     """
     Manipula novas mensagens. Processa sinais de trade dos grupos de origem.
@@ -1108,40 +1107,16 @@ async def handle_new_message(event):
     # CORREÇÃO: Garantir que chat_id seja sempre negativo
     if isinstance(incoming_chat_id, int) and incoming_chat_id > 0:
         incoming_chat_id = -incoming_chat_id
-        #print(f"[CORREÇÃO] Chat ID convertido para negativo: {incoming_chat_id}")
-
-    # ✅ ADICIONAR LOGS DE DEBUG DETALHADOS
-    print(f"[DEBUG] 📨 Nova mensagem recebida:")
-    print(f"[DEBUG]   - Chat ID: {incoming_chat_id}")
-    print(f"[DEBUG]   - Message ID: {incoming_message_id}")
-    print(f"[DEBUG]   - Grupos origem configurados: {GRUPOS_ORIGEM_IDS}")
-    print(f"[DEBUG]   - É grupo de origem? {incoming_chat_id in GRUPOS_ORIGEM_IDS}")
-    print(f"[DEBUG]   - Mapeamento disponível: {GRUPO_FONTE_MAPEAMENTO}")
 
     # Obter a fonte da mensagem com base no chat_id
     message_source = GRUPO_FONTE_MAPEAMENTO.get(incoming_chat_id)
-    print(f"[DEBUG]   - Message source: {message_source}")    
     
     try:
         incoming_message_id = event.message.id
         incoming_text = event.message.text
 
         if not incoming_text:
-            print(f"[DEBUG]   - Mensagem sem texto, ignorando")
-            return
-        
-        print(f"[DEBUG]   - Texto (200 chars): {incoming_text[:200]}...")        
-
-        # ✅ VERIFICAR SE CONTÉM PADRÕES DIVAP
-        has_divap_terms = any(term.lower() in incoming_text.lower() for term in ["divap", "possível divap", "divap de"])
-        has_entry = "entrada" in incoming_text.lower()
-        has_target = "alvo" in incoming_text.lower()
-        has_stop = "stop" in incoming_text.lower()
-        
-        print(f"[DEBUG]   - Contém DIVAP: {has_divap_terms}")
-        print(f"[DEBUG]   - Contém Entrada: {has_entry}")
-        print(f"[DEBUG]   - Contém Alvo: {has_target}")
-        print(f"[DEBUG]   - Contém Stop: {has_stop}")
+            return      
 
         incoming_created_at = event.message.date.strftime("%Y-%m-%d %H:%M:%S")
         GRUPOS_PERMITIDOS_PARA_REGISTRO = GRUPOS_ORIGEM_IDS
