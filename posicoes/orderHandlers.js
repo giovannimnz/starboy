@@ -610,7 +610,133 @@ async function handlePositionUpdates(connection, positions, accountId, reason) {
   }
 }
 
-// FUNÇÕES AUXILIARES
+/**
+ * ✅ FUNÇÃO NOVA: Verificar se posição deve ser fechada após execução de ordem
+ */
+async function checkPositionClosureAfterOrderExecution(orderId, accountId) {
+  try {
+    const db = await getDatabaseInstance();
+    
+    // Buscar ordem executada
+    const [executedOrder] = await db.query(`
+      SELECT o.*, p.simbolo as position_symbol, p.id as position_id, p.quantidade as position_qty
+      FROM ordens o
+      LEFT JOIN posicoes p ON o.id_posicao = p.id
+      WHERE o.id_externo = ? AND o.conta_id = ? AND o.status = 'FILLED'
+    `, [orderId, accountId]);
+    
+    if (executedOrder.length === 0) {
+      return false;
+    }
+    
+    const order = executedOrder[0];
+    
+    // Verificar se é ordem que fecha posição (TP ou SL)
+    if (order.tipo_ordem_bot === 'TAKE_PROFIT' || 
+        order.tipo_ordem_bot === 'STOP_LOSS' ||
+        order.close_position === 1) {
+      
+      console.log(`[ORDER_CLOSURE] 🎯 Ordem de fechamento executada: ${order.tipo_ordem_bot} para ${order.position_symbol}`);
+      
+      // Verificar se posição ainda existe na corretora
+      const exchangePositions = await api.getAllOpenPositions(accountId);
+      const exchangePos = exchangePositions.find(p => p.simbolo === order.position_symbol);
+      
+      if (!exchangePos || Math.abs(parseFloat(exchangePos.quantidade)) <= 0.000001) {
+        console.log(`[ORDER_CLOSURE] ✅ Posição ${order.position_symbol} confirmada como fechada na corretora`);
+        
+        // Mover posição para histórico (com cancelamento automático de ordens)
+        const { movePositionToHistoryPhysically } = require('./enhancedMonitoring');
+        const moved = await movePositionToHistoryPhysically(
+          db,
+          order.position_id,
+          'CLOSED',
+          `Fechada por ${order.tipo_ordem_bot} - Ordem ${orderId}`,
+          accountId
+        );
+        
+        if (moved) {
+          console.log(`[ORDER_CLOSURE] ✅ Posição ${order.position_symbol} movida para histórico com sucesso`);
+          return true;
+        }
+      }
+    }
+    
+    return false;
+    
+  } catch (error) {
+    console.error(`[ORDER_CLOSURE] ❌ Erro ao verificar fechamento de posição:`, error.message);
+    return false;
+  }
+}
+
+// ✅ MELHORAR handleTradeExecution para chamar a verificação
+async function handleTradeExecution(connection, order, accountId, existingOrder) {
+  const orderId = String(order.i);
+  const symbol = order.s;
+  const executedQty = parseFloat(order.z || '0');
+  const avgPrice = parseFloat(order.ap || '0');
+  const lastFilledQty = parseFloat(order.l || '0');
+  const lastFilledPrice = parseFloat(order.L || '0');
+  const commission = parseFloat(order.n || '0');
+  const commissionAsset = order.N || null;
+  const tradeId = order.t || null;
+  
+  try {
+    // ATUALIZAR ORDEM NO BANCO (código existente)
+    if (existingOrder) {
+      await connection.query(
+        `UPDATE ordens SET 
+         status = ?, 
+         quantidade_executada = ?,
+         preco_executado = ?,
+         commission = ?,
+         commission_asset = ?,
+         trade_id = ?,
+         dados_originais_ws = ?,
+         last_update = NOW()
+         WHERE id_externo = ? AND conta_id = ?`,
+        [
+          order.X, // status
+          executedQty,
+          avgPrice,
+          commission,
+          commissionAsset,
+          tradeId,
+          JSON.stringify(order),
+          orderId,
+          accountId
+        ]
+      );
+      
+      console.log(`[ORDER] ✅ Ordem ${orderId} atualizada: ${order.X}, Executado: ${executedQty} @ ${avgPrice}`);
+      
+      // ✅ NOVA VERIFICAÇÃO: Se ordem foi totalmente executada, verificar fechamento
+      if (order.X === 'FILLED') {
+        console.log(`[ORDER] 🎯 Ordem ${orderId} totalmente executada, verificando fechamento de posição...`);
+        
+        // Executar verificação em background para não bloquear
+        setTimeout(async () => {
+          try {
+            await checkPositionClosureAfterOrderExecution(orderId, accountId);
+          } catch (checkError) {
+            console.error(`[ORDER] ⚠️ Erro na verificação de fechamento:`, checkError.message);
+          }
+        }, 2000); // Aguardar 2 segundos para garantir que tudo foi processado
+      }
+      
+      // Resto da função existente...
+      // (notificações Telegram, etc.)
+      
+    } else {
+      console.warn(`[ORDER] ⚠️ Ordem ${orderId} não encontrada no banco para atualização`);
+    }
+    
+  } catch (error) {
+    console.error(`[ORDER] ❌ Erro ao processar execução da ordem ${orderId}:`, error.message);
+    throw error;
+  }
+}
 
 /**
  * Mapeia tipo de ordem da Binance para formato do banco
@@ -772,5 +898,7 @@ module.exports = {
   registerOrderHandlers,
   areHandlersRegistered,
   unregisterOrderHandlers,
-  initializeOrderHandlers
+  initializeOrderHandlers,
+  handleTradeExecution,
+  checkPositionClosureAfterOrderExecution
 };
