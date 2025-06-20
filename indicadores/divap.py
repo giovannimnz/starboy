@@ -236,7 +236,6 @@ def update_leverage_brackets_database():
             
             processed_symbols += 1
             
-            # Log de progresso a cada 100 símbolos
             if processed_symbols % 100 == 0:
                 #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] Processados {processed_symbols}/{len(brackets_data)} símbolos...")
                 pass
