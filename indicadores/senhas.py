@@ -8,7 +8,7 @@ reposition_bot_token = '7161019203:AAENDI-WMQ5JleeVUK7RukaQfhwkkUVgSCs'
 pers_api_hash = 'd4ceecabc0a6484c1d10e05d80cb1992'
 pers_api_id = 29449562
 pers_entry_bot_token = '7008319243:AAEwhYTuyrnb0JNkm7qF1HhkSqtddIPi5p8'
-pers_reposition_bot_token = ''
+pers_reposition_bot_token = '' 
 
 #Atius API Webhook
 webhook = 'https://api.atius.com.br/webhook'
