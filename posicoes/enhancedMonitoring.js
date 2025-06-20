@@ -236,15 +236,15 @@ async function runAdvancedPositionMonitoring(accountId) {
     
     const db = await getDatabaseInstance();
     
-    // ✅ 1. VERIFICAR POSIÇÕES DO BANCO vs CORRETORA
+    // ✅ 1. VERIFICAR POSIÇÕES DO BANCO vs CORRETORA (INCLUIR CLOSED)
     const [dbPositions] = await db.query(`
       SELECT * FROM posicoes 
-      WHERE status = 'OPEN' AND conta_id = ?
+      WHERE status IN ('OPEN', 'CLOSED') AND conta_id = ?
     `, [accountId]);
     
     const exchangePositions = await api.getAllOpenPositions(accountId);
     
-    console.log(`[ADVANCED_MONITOR] 📊 Banco: ${dbPositions.length} posições | Corretora: ${exchangePositions.length} posições`);
+    console.log(`[ADVANCED_MONITOR] 📊 Banco: ${dbPositions.length} posições (OPEN+CLOSED) | Corretora: ${exchangePositions.length} posições`);
     
     const exchangePositionsMap = new Map();
     exchangePositions.forEach(pos => {
@@ -255,18 +255,20 @@ async function runAdvancedPositionMonitoring(accountId) {
     let positionsMovedCount = 0;
     let filledOrdersMovedCount = 0;
     
-    // ✅ 2. VERIFICAR CADA POSIÇÃO DO BANCO
+    // ✅ 2. VERIFICAR CADA POSIÇÃO DO BANCO (OPEN E CLOSED)
     for (const position of dbPositions) {
       try {
-        console.log(`[ADVANCED_MONITOR] 🔍 Verificando posição ${position.simbolo} (ID: ${position.id})...`);
+        console.log(`[ADVANCED_MONITOR] 🔍 Verificando posição ${position.simbolo} (ID: ${position.id}, Status: ${position.status})...`);
         checkedCount++;
         
         const exchangePos = exchangePositionsMap.get(position.simbolo);
         
-        if (!exchangePos || Math.abs(parseFloat(exchangePos.quantidade)) <= 0.000001) {
-          console.log(`[ADVANCED_MONITOR] ⚠️ Posição ${position.simbolo} (ID: ${position.id}) NÃO EXISTE na corretora!`);
+        // ✅ LÓGICA DIFERENTE PARA POSIÇÕES OPEN VS CLOSED
+        if (position.status === 'CLOSED') {
+          // Posição já marcada como CLOSED no banco, deve ser movida para histórico
+          console.log(`[ADVANCED_MONITOR] 📚 Posição ${position.simbolo} (ID: ${position.id}) já está CLOSED, movendo para histórico...`);
           
-          // ✅ 2.1. PROCESSAR TODAS AS ORDENS RELACIONADAS
+          // ✅ PROCESSAR ORDENS RELACIONADAS
           const [relatedOrders] = await db.query(`
             SELECT id_externo, simbolo, tipo_ordem_bot, status, preco_executado, quantidade_executada 
             FROM ordens 
@@ -274,80 +276,93 @@ async function runAdvancedPositionMonitoring(accountId) {
           `, [position.id, accountId]);
           
           if (relatedOrders.length > 0) {
-            console.log(`[ADVANCED_MONITOR] 🗑️ Processando ${relatedOrders.length} ordens relacionadas...`);
+            console.log(`[ADVANCED_MONITOR] 🗑️ Processando ${relatedOrders.length} ordens relacionadas para posição CLOSED...`);
             
             for (const order of relatedOrders) {
-              if (order.status === 'FILLED') {
-                // ✅ MOVER ORDEM FILLED PARA HISTÓRICO
-                const moved = await moveOrderToHistoryPhysically(db, order.id_externo, accountId);
-                if (moved) {
-                  filledOrdersMovedCount++;
-                  console.log(`[ADVANCED_MONITOR] ✅ Ordem FILLED ${order.id_externo} movida para ordens_fechadas`);
-                }
-                
-              } else if (order.status === 'NEW' || order.status === 'PARTIALLY_FILLED') {
-                // ✅ MARCAR ORDENS PENDENTES COMO CANCELED E MOVER
-                await db.query(`
-                  UPDATE ordens 
-                  SET status = 'CANCELED', 
-                      last_update = NOW(),
-                      observacao = 'Auto-cancelada - posição fechada na corretora'
-                  WHERE id_externo = ? AND conta_id = ?
-                `, [order.id_externo, accountId]);
-                
-                // ✅ MOVER ORDEM CANCELED PARA HISTÓRICO
-                const moved = await moveOrderToHistoryPhysically(db, order.id_externo, accountId);
-                if (moved) {
-                  console.log(`[ADVANCED_MONITOR] ✅ Ordem ${order.id_externo} (${order.tipo_ordem_bot}) cancelada e movida para histórico`);
-                }
+              const moved = await moveOrderToHistoryPhysically(db, order.id_externo, accountId);
+              if (moved) {
+                filledOrdersMovedCount++;
+                console.log(`[ADVANCED_MONITOR] ✅ Ordem ${order.id_externo} (${order.status}) movida para histórico`);
               }
             }
           }
           
-          // ✅ 2.2. MOVER POSIÇÃO FISICAMENTE PARA HISTÓRICO
+          // ✅ MOVER POSIÇÃO PARA HISTÓRICO
           const moved = await movePositionToHistoryPhysically(
             db, 
             position.id, 
             'CLOSED', 
-            'Monitoramento automático - posição não existe na corretora',
+            position.observacoes || 'Movida automaticamente - status CLOSED detectado',
             accountId
           );
           
           if (moved) {
             positionsMovedCount++;
-            console.log(`[ADVANCED_MONITOR] ✅ Posição ${position.simbolo} (ID: ${position.id}) movida fisicamente para posicoes_fechadas`);
-            
-            // ✅ 2.3. NOTIFICAÇÃO TELEGRAM
-            try {
-              const { sendTelegramMessage, formatAlertMessage } = require('./telegramBot');
-              const alertMessage = formatAlertMessage(
-                'POSIÇÃO AUTO-FECHADA',
-                `⚠️ <b>${position.simbolo}</b>\n\n` +
-                `Posição foi detectada como fechada na corretora.\n` +
-                `Movida automaticamente para histórico.\n\n` +
-                `💰 Quantidade: ${position.quantidade}\n` +
-                `💵 Preço médio: ${position.preco_medio}\n` +
-                `📅 Aberta em: ${position.data_hora_abertura}\n` +
-                `📊 Ordens relacionadas processadas: ${relatedOrders.length}`
-              );
-              
-              await sendTelegramMessage(accountId, alertMessage);
-              console.log(`[ADVANCED_MONITOR] 📱 Notificação de fechamento enviada`);
-            } catch (telegramError) {
-              console.warn(`[ADVANCED_MONITOR] ⚠️ Erro ao enviar notificação:`, telegramError.message);
-            }
+            console.log(`[ADVANCED_MONITOR] ✅ Posição CLOSED ${position.simbolo} (ID: ${position.id}) movida para histórico`);
           }
           
-          continue;
-        }
-        
-        // ✅ 3. VERIFICAR TRAILING STOPS PARA POSIÇÕES ATIVAS
-        if (exchangePos) {
-          const currentPrice = await api.getPrice(position.simbolo, accountId);
-          
-          if (currentPrice && currentPrice > 0) {
-            const { checkOrderTriggers } = require('./trailingStopLoss');
-            await checkOrderTriggers(db, position, currentPrice, accountId);
+        } else if (position.status === 'OPEN') {
+          // Lógica original para posições OPEN
+          if (!exchangePos || Math.abs(parseFloat(exchangePos.quantidade)) <= 0.000001) {
+            console.log(`[ADVANCED_MONITOR] ⚠️ Posição OPEN ${position.simbolo} (ID: ${position.id}) NÃO EXISTE na corretora!`);
+            
+            // Processar ordens relacionadas e mover posição (lógica existente)
+            const [relatedOrders] = await db.query(`
+              SELECT id_externo, simbolo, tipo_ordem_bot, status, preco_executado, quantidade_executada 
+              FROM ordens 
+              WHERE id_posicao = ? AND conta_id = ?
+            `, [position.id, accountId]);
+            
+            if (relatedOrders.length > 0) {
+              console.log(`[ADVANCED_MONITOR] 🗑️ Processando ${relatedOrders.length} ordens relacionadas...`);
+              
+              for (const order of relatedOrders) {
+                if (order.status === 'FILLED') {
+                  const moved = await moveOrderToHistoryPhysically(db, order.id_externo, accountId);
+                  if (moved) {
+                    filledOrdersMovedCount++;
+                    console.log(`[ADVANCED_MONITOR] ✅ Ordem FILLED ${order.id_externo} movida para ordens_fechadas`);
+                  }
+                  
+                } else if (order.status === 'NEW' || order.status === 'PARTIALLY_FILLED') {
+                  await db.query(`
+                    UPDATE ordens 
+                    SET status = 'CANCELED', 
+                        last_update = NOW(),
+                        observacao = 'Auto-cancelada - posição fechada na corretora'
+                    WHERE id_externo = ? AND conta_id = ?
+                  `, [order.id_externo, accountId]);
+                  
+                  const moved = await moveOrderToHistoryPhysically(db, order.id_externo, accountId);
+                  if (moved) {
+                    console.log(`[ADVANCED_MONITOR] ✅ Ordem ${order.id_externo} (${order.tipo_ordem_bot}) cancelada e movida para histórico`);
+                  }
+                }
+              }
+            }
+            
+            // Mover posição para histórico
+            const moved = await movePositionToHistoryPhysically(
+              db, 
+              position.id, 
+              'CLOSED', 
+              'Monitoramento automático - posição não existe na corretora',
+              accountId
+            );
+            
+            if (moved) {
+              positionsMovedCount++;
+              console.log(`[ADVANCED_MONITOR] ✅ Posição ${position.simbolo} (ID: ${position.id}) movida fisicamente para posicoes_fechadas`);
+            }
+            
+          } else {
+            // ✅ VERIFICAR TRAILING STOPS PARA POSIÇÕES ATIVAS
+            const currentPrice = await api.getPrice(position.simbolo, accountId);
+            
+            if (currentPrice && currentPrice > 0) {
+              const { checkOrderTriggers } = require('./trailingStopLoss');
+              await checkOrderTriggers(db, position, currentPrice, accountId);
+            }
           }
         }
         

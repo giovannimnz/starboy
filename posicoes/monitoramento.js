@@ -456,6 +456,62 @@ try {
       }
     });
 
+    accountJobs.cleanupClosedPositions = schedule.scheduleJob('*/3 * * * *', async () => {
+  if (isShuttingDown) return;
+  try {
+    const db = await getDatabaseInstance();
+    
+    // Buscar posições CLOSED que ainda não foram movidas
+    const [closedPositions] = await db.query(`
+      SELECT id, simbolo, status, data_hora_fechamento, observacoes 
+      FROM posicoes 
+      WHERE status = 'CLOSED' AND conta_id = ?
+      AND data_hora_fechamento < DATE_SUB(NOW(), INTERVAL 1 MINUTE)
+    `, [accountId]);
+    
+    if (closedPositions.length > 0) {
+      console.log(`[MONITOR] 📚 Encontradas ${closedPositions.length} posições CLOSED para mover para histórico...`);
+      
+      for (const position of closedPositions) {
+        try {
+          // Mover ordens relacionadas primeiro
+          const [relatedOrders] = await db.query(`
+            SELECT id_externo FROM ordens 
+            WHERE id_posicao = ? AND conta_id = ?
+          `, [position.id, accountId]);
+          
+          let movedOrders = 0;
+          for (const order of relatedOrders) {
+            const { moveOrderToHistoryPhysically } = require('./enhancedMonitoring');
+            const moved = await moveOrderToHistoryPhysically(db, order.id_externo, accountId);
+            if (moved) movedOrders++;
+          }
+          
+          // Mover posição
+          const { movePositionToHistoryPhysically } = require('./enhancedMonitoring');
+          const moved = await movePositionToHistoryPhysically(
+            db, 
+            position.id, 
+            'CLOSED', 
+            position.observacoes || 'Limpeza automática - posição CLOSED',
+            accountId
+          );
+          
+          if (moved) {
+            console.log(`[MONITOR] ✅ Posição CLOSED ${position.simbolo} (ID: ${position.id}) movida para histórico (${movedOrders} ordens movidas)`);
+          }
+          
+        } catch (moveError) {
+          console.error(`[MONITOR] ❌ Erro ao mover posição CLOSED ${position.simbolo}:`, moveError.message);
+        }
+      }
+    }
+    
+  } catch (error) {
+    console.error(`[MONITOR] ⚠️ Erro na limpeza de posições CLOSED para conta ${accountId}:`, error.message);
+  }
+});
+
     // ✅ MELHORADO: Job de verificação de trailing stops mais inteligente
     accountJobs.checkTrailingStops = schedule.scheduleJob('*/30 * * * * *', async () => {
       if (isShuttingDown) return;
