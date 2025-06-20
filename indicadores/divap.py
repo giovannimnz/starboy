@@ -421,15 +421,15 @@ DB_PASSWORD = os.getenv('DB_PASSWORD')
 DB_NAME = os.getenv('DB_NAME')
 
 # IDs dos grupos - USANDO OS IDs INTERNOS CORRETOS COM SINAL NEGATIVO
-GRUPOS_ORIGEM_IDS = [-4192806079]  # Lista com os IDs dos grupos de origem
+GRUPOS_ORIGEM_IDS = [-4192806079,-1002444455075]  # Lista com os IDs dos grupos de origem
 #GRUPOS_ORIGEM_IDS = [-1002444455075]  # Lista com os IDs dos grupos de origem
 GRUPO_DESTINO_ID = -1002016807368  # ID do grupo de destino
 CONTA_ID = 1
 
 # Mapeamento de IDs de grupo para nomes de fontes (NOVO)
 GRUPO_FONTE_MAPEAMENTO = {
-    -1002444455075: "divap"  # Quando o grupo for este ID, o valor será "divap"
-    # Adicione mais mapeamentos conforme necessário para outros grupos
+    -4192806079: "divap",  # ✅ Grupo que está ATIVO na lista GRUPOS_ORIGEM_IDS
+    -1002444455075: "divap"  # ✅ Manter também o outro caso precise alternar
 }
 
 # Seletor de alvo - valor 2 corresponde ao segundo alvo (Alvo 2)
@@ -1110,15 +1110,38 @@ async def handle_new_message(event):
         incoming_chat_id = -incoming_chat_id
         #print(f"[CORREÇÃO] Chat ID convertido para negativo: {incoming_chat_id}")
 
+    # ✅ ADICIONAR LOGS DE DEBUG DETALHADOS
+    print(f"[DEBUG] 📨 Nova mensagem recebida:")
+    print(f"[DEBUG]   - Chat ID: {incoming_chat_id}")
+    print(f"[DEBUG]   - Message ID: {incoming_message_id}")
+    print(f"[DEBUG]   - Grupos origem configurados: {GRUPOS_ORIGEM_IDS}")
+    print(f"[DEBUG]   - É grupo de origem? {incoming_chat_id in GRUPOS_ORIGEM_IDS}")
+    print(f"[DEBUG]   - Mapeamento disponível: {GRUPO_FONTE_MAPEAMENTO}")
+
     # Obter a fonte da mensagem com base no chat_id
     message_source = GRUPO_FONTE_MAPEAMENTO.get(incoming_chat_id)
+    print(f"[DEBUG]   - Message source: {message_source}")    
     
     try:
         incoming_message_id = event.message.id
         incoming_text = event.message.text
 
         if not incoming_text:
+            print(f"[DEBUG]   - Mensagem sem texto, ignorando")
             return
+        
+        print(f"[DEBUG]   - Texto (200 chars): {incoming_text[:200]}...")        
+
+        # ✅ VERIFICAR SE CONTÉM PADRÕES DIVAP
+        has_divap_terms = any(term.lower() in incoming_text.lower() for term in ["divap", "possível divap", "divap de"])
+        has_entry = "entrada" in incoming_text.lower()
+        has_target = "alvo" in incoming_text.lower()
+        has_stop = "stop" in incoming_text.lower()
+        
+        print(f"[DEBUG]   - Contém DIVAP: {has_divap_terms}")
+        print(f"[DEBUG]   - Contém Entrada: {has_entry}")
+        print(f"[DEBUG]   - Contém Alvo: {has_target}")
+        print(f"[DEBUG]   - Contém Stop: {has_stop}")
 
         incoming_created_at = event.message.date.strftime("%Y-%m-%d %H:%M:%S")
         GRUPOS_PERMITIDOS_PARA_REGISTRO = GRUPOS_ORIGEM_IDS
