@@ -10,6 +10,10 @@ const { sendTelegramMessage, formatEntryMessage, formatErrorMessage, formatAlert
 async function executeLimitMakerEntry(signal, currentPrice, accountId) {
   console.log(`[LIMIT_ENTRY] 🚀 Executando entrada para sinal ${signal.id}: ${signal.symbol} ${signal.side} a ${signal.entry_price} (conta ${accountId})`);
 
+  // ✅ VARIÁVEIS DE CONTROLE PARA EVITAR DUPLICAÇÃO
+  let slTpRpsAlreadyCreated = false;
+  let entryProcessingComplete = false;
+  
   // ✅ SISTEMA DE RASTREAMENTO MELHORADO - DECLARADO CORRETAMENTE
   const sentOrders = new Map(); // DEVE estar aqui, não no escopo global
   let isEntryComplete = false;
@@ -1061,15 +1065,29 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
         const rpPrice = targetPrices[rpKey];
         
         if (rpPrice && rpPrice > 0 && i < reductionPercentages.length) {
+          // ✅ VERIFICAR SE JÁ EXISTE RP PARA ESTE TARGET ESPECÍFICO
+          const [existingRp] = await connection.query(`
+            SELECT COUNT(*) as count 
+            FROM ordens 
+            WHERE orign_sig = ? 
+              AND tipo_ordem_bot = 'REDUCAO_PARCIAL' 
+              AND target = ?
+              AND conta_id = ?
+              AND status IN ('NEW', 'PARTIALLY_FILLED')
+          `, [`WEBHOOK_${signal.id}`, i + 1, accountId]);
+
+          if (existingRp[0]?.count > 0) {
+            console.log(`[LIMIT_ENTRY] ⚠️ RP${i+1} já existe para sinal ${signal.id}. Pulando criação.`);
+            continue;
+          }
+
           const rpPercentage = reductionPercentages[i];
           const rawRpQty = totalFilledSize * rpPercentage;
           const rpQty = parseFloat(rawRpQty.toFixed(quantityPrecision));
           
           if (rpQty > 0) {
             try {
-              console.log(`[LIMIT_ENTRY] 📊 Calculando RP${i+1}: ${(rpPercentage*100)}% de ${totalFilledSize.toFixed(quantityPrecision)} = ${rawRpQty.toFixed(quantityPrecision)} → ${rpQty.toFixed(quantityPrecision)}`);
-              // CORREÇÃO: `side` não estava definido neste escopo, corrigido para `binanceSide`
-              console.log(`[LIMIT_ENTRY] 🎯 Criando RP${i+1}: ${rpQty.toFixed(quantityPrecision)} ${signal.symbol} @ ${rpPrice.toFixed(pricePrecision)} (${binanceSide})`);
+              console.log(`[LIMIT_ENTRY] 📊 Criando RP${i+1} ÚNICO para sinal ${signal.id}: ${(rpPercentage*100)}% de ${totalFilledSize.toFixed(quantityPrecision)} = ${rpQty.toFixed(quantityPrecision)}`);
               
               const rpResponse = await newReduceOnlyOrder(
                 numericAccountId,
@@ -1081,9 +1099,8 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
               
               if (rpResponse && (rpResponse.data?.orderId || rpResponse.orderId)) {
                 const rpOrderId = rpResponse.data?.orderId || rpResponse.orderId;
-                console.log(`[LIMIT_ENTRY] ✅ RP${i+1} criada: ${rpOrderId} (${(rpPercentage*100)}%)`);
+                console.log(`[LIMIT_ENTRY] ✅ RP${i+1} ÚNICO criado para sinal ${signal.id}: ${rpOrderId} (${(rpPercentage*100)}%)`);
                 
-                // ✅ CORREÇÃO: Usar a estrutura correta da tabela ordens
                 const rpOrderData = {
                   tipo_ordem: 'LIMIT',
                   preco: rpPrice,
@@ -1095,12 +1112,12 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
                   side: binanceOppositeSide,
                   simbolo: signal.symbol,
                   tipo_ordem_bot: 'REDUCAO_PARCIAL',
-                  target: i + 1, // ✅ USAR TARGET PARA IDENTIFICAR QUAL RP (1, 2, 3, 4)
+                  target: i + 1, // ✅ TARGET ESPECÍFICO PARA CADA RP
                   reduce_only: true,
                   close_position: false,
                   last_update: formatDateForMySQL(new Date()),
-                  orign_sig: `WEBHOOK_${signal.id}`,
-                  observacao: `RP${i+1} - ${(rpPercentage*100)}%`,
+                  orign_sig: `WEBHOOK_${signal.id}`, // ✅ USAR ID DO SINAL ESPECÍFICO
+                  observacao: `RP${i+1} - ${(rpPercentage*100)}% - Sinal ${signal.id}`, // ✅ IDENTIFICAR SINAL
                   preco_executado: 0,
                   quantidade_executada: 0,
                   dados_originais_ws: JSON.stringify(rpResponse),
@@ -1110,20 +1127,27 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
                 };
                 
                 await insertNewOrder(connection, rpOrderData);
-                console.log(`[LIMIT_ENTRY] ✅ Ordem RP${i+1} inserida no banco com target=${i+1}`);
-                
-                cumulativeQtyForRps += rpQty;
+                console.log(`[LIMIT_ENTRY] ✅ RP${i+1} salvo no banco para sinal ${signal.id} com target=${i+1}`);
               }
             } catch (rpError) {
-              console.error(`[LIMIT_ENTRY] ❌ Erro ao criar RP${i+1}:`, rpError.response?.data || rpError.message);
+              console.error(`[LIMIT_ENTRY] ❌ Erro ao criar RP${i+1} para sinal ${signal.id}:`, rpError.response?.data || rpError.message);
             }
           }
         }
       }
-    } // <-- **ERRO CORRIGIDO 1: A CHAVE '}' FALTANTE FOI ADICIONADA AQUI**
+      
+      console.log(`[LIMIT_ENTRY] ✅ Processo de criação SL/TP/RPs CONCLUÍDO para sinal ${signal.id}`);
+    } else if (slTpRpsAlreadyCreated) {
+      console.log(`[LIMIT_ENTRY] ℹ️ SL/TP/RPs já existem para sinal ${signal.id}. Processo ignorado.`);
+    } else {
+      console.log(`[LIMIT_ENTRY] ℹ️ Entrada não suficientemente completa (${(fillRatio * 100).toFixed(1)}%) para criar SL/TP/RPs para sinal ${signal.id}`);
+    }
+
+    // ✅ MARCAR COMO PROCESSAMENTO COMPLETO
+    entryProcessingComplete = true;
 
     await connection.commit();
-    console.log(`[LIMIT_ENTRY] Transação COMMITADA. Sucesso para Sinal ID ${signal.id}`);
+    console.log(`[LIMIT_ENTRY] ✅ Transação COMMITADA com sucesso para sinal ${signal.id}`);
 
     // ✅ NOTIFICAÇÃO TELEGRAM DE SUCESSO
     try {
@@ -1236,7 +1260,6 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
         console.error(`[LIMIT_ENTRY] Erro ao liberar conexão:`, releaseError.message);
       }
     }
-    // **ERRO CORRIGIDO 2: O BLOCO DE LIMPEZA DUPLICADO FOI REMOVIDO DAQUI**
   }
 }
 
