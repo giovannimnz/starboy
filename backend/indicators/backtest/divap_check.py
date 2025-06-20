@@ -23,7 +23,7 @@ logging.basicConfig(
 logger = logging.getLogger("DIVAP_Checker")
 
 # Carregar variáveis de ambiente do arquivo .env na raiz do projeto
-env_path = pathlib.Path(__file__).parents[3] / 'config' / '.env'
+env_path = pathlib.Path(__file__).parents[2] / 'config' / '.env'
 load_dotenv(dotenv_path=env_path)
 
 DB_HOST = os.getenv('DB_HOST')

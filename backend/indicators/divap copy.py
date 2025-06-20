@@ -5,7 +5,7 @@ import signal
 import sys
 import traceback
 import mysql.connector
-from datetime import datetime, timedelta
+from datetime import datetime
 from telethon import TelegramClient, events
 from dotenv import load_dotenv
 import pathlib
@@ -23,7 +23,7 @@ import json
 from urllib.parse import urlencode
 import warnings
 
-# Remover logs do Telethon
+# Remover logs  do Telethon
 logging.basicConfig(level=logging.ERROR)  # Mostrar apenas erros críticos
 logging.getLogger('telethon').setLevel(logging.CRITICAL)  # Silenciar completamente o Telethon
 logging.getLogger('telethon.network').setLevel(logging.CRITICAL)
@@ -34,11 +34,11 @@ warnings.filterwarnings("ignore", message=".*telethon.*")
 
 
 DB_CONFIG = {
-    'host': os.getenv('DB_HOST', 'atius.com.br'),
-    'port': int(os.getenv('DB_PORT', 3306)),
-    'user': os.getenv('DB_USER', 'atius_starboy'),
-    'password': os.getenv('DB_PASSWORD', 'Mt@301114'),
-    'database': os.getenv('DB_NAME', 'starboy'),
+    'host': os.getenv('DB_HOST'),
+    'port': os.getenv('DB_PORT'),
+    'user': os.getenv('DB_USER'),
+    'password': os.getenv('DB_PASSWORD'),
+    'database': os.getenv('DB_NAME'),
     'charset': 'utf8mb4',
     'autocommit': True
 }
@@ -372,7 +372,6 @@ def initialize_bracket_scheduler():
     """
     try:
         # Testar credenciais e banco antes de começar
-        #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] Executando testes iniciais...")
         
         binance_ok = test_binance_credentials()
         db_ok = test_database_connection()
@@ -386,12 +385,13 @@ def initialize_bracket_scheduler():
             return
         
         # Atualizar brackets na inicialização
-        #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] Executando atualização inicial de brackets...")
         update_leverage_brackets()
         
         # Iniciar scheduler em thread separada
         scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
         scheduler_thread.start()
+        
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] ✅ Scheduler de brackets inicializado em thread separada")
         
     except Exception as e:
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] ❌ Erro ao inicializar scheduler: {e}")
@@ -406,15 +406,15 @@ TAXA_SAIDA = 0.05  # 0.05% do valor nocional da posição
 
 # Adicionar o diretório backtest ao path para permitir a importação
 sys.path.append(str(Path(__file__).parent / 'backtest'))
-from backtest.divap_check import DIVAPAnalyzer, DB_CONFIG, BINANCE_CONFIG
+from backtest.divap_check import DIVAPAnalyzer
 
 # Carregar variáveis de ambiente do arquivo .env na raiz do projeto
-env_path = pathlib.Path(__file__).parents[1] / '.env'
+env_path = pathlib.Path(__file__).parents[1] / 'config' / '.env'
 load_dotenv(dotenv_path=env_path)
 
 # Configurações do banco de dados do arquivo .env
 DB_HOST = os.getenv('DB_HOST')
-DB_PORT = os.getenv('DB_PORT')
+DB_PORT = os.getenv('DB_PORT') 
 DB_USER = os.getenv('DB_USER')
 DB_PASSWORD = os.getenv('DB_PASSWORD')
 DB_NAME = os.getenv('DB_NAME')
@@ -649,10 +649,7 @@ def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent, si
     try:
         # Obter o saldo base de cálculo
         account_balance = get_account_base_balance()
-        #print(f"[DEBUG] Valor da ordem: {order_value:.2f} USDT (Saldo {account_balance:.2f} * {capital_percent}%)")
-        
-        max_leverage = 1
-        bracket_leverage_limits = []
+        #print(f"[DEBUG] Saldo base de cálculo: {account_balance:.2f} USDT")
         
         # Obter os brackets de alavancagem para o símbolo
         leverage_brackets = load_leverage_brackets(cleaned_symbol)
@@ -671,38 +668,36 @@ def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent, si
                 symbol_brackets = all_brackets["BTCUSDT"]
 
         # Valor para ordem (com base na porcentagem de capital)
-        # Use um valor nocional razoável para a verificação de bracket, e não o order_value
-        # Para evitar ciclos ou dependência circular, vamos usar o capital total e alavancagem ideal
-        # para estimar o tamanho da posição para verificar os brackets.
-        # A ideia aqui é encontrar o MAX_LEVERAGE que a Binance permite para aquele 'notional'
-        # Considerando que estamos calculando a alavancagem, um bom 'notional' inicial seria
-        # capital * alavancagem atual (ou um chute inicial como 20x)
-        estimated_order_value_at_max_leverage = account_balance * (capital_percent / 100) * target_leverage
+        order_value = account_balance * (capital_percent / 100)
+        #print(f"[DEBUG] Valor da ordem: {order_value:.2f} USDT (Saldo {account_balance:.2f} * {capital_percent}%)")
         
+        max_leverage = 1
+        bracket_leverage_limits = []
+        
+        # Verificar cada bracket para determinar a alavancagem máxima permitida
         for bracket in symbol_brackets:
             if "initialLeverage" not in bracket:
                 continue
                 
-            bracket_leverage = int(bracket.get("initialLeverure", 1)) # Bug fix: typo 'initialLeverure' corrected to 'initialLeverage'
+            bracket_leverage = int(bracket.get("initialLeverage", 1))
             notional_floor = float(bracket.get("notionalFloor", 0))
             notional_cap = float(bracket.get("notionalCap", float('inf')))
             
-            # Verificar se a alavancagem do bracket está dentro do que o cálculo ideal permite
-            if bracket_leverage <= target_leverage:
-                # E se o "valor da posição" simulado se encaixa no notional do bracket
-                # Aqui, usamos o capital da ordem * alavancagem do bracket
-                simulated_position_notional = account_balance * (capital_percent / 100) * bracket_leverage
-
-                if simulated_position_notional >= notional_floor and simulated_position_notional < notional_cap:
-                    max_leverage = max(max_leverage, bracket_leverage)
-                    bracket_leverage_limits.append(bracket_leverage)
-                    # print(f"[DEBUG] Bracket elegível: Alavancagem {bracket_leverage}x, Valor posição simulado: {simulated_position_notional:.2f}, Limites: {notional_floor:.2f} - {notional_cap:.2f}")
-                # else:
-                    # print(f"[DEBUG] Bracket não elegível (notional): Alavancagem {bracket_leverage}x, Valor posição simulado: {simulated_position_notional:.2f}, Limites: {notional_floor:.2f} - {notional_cap:.2f}")
-
+            # Valor da posição = valor da ordem * alavancagem
+            position_value = order_value * bracket_leverage
+            
+            # Verificar se o valor da posição está dentro dos limites do bracket
+            if position_value >= notional_floor and (notional_cap == float('inf') or position_value < notional_cap):
+                max_leverage = max(max_leverage, bracket_leverage)
+                bracket_leverage_limits.append(bracket_leverage)
+                print(f"[DEBUG] Bracket elegível: Alavancagem {bracket_leverage}x, Valor posição: {position_value:.2f}, Limites: {notional_floor:.2f} - {notional_cap:.2f}")
+            else:
+                #print(f"[DEBUG] Bracket não elegível: Alavancagem {bracket_leverage}x, Valor posição: {position_value:.2f}, Limites: {notional_floor:.2f} - {notional_cap:.2f}")
+                pass
+        
         if bracket_leverage_limits:
             max_leverage = max(bracket_leverage_limits)
-            print(f"[DEBUG] Alavancagem máxima permitida pelos brackets (com filtro de target_leverage): {max_leverage}x")
+            print(f"[DEBUG] Alavancagem máxima permitida pelos brackets: {max_leverage}x")
         else:
             print(f"[AVISO] Nenhum bracket elegível encontrado para o valor da ordem. Usando alavancagem conservadora.")
             max_leverage = min(20, target_leverage)  # Valor conservador
@@ -755,7 +750,10 @@ def save_to_database(trade_data):
         # CORREÇÃO: SQL query com contagem correta de placeholders
         sql = """
               INSERT INTO webhook_signals
-              (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price, chat_id, status, timeframe, message_id, message_id_orig, chat_id_orig_sinal, tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, message_source, divap_confirmado, cancelado_checker, error_message, conta_id)
+              (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price,
+               chat_id, status, timeframe, message_id, message_id_orig, chat_id_orig_sinal,
+               tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, message_source,
+               divap_confirmado, cancelado_checker, error_message, conta_id)
               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
               """
 
@@ -844,147 +842,174 @@ def save_to_database(trade_data):
 def extract_trade_info(message_text):
     """
     Extrai informações de trade da mensagem do Telegram usando regex
-    MELHORADO para lidar com diferentes formatos de mensagem e robustez.
+    MELHORADO para lidar com diferentes formatos de mensagem
     """
     try:
         # Verificar se contém termos obrigatórios (mais flexível)
-        required_terms_pattern1 = ["DIVAP", "Entrada", "Alvo", "Stop"]
-        required_terms_pattern2 = ["possível DIVAP", "Entrada", "Alvo", "Stop"]
+        required_terms_pattern1 = ["DIVAP", "Entrada", "Alvo", "Stop"]  # Formato antigo
+        required_terms_pattern2 = ["possível DIVAP", "Entrada", "Alvo", "Stop"]  # Novo formato
         
+        # Verificar qual padrão a mensagem segue
         is_pattern1 = all(term.lower() in message_text.lower() for term in required_terms_pattern1)
         is_pattern2 = all(term.lower() in message_text.lower() for term in required_terms_pattern2)
         
         if not (is_pattern1 or is_pattern2):
-            print(f"[INFO] Mensagem não contém termos obrigatórios para DIVAP: {message_text}")
+            #print(f"[INFO] Mensagem não contém termos obrigatórios para DIVAP")
             return None
 
-        # Padrões para extrair informações (mais flexíveis)
-        # Símbolo e Timeframe (captura #SÍMBOLO e (TIME), ignorando o resto da linha inicialmente)
-        symbol_timeframe_match = re.match(r'🚨\s*#([A-Z0-9]+)\s+([0-9]+[mhdwMD])\s*-', message_text)
-        if not symbol_timeframe_match:
-            # Fallback para capturar apenas o símbolo e tentar timeframe depois
-            symbol_match_only = re.match(r'🚨\s*#([A-Z0-9]+)', message_text)
-            if symbol_match_only:
-                symbol = symbol_match_only.group(1)
-                timeframe = "15m" # Default se não encontrar no padrão inicial
-            else:
-                print("[INFO] Símbolo não encontrado na mensagem.")
-                return None
-        else:
-            symbol = symbol_timeframe_match.group(1)
-            timeframe = symbol_timeframe_match.group(2).lower()
+        # Padrões para extrair informações
+        symbol_pattern = r'#([A-Z0-9]+)'
         
-        # Detecção do lado da operação mais robusta
+        # MELHORADO: Padrão para timeframe mais flexível
+        timeframe_pattern = r'#[A-Z0-9]+\s+([0-9]+[mhdwMD]|[0-9]+[a-zA-Z])'
+        
+        # NOVO: Detectar lado da operação de forma mais robusta
         side = None
-        if "venda" in message_text.lower() or "sell" in message_text.lower():
-            side = "VENDA"
-        elif "compra" in message_text.lower() or "buy" in message_text.lower():
+        if "compra" in message_text.lower() or "buy" in message_text.lower():
             side = "COMPRA"
-        
-        # Padrões para extrair preços (mais tolerantes a espaços e quebras de linha)
+        elif "venda" in message_text.lower() or "sell" in message_text.lower():
+            side = "VENDA"
+        else:
+            # Tentar determinar pelo contexto da mensagem
+            if "acima de:" in message_text.lower():
+                # Se entrada é "acima de", normalmente é compra
+                side = "COMPRA"
+            elif "abaixo de:" in message_text.lower():
+                # Se entrada é "abaixo de", normalmente é venda
+                side = "VENDA"
+
+        # MELHORADO: Padrões mais flexíveis para capturar preços
         entry_patterns = [
-            r'Entrada\s+(?:abaixo|acima)\s+de\s*:\s*([0-9.,]+)',
-            r'Entrada\s*:\s*([0-9.,]+)',
-            r'Entry\s*:\s*([0-9.,]+)'
+            r'Entrada\s+(?:acima|abaixo)\s+de:\s*([0-9,.]+)',  # Formato padrão
+            r'Entrada\s*:\s*([0-9,.]+)',  # Formato alternativo
+            r'Entry\s*:\s*([0-9,.]+)'  # Formato em inglês
         ]
         
         sl_patterns = [
-            r'Stop\s+(?:acima|abaixo)\s+de\s*:\s*([0-9.,]+)',
-            r'Stop\s*:\s*([0-9.,]+)',
-            r'Stop\s+Loss\s*:\s*([0-9.,]+)',
-            r'SL\s*:\s*([0-9.,]+)'
+            r'Stop\s+(?:acima|abaixo)\s+de:\s*([0-9,.]+)',  # Formato padrão
+            r'Stop\s*:\s*([0-9,.]+)',  # Formato alternativo
+            r'Stop\s+Loss\s*:\s*([0-9,.]+)',  # Formato completo
+            r'SL\s*:\s*([0-9,.]+)'  # Formato abreviado
         ]
 
-        # Padrão para múltiplos alvos (captura todos os "Alvo XX: YYYY" ou "Alvo XX.YYYY")
-        tp_patterns_list = [
-            r'Alvo\s+\d+\s*:\s*([0-9.,]+)',  # Ex: Alvo 01: 0.27448
-            r'Alvo\s+\d+\.\s*([0-9.,]+)',  # Ex: Alvo 01.27448 (se houver esse formato)
-            r'Target\s+\d+\s*:\s*([0-9.,]+)', # English target format
-            r'TP\s*\d*\s*:\s*([0-9.,]+)' # TP: or TP1:
+        # MELHORADO: Padrão para múltiplos alvos mais flexível
+        tp_patterns = [
+            r'Alvo\s+(?:\d+):\s*([0-9,.]+)',  # Formato padrão
+            r'Target\s+(?:\d+):\s*([0-9,.]+)',  # Formato em inglês
+            r'TP\s*(?:\d+)?\s*:\s*([0-9,.]+)'  # Formato abreviado
         ]
 
-        # Capital/risco (mais flexível)
-        capital_pattern = r'com\s+([0-9.,]+)%\s+do\s+capital'
+        # Capital/risco (mantido igual)
+        capital_pattern = r'(\d+)%\s+do\s+capital'
+
+        # Extrair dados usando múltiplos padrões
+        symbol_match = re.search(symbol_pattern, message_text)
+        timeframe_match = re.search(timeframe_pattern, message_text)
         
         # Tentar múltiplos padrões para entrada
-        entry_value = None
+        entry_match = None
         for pattern in entry_patterns:
-            match = re.search(pattern, message_text, re.IGNORECASE)
-            if match:
-                entry_value = float(normalize_number(match.group(1)))
+            entry_match = re.search(pattern, message_text, re.IGNORECASE)
+            if entry_match:
                 break
         
         # Tentar múltiplos padrões para stop loss
-        sl_value = None
+        sl_match = None
         for pattern in sl_patterns:
-            match = re.search(pattern, message_text, re.IGNORECASE)
-            if match:
-                sl_value = float(normalize_number(match.group(1)))
+            sl_match = re.search(pattern, message_text, re.IGNORECASE)
+            if sl_match:
                 break
 
-        # Extrair todos os alvos
-        all_tps_extracted = []
-        for pattern in tp_patterns_list:
-            found_tps = re.findall(pattern, message_text, re.IGNORECASE)
-            for tp_str in found_tps:
-                all_tps_extracted.append(float(normalize_number(tp_str)))
+        # Extrair todos os alvos usando múltiplos padrões
+        tp_matches = []
+        for pattern in tp_patterns:
+            matches = re.findall(pattern, message_text, re.IGNORECASE)
+            tp_matches.extend(matches)
         
-        # Remover duplicatas e manter ordem (se houver)
+        # Remover duplicatas mantendo ordem
         seen = set()
-        tp_matches_unique = [x for x in all_tps_extracted if not (x in seen or seen.add(x))]
+        tp_matches = [x for x in tp_matches if not (x in seen or seen.add(x))]
 
         capital_match = re.search(capital_pattern, message_text)
-        original_capital_pct = float(normalize_number(capital_match.group(1))) if capital_match else 5.0
 
         # Validar se temos dados mínimos necessários
-        if not symbol or entry_value is None or sl_value is None or not tp_matches_unique:
-            print(f"[INFO] Dados mínimos não encontrados: Símbolo={symbol}, Entrada={entry_value}, SL={sl_value}, TPs={tp_matches_unique}")
+        if not symbol_match:
+            print("[INFO] Símbolo não encontrado na mensagem")
+            return None
+            
+        if not entry_match:
+            print("[INFO] Preço de entrada não encontrado")
+            return None
+            
+        if not sl_match:
+            print("[INFO] Stop loss não encontrado")
+            return None
+            
+        if not tp_matches:
+            print("[INFO] Nenhum alvo encontrado")
             return None
 
+        # Processar dados extraídos
+        symbol = symbol_match.group(1)
+        timeframe = timeframe_match.group(1).lower() if timeframe_match else "15m"  # Padrão 15m
+        entry = float(normalize_number(entry_match.group(1)))
+        stop_loss = float(normalize_number(sl_match.group(1)))
+        
         # NOVO: Se side ainda não foi determinado, usar lógica de preços
         if not side:
-            if entry_value > sl_value:
+            if entry > stop_loss:
                 side = "VENDA"  # Entrada maior que stop = venda
             else:
                 side = "COMPRA"  # Entrada menor que stop = compra
         
-        # Calcular alavancagem
-        leverage, sl_distance_pct = calculate_ideal_leverage(symbol, entry_value, sl_value, original_capital_pct, side)
+        # Capital percentual da mensagem original (usado apenas para cálculo de alavancagem)
+        original_capital_pct = float(capital_match.group(1)) if capital_match else 5.0  # Valor padrão
+
+        # Calcular alavancagem, agora recebendo também a distância do stop loss
+        leverage, sl_distance_pct = calculate_ideal_leverage(symbol, entry, stop_loss, original_capital_pct, side)
 
         # Cálculo do percentual de capital dinâmico baseado em risco
-        taxa_entrada_decimal = TAXA_ENTRADA / 100
-        taxa_saida_decimal = TAXA_SAIDA / 100
-        prejuizo_maximo_decimal = PREJUIZO_MAXIMO_PERCENTUAL_DO_CAPITAL_TOTAL / 100
+        # Converter taxas para decimal
+        taxa_entrada_decimal = TAXA_ENTRADA / 100  # 0.02% -> 0.0002
+        taxa_saida_decimal = TAXA_SAIDA / 100     # 0.05% -> 0.0005
+        prejuizo_maximo_decimal = PREJUIZO_MAXIMO_PERCENTUAL_DO_CAPITAL_TOTAL / 100  # 4.90% -> 0.0490
         
+        # Aplicar a fórmula: capital_pct = (Prejuízo Máximo / (L * (P + taxas))) * 100
         taxas_totais = taxa_entrada_decimal + taxa_saida_decimal
         risco_por_operacao = sl_distance_pct + taxas_totais
         
+        # Evitar divisão por zero
         if leverage * risco_por_operacao > 0:
             capital_pct = (prejuizo_maximo_decimal / (leverage * risco_por_operacao)) * 100
+            
+            # Limitar o capital_pct a valores razoáveis
             capital_pct = min(100.0, max(0.1, capital_pct))
+            
+            # Formatar para 2 casas decimais
             capital_pct = round(capital_pct, 2)
             
             print(f"[INFO] Capital calculado: {capital_pct:.2f}% (baseado em risco máximo de {PREJUIZO_MAXIMO_PERCENTUAL_DO_CAPITAL_TOTAL}%, "
                   f"distância SL de {sl_distance_pct*100:.2f}%, alavancagem {leverage}x, taxas totais {taxas_totais*100:.2f}%)")
         else:
+            # Em caso de erro, usar o capital da mensagem original ou o padrão
             capital_pct = original_capital_pct
             print(f"[AVISO] Erro no cálculo dinâmico de capital. Usando valor original: {capital_pct:.2f}%")
 
         # Usar o primeiro alvo como TP principal
-        tp = tp_matches_unique[0] if tp_matches_unique else entry_value
+        tp = float(normalize_number(tp_matches[0])) if tp_matches else entry  # Fallback para entry se não houver TP
 
-        print(f"[INFO] Sinal DIVAP detectado: {symbol} {side} @ {entry_value} -> {tp} | SL: {sl_value} | TF: {timeframe}")
+        print(f"[INFO] Sinal DIVAP detectado: {symbol} {side} @ {entry} -> {tp} | SL: {stop_loss} | TF: {timeframe}")
 
         return {
             "symbol": symbol,
             "timeframe": timeframe,
             "side": side,
             "leverage": leverage,
-            "capital_pct": capital_pct,
-            "entry": entry_value,
+            "capital_pct": capital_pct,  # Agora usando o capital_pct calculado dinamicamente
+            "entry": entry,
             "tp": tp,
-            "stop_loss": sl_value,
-            "all_tps": tp_matches_unique,
+            "stop_loss": stop_loss,
+            "all_tps": [float(normalize_number(tp)) for tp in tp_matches] if tp_matches else [tp],
             "chat_id": GRUPO_DESTINO_ID
         }
 
