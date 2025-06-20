@@ -420,15 +420,15 @@ DB_PASSWORD = os.getenv('DB_PASSWORD')
 DB_NAME = os.getenv('DB_NAME')
 
 # IDs dos grupos - USANDO OS IDs INTERNOS CORRETOS COM SINAL NEGATIVO
-GRUPOS_ORIGEM_IDS = [-4192806079]  # Lista com os IDs dos grupos de origem
+GRUPOS_ORIGEM_IDS = [-1002059628218]  # Lista com os IDs dos grupos de origem
 #GRUPOS_ORIGEM_IDS = [-1002444455075]  # Lista com os IDs dos grupos de origem
 GRUPO_DESTINO_ID = -1002016807368  # ID do grupo de destino
 CONTA_ID = 1
 
 # Mapeamento de IDs de grupo para nomes de fontes (NOVO)
 GRUPO_FONTE_MAPEAMENTO = {
-    -4192806079: "divap",  # ✅ Grupo que está ATIVO na lista GRUPOS_ORIGEM_IDS
-    -1002444455075: "divap"  # ✅ Manter também o outro caso precise alternar
+    #-1002444455075: "divap",
+    -1002059628218: "divap"
 }
 
 # Seletor de alvo - valor 2 corresponde ao segundo alvo (Alvo 2)
