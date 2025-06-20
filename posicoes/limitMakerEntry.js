@@ -305,7 +305,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       [signal.id]
     );
 
-    // ✅ CONFIGURAR WEBSOCKET DE PROFUNDIDADE - VERSÃO CORRIGIDA
+    // ✅ CONFIGURAR WEBSOCKET DE PROFUNDIDADE - VERSÃO APENAS WEBSOCKET
     console.log(`[LIMIT_ENTRY] Iniciando WebSocket de profundidade para ${signal.symbol}`);
     depthWs = websockets.setupBookDepthWebsocket(signal.symbol, (depthData, receivedAccountId) => {
       // CORREÇÃO: Validar accountId se fornecido
@@ -318,7 +318,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
         const bid = parseFloat(depthData.bestBid);
         const ask = parseFloat(depthData.bestAsk);
 
-        // ✅ VALIDAÇÕES MELHORADAS DA VERSÃO DEV
+        // ✅ VALIDAÇÕES MELHORADAS 
         const spread = ask - bid;
         const spreadPercent = (spread / bid) * 100;
 
@@ -349,31 +349,11 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       }
     }, accountId);
 
-    // ✅ AGUARDAR DADOS DO WEBSOCKET COM FALLBACK - VERSÃO MELHORADA
-    const MAX_RETRY_ATTEMPTS = 30;
-    const RETRY_INTERVAL_MS = 500;
+    // ✅ AGUARDAR DADOS DO WEBSOCKET - VERSÃO APENAS WEBSOCKET
+    const MAX_RETRY_ATTEMPTS = 50; // Aumentado para dar mais tempo ao WebSocket
+    const RETRY_INTERVAL_MS = 200; // Reduzido para verificações mais frequentes
     let wsRetryCount = 0;
     let hasValidBookData = false;
-
-    // FALLBACK: Obter dados via REST API
-    let fallbackBid = null;
-    let fallbackAsk = null;
-
-    try {
-      console.log(`[LIMIT_ENTRY] Obtendo dados de preço via REST API como fallback...`);
-      const currentMarketPrice = await api.getPrice(signal.symbol, numericAccountId);
-      if (currentMarketPrice && currentMarketPrice > 0) {
-        // ✅ CORREÇÃO: Spread mais realista baseado no tick size
-        const tickSizeInfo = await getTickSize(signal.symbol, numericAccountId);
-        const tickSize = parseFloat(tickSizeInfo) || (currentMarketPrice * 0.0001); // ✅ CORREÇÃO: tickSizeInfo já é number
-        
-        fallbackBid = currentMarketPrice - tickSize;
-        fallbackAsk = currentMarketPrice + tickSize; // ✅ CORREÇÃO: + tickSize para ask
-        console.log(`[LIMIT_ENTRY] Dados de fallback: Bid=${fallbackBid.toFixed(pricePrecision)}, Ask=${fallbackAsk.toFixed(pricePrecision)} (tick=${tickSize})`);
-      }
-    } catch (priceError) {
-      console.warn(`[LIMIT_ENTRY] Erro ao obter preço de fallback:`, priceError.message);
-    }
 
     // AGUARDAR DADOS VÁLIDOS DO WEBSOCKET
     console.log(`[LIMIT_ENTRY] Aguardando dados do BookTicker WebSocket...`);
@@ -393,26 +373,16 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       await new Promise(resolve => setTimeout(resolve, RETRY_INTERVAL_MS));
     }
 
-    // USAR FALLBACK SE WEBSOCKET FALHAR
+    // ✅ FALHA SE WEBSOCKET NÃO FUNCIONAR - SEM FALLBACK
     if (!hasValidBookData) {
-      console.warn(`[LIMIT_ENTRY] ⚠️ BookTicker WebSocket falhou após ${MAX_RETRY_ATTEMPTS} tentativas. Usando fallback REST.`);
-
-      if (fallbackBid && fallbackAsk) {
-        currentBestBid = fallbackBid;
-        currentBestAsk = fallbackAsk;
-        lastDepthUpdateTimestamp = Date.now();
-        hasValidBookData = true;
-        console.log(`[LIMIT_ENTRY] ✅ Usando dados de fallback REST: Bid=${currentBestBid.toFixed(pricePrecision)}, Ask=${currentBestAsk.toFixed(pricePrecision)}`);
-      } else {
-        throw new Error(`Não foi possível obter dados de preço válidos nem via WebSocket nem via REST API para ${signal.symbol}`);
-      }
+      throw new Error(`WebSocket BookTicker falhou após ${MAX_RETRY_ATTEMPTS} tentativas. Dados inválidos para ${signal.symbol}. Última atualização: ${lastDepthUpdateTimestamp ? new Date(lastDepthUpdateTimestamp).toISOString() : 'N/A'}`);
     }
 
     // OBTER TICK SIZE
     const tickSizeData = await getTickSize(signal.symbol, numericAccountId);
     const tickSize = parseFloat(tickSizeData.tickSize) || 0.01;
 
-    console.log(`[LIMIT_ENTRY] ✅ Dados iniciais prontos. Iniciando loop de chasing...`);
+    console.log(`[LIMIT_ENTRY] ✅ Dados WebSocket prontos. Iniciando loop de chasing...`);
     console.log(`[LIMIT_ENTRY] Configuração: tickSize=${tickSize}, totalEntrySize=${totalEntrySize.toFixed(quantityPrecision)}`);
 
     // ===== LOOP PRINCIPAL DE PERSEGUIÇÃO DE PREÇO =====
