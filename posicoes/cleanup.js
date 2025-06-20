@@ -188,25 +188,34 @@ async function cancelOrphanOrders(accountId) {
 }
 
 /**
- * ✅ NOVA FUNÇÃO: Mover ordens CANCELED para ordens_fechadas
+ * ✅ FUNÇÃO MELHORADA: Mover ordens para histórico (CANCELED + FILLED órfãs)
  */
 async function moveOrdersToHistory(accountId) {
   try {
     const db = await getDatabaseInstance();
     
-    // Buscar ordens CANCELED que ainda estão na tabela principal
-    const [canceledOrders] = await db.query(`
-      SELECT * FROM ordens 
-      WHERE status = 'CANCELED' 
-        AND conta_id = ?
-        AND last_update > DATE_SUB(NOW(), INTERVAL 1 HOUR)
+    // ✅ BUSCAR ORDENS PARA MOVER (CANCELED + FILLED órfãs)
+    const [ordersToMove] = await db.query(`
+      SELECT o.*, p.status as position_status FROM ordens o
+      LEFT JOIN posicoes p ON o.id_posicao = p.id
+      WHERE o.conta_id = ? 
+        AND (
+          (o.status = 'CANCELED' AND o.last_update > DATE_SUB(NOW(), INTERVAL 1 HOUR))
+          OR 
+          (o.status = 'FILLED' AND (p.id IS NULL OR p.status != 'OPEN') AND o.last_update < DATE_SUB(NOW(), INTERVAL 5 MINUTE))
+        )
     `, [accountId]);
     
-    if (canceledOrders.length === 0) {
+    if (ordersToMove.length === 0) {
       return 0;
     }
     
-    console.log(`[CLEANUP] 📚 Movendo ${canceledOrders.length} ordens CANCELED para histórico...`);
+    const canceledOrders = ordersToMove.filter(o => o.status === 'CANCELED');
+    const orphanFilledOrders = ordersToMove.filter(o => o.status === 'FILLED');
+    
+    console.log(`[CLEANUP] 📚 Movendo para histórico:`);
+    console.log(`  - ${canceledOrders.length} ordens CANCELED`);
+    console.log(`  - ${orphanFilledOrders.length} ordens FILLED órfãs`);
     
     const connection = await db.getConnection();
     await connection.beginTransaction();
@@ -218,7 +227,7 @@ async function moveOrdersToHistory(accountId) {
       
       let movedCount = 0;
       
-      for (const order of canceledOrders) {
+      for (const order of ordersToMove) {
         // ✅ PREPARAR DADOS PARA INSERÇÃO
         const insertData = {
           tipo_ordem: order.tipo_ordem,
@@ -238,7 +247,8 @@ async function moveOrdersToHistory(accountId) {
           conta_id: order.conta_id,
           preco_executado: order.preco_executado || 0,
           quantidade_executada: order.quantidade_executada || 0,
-          observacao: order.observacao || 'Movida via cleanup - órfã'
+          observacao: order.observacao || 
+            (order.status === 'CANCELED' ? 'Movida via cleanup - órfã' : 'Movida automaticamente - posição fechada')
         };
         
         // ✅ ADICIONAR CAMPOS OPCIONAIS SE EXISTIREM

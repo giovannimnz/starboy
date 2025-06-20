@@ -44,6 +44,73 @@ async function updatePositionPricesWithTrailing(db, symbol, currentPrice, accoun
 }
 
 /**
+ * ✅ VERIFICAÇÃO ESPECÍFICA DE ORDERS E POSIÇÕES COMO NO _DEV
+ */
+async function logOpenPositionsAndOrders(accountId) {
+  try {
+    console.log('\n=== 🔍 DIAGNÓSTICO DE SINCRONIZAÇÃO ===');
+    
+    const db = await getDatabaseInstance();
+    
+    // Posições do banco
+    const [dbPositions] = await db.query(`
+      SELECT id, simbolo, quantidade, preco_entrada, side, status 
+      FROM posicoes WHERE status = 'OPEN' AND conta_id = ?
+    `, [accountId]);
+    
+    // Posições da corretora  
+    const exchangePositions = await api.getAllOpenPositions(accountId);
+    
+    console.log(`[SYNC_CHECK] 📊 Banco: ${dbPositions.length} posições | Corretora: ${exchangePositions.length} posições`);
+    
+    // ✅ DETECTAR DISCREPÂNCIAS
+    const discrepancies = [];
+    
+    dbPositions.forEach(dbPos => {
+      const exchangePos = exchangePositions.find(ex => ex.simbolo === dbPos.simbolo);
+      if (!exchangePos || Math.abs(parseFloat(exchangePos.quantidade)) <= 0.000001) {
+        discrepancies.push({
+          type: 'MISSING_ON_EXCHANGE',
+          symbol: dbPos.simbolo,
+          dbId: dbPos.id,
+          dbQty: dbPos.quantidade
+        });
+      }
+    });
+    
+    exchangePositions.forEach(exPos => {
+      if (Math.abs(parseFloat(exPos.quantidade)) > 0.000001) {
+        const dbPos = dbPositions.find(db => db.simbolo === exPos.simbolo);
+        if (!dbPos) {
+          discrepancies.push({
+            type: 'MISSING_ON_DB',
+            symbol: exPos.simbolo,
+            exchangeQty: exPos.quantidade
+          });
+        }
+      }
+    });
+    
+    if (discrepancies.length > 0) {
+      console.log(`[SYNC_CHECK] ⚠️ ENCONTRADAS ${discrepancies.length} DISCREPÂNCIAS:`);
+      discrepancies.forEach(disc => {
+        if (disc.type === 'MISSING_ON_EXCHANGE') {
+          console.log(`  🚨 ${disc.symbol}: Existe no banco (ID: ${disc.dbId}, Qty: ${disc.dbQty}) mas NÃO na corretora`);
+        } else {
+          console.log(`  🚨 ${disc.symbol}: Existe na corretora (Qty: ${disc.exchangeQty}) mas NÃO no banco`);
+        }
+      });
+    } else {
+      console.log(`[SYNC_CHECK] ✅ Banco e corretora estão sincronizados`);
+    }
+    
+    console.log('===========================================\n');
+  } catch (error) {
+    console.error(`[SYNC_CHECK] ❌ Erro na verificação de sincronização:`, error.message);
+  }
+}
+
+/**
  * ✅ ATUALIZAÇÃO COMPLETA DE PREÇOS COM TRAILING E GATILHOS
  * Combina todas as verificações de preço em uma só função
  */
@@ -161,7 +228,7 @@ function monitorWebSocketHealth(accountId) {
 }
 
 /**
- * ✅ FUNÇÃO MELHORADA DE MONITORAMENTO COMPLETO
+ * ✅ FUNÇÃO MELHORADA - VERIFICAR ORDENS FILLED DE POSIÇÕES FECHADAS
  */
 async function runAdvancedPositionMonitoring(accountId) {
   try {
@@ -186,6 +253,7 @@ async function runAdvancedPositionMonitoring(accountId) {
     
     let checkedCount = 0;
     let closedCount = 0;
+    let filledOrdersMovedCount = 0;
     
     // ✅ 2. VERIFICAR CADA POSIÇÃO DO BANCO
     for (const position of dbPositions) {
@@ -198,29 +266,39 @@ async function runAdvancedPositionMonitoring(accountId) {
         if (!exchangePos || Math.abs(parseFloat(exchangePos.quantidade)) <= 0.000001) {
           console.log(`[ADVANCED_MONITOR] ⚠️ Posição ${position.simbolo} (ID: ${position.id}) NÃO EXISTE na corretora!`);
           
-          // ✅ 2.1. VERIFICAR ORDENS RELACIONADAS ANTES DE MOVER
+          // ✅ 2.1. VERIFICAR TODAS AS ORDENS RELACIONADAS (incluindo FILLED)
           const [relatedOrders] = await db.query(`
-            SELECT id_externo, simbolo, tipo_ordem_bot, status 
+            SELECT id_externo, simbolo, tipo_ordem_bot, status, preco_executado, quantidade_executada 
             FROM ordens 
-            WHERE id_posicao = ? 
-              AND status IN ('NEW', 'PARTIALLY_FILLED') 
-              AND conta_id = ?
+            WHERE id_posicao = ? AND conta_id = ?
           `, [position.id, accountId]);
           
           if (relatedOrders.length > 0) {
-            console.log(`[ADVANCED_MONITOR] 🗑️ Encontradas ${relatedOrders.length} ordens relacionadas para limpar...`);
+            console.log(`[ADVANCED_MONITOR] 🗑️ Encontradas ${relatedOrders.length} ordens relacionadas para processar...`);
             
-            // ✅ MARCAR ORDENS COMO CANCELED
             for (const order of relatedOrders) {
-              await db.query(`
-                UPDATE ordens 
-                SET status = 'CANCELED', 
-                    last_update = NOW(),
-                    observacao = 'Auto-cancelada - posição fechada na corretora'
-                WHERE id_externo = ? AND conta_id = ?
-              `, [order.id_externo, accountId]);
-              
-              console.log(`[ADVANCED_MONITOR] ✅ Ordem ${order.id_externo} (${order.tipo_ordem_bot}) marcada como CANCELED`);
+              if (order.status === 'FILLED') {
+                // ✅ MOVER ORDEM FILLED PARA HISTÓRICO
+                console.log(`[ADVANCED_MONITOR] 📚 Movendo ordem FILLED ${order.id_externo} para histórico...`);
+                
+                const moved = await moveOrderToHistory(db, order.id_externo, accountId);
+                if (moved) {
+                  filledOrdersMovedCount++;
+                  console.log(`[ADVANCED_MONITOR] ✅ Ordem FILLED ${order.id_externo} movida para ordens_fechadas`);
+                }
+                
+              } else if (order.status === 'NEW' || order.status === 'PARTIALLY_FILLED') {
+                // ✅ MARCAR ORDENS PENDENTES COMO CANCELED
+                await db.query(`
+                  UPDATE ordens 
+                  SET status = 'CANCELED', 
+                      last_update = NOW(),
+                      observacao = 'Auto-cancelada - posição fechada na corretora'
+                  WHERE id_externo = ? AND conta_id = ?
+                `, [order.id_externo, accountId]);
+                
+                console.log(`[ADVANCED_MONITOR] ✅ Ordem ${order.id_externo} (${order.tipo_ordem_bot}) marcada como CANCELED`);
+              }
             }
           }
           
@@ -248,7 +326,8 @@ async function runAdvancedPositionMonitoring(accountId) {
                 `Movida automaticamente para histórico.\n\n` +
                 `💰 Quantidade: ${position.quantidade}\n` +
                 `💵 Preço médio: ${position.preco_medio}\n` +
-                `📅 Aberta em: ${position.data_hora_abertura}`
+                `📅 Aberta em: ${position.data_hora_abertura}\n` +
+                `📊 Ordens relacionadas processadas: ${relatedOrders.length}`
               );
               
               await sendTelegramMessage(accountId, alertMessage);
@@ -279,174 +358,172 @@ async function runAdvancedPositionMonitoring(accountId) {
       }
     }
     
-    // ✅ 4. VERIFICAR SE HÁ POSIÇÕES NA CORRETORA SEM REGISTRO NO BANCO
-    const missingInDb = [];
-    for (const exchangePos of exchangePositions) {
-      if (Math.abs(parseFloat(exchangePos.quantidade)) > 0.000001) {
-        const dbPos = dbPositions.find(db => db.simbolo === exchangePos.simbolo);
-        if (!dbPos) {
-          missingInDb.push(exchangePos);
-        }
-      }
-    }
-    
-    if (missingInDb.length > 0) {
-      console.log(`[ADVANCED_MONITOR] 🆕 Encontradas ${missingInDb.length} posições na corretora sem registro no banco:`);
-      missingInDb.forEach(pos => {
-        console.log(`[ADVANCED_MONITOR]   - ${pos.simbolo}: ${pos.quantidade} (${pos.lado})`);
-      });
-      
-      // ✅ CRIAR POSIÇÕES EXTERNAS NO BANCO
-      const { insertPosition } = require('../db/conexao');
-      const { formatDateForMySQL } = require('../db/conexao');
-      
-      for (const extPos of missingInDb) {
-        try {
-          const positionData = {
-            simbolo: extPos.simbolo,
-            quantidade: Math.abs(parseFloat(extPos.quantidade)),
-            preco_medio: parseFloat(extPos.precoEntrada || extPos.precoAtual || 0),
-            status: 'OPEN',
-            data_hora_abertura: formatDateForMySQL(new Date()),
-            side: parseFloat(extPos.quantidade) > 0 ? 'BUY' : 'SELL',
-            leverage: parseFloat(extPos.leverage || 1),
-            data_hora_ultima_atualizacao: formatDateForMySQL(new Date()),
-            preco_entrada: parseFloat(extPos.precoEntrada || extPos.precoAtual || 0),
-            preco_corrente: parseFloat(extPos.precoAtual || extPos.precoEntrada || 0),
-            orign_sig: 'EXTERNAL_DETECTED',
-            quantidade_aberta: Math.abs(parseFloat(extPos.quantidade)),
-            conta_id: accountId
-          };
-          
-          const newPositionId = await insertPosition(db, positionData);
-          console.log(`[ADVANCED_MONITOR] ✅ Posição externa ${extPos.simbolo} criada com ID ${newPositionId}`);
-          
-        } catch (createError) {
-          console.error(`[ADVANCED_MONITOR] ❌ Erro ao criar posição externa ${extPos.simbolo}:`, createError.message);
-        }
-      }
+    // ✅ 4. VERIFICAR ORDENS FILLED ÓRFÃS (sem posição correspondente)
+    const orphanFilledCount = await checkOrphanFilledOrders(db, accountId);
+    if (orphanFilledCount > 0) {
+      console.log(`[ADVANCED_MONITOR] 📚 ${orphanFilledCount} ordens FILLED órfãs adicionais movidas para histórico`);
+      filledOrdersMovedCount += orphanFilledCount;
     }
     
     console.log(`[ADVANCED_MONITOR] ✅ Monitoramento completo concluído para conta ${accountId}:`);
     console.log(`[ADVANCED_MONITOR]   - Posições verificadas: ${checkedCount}`);
     console.log(`[ADVANCED_MONITOR]   - Posições movidas para histórico: ${closedCount}`);
-    console.log(`[ADVANCED_MONITOR]   - Posições externas detectadas: ${missingInDb.length}`);
+    console.log(`[ADVANCED_MONITOR]   - Ordens FILLED movidas: ${filledOrdersMovedCount}`);
     
-    return { checked: checkedCount, closed: closedCount, external: missingInDb.length };
+    return { checked: checkedCount, closed: closedCount, filledMoved: filledOrdersMovedCount };
     
   } catch (error) {
     console.error(`[ADVANCED_MONITOR] ❌ Erro no monitoramento completo para conta ${accountId}:`, error.message);
-    return { checked: 0, closed: 0, external: 0 };
+    return { checked: 0, closed: 0, filledMoved: 0 };
   }
 }
 
 /**
- * ✅ VERIFICAÇÃO ESPECÍFICA DE ORDERS E POSIÇÕES COMO NO _DEV
+ * ✅ NOVA FUNÇÃO: Verificar ordens FILLED órfãs (sem posição correspondente)
  */
-async function logOpenPositionsAndOrders(accountId) {
+async function checkOrphanFilledOrders(db, accountId) {
   try {
-    console.log('\n=== 🔍 DIAGNÓSTICO DE SINCRONIZAÇÃO ===');
+    console.log(`[ADVANCED_MONITOR] 🔍 Verificando ordens FILLED órfãs para conta ${accountId}...`);
     
-    const db = await getDatabaseInstance();
-    
-    // Posições do banco
-    const [dbPositions] = await db.query(`
-      SELECT id, simbolo, quantidade, preco_entrada, side, status 
-      FROM posicoes WHERE status = 'OPEN' AND conta_id = ?
+    // Buscar ordens FILLED que não têm posição correspondente ABERTA
+    const [orphanFilledOrders] = await db.query(`
+      SELECT o.id_externo, o.simbolo, o.tipo_ordem_bot, o.status, o.id_posicao,
+             o.preco_executado, o.quantidade_executada
+      FROM ordens o
+      LEFT JOIN posicoes p ON o.id_posicao = p.id AND p.status = 'OPEN'
+      WHERE o.status = 'FILLED' 
+        AND o.conta_id = ?
+        AND p.id IS NULL
+        AND o.last_update < DATE_SUB(NOW(), INTERVAL 5 MINUTE)
     `, [accountId]);
     
-    // Posições da corretora  
-    const exchangePositions = await api.getAllOpenPositions(accountId);
-    
-    console.log(`[SYNC_CHECK] 📊 Banco: ${dbPositions.length} posições | Corretora: ${exchangePositions.length} posições`);
-    
-    // ✅ DETECTAR DISCREPÂNCIAS
-    const discrepancies = [];
-    
-    dbPositions.forEach(dbPos => {
-      const exchangePos = exchangePositions.find(ex => ex.simbolo === dbPos.simbolo);
-      if (!exchangePos || Math.abs(parseFloat(exchangePos.quantidade)) <= 0.000001) {
-        discrepancies.push({
-          type: 'MISSING_ON_EXCHANGE',
-          symbol: dbPos.simbolo,
-          dbId: dbPos.id,
-          dbQty: dbPos.quantidade
-        });
-      }
-    });
-    
-    exchangePositions.forEach(exPos => {
-      if (Math.abs(parseFloat(exPos.quantidade)) > 0.000001) {
-        const dbPos = dbPositions.find(db => db.simbolo === exPos.simbolo);
-        if (!dbPos) {
-          discrepancies.push({
-            type: 'MISSING_ON_DB',
-            symbol: exPos.simbolo,
-            exchangeQty: exPos.quantidade
-          });
-        }
-      }
-    });
-    
-    if (discrepancies.length > 0) {
-      console.log(`[SYNC_CHECK] ⚠️ ENCONTRADAS ${discrepancies.length} DISCREPÂNCIAS:`);
-      discrepancies.forEach(disc => {
-        if (disc.type === 'MISSING_ON_EXCHANGE') {
-          console.log(`  🚨 ${disc.symbol}: Existe no banco (ID: ${disc.dbId}, Qty: ${disc.dbQty}) mas NÃO na corretora`);
-        } else {
-          console.log(`  🚨 ${disc.symbol}: Existe na corretora (Qty: ${disc.exchangeQty}) mas NÃO no banco`);
-        }
-      });
-    } else {
-      console.log(`[SYNC_CHECK] ✅ Banco e corretora estão sincronizados`);
+    if (orphanFilledOrders.length === 0) {
+      return 0;
     }
     
-    console.log('===========================================\n');
+    console.log(`[ADVANCED_MONITOR] 📚 Encontradas ${orphanFilledOrders.length} ordens FILLED órfãs para mover...`);
+    
+    let movedCount = 0;
+    
+    for (const order of orphanFilledOrders) {
+      try {
+        const moved = await moveOrderToHistory(db, order.id_externo, accountId);
+        if (moved) {
+          movedCount++;
+          console.log(`[ADVANCED_MONITOR] ✅ Ordem FILLED órfã ${order.id_externo} (${order.simbolo}) movida para histórico`);
+        }
+      } catch (moveError) {
+        console.error(`[ADVANCED_MONITOR] ❌ Erro ao mover ordem FILLED ${order.id_externo}:`, moveError.message);
+      }
+    }
+    
+    return movedCount;
+    
   } catch (error) {
-    console.error(`[SYNC_CHECK] ❌ Erro na verificação de sincronização:`, error.message);
+    console.error(`[ADVANCED_MONITOR] ❌ Erro ao verificar ordens FILLED órfãs:`, error.message);
+    return 0;
   }
 }
 
 /**
- * ✅ OUTRAS FUNÇÕES DE MONITORAMENTO
+ * ✅ NOVA FUNÇÃO: Mover ordem específica para histórico
  */
-async function runPeriodicCleanup(accountId) {
-  console.log(`[CLEANUP] 🧹 Executando limpeza periódica para conta ${accountId}...`);
-  // Implementar lógica de limpeza
-}
-
-async function monitorWebSocketHealth(accountId) {
-  console.log(`[WS_HEALTH] 🔗 Verificando saúde dos WebSockets para conta ${accountId}...`);
-  // Implementar verificação de WebSocket
-}
-
-async function updatePositionPricesWithTrailing(db, symbol, price, accountId) {
+async function moveOrderToHistory(db, orderId, accountId) {
   try {
-    // Atualizar preços e verificar trailing stops
-    console.log(`[TRAILING] 📈 Atualizando ${symbol} @ ${price} para conta ${accountId}`);
+    const connection = await db.getConnection();
+    await connection.beginTransaction();
     
-    const { checkOrderTriggers } = require('./trailingStopLoss');
-    
-    // Buscar posições abertas para este símbolo
-    const [positions] = await db.query(`
-      SELECT * FROM posicoes 
-      WHERE simbolo = ? AND status = 'OPEN' AND conta_id = ?
-    `, [symbol, accountId]);
-    
-    for (const position of positions) {
-      await checkOrderTriggers(db, position, price, accountId);
+    try {
+      // ✅ BUSCAR ORDEM PARA MOVER
+      const [orderToMove] = await connection.query(`
+        SELECT * FROM ordens 
+        WHERE id_externo = ? AND conta_id = ?
+      `, [orderId, accountId]);
+      
+      if (orderToMove.length === 0) {
+        await connection.rollback();
+        connection.release();
+        return false;
+      }
+      
+      const order = orderToMove[0];
+      
+      // ✅ VERIFICAR COLUNAS DA TABELA DESTINO
+      const [destColumns] = await connection.query(`SHOW COLUMNS FROM ordens_fechadas`);
+      const destColumnNames = destColumns.map(col => col.Field);
+      
+      // ✅ PREPARAR DADOS PARA INSERÇÃO
+      const insertData = {
+        tipo_ordem: order.tipo_ordem,
+        preco: order.preco,
+        quantidade: order.quantidade,
+        id_posicao: order.id_posicao,
+        status: order.status,
+        data_hora_criacao: order.data_hora_criacao,
+        id_externo: order.id_externo,
+        side: order.side,
+        simbolo: order.simbolo,
+        tipo_ordem_bot: order.tipo_ordem_bot,
+        target: order.target,
+        reduce_only: order.reduce_only,
+        close_position: order.close_position,
+        last_update: order.last_update,
+        conta_id: order.conta_id,
+        preco_executado: order.preco_executado || 0,
+        quantidade_executada: order.quantidade_executada || 0,
+        observacao: order.observacao || 'Movida automaticamente - posição fechada'
+      };
+      
+      // ✅ ADICIONAR CAMPOS OPCIONAIS SE EXISTIREM
+      if (destColumnNames.includes('orign_sig') && order.orign_sig) {
+        insertData.orign_sig = order.orign_sig;
+      }
+      if (destColumnNames.includes('dados_originais_ws') && order.dados_originais_ws) {
+        insertData.dados_originais_ws = order.dados_originais_ws;
+      }
+      
+      // ✅ CONSTRUIR QUERY DINÂMICA
+      const columns = Object.keys(insertData).filter(key => 
+        destColumnNames.includes(key) && insertData[key] !== undefined
+      );
+      const values = columns.map(col => insertData[col]);
+      const placeholders = columns.map(() => '?').join(', ');
+      
+      // ✅ INSERIR NA TABELA FECHADAS
+      await connection.query(
+        `INSERT INTO ordens_fechadas (${columns.join(', ')}) VALUES (${placeholders})`,
+        values
+      );
+      
+      // ✅ REMOVER DA TABELA ATIVA
+      await connection.query(
+        'DELETE FROM ordens WHERE id_externo = ? AND conta_id = ?',
+        [orderId, accountId]
+      );
+      
+      await connection.commit();
+      connection.release();
+      
+      return true;
+      
+    } catch (moveError) {
+      await connection.rollback();
+      connection.release();
+      throw moveError;
     }
     
   } catch (error) {
-    console.error(`[TRAILING] ❌ Erro ao atualizar trailing para ${symbol}:`, error.message);
+    console.error(`[ADVANCED_MONITOR] ❌ Erro ao mover ordem ${orderId} para histórico:`, error.message);
+    return false;
   }
 }
 
-// ✅ EXPORTS CORRETOS
 module.exports = {
   runAdvancedPositionMonitoring,
   logOpenPositionsAndOrders,
   runPeriodicCleanup,
   monitorWebSocketHealth,
-  updatePositionPricesWithTrailing
+  updatePositionPricesWithTrailing,
+  checkOrphanFilledOrders,
+  moveOrderToHistory
 };
