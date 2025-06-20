@@ -5,9 +5,7 @@ const path = require('path');
 const readline = require('readline');
 const dotenv = require('dotenv');
 const util = require('util');
-
-// Carrega variáveis de ambiente
-dotenv.config({ path: path.join(__dirname, '..', '.env') });
+require('dotenv').config({ path: path.resolve(__dirname, '../../../config/.env') });
 
 // Cria interface para ler input do usuário
 const rl = readline.createInterface({

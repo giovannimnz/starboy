@@ -1,18 +1,18 @@
 const mysql = require('mysql2/promise');
 const path = require('path');
 const fs = require('fs').promises;
-require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
+require('dotenv').config({ path: path.resolve(__dirname, '../../../config/.env') });
 
 // Pool de conexões MySQL global
 let pool = null;
 
 // Configuração do banco de dados
 const dbConfig = {
-  host: process.env.DB_HOST || 'atius.com.br',
-  port: process.env.DB_PORT || 3306,
-  user: process.env.DB_USER || 'atius_starboy',
-  password: process.env.DB_PASSWORD || 'Mt@301114',
-  database: process.env.DB_NAME || 'starboy',
+  host: process.env.DB_HOST,
+  port: process.env.DB_PORT,
+  user: process.env.DB_USER,
+  password: process.env.DB_PASSWORD,
+  database: process.env.DB_NAME,
   connectionLimit: 20,
   queueLimit: 0,
   waitForConnections: true,

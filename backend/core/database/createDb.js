@@ -1,6 +1,6 @@
 const mysql = require('mysql2/promise');
 const path = require('path');
-require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
+require('dotenv').config({ path: path.resolve(__dirname, '../../../config/.env') });
 
 async function createDatabase() {
     console.log('Iniciando criação do banco de dados MySQL...');
