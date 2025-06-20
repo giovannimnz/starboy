@@ -21,7 +21,7 @@ const { syncAndCloseGhostPositions } = require('./positionHistory');
 const { checkOrderTriggers } = require('./trailingStopLoss');
 
 // === DEBUGGING ROBUSTO ===
-console.log(`[MONITOR] 🚀 === INICIANDO MONITORAMENTO PARA CONTA ${process.argv[4] || 'INDEFINIDA'} ===`);
+console.log(`[MONITOR] 🚀 === INICIANDO MONITORAMENTO PARA CONTA ${process.argv[4] || ''} ===`);
 console.log(`[MONITOR] 📅 Timestamp: ${new Date().toISOString()}`);
 console.log(`[MONITOR] 🖥️ Process ID: ${process.pid}`);
 console.log(`[MONITOR] 📁 Working Directory: ${process.cwd()}`);
