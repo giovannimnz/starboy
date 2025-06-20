@@ -34,11 +34,11 @@ warnings.filterwarnings("ignore", message=".*telethon.*")
 
 
 DB_CONFIG = {
-    'host': os.getenv('DB_HOST', 'atius.com.br'),
-    'port': int(os.getenv('DB_PORT', 3306)),
-    'user': os.getenv('DB_USER', 'atius_starboy'),
-    'password': os.getenv('DB_PASSWORD', 'Mt@301114'),
-    'database': os.getenv('DB_NAME', 'starboy'),
+    'host': os.getenv('DB_HOST'),
+    'port': int(os.getenv('DB_PORT')),
+    'user': os.getenv('DB_USER'),
+    'password': os.getenv('DB_PASSWORD'),
+    'database': os.getenv('DB_NAME'),
     'charset': 'utf8mb4',
     'autocommit': True
 }
@@ -414,7 +414,7 @@ load_dotenv(dotenv_path=env_path)
 
 # Configurações do banco de dados do arquivo .env
 DB_HOST = os.getenv('DB_HOST')
-DB_PORT = os.getenv('DB_PORT')
+DB_PORT = os.getenv('DB_PORT') 
 DB_USER = os.getenv('DB_USER')
 DB_PASSWORD = os.getenv('DB_PASSWORD')
 DB_NAME = os.getenv('DB_NAME')
@@ -1547,8 +1547,8 @@ def initialize_divap_analyzer():
                     "database": DB_NAME
                 },
                 binance_config={
-                    "apiKey": os.getenv('API_KEY'),
-                    "secret": os.getenv('API_SECRET'),
+                    "apiKey": API_KEY,
+                    "secret": API_SECRET,
                     "enableRateLimit": True
                 }
             )
