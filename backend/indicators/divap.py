@@ -34,11 +34,11 @@ warnings.filterwarnings("ignore", message=".*telethon.*")
 
 
 DB_CONFIG = {
-    'host': os.getenv('DB_HOST', 'atius.com.br'),
-    'port': int(os.getenv('DB_PORT', 3306)),
-    'user': os.getenv('DB_USER', 'atius_starboy'),
-    'password': os.getenv('DB_PASSWORD', 'Mt@301114'),
-    'database': os.getenv('DB_NAME', 'starboy'),
+    'host': os.getenv('DB_HOST'),
+    'port': int(os.getenv('DB_PORT')),
+    'user': os.getenv('DB_USER'),
+    'password': os.getenv('DB_PASSWORD'),
+    'database': os.getenv('DB_NAME'),
     'charset': 'utf8mb4',
     'autocommit': True
 }
@@ -1077,10 +1077,22 @@ async def handle_new_message(event):
     """
     incoming_message_id = event.message.id if event and hasattr(event, 'message') and hasattr(event.message, 'id') else 'desconhecido'
     incoming_chat_id = event.chat_id if event and hasattr(event, 'chat_id') else 'desconhecido'
+    incoming_text = event.message.text if event and hasattr(event, 'message') and hasattr(event.message, 'text') else 'N/A'
 
-    # CORREÇÃO: Garantir que chat_id seja sempre negativo
+    # CORREÇÃO: Garantir que chat_id seja sempre negativo para comparação
     if isinstance(incoming_chat_id, int) and incoming_chat_id > 0:
         incoming_chat_id = -incoming_chat_id
+
+    # --- DEBUG INÍCIO ---
+    # Só exibe o debug se o chat_id estiver na lista de GRUPOS_ORIGEM_IDS
+    if incoming_chat_id in GRUPOS_ORIGEM_IDS:
+        print(f"\n[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [DEBUG_RECEIVE] Mensagem recebida:")
+        print(f"  Chat ID: {incoming_chat_id}")
+        print(f"  Message ID: {incoming_message_id}")
+        print(f"  Texto: {incoming_text}")
+        print(f"  Fonte mapeada: {GRUPO_FONTE_MAPEAMENTO.get(incoming_chat_id, 'Desconhecida')}")
+        print("-" * 50)
+    # --- DEBUG FIM ---
 
     # Obter a fonte da mensagem com base no chat_id
     message_source = GRUPO_FONTE_MAPEAMENTO.get(incoming_chat_id)
@@ -1144,14 +1156,6 @@ async def handle_new_message(event):
                     trade_info['chat_id_origem_sinal'] = incoming_chat_id  # Já processado como negativo
                     trade_info['chat_id'] = GRUPO_DESTINO_ID  # Já definido como negativo
                     trade_info['message_source'] = message_source
-                    trade_info['conta_id'] = CONTA_ID  # NOVO: Adicionar conta_id
-
-                    # Enviar a mensagem ao grupo destino
-                    sent_message_to_dest = await client.send_message(GRUPO_DESTINO_ID, message_text_to_send)
-                    sent_message_id_in_dest = sent_message_to_dest.id
-                    sent_message_created_at = sent_message_to_dest.date.strftime("%Y-%m-%d %H:%M:%S")
-                    
-                    trade_info['message_id'] = sent_message_id_in_dest
                     trade_info['divap_confirmado'] = 1
                     trade_info['cancelado_checker'] = 0
                     
@@ -1171,6 +1175,10 @@ async def handle_new_message(event):
                             created_at=incoming_created_at,
                             message_source=message_source                        
                         )
+                        
+                        sent_message_to_dest = await client.send_message(GRUPO_DESTINO_ID, message_text_to_send)
+                        sent_message_id_in_dest = sent_message_to_dest.id
+                        sent_message_created_at = sent_message_to_dest.date.strftime("%Y-%m-%d %H:%M:%S")
                         
                         save_message_to_database(
                             message_id=sent_message_id_in_dest,
@@ -1207,12 +1215,10 @@ async def handle_new_message(event):
                     trade_info['cancelado_checker'] = 1
                     trade_info['status'] = 'CANCELED'
                     trade_info['error_message'] = error_message
-                    trade_info['conta_id'] = CONTA_ID  # NOVO: Adicionar conta_id
+                    trade_info['conta_id'] = CONTA_ID
                     
-                    # Salvar sem enviar para o grupo destino
                     save_to_database(trade_info)
                     
-                    # Registrar a mensagem original
                     save_message_to_database(
                         message_id=incoming_message_id,
                         chat_id=incoming_chat_id,
