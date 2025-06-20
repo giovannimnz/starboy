@@ -409,7 +409,7 @@ sys.path.append(str(Path(__file__).parent / 'backtest'))
 from backtest.divap_check import DIVAPAnalyzer, DB_CONFIG, BINANCE_CONFIG
 
 # Carregar variáveis de ambiente do arquivo .env na raiz do projeto
-env_path = pathlib.Path(__file__).parents[1] / '.env'
+env_path = pathlib.Path(__file__).parents[2] / '.env'
 load_dotenv(dotenv_path=env_path)
 
 # Configurações do banco de dados do arquivo .env
