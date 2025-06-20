@@ -742,60 +742,6 @@ async function startMonitoringProcess() {
   }
 }
 
-/**
- * Função para cancelar ordens órfãs (sem redundância de código)
- * @param {number} accountId - ID da conta
- * @returns {Promise<number>} - Número de ordens canceladas
- */
-async function cancelOrphanOrders(accountId) {
-  if (!accountId) {
-    throw new Error('AccountId é obrigatório para cancelar ordens órfãs');
-  }
-
-  try {
-    console.log(`[CLEANUP] Cancelando ordens órfãs para conta ${accountId}...`);
-    
-    const db = await getDatabaseInstance();
-    
-    // Obter ordens órfãs (sem posição correspondente)
-    const [orphanOrders] = await db.query(`
-      SELECT o.* FROM ordens o
-      LEFT JOIN posicoes p ON o.posicao_id = p.id
-      WHERE o.conta_id = ? AND p.id IS NULL
-    `, [accountId]);
-    
-    if (orphanOrders.length === 0) {
-      console.log(`[CLEANUP] ✅ Nenhuma ordem órfã encontrada para conta ${accountId}`);
-      return 0;
-    }
-    
-    // Cancelar cada ordem órfã encontrada
-    let cancelCount = 0;
-    for (const order of orphanOrders) {
-      try {
-        // Usar função da API para cancelar a ordem
-        const result = await api.cancelOrder(order.simbolo, order.id, accountId);
-        
-        if (result && result.success) {
-          cancelCount++;
-          console.log(`[CLEANUP]   ✅ Ordem ${order.id} cancelada com sucesso`);
-        } else {
-          console.warn(`[CLEANUP]   ⚠️ Falha ao cancelar ordem ${order.id}: ${result?.error || 'Erro desconhecido'}`);
-        }
-      } catch (error) {
-        console.error(`[CLEANUP]   ❌ Erro ao cancelar ordem ${order.id}:`, error.message);
-      }
-    }
-    
-    console.log(`[CLEANUP] ✅ Total de ordens canceladas: ${cancelCount}`);
-    return cancelCount;
-    
-  } catch (error) {
-    console.error(`[CLEANUP] ❌ Erro ao cancelar ordens órfãs para conta ${accountId}:`, error.message);
-    return 0;
-  }
-}
-
 // === EXECUÇÃO PRINCIPAL ===
 if (require.main === module) {
   console.log(`[MONITOR] 🎬 Executando como script principal para conta ${targetAccountId}`);
