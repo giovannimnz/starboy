@@ -14,7 +14,7 @@ import warnings
 import logging
 
 # Carregar variáveis de ambiente do arquivo .env
-env_path = pathlib.Path(__file__).parents[1] / 'config' / '.env'
+env_path = pathlib.Path(__file__).parents[2] / 'config' / '.env'
 load_dotenv(dotenv_path=env_path)
 
 # Importar senhas após carregar o .env
