@@ -343,26 +343,22 @@ try {
     console.log(`🧹 ETAPA 9: Executando limpeza avançada para conta ${accountId}...`);
 
     try {
-      // Limpeza de sinais órfãos
-      await cleanupOrphanSignals(accountId);
-      
-      // Verificar sinais expirados
-      const expiredCount = await checkExpiredSignals(accountId);
-      if (expiredCount > 0) {
-        console.log(`[MONITOR] ${expiredCount} sinais expirados cancelados para conta ${accountId}`);
-      }
-      
-      // Cancelar ordens órfãs (uma vez na inicialização)
+      // ✅ LIMPEZA COMPLETA DE ORDENS ÓRFÃS
+      console.log(`[MONITOR] 🗑️ Limpando ordens órfãs...`);
       const canceledOrders = await cancelOrphanOrders(accountId);
       if (canceledOrders > 0) {
-        console.log(`[MONITOR] ${canceledOrders} ordens órfãs canceladas para conta ${accountId}`);
+        console.log(`[MONITOR] ✅ ${canceledOrders} ordens órfãs processadas para conta ${accountId}`);
       }
       
-      // Forçar fechamento de posições fantasma
-      const closedGhosts = await forceCloseGhostPositions(accountId);
-      if (closedGhosts > 0) {
-        console.log(`[MONITOR] ${closedGhosts} posições fantasma fechadas para conta ${accountId}`);
+      // ✅ MOVER ORDENS CANCELED PARA HISTÓRICO
+      const { moveOrdersToHistory } = require('./cleanup');
+      const movedOrders = await moveOrdersToHistory(accountId);
+      if (movedOrders > 0) {
+        console.log(`[MONITOR] 📚 ${movedOrders} ordens movidas para histórico para conta ${accountId}`);
       }
+      
+      // Resto da limpeza...
+      await cleanupOrphanSignals(accountId);
       
       console.log(`[MONITOR] ✅ Limpeza avançada concluída para conta ${accountId}`);
     } catch (cleanupError) {
@@ -440,26 +436,29 @@ try {
     accountJobs.syncAndCloseGhosts = schedule.scheduleJob('*/5 * * * *', async () => {
       if (isShuttingDown) return;
       try {
-        const closedCount = await syncAndCloseGhostPositions(accountId);
-        if (closedCount > 0) {
-          console.log(`[MONITOR] 📊 ${closedCount} posições fantasma fechadas para conta ${accountId}`);
-        }
-      } catch (error) {
-        console.error(`[MONITOR] ⚠️ Erro na sincronização com fechamento para conta ${accountId}:`, error.message);
-      }
-    });
-
-    // ✅ NOVO: Job de movimentação automática para histórico a cada 3 minutos
-    accountJobs.moveToHistory = schedule.scheduleJob('*/3 * * * *', async () => {
-      if (isShuttingDown) return;
-      try {
+        console.log(`[MONITOR] 🔄 Executando sincronização completa para conta ${accountId}...`);
+        
+        // ✅ 1. VERIFICAR E MOVER POSIÇÕES ÓRFÃS
         const { syncAndCloseGhostPositions } = require('./positionHistory');
-        const movedCount = await syncAndCloseGhostPositions(accountId);
-        if (movedCount > 0) {
-          console.log(`[MONITOR] 📚 ${movedCount} posições movidas para histórico para conta ${accountId}`);
+        const closedPositions = await syncAndCloseGhostPositions(accountId);
+        
+        // ✅ 2. VERIFICAR E LIMPAR ORDENS ÓRFÃS
+        const { cancelOrphanOrders, moveOrdersToHistory } = require('./cleanup');
+        const canceledOrders = await cancelOrphanOrders(accountId);
+        const movedOrders = await moveOrdersToHistory(accountId);
+        
+        // ✅ 3. VERIFICAR CONSISTÊNCIA FINAL
+        await runAdvancedPositionMonitoring(accountId);
+        
+        if (closedPositions > 0 || canceledOrders > 0 || movedOrders > 0) {
+          console.log(`[MONITOR] 📊 Sincronização completa para conta ${accountId}:`);
+          console.log(`[MONITOR]   - Posições fechadas: ${closedPositions}`);
+          console.log(`[MONITOR]   - Ordens canceladas: ${canceledOrders}`);
+          console.log(`[MONITOR]   - Ordens movidas: ${movedOrders}`);
         }
+        
       } catch (error) {
-        console.error(`[MONITOR] ⚠️ Erro ao mover posições para histórico para conta ${accountId}:`, error.message);
+        console.error(`[MONITOR] ⚠️ Erro na sincronização completa para conta ${accountId}:`, error.message);
       }
     });
 
@@ -700,16 +699,6 @@ async function startMonitoringProcess() {
       }
     }
 
-// === EXECUÇÃO PRINCIPAL ===
-if (require.main === module) {
-  console.log(`[MONITOR] 🎬 Executando como script principal para conta ${targetAccountId}`);
-  startMonitoringProcess();
-} else {
-  console.log(`[MONITOR] 📚 Carregado como módulo`);
-}
-
-// Remover a execução automática do final do arquivo se existir
-
     console.log(`[MONITOR] ✅ Todas as dependências carregadas com sucesso`);
     
     // IMPORTANTE: Chamar initializeMonitoring de forma protegida
@@ -753,124 +742,66 @@ if (require.main === module) {
   }
 }
 
-module.exports = {
-  initializeMonitoring,
-  syncAccountBalance,
-  gracefulShutdown,
-  checkNewTrades: (accountId) => {
-    const { checkNewTrades } = require('./signalProcessor');
-    return checkNewTrades(accountId);
+/**
+ * Função para cancelar ordens órfãs (sem redundância de código)
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<number>} - Número de ordens canceladas
+ */
+async function cancelOrphanOrders(accountId) {
+  if (!accountId) {
+    throw new Error('AccountId é obrigatório para cancelar ordens órfãs');
   }
-};
+
+  try {
+    console.log(`[CLEANUP] Cancelando ordens órfãs para conta ${accountId}...`);
+    
+    const db = await getDatabaseInstance();
+    
+    // Obter ordens órfãs (sem posição correspondente)
+    const [orphanOrders] = await db.query(`
+      SELECT o.* FROM ordens o
+      LEFT JOIN posicoes p ON o.posicao_id = p.id
+      WHERE o.conta_id = ? AND p.id IS NULL
+    `, [accountId]);
+    
+    if (orphanOrders.length === 0) {
+      console.log(`[CLEANUP] ✅ Nenhuma ordem órfã encontrada para conta ${accountId}`);
+      return 0;
+    }
+    
+    // Cancelar cada ordem órfã encontrada
+    let cancelCount = 0;
+    for (const order of orphanOrders) {
+      try {
+        // Usar função da API para cancelar a ordem
+        const result = await api.cancelOrder(order.simbolo, order.id, accountId);
+        
+        if (result && result.success) {
+          cancelCount++;
+          console.log(`[CLEANUP]   ✅ Ordem ${order.id} cancelada com sucesso`);
+        } else {
+          console.warn(`[CLEANUP]   ⚠️ Falha ao cancelar ordem ${order.id}: ${result?.error || 'Erro desconhecido'}`);
+        }
+      } catch (error) {
+        console.error(`[CLEANUP]   ❌ Erro ao cancelar ordem ${order.id}:`, error.message);
+      }
+    }
+    
+    console.log(`[CLEANUP] ✅ Total de ordens canceladas: ${cancelCount}`);
+    return cancelCount;
+    
+  } catch (error) {
+    console.error(`[CLEANUP] ❌ Erro ao cancelar ordens órfãs para conta ${accountId}:`, error.message);
+    return 0;
+  }
+}
 
 // === EXECUÇÃO PRINCIPAL ===
 if (require.main === module) {
-  console.log(`[MONITOR] 🚀 === SCRIPT PRINCIPAL INICIADO ===`);
-  console.log(`[MONITOR] 📅 Timestamp: ${new Date().toISOString()}`);
-  console.log(`[MONITOR] 🖥️ Process ID: ${process.pid}`);
-  console.log(`[MONITOR] 📋 Arguments: ${JSON.stringify(process.argv)}`);
-
-  // === CAPTURA DE ERROS CRÍTICOS ===
-  process.on('uncaughtException', (error) => {
-    console.error(`\n[MONITOR] 💥 ERRO CRÍTICO NÃO TRATADO:`, error);
-    console.error(`[MONITOR] Stack trace:`, error.stack);
-    console.error(`[MONITOR] 🚨 PROCESSO SERÁ ENCERRADO!`);
-    process.exit(1);
-  });
-
-  process.on('unhandledRejection', (reason, promise) => {
-    console.error(`\n[MONITOR] 🚫 PROMISE REJEITADA:`, reason);
-    console.error(`[MONITOR] Promise:`, promise);
-    console.error(`[MONITOR] 🚨 PROCESSO PODE SER ENCERRADO!`);
-    process.exit(1);
-  });
-
-  // === PARSING DE ARGUMENTOS ===
-  let targetAccountId = null;
-
-  const accountIndex = process.argv.indexOf('--account');
-  if (accountIndex !== -1 && accountIndex + 1 < process.argv.length) {
-    const accountArg = process.argv[accountIndex + 1];
-    targetAccountId = parseInt(accountArg, 10);
-    
-    if (isNaN(targetAccountId) || targetAccountId <= 0) {
-      console.error(`[MONITOR] ❌ AccountId inválido: "${accountArg}"`);
-      process.exit(1);
-    }
-  } else {
-    console.error(`[MONITOR] ❌ Parâmetro --account não encontrado`);
-    process.exit(1);
-  }
-
-  console.log(`[MONITOR] ✅ AccountId validado: ${targetAccountId}`);
-
-  // === FUNÇÃO DE INICIALIZAÇÃO (SEM RECURSÃO) ===
-  async function startMonitoringProcess() {
-    try {
-      console.log(`[MONITOR] 🔄 Iniciando sistema de monitoramento para conta ${targetAccountId}...`);
-      
-      // Verificar dependências críticas
-      console.log(`[MONITOR] 📦 Verificando dependências críticas...`);
-      
-      const criticalModules = ['../db/conexao', '../api', '../websockets'];
-      for (const module of criticalModules) {
-        try {
-          require(module);
-          console.log(`[MONITOR]   ✅ ${module}`);
-        } catch (error) {
-          console.error(`[MONITOR]   ❌ ${module}: ${error.message}`);
-          throw new Error(`Módulo crítico ${module} não encontrado: ${error.message}`);
-        }
-      }
-
-      console.log(`[MONITOR] ✅ Dependências críticas verificadas`);
-      
-      // Chamar initializeMonitoring UMA ÚNICA VEZ
-      console.log(`[MONITOR] 🎯 Chamando initializeMonitoring para conta ${targetAccountId}...`);
-      const jobsResult = await initializeMonitoring(targetAccountId);
-      
-      if (!jobsResult || Object.keys(jobsResult).length === 0) {
-        throw new Error('initializeMonitoring retornou resultado vazio');
-      }
-      
-      console.log(`[MONITOR] 🎉 === MONITORAMENTO INICIALIZADO ===`);
-      console.log(`[MONITOR] 📊 Jobs agendados: ${Object.keys(jobsResult).length}`);
-      console.log(`[MONITOR] 🔄 Sistema entrando em modo de operação contínua...`);
-      
-      // Manter o processo vivo без recursão
-      let heartbeatCounter = 0;
-      const heartbeatInterval = setInterval(() => {
-        heartbeatCounter++;
-        
-        // Log a cada 5 minutos
-        if (heartbeatCounter % 30 === 0) {
-          console.log(`[MONITOR] 💓 Heartbeat #${heartbeatCounter} - Conta ${targetAccountId}`);
-          console.log(`[MONITOR] 📊 Jobs ativos: ${Object.keys(jobsResult).length}`);
-        }
-      }, 10000); // 10 segundos
-      
-      console.log(`[MONITOR] ✅ Heartbeat configurado - Sistema operacional`);
-      
-    } catch (error) {
-      console.error(`[MONITOR] ❌ ERRO FATAL:`, error.message);
-      console.error(`[MONITOR] Stack trace:`, error.stack);
-      
-      try {
-        console.log(`[MONITOR] 🧹 Tentando graceful shutdown...`);
-        await gracefulShutdown(targetAccountId);
-      } catch (cleanupError) {
-        console.error(`[MONITOR] ❌ Erro no shutdown:`, cleanupError.message);
-      }
-      
-      console.error(`[MONITOR] 🚨 PROCESSO SERÁ ENCERRADO`);
-      process.exit(1);
-    }
-  }
-
-  // === EXECUTAR APENAS UMA VEZ ===
   console.log(`[MONITOR] 🎬 Executando como script principal para conta ${targetAccountId}`);
   startMonitoringProcess();
-  
 } else {
   console.log(`[MONITOR] 📚 Carregado como módulo`);
 }
+
+// Remover a execução automática do final do arquivo se existir

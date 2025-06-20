@@ -161,88 +161,117 @@ function monitorWebSocketHealth(accountId) {
 }
 
 /**
- * ✅ FUNÇÃO COMPLETA DE MONITORAMENTO COMO NO _DEV
- * Combina trailing stops, verificação de posições fechadas e limpeza
+ * ✅ FUNÇÃO MELHORADA DE MONITORAMENTO COMPLETO
  */
 async function runAdvancedPositionMonitoring(accountId) {
   try {
-    console.log(`[ADVANCED_MONITOR] 🔄 Executando monitoramento avançado para conta ${accountId}...`);
+    console.log(`[ADVANCED_MONITOR] 🔄 Executando monitoramento completo para conta ${accountId}...`);
     
     const db = await getDatabaseInstance();
     
-    // ✅ 1. VERIFICAR POSIÇÕES ABERTAS NO BANCO
-    const [openPositions] = await db.query(`
+    // ✅ 1. VERIFICAR POSIÇÕES DO BANCO vs CORRETORA
+    const [dbPositions] = await db.query(`
       SELECT * FROM posicoes 
       WHERE status = 'OPEN' AND conta_id = ?
     `, [accountId]);
     
-    console.log(`[ADVANCED_MONITOR] 📊 Encontradas ${openPositions.length} posições abertas no banco para conta ${accountId}`);
-    
-    if (openPositions.length === 0) {
-      console.log(`[ADVANCED_MONITOR] ℹ️ Nenhuma posição aberta para verificar na conta ${accountId}`);
-      return;
-    }
-    
-    // ✅ 2. OBTER POSIÇÕES DA CORRETORA
-    console.log(`[ADVANCED_MONITOR] 🏦 Verificando posições na corretora...`);
     const exchangePositions = await api.getAllOpenPositions(accountId);
-    console.log(`[ADVANCED_MONITOR] 🏦 Encontradas ${exchangePositions.length} posições na corretora para conta ${accountId}`);
+    
+    console.log(`[ADVANCED_MONITOR] 📊 Banco: ${dbPositions.length} posições | Corretora: ${exchangePositions.length} posições`);
     
     const exchangePositionsMap = new Map();
     exchangePositions.forEach(pos => {
       exchangePositionsMap.set(pos.simbolo, pos);
-      console.log(`[ADVANCED_MONITOR]   - ${pos.simbolo}: ${pos.quantidade} (${pos.lado})`);
     });
     
     let checkedCount = 0;
     let closedCount = 0;
     
-    // ✅ 3. VERIFICAR CADA POSIÇÃO DO BANCO
-    for (const position of openPositions) {
+    // ✅ 2. VERIFICAR CADA POSIÇÃO DO BANCO
+    for (const position of dbPositions) {
       try {
         console.log(`[ADVANCED_MONITOR] 🔍 Verificando posição ${position.simbolo} (ID: ${position.id})...`);
         checkedCount++;
         
-        // Verificar se posição ainda existe na corretora
         const exchangePos = exchangePositionsMap.get(position.simbolo);
         
         if (!exchangePos || Math.abs(parseFloat(exchangePos.quantidade)) <= 0.000001) {
-          console.log(`[ADVANCED_MONITOR] ⚠️ Posição ${position.simbolo} (ID: ${position.id}) NÃO EXISTE mais na corretora!`);
-          console.log(`[ADVANCED_MONITOR] 📝 Banco: ${position.quantidade} | Corretora: ${exchangePos ? exchangePos.quantidade : 'N/A'}`);
+          console.log(`[ADVANCED_MONITOR] ⚠️ Posição ${position.simbolo} (ID: ${position.id}) NÃO EXISTE na corretora!`);
           
+          // ✅ 2.1. VERIFICAR ORDENS RELACIONADAS ANTES DE MOVER
+          const [relatedOrders] = await db.query(`
+            SELECT id_externo, simbolo, tipo_ordem_bot, status 
+            FROM ordens 
+            WHERE id_posicao = ? 
+              AND status IN ('NEW', 'PARTIALLY_FILLED') 
+              AND conta_id = ?
+          `, [position.id, accountId]);
+          
+          if (relatedOrders.length > 0) {
+            console.log(`[ADVANCED_MONITOR] 🗑️ Encontradas ${relatedOrders.length} ordens relacionadas para limpar...`);
+            
+            // ✅ MARCAR ORDENS COMO CANCELED
+            for (const order of relatedOrders) {
+              await db.query(`
+                UPDATE ordens 
+                SET status = 'CANCELED', 
+                    last_update = NOW(),
+                    observacao = 'Auto-cancelada - posição fechada na corretora'
+                WHERE id_externo = ? AND conta_id = ?
+              `, [order.id_externo, accountId]);
+              
+              console.log(`[ADVANCED_MONITOR] ✅ Ordem ${order.id_externo} (${order.tipo_ordem_bot}) marcada como CANCELED`);
+            }
+          }
+          
+          // ✅ 2.2. MOVER POSIÇÃO PARA HISTÓRICO
+          const { movePositionToHistory } = require('./positionHistory');
           const moved = await movePositionToHistory(
             db, 
             position.id, 
             'CLOSED', 
-            'Monitoramento automático - posição fechada na corretora',
+            'Monitoramento automático - posição não existe na corretora',
             accountId
           );
           
           if (moved) {
             closedCount++;
             console.log(`[ADVANCED_MONITOR] ✅ Posição ${position.simbolo} (ID: ${position.id}) movida para histórico`);
-          } else {
-            console.error(`[ADVANCED_MONITOR] ❌ Falha ao mover posição ${position.simbolo} (ID: ${position.id}) para histórico`);
+            
+            // ✅ 2.3. NOTIFICAÇÃO TELEGRAM
+            try {
+              const { sendTelegramMessage, formatAlertMessage } = require('./telegramBot');
+              const alertMessage = formatAlertMessage(
+                'POSIÇÃO AUTO-FECHADA',
+                `⚠️ <b>${position.simbolo}</b>\n\n` +
+                `Posição foi detectada como fechada na corretora.\n` +
+                `Movida automaticamente para histórico.\n\n` +
+                `💰 Quantidade: ${position.quantidade}\n` +
+                `💵 Preço médio: ${position.preco_medio}\n` +
+                `📅 Aberta em: ${position.data_hora_abertura}`
+              );
+              
+              await sendTelegramMessage(accountId, alertMessage);
+              console.log(`[ADVANCED_MONITOR] 📱 Notificação de fechamento enviada`);
+            } catch (telegramError) {
+              console.warn(`[ADVANCED_MONITOR] ⚠️ Erro ao enviar notificação:`, telegramError.message);
+            }
           }
           
           continue;
-        } else {
-          console.log(`[ADVANCED_MONITOR] ✅ Posição ${position.simbolo} confirmada na corretora: ${exchangePos.quantidade}`);
         }
         
-        // ✅ 4. VERIFICAR TRAILING STOPS PARA POSIÇÕES EXISTENTES
+        // ✅ 3. VERIFICAR TRAILING STOPS PARA POSIÇÕES ATIVAS
         if (exchangePos) {
           const currentPrice = await api.getPrice(position.simbolo, accountId);
           
           if (currentPrice && currentPrice > 0) {
             const { checkOrderTriggers } = require('./trailingStopLoss');
             await checkOrderTriggers(db, position, currentPrice, accountId);
-            
-            console.log(`[ADVANCED_MONITOR] ✅ ${position.simbolo} @ ${currentPrice} - trailing verificado`);
           }
         }
         
-        // Pequena pausa entre verificações
+        // Pausa entre verificações
         await new Promise(resolve => setTimeout(resolve, 100));
         
       } catch (posError) {
@@ -250,12 +279,64 @@ async function runAdvancedPositionMonitoring(accountId) {
       }
     }
     
-    console.log(`[ADVANCED_MONITOR] ✅ Monitoramento concluído para conta ${accountId}:`);
+    // ✅ 4. VERIFICAR SE HÁ POSIÇÕES NA CORRETORA SEM REGISTRO NO BANCO
+    const missingInDb = [];
+    for (const exchangePos of exchangePositions) {
+      if (Math.abs(parseFloat(exchangePos.quantidade)) > 0.000001) {
+        const dbPos = dbPositions.find(db => db.simbolo === exchangePos.simbolo);
+        if (!dbPos) {
+          missingInDb.push(exchangePos);
+        }
+      }
+    }
+    
+    if (missingInDb.length > 0) {
+      console.log(`[ADVANCED_MONITOR] 🆕 Encontradas ${missingInDb.length} posições na corretora sem registro no banco:`);
+      missingInDb.forEach(pos => {
+        console.log(`[ADVANCED_MONITOR]   - ${pos.simbolo}: ${pos.quantidade} (${pos.lado})`);
+      });
+      
+      // ✅ CRIAR POSIÇÕES EXTERNAS NO BANCO
+      const { insertPosition } = require('../db/conexao');
+      const { formatDateForMySQL } = require('../db/conexao');
+      
+      for (const extPos of missingInDb) {
+        try {
+          const positionData = {
+            simbolo: extPos.simbolo,
+            quantidade: Math.abs(parseFloat(extPos.quantidade)),
+            preco_medio: parseFloat(extPos.precoEntrada || extPos.precoAtual || 0),
+            status: 'OPEN',
+            data_hora_abertura: formatDateForMySQL(new Date()),
+            side: parseFloat(extPos.quantidade) > 0 ? 'BUY' : 'SELL',
+            leverage: parseFloat(extPos.leverage || 1),
+            data_hora_ultima_atualizacao: formatDateForMySQL(new Date()),
+            preco_entrada: parseFloat(extPos.precoEntrada || extPos.precoAtual || 0),
+            preco_corrente: parseFloat(extPos.precoAtual || extPos.precoEntrada || 0),
+            orign_sig: 'EXTERNAL_DETECTED',
+            quantidade_aberta: Math.abs(parseFloat(extPos.quantidade)),
+            conta_id: accountId
+          };
+          
+          const newPositionId = await insertPosition(db, positionData);
+          console.log(`[ADVANCED_MONITOR] ✅ Posição externa ${extPos.simbolo} criada com ID ${newPositionId}`);
+          
+        } catch (createError) {
+          console.error(`[ADVANCED_MONITOR] ❌ Erro ao criar posição externa ${extPos.simbolo}:`, createError.message);
+        }
+      }
+    }
+    
+    console.log(`[ADVANCED_MONITOR] ✅ Monitoramento completo concluído para conta ${accountId}:`);
     console.log(`[ADVANCED_MONITOR]   - Posições verificadas: ${checkedCount}`);
     console.log(`[ADVANCED_MONITOR]   - Posições movidas para histórico: ${closedCount}`);
+    console.log(`[ADVANCED_MONITOR]   - Posições externas detectadas: ${missingInDb.length}`);
+    
+    return { checked: checkedCount, closed: closedCount, external: missingInDb.length };
     
   } catch (error) {
-    console.error(`[ADVANCED_MONITOR] ❌ Erro no monitoramento avançado para conta ${accountId}:`, error.message);
+    console.error(`[ADVANCED_MONITOR] ❌ Erro no monitoramento completo para conta ${accountId}:`, error.message);
+    return { checked: 0, closed: 0, external: 0 };
   }
 }
 

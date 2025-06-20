@@ -97,7 +97,7 @@ async function forceCloseGhostPositions(accountId) {
 }
 
 /**
- * Cancela ordens órfãs na corretora
+ * Cancela ordens órfãs na corretora e atualiza status no banco
  */
 async function cancelOrphanOrders(accountId) {
   try {
@@ -108,42 +108,184 @@ async function cancelOrphanOrders(accountId) {
     
     const db = await getDatabaseInstance();
     
-    // Buscar ordens em estado inconsistente há mais de 10 minutos
-    const [orphanOrders] = await db.query(`
-      SELECT id_externo, simbolo 
+    // ✅ BUSCAR ORDENS QUE PODEM ESTAR ÓRFÃS
+    const [potentialOrphanOrders] = await db.query(`
+      SELECT id_externo, simbolo, tipo_ordem_bot, quantidade, preco, status, id_posicao
       FROM ordens 
-      WHERE status IN ('NEW', 'PENDING_CANCEL')
+      WHERE status IN ('NEW', 'PARTIALLY_FILLED', 'PENDING_CANCEL')
         AND conta_id = ?
-        AND last_update < DATE_SUB(NOW(), INTERVAL 10 MINUTE)
+        AND last_update < DATE_SUB(NOW(), INTERVAL 5 MINUTE)
     `, [accountId]);
     
-    let canceledCount = 0;
+    if (potentialOrphanOrders.length === 0) {
+      console.log(`[CLEANUP] Nenhuma ordem órfã encontrada para conta ${accountId}`);
+      return 0;
+    }
     
-    for (const order of orphanOrders) {
+    console.log(`[CLEANUP] 🔍 Verificando ${potentialOrphanOrders.length} ordens potencialmente órfãs para conta ${accountId}...`);
+    
+    let canceledCount = 0;
+    let updatedCount = 0;
+    
+    for (const order of potentialOrphanOrders) {
       try {
+        // ✅ TENTAR CANCELAR NA CORRETORA
         await cancelOrder(order.simbolo, order.id_externo, accountId);
         
-        // Atualizar status no banco
+        // ✅ SE CHEGOU AQUI, ORDEM AINDA EXISTIA E FOI CANCELADA
+        console.log(`[CLEANUP] ✅ Ordem ${order.id_externo} cancelada na corretora`);
+        
         await db.query(`
           UPDATE ordens 
           SET status = 'CANCELED', 
-              observacao = 'Cancelada via cleanup',
               last_update = NOW()
           WHERE id_externo = ? AND conta_id = ?
         `, [order.id_externo, accountId]);
         
-        console.log(`[CLEANUP] Ordem órfã cancelada: ${order.id_externo} para conta ${accountId}`);
         canceledCount++;
         
       } catch (cancelError) {
-        console.warn(`[CLEANUP] Erro ao cancelar ordem órfã ${order.id_externo}:`, cancelError.message);
+        // ✅ VERIFICAR SE É ERRO "ORDEM NÃO EXISTE"
+        if (cancelError.message.includes('Unknown order sent') || 
+            cancelError.message.includes('Order does not exist')) {
+          
+          console.log(`[CLEANUP] ✅ Ordem ${order.id_externo} confirmada como já cancelada/executada na corretora`);
+          
+          // ✅ MARCAR COMO CANCELED NO BANCO (porque não existe mais na corretora)
+          await db.query(`
+            UPDATE ordens 
+            SET status = 'CANCELED', 
+                last_update = NOW(),
+                observacao = 'Órfã - não existe na corretora'
+            WHERE id_externo = ? AND conta_id = ?
+          `, [order.id_externo, accountId]);
+          
+          updatedCount++;
+          
+        } else {
+          // ✅ ERRO REAL DE CANCELAMENTO
+          console.error(`[CLEANUP] ❌ Erro real ao cancelar ordem ${order.id_externo}:`, cancelError.message);
+        }
       }
     }
     
-    return canceledCount;
+    console.log(`[CLEANUP] 📊 Resumo para conta ${accountId}:`);
+    console.log(`  - Ordens canceladas na corretora: ${canceledCount}`);
+    console.log(`  - Ordens órfãs marcadas como CANCELED: ${updatedCount}`);
+    
+    // ✅ MOVER ORDENS CANCELED PARA HISTÓRICO
+    if (canceledCount > 0 || updatedCount > 0) {
+      const movedToHistory = await moveOrdersToHistory(accountId);
+      console.log(`[CLEANUP] 📚 ${movedToHistory} ordens movidas para ordens_fechadas`);
+    }
+    
+    return canceledCount + updatedCount;
     
   } catch (error) {
-    console.error(`[CLEANUP] Erro ao cancelar ordens órfãs para conta ${accountId}:`, error.message);
+    console.error(`[CLEANUP] ❌ Erro ao cancelar ordens órfãs para conta ${accountId}:`, error.message);
+    return 0;
+  }
+}
+
+/**
+ * ✅ NOVA FUNÇÃO: Mover ordens CANCELED para ordens_fechadas
+ */
+async function moveOrdersToHistory(accountId) {
+  try {
+    const db = await getDatabaseInstance();
+    
+    // Buscar ordens CANCELED que ainda estão na tabela principal
+    const [canceledOrders] = await db.query(`
+      SELECT * FROM ordens 
+      WHERE status = 'CANCELED' 
+        AND conta_id = ?
+        AND last_update > DATE_SUB(NOW(), INTERVAL 1 HOUR)
+    `, [accountId]);
+    
+    if (canceledOrders.length === 0) {
+      return 0;
+    }
+    
+    console.log(`[CLEANUP] 📚 Movendo ${canceledOrders.length} ordens CANCELED para histórico...`);
+    
+    const connection = await db.getConnection();
+    await connection.beginTransaction();
+    
+    try {
+      // ✅ VERIFICAR SE TABELA DESTINO TEM COLUNAS NECESSÁRIAS
+      const [destColumns] = await connection.query(`SHOW COLUMNS FROM ordens_fechadas`);
+      const destColumnNames = destColumns.map(col => col.Field);
+      
+      let movedCount = 0;
+      
+      for (const order of canceledOrders) {
+        // ✅ PREPARAR DADOS PARA INSERÇÃO
+        const insertData = {
+          tipo_ordem: order.tipo_ordem,
+          preco: order.preco,
+          quantidade: order.quantidade,
+          id_posicao: order.id_posicao,
+          status: order.status,
+          data_hora_criacao: order.data_hora_criacao,
+          id_externo: order.id_externo,
+          side: order.side,
+          simbolo: order.simbolo,
+          tipo_ordem_bot: order.tipo_ordem_bot,
+          target: order.target,
+          reduce_only: order.reduce_only,
+          close_position: order.close_position,
+          last_update: order.last_update,
+          conta_id: order.conta_id,
+          preco_executado: order.preco_executado || 0,
+          quantidade_executada: order.quantidade_executada || 0,
+          observacao: order.observacao || 'Movida via cleanup - órfã'
+        };
+        
+        // ✅ ADICIONAR CAMPOS OPCIONAIS SE EXISTIREM
+        if (destColumnNames.includes('orign_sig') && order.orign_sig) {
+          insertData.orign_sig = order.orign_sig;
+        }
+        if (destColumnNames.includes('dados_originais_ws') && order.dados_originais_ws) {
+          insertData.dados_originais_ws = order.dados_originais_ws;
+        }
+        
+        // ✅ CONSTRUIR QUERY DINÂMICA
+        const columns = Object.keys(insertData).filter(key => 
+          destColumnNames.includes(key) && insertData[key] !== undefined
+        );
+        const values = columns.map(col => insertData[col]);
+        const placeholders = columns.map(() => '?').join(', ');
+        
+        // ✅ INSERIR NA TABELA FECHADAS
+        await connection.query(
+          `INSERT INTO ordens_fechadas (${columns.join(', ')}) VALUES (${placeholders})`,
+          values
+        );
+        
+        // ✅ REMOVER DA TABELA ATIVA
+        await connection.query(
+          'DELETE FROM ordens WHERE id_externo = ? AND conta_id = ?',
+          [order.id_externo, accountId]
+        );
+        
+        movedCount++;
+      }
+      
+      await connection.commit();
+      console.log(`[CLEANUP] ✅ ${movedCount} ordens movidas para histórico com sucesso`);
+      
+      return movedCount;
+      
+    } catch (moveError) {
+      await connection.rollback();
+      console.error(`[CLEANUP] ❌ Erro ao mover ordens para histórico:`, moveError.message);
+      throw moveError;
+    } finally {
+      connection.release();
+    }
+    
+  } catch (error) {
+    console.error(`[CLEANUP] ❌ Erro na função moveOrdersToHistory:`, error.message);
     return 0;
   }
 }
