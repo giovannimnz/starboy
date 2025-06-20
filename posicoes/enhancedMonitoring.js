@@ -1,8 +1,10 @@
 const { getDatabaseInstance } = require('../db/conexao');
+const api = require('../api');
+const { movePositionToHistory } = require('./positionHistory');
+const websockets = require('../websockets');
 const { checkOrderTriggers } = require('./trailingStopLoss');
 const { checkExpiredSignals } = require('./signalTimeout');
 const { cleanupOrphanSignals, forceCloseGhostPositions } = require('./cleanup');
-const websockets = require('../websockets');
 
 /**
  * Atualiza preços das posições com trailing stop
@@ -166,6 +168,8 @@ async function runAdvancedPositionMonitoring(accountId) {
   try {
     console.log(`[ADVANCED_MONITOR] 🔄 Executando monitoramento avançado para conta ${accountId}...`);
     
+    const db = await getDatabaseInstance();
+    
     // ✅ 1. VERIFICAR POSIÇÕES ABERTAS NO BANCO
     const [openPositions] = await db.query(`
       SELECT * FROM posicoes 
@@ -226,22 +230,16 @@ async function runAdvancedPositionMonitoring(accountId) {
           console.log(`[ADVANCED_MONITOR] ✅ Posição ${position.simbolo} confirmada na corretora: ${exchangePos.quantidade}`);
         }
         
-        // ✅ 4. OBTER PREÇO ATUAL E VERIFICAR TRAILING STOPS
-        const currentPrice = await api.getPrice(position.simbolo, accountId);
-        
-        if (currentPrice && currentPrice > 0) {
-          // Atualizar preço corrente no banco
-          await db.query(`
-            UPDATE posicoes 
-            SET preco_corrente = ?, data_hora_ultima_atualizacao = NOW()
-            WHERE id = ?
-          `, [currentPrice, position.id]);
+        // ✅ 4. VERIFICAR TRAILING STOPS PARA POSIÇÕES EXISTENTES
+        if (exchangePos) {
+          const currentPrice = await api.getPrice(position.simbolo, accountId);
           
-          // Verificar trailing stops
-          const { checkOrderTriggers } = require('./trailingStopLoss');
-          await checkOrderTriggers(db, position, currentPrice, accountId);
-          
-          console.log(`[ADVANCED_MONITOR] ✅ ${position.simbolo} @ ${currentPrice} - trailing verificado`);
+          if (currentPrice && currentPrice > 0) {
+            const { checkOrderTriggers } = require('./trailingStopLoss');
+            await checkOrderTriggers(db, position, currentPrice, accountId);
+            
+            console.log(`[ADVANCED_MONITOR] ✅ ${position.simbolo} @ ${currentPrice} - trailing verificado`);
+          }
         }
         
         // Pequena pausa entre verificações
@@ -267,6 +265,8 @@ async function runAdvancedPositionMonitoring(accountId) {
 async function logOpenPositionsAndOrders(accountId) {
   try {
     console.log('\n=== 🔍 DIAGNÓSTICO DE SINCRONIZAÇÃO ===');
+    
+    const db = await getDatabaseInstance();
     
     // Posições do banco
     const [dbPositions] = await db.query(`
@@ -326,23 +326,46 @@ async function logOpenPositionsAndOrders(accountId) {
   }
 }
 
-// ✅ ADICIONAR LOGS NO SCHEDULER do monitoramento.js:
-accountJobs.advancedPositionMonitoring = schedule.scheduleJob('*/2 * * * *', async () => {
-  if (isShuttingDown) return;
-  try {
-    console.log(`[MONITOR] 🔄 Executando job advancedPositionMonitoring para conta ${accountId}...`);
-    await runAdvancedPositionMonitoring(accountId);
-    console.log(`[MONITOR] ✅ Job advancedPositionMonitoring concluído para conta ${accountId}`);
-  } catch (error) {
-    console.error(`[MONITOR] ⚠️ Erro no monitoramento avançado para conta ${accountId}:`, error.message);
-  }
-});
+/**
+ * ✅ OUTRAS FUNÇÕES DE MONITORAMENTO
+ */
+async function runPeriodicCleanup(accountId) {
+  console.log(`[CLEANUP] 🧹 Executando limpeza periódica para conta ${accountId}...`);
+  // Implementar lógica de limpeza
+}
 
-// ✅ ATUALIZAR module.exports:
+async function monitorWebSocketHealth(accountId) {
+  console.log(`[WS_HEALTH] 🔗 Verificando saúde dos WebSockets para conta ${accountId}...`);
+  // Implementar verificação de WebSocket
+}
+
+async function updatePositionPricesWithTrailing(db, symbol, price, accountId) {
+  try {
+    // Atualizar preços e verificar trailing stops
+    console.log(`[TRAILING] 📈 Atualizando ${symbol} @ ${price} para conta ${accountId}`);
+    
+    const { checkOrderTriggers } = require('./trailingStopLoss');
+    
+    // Buscar posições abertas para este símbolo
+    const [positions] = await db.query(`
+      SELECT * FROM posicoes 
+      WHERE simbolo = ? AND status = 'OPEN' AND conta_id = ?
+    `, [symbol, accountId]);
+    
+    for (const position of positions) {
+      await checkOrderTriggers(db, position, price, accountId);
+    }
+    
+  } catch (error) {
+    console.error(`[TRAILING] ❌ Erro ao atualizar trailing para ${symbol}:`, error.message);
+  }
+}
+
+// ✅ EXPORTS CORRETOS
 module.exports = {
-  updatePositionPricesWithTrailing,
+  runAdvancedPositionMonitoring,
+  logOpenPositionsAndOrders,
   runPeriodicCleanup,
   monitorWebSocketHealth,
-  runAdvancedPositionMonitoring, // ✅ NOVA
-  logOpenPositionsAndOrders       // ✅ NOVA
+  updatePositionPricesWithTrailing
 };
