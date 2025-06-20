@@ -14,15 +14,8 @@ import warnings
 import logging
 
 # Carregar variáveis de ambiente do arquivo .env
-# Isso permite que o script seja executado de forma independente
-env_path = pathlib.Path(__file__).resolve().parent / '.env'
-if env_path.exists():
-    load_dotenv(dotenv_path=env_path)
-else:
-    # Tenta carregar de um diretório pai, se a estrutura for /scripts/.env
-    env_path_parent = pathlib.Path(__file__).resolve().parents[1] / '.env'
-    if env_path_parent.exists():
-        load_dotenv(dotenv_path=env_path_parent)
+env_path = pathlib.Path(__file__).parents[1] / 'config' / '.env'
+load_dotenv(dotenv_path=env_path)
 
 # Importar senhas após carregar o .env
 from senhas import API_KEY, API_SECRET, API_URL

@@ -57,12 +57,7 @@ except ImportError as e:
     DIVAPAnalyzer = None
 
 # --- Carregamento de Variáveis de Ambiente ---
-env_path = pathlib.Path(__file__).resolve().parent / '.env'
-if not env_path.exists():
-    env_path = pathlib.Path(__file__).resolve().parents[1] / 'config' / '.env'
-if not env_path.exists():
-    env_path = pathlib.Path(__file__).resolve().parents[2] / '.env'
-    
+env_path = pathlib.Path(__file__).parents[1] / 'config' / '.env'
 load_dotenv(dotenv_path=env_path)
 
 DB_HOST = os.getenv('DB_HOST')
