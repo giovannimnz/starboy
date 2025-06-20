@@ -124,23 +124,7 @@ async function syncAccountBalance(accountId) {
 
   try {
     console.log(`[MONITOR] Sincronizando saldo da conta ${accountId} via WebSocket API...`);
-    
-    // ✅ TENTAR VIA WEBSOCKET API PRIMEIRO
-    try {
-      const websocketApi = require('../websocketApi');
-      const wsResult = await websocketApi.syncAccountBalanceViaWebSocket(accountId);
-      
-      if (wsResult && wsResult.success) {
-        console.log(`[MONITOR] ✅ Saldo sincronizado via WebSocket API: ${wsResult.saldo} USDT`);
-        return wsResult;
-      } else {
-        console.warn(`[MONITOR] ⚠️ WebSocket API falhou, usando REST API como fallback`);
-      }
-    } catch (wsError) {
-      console.warn(`[MONITOR] ⚠️ Erro no WebSocket API, usando REST API: ${wsError.message}`);
-    }
-    
-    // ✅ FALLBACK PARA REST API
+
     const result = await getFuturesAccountBalanceDetails(accountId);
     
     if (result && result.success) {
