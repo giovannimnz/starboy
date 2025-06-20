@@ -293,5 +293,6 @@ async function moveOrdersToHistory(accountId) {
 module.exports = {
   cleanupOrphanSignals,
   forceCloseGhostPositions,
-  cancelOrphanOrders
+  cancelOrphanOrders,      // ✅ ESTA LINHA DEVE EXISTIR
+  moveOrdersToHistory      // ✅ ADICIONAR SE AINDA NÃO EXISTE
 };
