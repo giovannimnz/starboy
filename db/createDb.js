@@ -6,7 +6,6 @@ async function createDatabase() {
     console.log('Iniciando criação do banco de dados MySQL...');
     console.log(`Host: ${process.env.DB_HOST}, Porta: ${process.env.DB_PORT}, Usuário: ${process.env.DB_USER}`);
     
-    // Primeiro, conectar sem especificar o banco de dados
     let connection;
     
     try {
@@ -28,10 +27,57 @@ async function createDatabase() {
         await connection.execute(`USE ${process.env.DB_NAME}`);
         console.log(`Banco de dados "${process.env.DB_NAME}" selecionado.`);
         
-        // Criar tabelas
-        console.log('Criando tabelas...');
-        
-        // Tabela configuracoes
+        // ✅ FASE 1: CRIAR TABELAS SEM FOREIGN KEYS PRIMEIRO
+        console.log('FASE 1: Criando tabelas base sem foreign keys...');
+
+        // 1. Tabela corretoras (independente)
+        await connection.execute(`
+            CREATE TABLE IF NOT EXISTS corretoras (
+                id INT NOT NULL AUTO_INCREMENT,
+                corretora VARCHAR(50) NOT NULL COMMENT 'Nome da corretora (ex: binance, bybit)',
+                ambiente VARCHAR(20) NOT NULL COMMENT 'Ambiente (ex: prd, testnet, dev)',
+                spot_rest_api_url VARCHAR(255) DEFAULT NULL COMMENT 'URL da API REST para o mercado spot',
+                futures_rest_api_url VARCHAR(255) DEFAULT NULL COMMENT 'URL da API REST para o mercado de futuros',
+                futures_ws_market_url VARCHAR(255) DEFAULT NULL COMMENT 'URL do WebSocket para dados de mercado de futuros',
+                futures_ws_api_url VARCHAR(255) DEFAULT NULL COMMENT 'URL do WebSocket API para futuros',
+                ativa TINYINT(1) DEFAULT 1 COMMENT 'Se esta configuração está ativa',
+                data_criacao TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP,
+                ultima_atualizacao TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                PRIMARY KEY (id),
+                UNIQUE KEY idx_corretora_ambiente (corretora, ambiente)
+            ) ENGINE=InnoDB AUTO_INCREMENT=1000 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci 
+            COMMENT='Configurações de URLs de APIs por corretora e ambiente'
+        `);
+        console.log('✅ Tabela "corretoras" criada.');
+
+        // 2. Tabela posicoes (independente, será referenciada)
+        await connection.execute(`
+            CREATE TABLE IF NOT EXISTS posicoes (
+                id INT NOT NULL AUTO_INCREMENT,
+                simbolo VARCHAR(50) NOT NULL,
+                quantidade DECIMAL(20,8) NOT NULL,
+                quantidade_aberta DECIMAL(20,8) DEFAULT NULL,
+                preco_medio DECIMAL(20,8) NOT NULL,
+                status VARCHAR(50) NOT NULL,
+                data_hora_abertura DATETIME NOT NULL,
+                data_hora_fechamento DATETIME DEFAULT NULL,
+                side VARCHAR(20) DEFAULT NULL,
+                leverage INT DEFAULT NULL,
+                data_hora_ultima_atualizacao DATETIME DEFAULT NULL,
+                preco_entrada DECIMAL(20,8) DEFAULT NULL,
+                preco_corrente DECIMAL(20,8) DEFAULT NULL,
+                orign_sig VARCHAR(100) DEFAULT NULL,
+                trailing_stop_level VARCHAR(20) DEFAULT 'ORIGINAL',
+                pnl_corrente DECIMAL(20,8) DEFAULT 0.00000000,
+                conta_id INT DEFAULT 1,
+                observacoes TEXT DEFAULT NULL,
+                PRIMARY KEY (id),
+                KEY idx_conta_id (conta_id)
+            ) ENGINE=InnoDB AUTO_INCREMENT=3727 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+        console.log('✅ Tabela "posicoes" criada.');
+
+        // 3. Tabelas independentes (sem foreign keys)
         await connection.execute(`
             CREATE TABLE IF NOT EXISTS configuracoes (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -44,19 +90,7 @@ async function createDatabase() {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         `);
         console.log('✅ Tabela "configuracoes" criada.');
-        
-        // Tabela conta
-        await connection.execute(`
-            CREATE TABLE IF NOT EXISTS conta (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                saldo DECIMAL(20, 8),
-                margem_manutencao DECIMAL(20, 8),
-                saldo_nao_realizado DECIMAL(20, 8)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-        `);
-        console.log('✅ Tabela "conta" criada.');
-        
-        // Tabela controle_posicoes
+
         await connection.execute(`
             CREATE TABLE IF NOT EXISTS controle_posicoes (
                 total_abertas INT DEFAULT 0,
@@ -64,112 +98,150 @@ async function createDatabase() {
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         `);
         console.log('✅ Tabela "controle_posicoes" criada.');
-        
-        // Tabela posicoes (criar antes para as foreign keys)
+
         await connection.execute(`
-            CREATE TABLE IF NOT EXISTS posicoes (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                simbolo VARCHAR(50) NOT NULL,
-                quantidade DECIMAL(20, 8) NOT NULL DEFAULT 0,
-                preco_medio DECIMAL(20, 8) NOT NULL DEFAULT 0,
-                status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
-                data_hora_abertura DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                data_hora_fechamento DATETIME NULL,
-                side VARCHAR(20) DEFAULT 'BUY',
-                leverage INT DEFAULT 1,
-                data_hora_ultima_atualizacao DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
-                preco_entrada DECIMAL(20, 8) NOT NULL DEFAULT 0,
-                preco_corrente DECIMAL(20, 8) NOT NULL DEFAULT 0,
-                orign_sig VARCHAR(100) NULL
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            CREATE TABLE IF NOT EXISTS alavancagem (
+                id INT NOT NULL AUTO_INCREMENT,
+                symbol VARCHAR(50) NOT NULL,
+                corretora VARCHAR(50) NOT NULL,
+                bracket INT NOT NULL,
+                initial_leverage INT NOT NULL,
+                notional_cap DECIMAL(50,2) NOT NULL,
+                notional_floor DECIMAL(15,2) NOT NULL,
+                maint_margin_ratio DECIMAL(8,6) NOT NULL,
+                cum DECIMAL(15,2) NOT NULL,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (id),
+                UNIQUE KEY symbol (symbol, corretora, bracket)
+            ) ENGINE=InnoDB AUTO_INCREMENT=208177 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         `);
-        console.log('✅ Tabela "posicoes" criada.');
-        
-        // Tabela ordens (criar antes devido à foreign key em historico_ordens)
+        console.log('✅ Tabela "alavancagem" criada.');
+
         await connection.execute(`
-            CREATE TABLE IF NOT EXISTS ordens (
-                id INT AUTO_INCREMENT PRIMARY KEY,
+            CREATE TABLE IF NOT EXISTS posicoes_fechadas (
+                id INT NOT NULL AUTO_INCREMENT,
+                id_original INT DEFAULT NULL,
+                simbolo VARCHAR(50) NOT NULL,
+                quantidade DECIMAL(20,8) NOT NULL,
+                preco_medio DECIMAL(20,8) NOT NULL,
+                status VARCHAR(50) NOT NULL,
+                data_hora_abertura DATETIME NOT NULL,
+                data_hora_fechamento DATETIME DEFAULT NULL,
+                motivo_fechamento VARCHAR(100) DEFAULT NULL,
+                side VARCHAR(20) DEFAULT NULL,
+                leverage INT DEFAULT NULL,
+                data_hora_ultima_atualizacao DATETIME DEFAULT NULL,
+                preco_entrada DECIMAL(20,8) DEFAULT NULL,
+                preco_corrente DECIMAL(20,8) DEFAULT NULL,
+                orign_sig VARCHAR(100) DEFAULT NULL,
+                conta_id INT DEFAULT 1,
+                PRIMARY KEY (id),
+                KEY idx_simbolo (simbolo),
+                KEY idx_status (status),
+                KEY idx_id_original (id_original)
+            ) ENGINE=InnoDB AUTO_INCREMENT=83 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+        console.log('✅ Tabela "posicoes_fechadas" criada.');
+
+        await connection.execute(`
+            CREATE TABLE IF NOT EXISTS ordens_fechadas (
+                id INT NOT NULL AUTO_INCREMENT,
+                id_original INT DEFAULT NULL,
                 tipo_ordem VARCHAR(50) NOT NULL,
-                preco DECIMAL(20, 8) NOT NULL DEFAULT 0,
-                quantidade DECIMAL(20, 8) NOT NULL DEFAULT 0,
-                id_posicao INT,
-                status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
-                data_hora_criacao DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-                id_externo BIGINT NULL,
-                side VARCHAR(20) DEFAULT 'BUY',
-                simbolo VARCHAR(50) NOT NULL,
-                tipo_ordem_bot VARCHAR(50) NULL,
-                target INT NULL,
-                reduce_only BOOLEAN DEFAULT FALSE,
-                close_position BOOLEAN DEFAULT FALSE,
-                last_update DATETIME NULL DEFAULT CURRENT_TIMESTAMP,
-                orign_sig VARCHAR(100) NULL,
-                FOREIGN KEY (id_posicao) REFERENCES posicoes(id)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                preco DECIMAL(20,8) NOT NULL,
+                quantidade DECIMAL(20,8) NOT NULL,
+                id_posicao INT DEFAULT NULL,
+                status VARCHAR(50) NOT NULL,
+                data_hora_criacao DATETIME DEFAULT NULL,
+                id_externo VARCHAR(100) DEFAULT NULL,
+                side VARCHAR(20) DEFAULT NULL,
+                simbolo VARCHAR(50) DEFAULT NULL,
+                tipo_ordem_bot VARCHAR(50) DEFAULT NULL,
+                target INT DEFAULT NULL,
+                reduce_only TINYINT(1) DEFAULT NULL,
+                close_position TINYINT(1) DEFAULT NULL,
+                last_update DATETIME DEFAULT NULL,
+                renew_sl_firs VARCHAR(20) DEFAULT NULL,
+                renew_sl_seco VARCHAR(20) DEFAULT NULL,
+                orign_sig VARCHAR(100) DEFAULT NULL,
+                dados_originais_ws TEXT DEFAULT NULL,
+                quantidade_executada DECIMAL(20,8) DEFAULT 0.00000000,
+                preco_executado DECIMAL(20,8) DEFAULT NULL,
+                observacao VARCHAR(255) DEFAULT NULL,
+                id_original_ordens INT DEFAULT NULL,
+                conta_id INT DEFAULT 1,
+                PRIMARY KEY (id),
+                KEY idx_simbolo (simbolo),
+                KEY idx_status (status),
+                KEY idx_id_posicao (id_posicao),
+                KEY idx_id_original (id_original),
+                KEY idx_id_original_ordens (id_original_ordens)
+            ) ENGINE=InnoDB AUTO_INCREMENT=562 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         `);
-        console.log('✅ Tabela "ordens" criada.');
-        
-        // Tabela historico_ordens
+        console.log('✅ Tabela "ordens_fechadas" criada.');
+
         await connection.execute(`
-            CREATE TABLE IF NOT EXISTS historico_ordens (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                id_posicao INT,
-                id_ordem INT,
-                tipo_evento VARCHAR(50) NOT NULL,
-                data_hora_evento DATETIME NOT NULL,
-                resultado DECIMAL(20, 8),
-                tipo_ordem_bot VARCHAR(50),
-                target INT,
-                reduce_only BOOLEAN,
-                close_position BOOLEAN,
-                last_update DATETIME,
-                FOREIGN KEY (id_posicao) REFERENCES posicoes(id),
-                FOREIGN KEY (id_ordem) REFERENCES ordens(id)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            CREATE TABLE IF NOT EXISTS divap_analysis (
+                id INT NOT NULL AUTO_INCREMENT,
+                signal_id INT DEFAULT NULL,
+                is_bull_divap TINYINT(1) DEFAULT 0,
+                is_bear_divap TINYINT(1) DEFAULT 0,
+                divap_confirmed TINYINT(1) DEFAULT 0,
+                rsi FLOAT DEFAULT NULL,
+                volume DOUBLE DEFAULT NULL,
+                volume_sma DOUBLE DEFAULT NULL,
+                high_volume TINYINT(1) DEFAULT 0,
+                bull_div TINYINT(1) DEFAULT 0,
+                bear_div TINYINT(1) DEFAULT 0,
+                message TEXT DEFAULT NULL,
+                price_reversal_up TINYINT(1) DEFAULT 0,
+                price_reversal_down TINYINT(1) DEFAULT 0,
+                analyzed_at DATETIME DEFAULT NULL,
+                bull_reversal_pattern TINYINT(1) DEFAULT 0,
+                bear_reversal_pattern TINYINT(1) DEFAULT 0,
+                PRIMARY KEY (id),
+                UNIQUE KEY signal_id (signal_id)
+            ) ENGINE=InnoDB AUTO_INCREMENT=490 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         `);
-        console.log('✅ Tabela "historico_ordens" criada.');
-        
-        // Tabela historico_posicoes
+        console.log('✅ Tabela "divap_analysis" criada.');
+
+        // ✅ FASE 2: CRIAR TABELAS COM FOREIGN KEYS
+        console.log('\nFASE 2: Criando tabelas com foreign keys...');
+
+        // 4. Tabela contas (referencia corretoras)
         await connection.execute(`
-            CREATE TABLE IF NOT EXISTS historico_posicoes (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                id_posicao INT,
-                tipo_evento VARCHAR(50) NOT NULL,
-                data_hora_evento DATETIME NOT NULL,
-                resultado DECIMAL(20, 8),
-                tipo_ordem_bot VARCHAR(50),
-                target INT,
-                reduce_only BOOLEAN,
-                close_position BOOLEAN,
-                last_update DATETIME,
-                FOREIGN KEY (id_posicao) REFERENCES posicoes(id)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            CREATE TABLE IF NOT EXISTS contas (
+                id INT NOT NULL AUTO_INCREMENT,
+                nome VARCHAR(100) NOT NULL,
+                descricao TEXT DEFAULT NULL,
+                id_corretora INT DEFAULT 1 COMMENT 'ID da corretora associada a esta conta',
+                api_key VARCHAR(255) NOT NULL,
+                api_secret VARCHAR(255) NOT NULL,
+                ws_api_key VARCHAR(255) DEFAULT NULL,
+                ws_api_secret VARCHAR(255) DEFAULT NULL,
+                telegram_chat_id BIGINT DEFAULT NULL,
+                ativa TINYINT(1) DEFAULT 1,
+                max_posicoes INT DEFAULT 5,
+                saldo_base_calculo DECIMAL(20,8) DEFAULT NULL,
+                saldo DECIMAL(20,8) DEFAULT NULL,
+                data_criacao DATETIME DEFAULT CURRENT_TIMESTAMP,
+                ultima_atualizacao DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                celular VARCHAR(20) DEFAULT NULL,
+                telegram_bot_token VARCHAR(255) DEFAULT NULL,
+                telegram_bot_token_controller VARCHAR(255) DEFAULT NULL,
+                PRIMARY KEY (id),
+                KEY fk_contas_corretora (id_corretora),
+                CONSTRAINT fk_contas_corretora FOREIGN KEY (id_corretora) REFERENCES corretoras (id) ON DELETE SET NULL ON UPDATE CASCADE
+            ) ENGINE=InnoDB AUTO_INCREMENT=1000 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         `);
-        console.log('✅ Tabela "historico_posicoes" criada.');
-        
-        // Tabela monitoramento
-        await connection.execute(`
-            CREATE TABLE IF NOT EXISTS monitoramento (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                tipo_evento VARCHAR(50) NOT NULL,
-                id_ordem INT NOT NULL,
-                id_posicao INT,
-                mensagem TEXT,
-                data_hora_evento DATETIME NOT NULL,
-                status VARCHAR(50),
-                preco DECIMAL(20, 8),
-                preco_corrente DECIMAL(20, 8),
-                FOREIGN KEY (id_ordem) REFERENCES ordens(id),
-                FOREIGN KEY (id_posicao) REFERENCES posicoes(id)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-        `);
-        console.log('✅ Tabela "monitoramento" criada.');
-        
-        // Tabela webhook_signals
+        console.log('✅ Tabela "contas" criada.');
+
+        // 5. Tabela webhook_signals (referencia posicoes)
         await connection.execute(`
             CREATE TABLE IF NOT EXISTS webhook_signals (
-                id INT AUTO_INCREMENT PRIMARY KEY,
+                id INT NOT NULL AUTO_INCREMENT,
                 symbol VARCHAR(50) NOT NULL,
+                timeframe VARCHAR(10) DEFAULT NULL,
                 side VARCHAR(10) NOT NULL,
                 leverage INT NOT NULL,
                 capital_pct DECIMAL(5,2) NOT NULL,
@@ -177,81 +249,130 @@ async function createDatabase() {
                 tp_price DECIMAL(20,8) NOT NULL,
                 sl_price DECIMAL(20,8) NOT NULL,
                 status VARCHAR(50) NOT NULL DEFAULT 'PENDING',
-                error_message TEXT,
-                position_id INT,
-                entry_order_id BIGINT,
-                tp_order_id BIGINT,
-                sl_order_id BIGINT,
-                chat_id BIGINT,
-                message_id BIGINT,
+                error_message TEXT DEFAULT NULL,
+                position_id INT DEFAULT NULL,
+                entry_order_id BIGINT DEFAULT NULL,
+                tp_order_id BIGINT DEFAULT NULL,
+                sl_order_id BIGINT DEFAULT NULL,
+                chat_id BIGINT DEFAULT NULL,
+                message_id BIGINT DEFAULT NULL,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                
-                INDEX idx_status (status),
-                INDEX idx_symbol (symbol),
-                INDEX idx_position_id (position_id),
-                FOREIGN KEY (position_id) REFERENCES posicoes(id) ON DELETE SET NULL
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+                timeout_at DATETIME DEFAULT NULL COMMENT 'Horário calculado para timeout',
+                max_lifetime_minutes INT DEFAULT NULL COMMENT 'Tempo máximo de vida em minutos',
+                registry_message_id BIGINT DEFAULT NULL,
+                message_id_orig BIGINT DEFAULT NULL COMMENT 'ID da mensagem original no grupo de origem',
+                chat_id_orig_sinal BIGINT DEFAULT NULL,
+                tp1_price DECIMAL(20,8) DEFAULT NULL COMMENT 'Preço do primeiro alvo',
+                tp2_price DECIMAL(20,8) DEFAULT NULL COMMENT 'Preço do segundo alvo',
+                tp3_price DECIMAL(20,8) DEFAULT NULL COMMENT 'Preço do terceiro alvo',
+                tp4_price DECIMAL(20,8) DEFAULT NULL COMMENT 'Preço do quarto alvo',
+                tp5_price DECIMAL(20,8) DEFAULT NULL COMMENT 'Preço do quinto alvo',
+                message_source VARCHAR(50) DEFAULT NULL,
+                divap_confirmado TINYINT(1) DEFAULT NULL,
+                cancelado_checker TINYINT(1) DEFAULT NULL,
+                sent_msg TINYINT(1) DEFAULT 0,
+                conta_id INT DEFAULT 1,
+                PRIMARY KEY (id),
+                KEY idx_status (status),
+                KEY idx_symbol (symbol),
+                KEY idx_position_id (position_id),
+                KEY idx_conta_id (conta_id),
+                CONSTRAINT webhook_signals_ibfk_1 FOREIGN KEY (position_id) REFERENCES posicoes (id) ON DELETE SET NULL
+            ) ENGINE=InnoDB AUTO_INCREMENT=254 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         `);
         console.log('✅ Tabela "webhook_signals" criada.');
-        
-        // Tabela posicoes_fechadas
+
+        // 6. Tabela ordens (referencia posicoes)
         await connection.execute(`
-            CREATE TABLE IF NOT EXISTS posicoes_fechadas (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                id_original INT,
-                simbolo VARCHAR(50) NOT NULL,
-                quantidade DECIMAL(20,8) NOT NULL,
-                preco_medio DECIMAL(20,8) NOT NULL,
-                status VARCHAR(50) NOT NULL,
-                data_hora_abertura DATETIME NOT NULL,
-                data_hora_fechamento DATETIME,
-                motivo_fechamento VARCHAR(100),
-                side VARCHAR(20),
-                leverage INT,
-                data_hora_ultima_atualizacao DATETIME,
-                preco_entrada DECIMAL(20,8),
-                preco_corrente DECIMAL(20,8),
-                orign_sig VARCHAR(100),
-                
-                INDEX idx_simbolo (simbolo),
-                INDEX idx_status (status),
-                INDEX idx_id_original (id_original)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-        `);
-        console.log('✅ Tabela "posicoes_fechadas" criada.');
-          
-        // Tabela ordens_fechadas
-        await connection.execute(`
-            CREATE TABLE IF NOT EXISTS ordens_fechadas (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                id_original INT,
+            CREATE TABLE IF NOT EXISTS ordens (
+                id INT NOT NULL AUTO_INCREMENT,
                 tipo_ordem VARCHAR(50) NOT NULL,
                 preco DECIMAL(20,8) NOT NULL,
                 quantidade DECIMAL(20,8) NOT NULL,
-                id_posicao INT,
+                id_posicao INT DEFAULT NULL,
                 status VARCHAR(50) NOT NULL,
-                data_hora_criacao DATETIME,
-                id_externo BIGINT,
-                side VARCHAR(20),
-                simbolo VARCHAR(50),
-                tipo_ordem_bot VARCHAR(50),
-                target INT,
-                reduce_only BOOLEAN,
-                close_position BOOLEAN,
-                last_update DATETIME,
-                renew_sl_firs VARCHAR(20),
-                renew_sl_seco VARCHAR(20),
-                orign_sig VARCHAR(100),
-                
-                INDEX idx_simbolo (simbolo),
-                INDEX idx_status (status),
-                INDEX idx_id_posicao (id_posicao),
-                INDEX idx_id_original (id_original)
+                data_hora_criacao DATETIME DEFAULT NULL,
+                id_externo VARCHAR(100) DEFAULT NULL,
+                side VARCHAR(20) DEFAULT NULL,
+                simbolo VARCHAR(50) DEFAULT NULL,
+                tipo_ordem_bot VARCHAR(50) DEFAULT NULL,
+                target INT DEFAULT NULL,
+                reduce_only TINYINT(1) DEFAULT NULL,
+                close_position TINYINT(1) DEFAULT NULL,
+                last_update DATETIME DEFAULT NULL,
+                orign_sig VARCHAR(100) DEFAULT NULL,
+                observacao VARCHAR(255) DEFAULT NULL,
+                preco_executado DECIMAL(20,8) DEFAULT NULL,
+                quantidade_executada DECIMAL(20,8) DEFAULT 0.00000000,
+                dados_originais_ws TEXT DEFAULT NULL,
+                conta_id INT DEFAULT 1,
+                renew_sl_firs VARCHAR(20) DEFAULT NULL,
+                renew_sl_seco VARCHAR(20) DEFAULT NULL,
+                commission DECIMAL(20,8) DEFAULT 0.00000000,
+                commission_asset VARCHAR(10) DEFAULT NULL,
+                trade_id BIGINT DEFAULT NULL,
+                PRIMARY KEY (id),
+                KEY idx_conta_id (conta_id),
+                KEY idx_id_externo_simbolo (id_externo, simbolo),
+                KEY fk_ordens_posicoes (id_posicao),
+                CONSTRAINT fk_ordens_posicoes FOREIGN KEY (id_posicao) REFERENCES posicoes (id) ON DELETE SET NULL ON UPDATE CASCADE
+            ) ENGINE=InnoDB AUTO_INCREMENT=688 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+        console.log('✅ Tabela "ordens" criada.');
+
+        // 7. Tabela signals_msg (referencia webhook_signals)
+        await connection.execute(`
+            CREATE TABLE IF NOT EXISTS signals_msg (
+                id INT NOT NULL AUTO_INCREMENT,
+                message_id BIGINT NOT NULL COMMENT 'ID da mensagem no Telegram',
+                chat_id BIGINT NOT NULL COMMENT 'ID do chat onde a mensagem foi enviada',
+                text TEXT NOT NULL COMMENT 'Conteúdo da mensagem',
+                is_reply TINYINT(1) NOT NULL DEFAULT 0 COMMENT 'Se é uma resposta a outra mensagem',
+                reply_to_message_id BIGINT DEFAULT NULL COMMENT 'ID da mensagem à qual esta responde',
+                symbol VARCHAR(50) DEFAULT NULL COMMENT 'Símbolo relacionado (se identificado)',
+                signal_id INT DEFAULT NULL COMMENT 'ID do sinal na tabela webhook_signals (se relacionado)',
+                created_at DATETIME NOT NULL COMMENT 'Timestamp da mensagem',
+                registered_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT 'Timestamp de registro no banco',
+                message_source VARCHAR(50) DEFAULT NULL,
+                PRIMARY KEY (id),
+                KEY idx_message_id (message_id),
+                KEY idx_chat_id (chat_id),
+                KEY idx_symbol (symbol),
+                KEY idx_reply_to (reply_to_message_id),
+                KEY idx_signal_id (signal_id),
+                CONSTRAINT signals_msg_ibfk_1 FOREIGN KEY (signal_id) REFERENCES webhook_signals (id) ON DELETE SET NULL
+            ) ENGINE=InnoDB AUTO_INCREMENT=639 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        `);
+        console.log('✅ Tabela "signals_msg" criada.');
+
+        // ✅ PROBLEMA CORRIGIDO: Tabela monitoramento SEM foreign key para ordens
+        // (porque referencia id_externo, não id)
+        await connection.execute(`
+            CREATE TABLE IF NOT EXISTS monitoramento (
+                id INT NOT NULL AUTO_INCREMENT,
+                tipo_evento VARCHAR(50) NOT NULL,
+                id_ordem VARCHAR(100) NOT NULL COMMENT 'ID externo da ordem (não FK)',
+                id_posicao INT DEFAULT NULL,
+                mensagem TEXT DEFAULT NULL,
+                data_hora_evento DATETIME NOT NULL,
+                status VARCHAR(50) DEFAULT NULL,
+                preco DECIMAL(20,8) DEFAULT NULL,
+                preco_corrente DECIMAL(20,8) DEFAULT NULL,
+                simbolo VARCHAR(50) DEFAULT NULL,
+                conta_id INT DEFAULT 1,
+                PRIMARY KEY (id),
+                KEY idx_id_ordem (id_ordem),
+                KEY idx_id_posicao (id_posicao),
+                KEY idx_simbolo (simbolo),
+                CONSTRAINT monitoramento_ibfk_1 FOREIGN KEY (id_posicao) REFERENCES posicoes (id) ON DELETE SET NULL
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
         `);
-        console.log('✅ Tabela "ordens_fechadas" criada.');
-        
+        console.log('✅ Tabela "monitoramento" criada.');
+
+        // ✅ FASE 3: INSERIR DADOS INICIAIS
+        console.log('\nFASE 3: Inserindo dados iniciais...');
+
         // Inserir registro inicial na tabela controle_posicoes se não existir
         const [rows] = await connection.execute('SELECT COUNT(*) as count FROM controle_posicoes');
         if (rows[0].count === 0) {
@@ -259,103 +380,31 @@ async function createDatabase() {
             console.log('✅ Registro inicial de controle_posicoes criado.');
         }
 
-        // Adicionar coluna orign_sig em posicoes_fechadas se não existir
-        try {
+        // Inserir corretora padrão Binance se não existir
+        const [corretoras] = await connection.execute('SELECT COUNT(*) as count FROM corretoras WHERE id = 1');
+        if (corretoras[0].count === 0) {
             await connection.execute(`
-                ALTER TABLE posicoes_fechadas 
-                ADD COLUMN IF NOT EXISTS orign_sig VARCHAR(100) NULL
+                INSERT INTO corretoras (id, corretora, ambiente, futures_rest_api_url, futures_ws_market_url, futures_ws_api_url, ativa) 
+                VALUES (1, 'binance', 'prd', 'https://fapi.binance.com/fapi', 'wss://fstream.binance.com', 'wss://ws-fapi.binance.com/ws-fapi/v1', 1)
             `);
-            console.log('✅ Coluna orign_sig adicionada à tabela posicoes_fechadas.');
-        } catch (error) {
-            console.log('Coluna orign_sig já existe na tabela posicoes_fechadas ou erro:', error.message);
+            console.log('✅ Corretora padrão Binance PRD criada.');
         }
 
-        // Adicionar coluna orign_sig em ordens_fechadas se não existir
-        try {
+        // Inserir conta padrão se não existir
+        const [contas] = await connection.execute('SELECT COUNT(*) as count FROM contas WHERE id = 1');
+        if (contas[0].count === 0) {
             await connection.execute(`
-                ALTER TABLE ordens_fechadas 
-                ADD COLUMN IF NOT EXISTS orign_sig VARCHAR(100) NULL
+                INSERT INTO contas (id, nome, id_corretora, api_key, api_secret, ativa) 
+                VALUES (1, 'Conta Principal', 1, 'INSIRA_SUA_API_KEY', 'INSIRA_SUA_API_SECRET', 1)
             `);
-            console.log('✅ Coluna orign_sig adicionada à tabela ordens_fechadas.');
-        } catch (error) {
-            console.log('Coluna orign_sig já existe na tabela ordens_fechadas ou erro:', error.message);
+            console.log('✅ Conta padrão criada (ID: 1). LEMBRE-SE DE ATUALIZAR AS CREDENCIAIS!');
         }
 
-        // Adicionar coluna renew_sl_firs em ordens_fechadas se não existir
-        try {
-            await connection.execute(`
-                ALTER TABLE ordens_fechadas 
-                ADD COLUMN IF NOT EXISTS renew_sl_firs VARCHAR(20)
-            `);
-            console.log('✅ Coluna renew_sl_firs adicionada à tabela ordens_fechadas.');
-        } catch (error) {
-            console.log('Coluna renew_sl_firs já existe na tabela ordens_fechadas ou erro:', error.message);
-        }
-
-        // Adicionar coluna renew_sl_seco em ordens_fechadas se não existir
-        try {
-            await connection.execute(`
-                ALTER TABLE ordens_fechadas 
-                ADD COLUMN IF NOT EXISTS renew_sl_seco VARCHAR(20)
-            `);
-            console.log('✅ Coluna renew_sl_seco adicionada à tabela ordens_fechadas.');
-        } catch (error) {
-            console.log('Coluna renew_sl_seco já existe na tabela ordens_fechadas ou erro:', error.message);
-        }
-
-        // Adicionar coluna orign_sig em posicoes se não existir
-        try {
-            await connection.execute(`
-                ALTER TABLE posicoes 
-                ADD COLUMN IF NOT EXISTS orign_sig VARCHAR(100) NULL
-            `);
-            console.log('✅ Coluna orign_sig adicionada à tabela posicoes.');
-        } catch (error) {
-            console.log('Coluna orign_sig já existe na tabela posicoes ou erro:', error.message);
-        }
-        
-        // Adicionar coluna orign_sig em ordens se não existir
-        try {
-            await connection.execute(`
-                ALTER TABLE ordens 
-                ADD COLUMN IF NOT EXISTS orign_sig VARCHAR(100) NULL
-            `);
-            console.log('✅ Coluna orign_sig adicionada à tabela ordens.');
-        } catch (error) {
-            console.log('Coluna orign_sig já existe na tabela ordens ou erro:', error.message);
-        }
-
-        // Modificar coluna resultado em historico_posicoes apenas se não for VARCHAR
-        try {
-            // Primeiro verificamos o tipo atual da coluna
-            const [columns] = await connection.execute(`
-                SELECT DATA_TYPE 
-                FROM INFORMATION_SCHEMA.COLUMNS 
-                WHERE TABLE_SCHEMA = ? 
-                  AND TABLE_NAME = 'historico_posicoes' 
-                  AND COLUMN_NAME = 'resultado'
-            `, [process.env.DB_NAME]);
-            
-            if (columns.length > 0) {
-                const currentType = columns[0].DATA_TYPE.toLowerCase();
-                
-                // Se não for varchar ou algum tipo de texto similar, fazemos a alteração
-                if (currentType !== 'varchar' && currentType !== 'text' && currentType !== 'char') {
-                    await connection.execute(`
-                        ALTER TABLE historico_posicoes MODIFY COLUMN resultado VARCHAR(100)
-                    `);
-                    console.log('✅ Coluna resultado modificada de', currentType, 'para VARCHAR(100) na tabela historico_posicoes.');
-                } else {
-                    console.log('✅ Coluna resultado já é do tipo', currentType, 'na tabela historico_posicoes. Nenhuma alteração necessária.');
-                }
-            } else {
-                console.log('❌ Coluna resultado não encontrada na tabela historico_posicoes.');
-            }
-        } catch (error) {
-            console.log('Erro ao verificar/modificar coluna resultado na tabela historico_posicoes:', error.message);
-        }
-        
         console.log('\n🚀 Banco de dados "starboy" criado com sucesso! Todas as tabelas foram criadas.');
+        console.log('\n📋 PRÓXIMOS PASSOS:');
+        console.log('1. ✅ Atualizar credenciais da API na tabela "contas"');
+        console.log('2. ✅ Configurar tokens do Telegram na tabela "contas"');
+        console.log('3. ✅ Verificar configurações da corretora na tabela "corretoras"');
         
     } catch (error) {
         console.error('❌ Erro ao criar banco de dados:', error);
@@ -369,7 +418,7 @@ async function createDatabase() {
     }
 }
 
-// Executar a criação do banco de dados no servidor
+// Executar a criação do banco de dados
 createDatabase()
     .then(() => {
         console.log('Processo finalizado com sucesso!');
