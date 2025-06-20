@@ -228,7 +228,7 @@ function monitorWebSocketHealth(accountId) {
 }
 
 /**
- * ✅ FUNÇÃO MELHORADA - VERIFICAR ORDENS FILLED DE POSIÇÕES FECHADAS
+ * ✅ FUNÇÃO MELHORADA - MOVER POSIÇÕES FISICAMENTE PARA HISTÓRICO
  */
 async function runAdvancedPositionMonitoring(accountId) {
   try {
@@ -252,7 +252,7 @@ async function runAdvancedPositionMonitoring(accountId) {
     });
     
     let checkedCount = 0;
-    let closedCount = 0;
+    let positionsMovedCount = 0;
     let filledOrdersMovedCount = 0;
     
     // ✅ 2. VERIFICAR CADA POSIÇÃO DO BANCO
@@ -266,7 +266,7 @@ async function runAdvancedPositionMonitoring(accountId) {
         if (!exchangePos || Math.abs(parseFloat(exchangePos.quantidade)) <= 0.000001) {
           console.log(`[ADVANCED_MONITOR] ⚠️ Posição ${position.simbolo} (ID: ${position.id}) NÃO EXISTE na corretora!`);
           
-          // ✅ 2.1. VERIFICAR TODAS AS ORDENS RELACIONADAS (incluindo FILLED)
+          // ✅ 2.1. PROCESSAR TODAS AS ORDENS RELACIONADAS
           const [relatedOrders] = await db.query(`
             SELECT id_externo, simbolo, tipo_ordem_bot, status, preco_executado, quantidade_executada 
             FROM ordens 
@@ -274,21 +274,19 @@ async function runAdvancedPositionMonitoring(accountId) {
           `, [position.id, accountId]);
           
           if (relatedOrders.length > 0) {
-            console.log(`[ADVANCED_MONITOR] 🗑️ Encontradas ${relatedOrders.length} ordens relacionadas para processar...`);
+            console.log(`[ADVANCED_MONITOR] 🗑️ Processando ${relatedOrders.length} ordens relacionadas...`);
             
             for (const order of relatedOrders) {
               if (order.status === 'FILLED') {
                 // ✅ MOVER ORDEM FILLED PARA HISTÓRICO
-                console.log(`[ADVANCED_MONITOR] 📚 Movendo ordem FILLED ${order.id_externo} para histórico...`);
-                
-                const moved = await moveOrderToHistory(db, order.id_externo, accountId);
+                const moved = await moveOrderToHistoryPhysically(db, order.id_externo, accountId);
                 if (moved) {
                   filledOrdersMovedCount++;
                   console.log(`[ADVANCED_MONITOR] ✅ Ordem FILLED ${order.id_externo} movida para ordens_fechadas`);
                 }
                 
               } else if (order.status === 'NEW' || order.status === 'PARTIALLY_FILLED') {
-                // ✅ MARCAR ORDENS PENDENTES COMO CANCELED
+                // ✅ MARCAR ORDENS PENDENTES COMO CANCELED E MOVER
                 await db.query(`
                   UPDATE ordens 
                   SET status = 'CANCELED', 
@@ -297,14 +295,17 @@ async function runAdvancedPositionMonitoring(accountId) {
                   WHERE id_externo = ? AND conta_id = ?
                 `, [order.id_externo, accountId]);
                 
-                console.log(`[ADVANCED_MONITOR] ✅ Ordem ${order.id_externo} (${order.tipo_ordem_bot}) marcada como CANCELED`);
+                // ✅ MOVER ORDEM CANCELED PARA HISTÓRICO
+                const moved = await moveOrderToHistoryPhysically(db, order.id_externo, accountId);
+                if (moved) {
+                  console.log(`[ADVANCED_MONITOR] ✅ Ordem ${order.id_externo} (${order.tipo_ordem_bot}) cancelada e movida para histórico`);
+                }
               }
             }
           }
           
-          // ✅ 2.2. MOVER POSIÇÃO PARA HISTÓRICO
-          const { movePositionToHistory } = require('./positionHistory');
-          const moved = await movePositionToHistory(
+          // ✅ 2.2. MOVER POSIÇÃO FISICAMENTE PARA HISTÓRICO
+          const moved = await movePositionToHistoryPhysically(
             db, 
             position.id, 
             'CLOSED', 
@@ -313,8 +314,8 @@ async function runAdvancedPositionMonitoring(accountId) {
           );
           
           if (moved) {
-            closedCount++;
-            console.log(`[ADVANCED_MONITOR] ✅ Posição ${position.simbolo} (ID: ${position.id}) movida para histórico`);
+            positionsMovedCount++;
+            console.log(`[ADVANCED_MONITOR] ✅ Posição ${position.simbolo} (ID: ${position.id}) movida fisicamente para posicoes_fechadas`);
             
             // ✅ 2.3. NOTIFICAÇÃO TELEGRAM
             try {
@@ -358,23 +359,205 @@ async function runAdvancedPositionMonitoring(accountId) {
       }
     }
     
-    // ✅ 4. VERIFICAR ORDENS FILLED ÓRFÃS (sem posição correspondente)
-    const orphanFilledCount = await checkOrphanFilledOrders(db, accountId);
-    if (orphanFilledCount > 0) {
-      console.log(`[ADVANCED_MONITOR] 📚 ${orphanFilledCount} ordens FILLED órfãs adicionais movidas para histórico`);
-      filledOrdersMovedCount += orphanFilledCount;
-    }
-    
     console.log(`[ADVANCED_MONITOR] ✅ Monitoramento completo concluído para conta ${accountId}:`);
     console.log(`[ADVANCED_MONITOR]   - Posições verificadas: ${checkedCount}`);
-    console.log(`[ADVANCED_MONITOR]   - Posições movidas para histórico: ${closedCount}`);
-    console.log(`[ADVANCED_MONITOR]   - Ordens FILLED movidas: ${filledOrdersMovedCount}`);
+    console.log(`[ADVANCED_MONITOR]   - Posições movidas fisicamente: ${positionsMovedCount}`);
+    console.log(`[ADVANCED_MONITOR]   - Ordens movidas: ${filledOrdersMovedCount}`);
     
-    return { checked: checkedCount, closed: closedCount, filledMoved: filledOrdersMovedCount };
+    return { checked: checkedCount, positionsMoved: positionsMovedCount, ordersMoved: filledOrdersMovedCount };
     
   } catch (error) {
     console.error(`[ADVANCED_MONITOR] ❌ Erro no monitoramento completo para conta ${accountId}:`, error.message);
-    return { checked: 0, closed: 0, filledMoved: 0 };
+    return { checked: 0, positionsMoved: 0, ordersMoved: 0 };
+  }
+}
+
+/**
+ * ✅ NOVA FUNÇÃO: Mover posição fisicamente para posicoes_fechadas
+ */
+async function movePositionToHistoryPhysically(db, positionId, status, reason, accountId) {
+  try {
+    const connection = await db.getConnection();
+    await connection.beginTransaction();
+    
+    try {
+      // ✅ 1. BUSCAR POSIÇÃO PARA MOVER
+      const [positionToMove] = await connection.query(`
+        SELECT * FROM posicoes 
+        WHERE id = ? AND conta_id = ?
+      `, [positionId, accountId]);
+      
+      if (positionToMove.length === 0) {
+        await connection.rollback();
+        connection.release();
+        return false;
+      }
+      
+      const position = positionToMove[0];
+      
+      // ✅ 2. VERIFICAR COLUNAS DA TABELA DESTINO
+      const [destColumns] = await connection.query(`SHOW COLUMNS FROM posicoes_fechadas`);
+      const destColumnNames = destColumns.map(col => col.Field);
+      
+      // ✅ 3. PREPARAR DADOS PARA INSERÇÃO
+      const now = new Date();
+      const insertData = {
+        simbolo: position.simbolo,
+        quantidade: position.quantidade,
+        preco_medio: position.preco_medio,
+        status: status || 'CLOSED',
+        data_hora_abertura: position.data_hora_abertura,
+        data_hora_fechamento: now,
+        side: position.side,
+        leverage: position.leverage,
+        data_hora_ultima_atualizacao: now,
+        preco_entrada: position.preco_entrada,
+        preco_corrente: position.preco_corrente,
+        conta_id: position.conta_id,
+        observacoes: reason || 'Movida automaticamente'
+      };
+      
+      // ✅ 4. ADICIONAR CAMPOS OPCIONAIS SE EXISTIREM
+      if (destColumnNames.includes('orign_sig') && position.orign_sig) {
+        insertData.orign_sig = position.orign_sig;
+      }
+      if (destColumnNames.includes('quantidade_aberta') && position.quantidade_aberta) {
+        insertData.quantidade_aberta = position.quantidade_aberta;
+      }
+      if (destColumnNames.includes('trailing_stop_level') && position.trailing_stop_level) {
+        insertData.trailing_stop_level = position.trailing_stop_level;
+      }
+      if (destColumnNames.includes('pnl_corrente') && position.pnl_corrente) {
+        insertData.pnl_corrente = position.pnl_corrente;
+      }
+      
+      // ✅ 5. CONSTRUIR QUERY DINÂMICA
+      const columns = Object.keys(insertData).filter(key => 
+        destColumnNames.includes(key) && insertData[key] !== undefined
+      );
+      const values = columns.map(col => insertData[col]);
+      const placeholders = columns.map(() => '?').join(', ');
+      
+      // ✅ 6. INSERIR NA TABELA FECHADAS
+      await connection.query(
+        `INSERT INTO posicoes_fechadas (${columns.join(', ')}) VALUES (${placeholders})`,
+        values
+      );
+      
+      // ✅ 7. REMOVER DA TABELA ATIVA
+      await connection.query(
+        'DELETE FROM posicoes WHERE id = ? AND conta_id = ?',
+        [positionId, accountId]
+      );
+      
+      await connection.commit();
+      connection.release();
+      
+      console.log(`[ADVANCED_MONITOR] ✅ Posição ${position.simbolo} (ID: ${positionId}) movida fisicamente para posicoes_fechadas`);
+      return true;
+      
+    } catch (moveError) {
+      await connection.rollback();
+      connection.release();
+      throw moveError;
+    }
+    
+  } catch (error) {
+    console.error(`[ADVANCED_MONITOR] ❌ Erro ao mover posição ${positionId} para histórico:`, error.message);
+    return false;
+  }
+}
+
+/**
+ * ✅ NOVA FUNÇÃO: Mover ordem fisicamente para ordens_fechadas
+ */
+async function moveOrderToHistoryPhysically(db, orderId, accountId) {
+  try {
+    const connection = await db.getConnection();
+    await connection.beginTransaction();
+    
+    try {
+      // ✅ BUSCAR ORDEM PARA MOVER
+      const [orderToMove] = await connection.query(`
+        SELECT * FROM ordens 
+        WHERE id_externo = ? AND conta_id = ?
+      `, [orderId, accountId]);
+      
+      if (orderToMove.length === 0) {
+        await connection.rollback();
+        connection.release();
+        return false;
+      }
+      
+      const order = orderToMove[0];
+      
+      // ✅ VERIFICAR COLUNAS DA TABELA DESTINO
+      const [destColumns] = await connection.query(`SHOW COLUMNS FROM ordens_fechadas`);
+      const destColumnNames = destColumns.map(col => col.Field);
+      
+      // ✅ PREPARAR DADOS PARA INSERÇÃO
+      const insertData = {
+        tipo_ordem: order.tipo_ordem,
+        preco: order.preco,
+        quantidade: order.quantidade,
+        id_posicao: order.id_posicao,
+        status: order.status,
+        data_hora_criacao: order.data_hora_criacao,
+        id_externo: order.id_externo,
+        side: order.side,
+        simbolo: order.simbolo,
+        tipo_ordem_bot: order.tipo_ordem_bot,
+        target: order.target,
+        reduce_only: order.reduce_only,
+        close_position: order.close_position,
+        last_update: order.last_update,
+        conta_id: order.conta_id,
+        preco_executado: order.preco_executado || 0,
+        quantidade_executada: order.quantidade_executada || 0,
+        observacao: order.observacao || 'Movida automaticamente'
+      };
+      
+      // ✅ ADICIONAR CAMPOS OPCIONAIS SE EXISTIREM
+      if (destColumnNames.includes('orign_sig') && order.orign_sig) {
+        insertData.orign_sig = order.orign_sig;
+      }
+      if (destColumnNames.includes('dados_originais_ws') && order.dados_originais_ws) {
+        insertData.dados_originais_ws = order.dados_originais_ws;
+      }
+      
+      // ✅ CONSTRUIR QUERY DINÂMICA
+      const columns = Object.keys(insertData).filter(key => 
+        destColumnNames.includes(key) && insertData[key] !== undefined
+      );
+      const values = columns.map(col => insertData[col]);
+      const placeholders = columns.map(() => '?').join(', ');
+      
+      // ✅ INSERIR NA TABELA FECHADAS
+      await connection.query(
+        `INSERT INTO ordens_fechadas (${columns.join(', ')}) VALUES (${placeholders})`,
+        values
+      );
+      
+      // ✅ REMOVER DA TABELA ATIVA
+      await connection.query(
+        'DELETE FROM ordens WHERE id_externo = ? AND conta_id = ?',
+        [orderId, accountId]
+      );
+      
+      await connection.commit();
+      connection.release();
+      
+      return true;
+      
+    } catch (moveError) {
+      await connection.rollback();
+      connection.release();
+      throw moveError;
+    }
+    
+  } catch (error) {
+    console.error(`[ADVANCED_MONITOR] ❌ Erro ao mover ordem ${orderId} para histórico:`, error.message);
+    return false;
   }
 }
 
@@ -524,6 +707,6 @@ module.exports = {
   runPeriodicCleanup,
   monitorWebSocketHealth,
   updatePositionPricesWithTrailing,
-  checkOrphanFilledOrders,
-  moveOrderToHistory
+  movePositionToHistoryPhysically,
+  moveOrderToHistoryPhysically
 };

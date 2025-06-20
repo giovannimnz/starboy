@@ -3,213 +3,196 @@ const { cancelOrder, getOpenOrders } = require('../api');
 const { sendTelegramMessage, formatPositionClosedMessage, formatAlertMessage } = require('./telegramBot');
 
 /**
- * ✅ FUNÇÃO PRINCIPAL PARA MOVER POSIÇÕES E ORDENS PARA HISTÓRICO
- * Baseada na versão do _dev com melhorias
+ * ✅ FUNÇÃO MELHORADA: Mover posição fisicamente para histórico
  */
 async function movePositionToHistory(db, positionId, status, reason, accountId) {
-  console.log(`[MOVE_POSITION] 🔄 Iniciando movimentação da posição ${positionId} para histórico...`);
-  console.log(`[MOVE_POSITION] 📋 Status: ${status}, Motivo: ${reason}, Conta: ${accountId}`);
+  let connection;
   
-  let attempts = 0;
-  const maxAttempts = 3;
-
-  while (attempts < maxAttempts) {
-    attempts++;
-    console.log(`[MOVE_POSITION] 🔄 Tentativa ${attempts}/${maxAttempts} para posição ${positionId}`);
+  try {
+    console.log(`[MOVE_POSITION] 📚 Iniciando processo de mover posição ${positionId} para histórico...`);
     
-    const connection = await db.getConnection();
-
+    connection = await db.getConnection();
+    await connection.beginTransaction();
+    
+    // ✅ 1. BUSCAR POSIÇÃO COMPLETA
+    const [positionResult] = await connection.query(
+      'SELECT * FROM posicoes WHERE id = ? AND conta_id = ?',
+      [positionId, accountId]
+    );
+    
+    if (positionResult.length === 0) {
+      console.log(`[MOVE_POSITION] ⚠️ Posição ${positionId} não encontrada para conta ${accountId}`);
+      await connection.rollback();
+      return false;
+    }
+    
+    const position = positionResult[0];
+    const symbol = position.simbolo;
+    
+    console.log(`[MOVE_POSITION] 📋 Processando posição: ${symbol} (ID: ${positionId})`);
+    
+    // ✅ 2. CANCELAR ORDENS ABERTAS NA CORRETORA PARA ESTE SÍMBOLO
     try {
-      await connection.beginTransaction();
-
-      // ✅ 1. VERIFICAR SE A POSIÇÃO EXISTE
-      const [positionResult] = await connection.query(
-        "SELECT * FROM posicoes WHERE id = ?", 
-        [positionId]
-      );
+      console.log(`[MOVE_POSITION] 🗑️ Verificando ordens abertas na corretora para ${symbol}...`);
       
-      if (positionResult.length === 0) {
-        console.warn(`[MOVE_POSITION] ⚠️ Posição ${positionId} não encontrada no banco`);
-        await connection.rollback();
-        connection.release();
-        return false;
-      }
+      const openOrdersOnExchange = await api.getOpenOrders(accountId, symbol);
       
-      const position = positionResult[0];
-      const symbol = position.simbolo;
-      const quantity = parseFloat(position.quantidade || 0);
-      const entryPrice = parseFloat(position.preco_entrada || 0);
-      const currentPrice = parseFloat(position.preco_corrente || entryPrice);
-      
-      console.log(`[MOVE_POSITION] 📊 Posição encontrada: ${symbol} - ${quantity} @ ${entryPrice}`);
-      
-      // ✅ 2. CANCELAR ORDENS ABERTAS NA CORRETORA PARA ESTE SÍMBOLO
-      try {
-        console.log(`[MOVE_POSITION] 🗑️ Verificando ordens abertas na corretora para ${symbol}...`);
+      if (openOrdersOnExchange && openOrdersOnExchange.length > 0) {
+        console.log(`[MOVE_POSITION] 📋 Encontradas ${openOrdersOnExchange.length} ordens abertas para ${symbol}`);
         
-        const openOrdersOnExchange = await getOpenOrders(accountId, symbol);
-        
-        if (openOrdersOnExchange && openOrdersOnExchange.length > 0) {
-          console.log(`[MOVE_POSITION] 📋 Encontradas ${openOrdersOnExchange.length} ordens abertas para ${symbol}`);
-          
-          for (const order of openOrdersOnExchange) {
-            try {
-              await cancelOrder(accountId, symbol, order.orderId);
-              console.log(`[MOVE_POSITION] ✅ Ordem ${order.orderId} cancelada`);
-              
-              // Aguardar um pouco entre cancelamentos
-              await new Promise(resolve => setTimeout(resolve, 200));
-              
-            } catch (cancelError) {
-              console.warn(`[MOVE_POSITION] ⚠️ Erro ao cancelar ordem ${order.orderId}:`, cancelError.message);
-            }
-          }
-          
-          // Aguardar cancelamentos serem processados
-          await new Promise(resolve => setTimeout(resolve, 1000));
-        } else {
-          console.log(`[MOVE_POSITION] ℹ️ Nenhuma ordem aberta encontrada para ${symbol}`);
-        }
-        
-      } catch (exchangeError) {
-        console.warn(`[MOVE_POSITION] ⚠️ Erro ao verificar/cancelar ordens na corretora:`, exchangeError.message);
-      }
-
-      // ✅ 3. ATUALIZAR STATUS E TEMPO DE FECHAMENTO DA POSIÇÃO
-      const formattedDate = formatDateForMySQL(new Date());
-      await connection.query(
-        `UPDATE posicoes
-         SET status = ?,
-             data_hora_fechamento = ?,
-             data_hora_ultima_atualizacao = ?
-         WHERE id = ?`,
-        [status, formattedDate, formattedDate, positionId]
-      );
-      
-      console.log(`[MOVE_POSITION] ✅ Status da posição ${positionId} atualizado para ${status}`);
-
-      // ✅ 4. BUSCAR TODAS AS ORDENS RELACIONADAS À POSIÇÃO
-      const [orderResult] = await connection.query(
-        "SELECT * FROM ordens WHERE id_posicao = ?", 
-        [positionId]
-      );
-      
-      console.log(`[MOVE_POSITION] 📋 Encontradas ${orderResult.length} ordens para posição ${positionId}`);
-
-      // ✅ 5. MOVER ORDENS PARA TABELA DE FECHADAS (SE HOUVER)
-      if (orderResult.length > 0) {
-        console.log(`[MOVE_POSITION] 🔄 Movendo ${orderResult.length} ordens para ordens_fechadas...`);
-        
-        for (const order of orderResult) {
+        for (const order of openOrdersOnExchange) {
           try {
-            // Verificar se a coluna orign_sig existe na tabela ordens
-            const [orderColumns] = await connection.query(`SHOW COLUMNS FROM ordens LIKE 'orign_sig'`);
-            const hasOrignSigOrdens = orderColumns.length > 0;
-            
-            // Inserir na tabela fechadas
-            if (hasOrignSigOrdens) {
-              await connection.query(`
-                INSERT INTO ordens_fechadas (
-                  tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao,
-                  id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only,
-                  close_position, last_update, orign_sig, observacao, preco_executado,
-                  quantidade_executada, dados_originais_ws, conta_id, renew_sl_firs,
-                  renew_sl_seco, commission, commission_asset, trade_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-              `, [
-                order.tipo_ordem, order.preco, order.quantidade, order.id_posicao,
-                order.status, order.data_hora_criacao, order.id_externo, order.side,
-                order.simbolo, order.tipo_ordem_bot, order.target, order.reduce_only,
-                order.close_position, order.last_update, order.orign_sig, order.observacao,
-                order.preco_executado, order.quantidade_executada, order.dados_originais_ws,
-                order.conta_id, order.renew_sl_firs, order.renew_sl_seco, order.commission,
-                order.commission_asset, order.trade_id
-              ]);
-            } else {
-              // Versão sem orign_sig para compatibilidade
-              await connection.query(`
-                INSERT INTO ordens_fechadas (
-                  tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao,
-                  id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only,
-                  close_position, last_update, observacao, preco_executado,
-                  quantidade_executada, dados_originais_ws, conta_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-              `, [
-                order.tipo_ordem, order.preco, order.quantidade, order.id_posicao,
-                order.status, order.data_hora_criacao, order.id_externo, order.side,
-                order.simbolo, order.tipo_ordem_bot, order.target, order.reduce_only,
-                order.close_position, order.last_update, order.observacao,
-                order.preco_executado, order.quantidade_executada, order.dados_originais_ws,
-                order.conta_id
-              ]);
-            }
-            
-            console.log(`[MOVE_POSITION] ✅ Ordem ${order.id_externo} movida para histórico`);
-            
-          } catch (moveOrderError) {
-            console.error(`[MOVE_POSITION] ❌ Erro ao mover ordem ${order.id_externo}:`, moveOrderError.message);
-            throw moveOrderError;
+            await api.cancelOrder(symbol, order.orderId, accountId);
+            console.log(`[MOVE_POSITION] ✅ Ordem ${order.orderId} cancelada na corretora`);
+          } catch (cancelError) {
+            console.warn(`[MOVE_POSITION] ⚠️ Erro ao cancelar ordem ${order.orderId}:`, cancelError.message);
           }
         }
-        
-        // Excluir ordens originais
-        await connection.query("DELETE FROM ordens WHERE id_posicao = ?", [positionId]);
-        console.log(`[MOVE_POSITION] ✅ ${orderResult.length} ordens excluídas da tabela original`);
       }
-
-      // ✅ 6. VERIFICAR SE POSIÇÃO TEM COLUNA orign_sig
-      const [posColumns] = await connection.query(`SHOW COLUMNS FROM posicoes LIKE 'orign_sig'`);
-      const hasOrignSigPos = posColumns.length > 0;
-
-      // ✅ 7. COPIAR POSIÇÃO PARA TABELA HISTÓRICA
-      console.log(`[MOVE_POSITION] 🔄 Movendo posição ${positionId} para posicoes_fechadas...`);
+    } catch (exchangeError) {
+      console.warn(`[MOVE_POSITION] ⚠️ Erro ao verificar/cancelar ordens na corretora:`, exchangeError.message);
+    }
+    
+    // ✅ 3. PROCESSAR ORDENS RELACIONADAS NO BANCO
+    const [relatedOrders] = await connection.query(
+      'SELECT * FROM ordens WHERE id_posicao = ? AND conta_id = ?',
+      [positionId, accountId]
+    );
+    
+    console.log(`[MOVE_POSITION] 📊 Encontradas ${relatedOrders.length} ordens relacionadas no banco`);
+    
+    // ✅ 4. MOVER ORDENS PARA HISTÓRICO
+    if (relatedOrders.length > 0) {
+      // Verificar colunas da tabela ordens_fechadas
+      const [destColumns] = await connection.query(`SHOW COLUMNS FROM ordens_fechadas`);
+      const destColumnNames = destColumns.map(col => col.Field);
       
-      try {
-        if (hasOrignSigPos) {
-          await connection.query(`
-            INSERT INTO posicoes_fechadas (
-              simbolo, quantidade, preco_medio, status, data_hora_abertura,
-              data_hora_fechamento, side, leverage, data_hora_ultima_atualizacao,
-              preco_entrada, preco_corrente, orign_sig, quantidade_aberta, conta_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `, [
-            position.simbolo, position.quantidade, position.preco_medio, status,
-            position.data_hora_abertura, formattedDate, position.side, position.leverage,
-            formattedDate, position.preco_entrada, position.preco_corrente,
-            position.orign_sig, position.quantidade_aberta, position.conta_id
-          ]);
-        } else {
-          await connection.query(`
-            INSERT INTO posicoes_fechadas (
-              simbolo, quantidade, preco_medio, status, data_hora_abertura,
-              data_hora_fechamento, side, leverage, data_hora_ultima_atualizacao,
-              preco_entrada, preco_corrente, quantidade_aberta, conta_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `, [
-            position.simbolo, position.quantidade, position.preco_medio, status,
-            position.data_hora_abertura, formattedDate, position.side, position.leverage,
-            formattedDate, position.preco_entrada, position.preco_corrente,
-            position.quantidade_aberta, position.conta_id
-          ]);
+      for (const order of relatedOrders) {
+        // Preparar dados da ordem
+        const orderData = {
+          tipo_ordem: order.tipo_ordem,
+          preco: order.preco,
+          quantidade: order.quantidade,
+          id_posicao: order.id_posicao,
+          status: order.status === 'NEW' || order.status === 'PARTIALLY_FILLED' ? 'CANCELED' : order.status,
+          data_hora_criacao: order.data_hora_criacao,
+          id_externo: order.id_externo,
+          side: order.side,
+          simbolo: order.simbolo,
+          tipo_ordem_bot: order.tipo_ordem_bot,
+          target: order.target,
+          reduce_only: order.reduce_only,
+          close_position: order.close_position,
+          last_update: new Date(),
+          conta_id: order.conta_id,
+          preco_executado: order.preco_executado || 0,
+          quantidade_executada: order.quantidade_executada || 0,
+          observacao: order.observacao || 'Movida automaticamente - posição fechada'
+        };
+        
+        // Adicionar campos opcionais
+        if (destColumnNames.includes('orign_sig') && order.orign_sig) {
+          orderData.orign_sig = order.orign_sig;
+        }
+        if (destColumnNames.includes('dados_originais_ws') && order.dados_originais_ws) {
+          orderData.dados_originais_ws = order.dados_originais_ws;
         }
         
-        console.log(`[MOVE_POSITION] ✅ Posição ${positionId} copiada para posicoes_fechadas`);
+        // Construir query dinâmica
+        const columns = Object.keys(orderData).filter(key => 
+          destColumnNames.includes(key) && orderData[key] !== undefined
+        );
+        const values = columns.map(col => orderData[col]);
+        const placeholders = columns.map(() => '?').join(', ');
         
-      } catch (copyError) {
-        console.error(`[MOVE_POSITION] ❌ Erro ao copiar posição para histórico:`, copyError.message);
-        throw copyError;
+        // Inserir na tabela fechadas
+        await connection.query(
+          `INSERT INTO ordens_fechadas (${columns.join(', ')}) VALUES (${placeholders})`,
+          values
+        );
+        
+        console.log(`[MOVE_POSITION] ✅ Ordem ${order.id_externo} (${order.tipo_ordem_bot}) movida para ordens_fechadas`);
       }
-
-      // ✅ 8. EXCLUIR POSIÇÃO ORIGINAL
-      await connection.query("DELETE FROM posicoes WHERE id = ?", [positionId]);
-      console.log(`[MOVE_POSITION] ✅ Posição ${positionId} excluída da tabela original`);
-
-      // ✅ 9. FINALIZAR TRANSAÇÃO
-      await connection.commit();
-      console.log(`[MOVE_POSITION] ✅ Transação commitada para posição ${positionId}`);
-
-      // ✅ 10. CALCULAR PNL E ENVIAR NOTIFICAÇÃO TELEGRAM
-      try {
+      
+      // Remover ordens da tabela ativa
+      await connection.query(
+        'DELETE FROM ordens WHERE id_posicao = ? AND conta_id = ?',
+        [positionId, accountId]
+      );
+      
+      console.log(`[MOVE_POSITION] 🗑️ ${relatedOrders.length} ordens removidas da tabela ativa`);
+    }
+    
+    // ✅ 5. MOVER POSIÇÃO PARA HISTÓRICO
+    console.log(`[MOVE_POSITION] 📚 Movendo posição para posicoes_fechadas...`);
+    
+    // Verificar colunas da tabela posicoes_fechadas
+    const [posDestColumns] = await connection.query(`SHOW COLUMNS FROM posicoes_fechadas`);
+    const posDestColumnNames = posDestColumns.map(col => col.Field);
+    
+    // Preparar dados da posição
+    const now = new Date();
+    const positionData = {
+      simbolo: position.simbolo,
+      quantidade: position.quantidade,
+      preco_medio: position.preco_medio,
+      status: status || 'CLOSED',
+      data_hora_abertura: position.data_hora_abertura,
+      data_hora_fechamento: now,
+      side: position.side,
+      leverage: position.leverage,
+      data_hora_ultima_atualizacao: now,
+      preco_entrada: position.preco_entrada,
+      preco_corrente: position.preco_corrente,
+      conta_id: position.conta_id,
+      observacoes: reason || 'Movida automaticamente'
+    };
+    
+    // Adicionar campos opcionais
+    if (posDestColumnNames.includes('orign_sig') && position.orign_sig) {
+      positionData.orign_sig = position.orign_sig;
+    }
+    if (posDestColumnNames.includes('quantidade_aberta') && position.quantidade_aberta) {
+      positionData.quantidade_aberta = position.quantidade_aberta;
+    }
+    if (posDestColumnNames.includes('trailing_stop_level') && position.trailing_stop_level) {
+      positionData.trailing_stop_level = position.trailing_stop_level;
+    }
+    if (posDestColumnNames.includes('pnl_corrente') && position.pnl_corrente) {
+      positionData.pnl_corrente = position.pnl_corrente;
+    }
+    
+    // Construir query dinâmica para posição
+    const posColumns = Object.keys(positionData).filter(key => 
+      posDestColumnNames.includes(key) && positionData[key] !== undefined
+    );
+    const posValues = posColumns.map(col => positionData[col]);
+    const posPlaceholders = posColumns.map(() => '?').join(', ');
+    
+    // Inserir posição na tabela fechadas
+    await connection.query(
+      `INSERT INTO posicoes_fechadas (${posColumns.join(', ')}) VALUES (${posPlaceholders})`,
+      posValues
+    );
+    
+    // Remover posição da tabela ativa
+    await connection.query(
+      'DELETE FROM posicoes WHERE id = ? AND conta_id = ?',
+      [positionId, accountId]
+    );
+    
+    await connection.commit();
+    
+    console.log(`[MOVE_POSITION] ✅ Posição ${symbol} (ID: ${positionId}) movida fisicamente para posicoes_fechadas`);
+    
+    // ✅ 6. NOTIFICAÇÃO TELEGRAM
+    try {
+      const { sendTelegramMessage, formatPositionClosedMessage } = require('./telegramBot');
+      const currentPrice = await api.getPrice(symbol, accountId);
+      const entryPrice = parseFloat(position.preco_entrada);
+      const quantity = parseFloat(position.quantidade);
+      
+      if (currentPrice && entryPrice) {
         const pnl = (currentPrice - entryPrice) * quantity * (position.side === 'BUY' ? 1 : -1);
         
         const message = formatPositionClosedMessage(
@@ -223,44 +206,25 @@ async function movePositionToHistory(db, positionId, status, reason, accountId) 
         
         await sendTelegramMessage(accountId, message);
         console.log(`[MOVE_POSITION] 📱 Notificação de fechamento enviada`);
-        
-      } catch (telegramError) {
-        console.warn(`[MOVE_POSITION] ⚠️ Erro ao enviar notificação Telegram:`, telegramError.message);
       }
-
-      // ✅ 11. VERIFICAR SE DEVE FECHAR WEBSOCKET
-      await checkAndCloseWebsocket(db, symbol, accountId);
-
-      connection.release();
-      console.log(`[MOVE_POSITION] 🎉 Posição ${positionId} movida com sucesso para histórico`);
-      return true;
-
-    } catch (error) {
+    } catch (telegramError) {
+      console.warn(`[MOVE_POSITION] ⚠️ Erro ao enviar notificação Telegram:`, telegramError.message);
+    }
+    
+    return true;
+    
+  } catch (error) {
+    if (connection) {
       await connection.rollback();
-      console.error(`[MOVE_POSITION] ❌ Erro na tentativa ${attempts}:`, error.message);
-
-      // Se for erro de bloqueio, tentar novamente
-      if (error.code === 'ER_LOCK_WAIT_TIMEOUT' ||
-          error.message.includes('Lock wait timeout') ||
-          error.message.includes('Deadlock')) {
-        
-        const backoffTime = Math.pow(2, attempts) * 1000; // Backoff exponencial
-        console.log(`[MOVE_POSITION] ⏳ Aguardando ${backoffTime}ms antes da próxima tentativa...`);
-        await new Promise(resolve => setTimeout(resolve, backoffTime));
-        
-      } else {
-        console.error(`[MOVE_POSITION] ❌ Erro não recuperável:`, error.message);
-        break;
-      }
-    } finally {
-      if (connection) {
-        connection.release();
-      }
+    }
+    console.error(`[MOVE_POSITION] ❌ Erro ao mover posição ${positionId} para histórico:`, error.message);
+    return false;
+    
+  } finally {
+    if (connection) {
+      connection.release();
     }
   }
-
-  console.error(`[MOVE_POSITION] ❌ Falha definitiva ao mover posição ${positionId} após ${maxAttempts} tentativas`);
-  return false;
 }
 
 /**
