@@ -74,7 +74,7 @@ async function movePositionToHistory(db, positionId, status, reason, accountId) 
           preco: order.preco,
           quantidade: order.quantidade,
           id_posicao: order.id_posicao,
-          status: order.status === 'NEW' || order.status === 'PARTIALLY_FILLED' ? 'CANCELED' : order.status,
+          status: (order.status === 'NEW' || order.status === 'PARTIALLY_FILLED' || order.status === 'EXPIRED') ? 'CANCELED' : order.status,
           data_hora_criacao: order.data_hora_criacao,
           id_externo: order.id_externo,
           side: order.side,
