@@ -1106,6 +1106,75 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
         }
       }
       
+      if (targetPrices.tp5 && targetPrices.tp5 > 0) {
+        try {
+          // Verifica se já existe ordem TP5 para este sinal
+          const [existingTp5] = await connection.query(`
+            SELECT COUNT(*) as count 
+            FROM ordens 
+            WHERE orign_sig = ? 
+              AND tipo_ordem_bot = 'TAKE_PROFIT' 
+              AND target = 5
+              AND conta_id = ?
+              AND status IN ('NEW', 'PARTIALLY_FILLED')
+          `, [`WEBHOOK_${signal.id}`, accountId]);
+
+          if (existingTp5[0]?.count > 0) {
+            console.log(`[LIMIT_ENTRY] ⚠️ TP5 já existe para sinal ${signal.id}. Pulando criação.`);
+          } else {
+            console.log(`[LIMIT_ENTRY] 🏁 Criando TAKE_PROFIT_MARKET para TP5 (${targetPrices.tp5})`);
+
+            // Envia ordem TAKE_PROFIT_MARKET (closePosition = true)
+            const tp5Response = await api.newStopOrder(
+              numericAccountId,
+              signal.symbol,
+              null, // quantity = null para closePosition
+              binanceOppositeSide,
+              targetPrices.tp5,
+              null,
+              false, // reduceOnly
+              true,  // closePosition
+              'TAKE_PROFIT_MARKET'
+            );
+
+            if (tp5Response && (tp5Response.data?.orderId || tp5Response.orderId)) {
+              const tp5OrderId = tp5Response.data?.orderId || tp5Response.orderId;
+              console.log(`[LIMIT_ENTRY] ✅ TAKE_PROFIT_MARKET TP5 criado: ${tp5OrderId} @ ${targetPrices.tp5}`);
+
+              const tp5OrderData = {
+                tipo_ordem: 'TAKE_PROFIT_MARKET',
+                preco: targetPrices.tp5,
+                quantidade: 0, // closePosition = true
+                id_posicao: positionId,
+                status: 'NEW',
+                data_hora_criacao: formatDateForMySQL(new Date()),
+                id_externo: String(tp5OrderId).substring(0, 90),
+                side: binanceOppositeSide,
+                simbolo: signal.symbol,
+                tipo_ordem_bot: 'TAKE_PROFIT',
+                target: 5,
+                reduce_only: false,
+                close_position: true,
+                last_update: formatDateForMySQL(new Date()),
+                orign_sig: `WEBHOOK_${signal.id}`,
+                observacao: `TP5 - TAKE_PROFIT_MARKET - Sinal ${signal.id}`,
+                preco_executado: 0,
+                quantidade_executada: 0,
+                dados_originais_ws: JSON.stringify(tp5Response),
+                conta_id: accountId,
+                renew_sl_firs: null,
+                renew_sl_seco: null
+              };
+
+              await insertNewOrder(connection, tp5OrderData);
+              console.log(`[LIMIT_ENTRY] ✅ TP5 TAKE_PROFIT_MARKET salvo no banco para sinal ${signal.id}`);
+            }
+          }
+        } catch (tp5Error) {
+          console.error(`[LIMIT_ENTRY] ❌ Erro ao criar TAKE_PROFIT_MARKET TP5 para sinal ${signal.id}:`, tp5Error.response?.data || tp5Error.message);
+        }
+      }
+      
       console.log(`[LIMIT_ENTRY] ✅ Processo de criação SL/TP/RPs CONCLUÍDO para sinal ${signal.id}`);
     } else if (slTpRpsAlreadyCreated) {
       console.log(`[LIMIT_ENTRY] ℹ️ SL/TP/RPs já existem para sinal ${signal.id}. Processo ignorado.`);
