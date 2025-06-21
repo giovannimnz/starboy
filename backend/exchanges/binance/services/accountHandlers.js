@@ -138,141 +138,57 @@ async function handleBalanceUpdates(connection, balances, accountId, reason) {
  * Processa atualizações de posições - VERSÃO CORRIGIDA SEM OBSERVACOES E SEM VALIDAÇÃO DE PREÇO MÍNIMO
  */
 async function handlePositionUpdates(connection, positions, accountId, reason, eventTime) {
-  try {
-    console.log(`[ACCOUNT] 📊 Processando ${positions.length} atualizações de posição para conta ${accountId}`);
+  for (const positionData of positions) {
+    const symbol = positionData.s;
+    const positionAmt = parseFloat(positionData.pa || '0');
     
-    for (const position of positions) {
-      const symbol = position.s;
-      const positionAmt = parseFloat(position.pa || '0');
-      const entryPrice = parseFloat(position.ep || '0');
-      const unrealizedPnl = parseFloat(position.up || '0');
-      const marginType = position.mt || 'cross';
-      const positionSide = position.ps || 'BOTH';
-      const isolatedWallet = parseFloat(position.iw || '0');
-      const breakEvenPrice = parseFloat(position.bep || '0');
-      const accumulatedRealized = parseFloat(position.cr || '0');
+    if (Math.abs(positionAmt) > 0.000001) {
+      // POSIÇÃO ABERTA OU AUMENTADA
       
-      console.log(`[ACCOUNT] 📊 ${symbol}: Amt=${positionAmt}, Entry=${entryPrice}, PnL=${unrealizedPnl >= 0 ? '+' : ''}${unrealizedPnl.toFixed(4)}, Margin=${marginType}`);
-      
-      // BUSCAR POSIÇÃO EXISTENTE NO BANCO
+      // Verificar se é nova posição
       const [existingPositions] = await connection.query(
-        `SELECT * FROM posicoes 
-         WHERE simbolo = ? AND status = ? AND conta_id = ?
-         ORDER BY data_hora_abertura DESC
-         LIMIT 1`,
+        'SELECT id FROM posicoes WHERE simbolo = ? AND status = ? AND conta_id = ?',
         [symbol, 'OPEN', accountId]
       );
-
-      // VERIFICAR SE POSIÇÃO DEVE SER FECHADA (quantidade zero ou muito pequena)
-      if (Math.abs(positionAmt) <= 0.000001) {
-        console.log(`[ACCOUNT] 🔄 Posição ${symbol} deve ser fechada (quantidade: ${positionAmt})`);
+      
+      if (existingPositions.length === 0) {
+        // ✅ NOVA POSIÇÃO - BUSCAR SINAL ORIGINAL
+        const [recentSignal] = await connection.query(`
+          SELECT id, side, leverage 
+          FROM webhook_signals 
+          WHERE symbol = ? AND status IN ('ENTRADA_EM_PROGRESSO', 'EXECUTADO') 
+          AND created_at > DATE_SUB(NOW(), INTERVAL 10 MINUTE)
+          ORDER BY id DESC LIMIT 1
+        `, [symbol]);
         
-        if (existingPositions.length > 0) {
-          const existingPos = existingPositions[0];
-          
-          try {
-            await connection.query(
-              `UPDATE posicoes SET 
-               status = 'CLOSED',
-               quantidade = 0,
-               data_hora_fechamento = NOW(),
-               data_hora_ultima_atualizacao = NOW()
-               WHERE id = ?`,
-              [existingPos.id]
-            );
-            
-            console.log(`[ACCOUNT] ✅ Posição ${symbol} fechada no banco (ID: ${existingPos.id}, motivo: ${reason})`);
-            
-          } catch (closeError) {
-            console.error(`[ACCOUNT] ❌ Erro ao fechar posição ${symbol}:`, closeError.message);
-          }
-          
-        } else {
-          console.log(`[ACCOUNT] ℹ️ Posição ${symbol} já estava fechada ou não existia no banco`);
-        }
+        const positionData = {
+          simbolo: symbol,
+          quantidade: Math.abs(positionAmt),
+          preco_medio: parseFloat(positionData.ep || '0'),
+          status: 'OPEN',
+          data_hora_abertura: formatDateForMySQL(new Date()),
+          side: positionAmt > 0 ? 'BUY' : 'SELL',
+          leverage: recentSignal[0]?.leverage || 1,
+          data_hora_ultima_atualizacao: formatDateForMySQL(new Date()),
+          preco_entrada: parseFloat(positionData.ep || '0'),
+          preco_corrente: parseFloat(positionData.ep || '0'),
+          orign_sig: recentSignal[0] ? `WEBHOOK_${recentSignal[0].id}` : null,
+          quantidade_aberta: Math.abs(positionAmt),
+          conta_id: accountId
+        };
         
-      } else {
-        // POSIÇÃO ABERTA OU DEVE SER ATUALIZADA
-        const side = positionAmt > 0 ? 'BUY' : 'SELL';
-        const absPositionAmt = Math.abs(positionAmt);
+        const newPositionId = await insertPosition(connection, positionData, recentSignal[0]?.id);
+        console.log(`[ACCOUNT_UPDATE] ✅ Nova posição criada via webhook: ${symbol} (ID: ${newPositionId})`);
         
-        console.log(`[ACCOUNT] 📊 Posição ${symbol} ativa: ${side} ${absPositionAmt} @ ${entryPrice}`);
-        
-        if (existingPositions.length > 0) {
-          // ATUALIZAR POSIÇÃO EXISTENTE
-          const existingPos = existingPositions[0];
-          
-          // VERIFICAR SE HOUVE MUDANÇA SIGNIFICATIVA PARA LOG
-          const currentQty = parseFloat(existingPos.quantidade || '0');
-          const currentPrice = parseFloat(existingPos.preco_entrada || '0');
-          const qtyChanged = Math.abs(currentQty - absPositionAmt) > 0.000001;
-          const priceChanged = Math.abs(currentPrice - entryPrice) > 0.000001;
-          
-          if (qtyChanged || priceChanged) {
-            console.log(`[ACCOUNT] 🔄 Atualizando posição ${symbol}:`);
-            console.log(`[ACCOUNT]   - Quantidade: ${currentQty} → ${absPositionAmt}`);
-            console.log(`[ACCOUNT]   - Preço entrada: ${currentPrice} → ${entryPrice}`);
-            console.log(`[ACCOUNT]   - Side: ${existingPos.side} → ${side}`);
-          }
-          
-          try {
-            // ✅ CORREÇÃO: REMOVER CAMPO observacoes QUE NÃO EXISTE
-            await connection.query(
-              `UPDATE posicoes SET 
-               quantidade = ?,
-               preco_entrada = ?,
-               preco_corrente = ?,
-               preco_medio = ?,
-               side = ?,
-               data_hora_ultima_atualizacao = NOW()
-               WHERE id = ?`,
-              [absPositionAmt, entryPrice, entryPrice, entryPrice, side, existingPos.id]
-            );
-            
-            if (qtyChanged || priceChanged) {
-              console.log(`[ACCOUNT] ✅ Posição ${symbol} atualizada no banco (ID: ${existingPos.id})`);
-            }
-            
-          } catch (updateError) {
-            console.error(`[ACCOUNT] ❌ Erro ao atualizar posição ${symbol}:`, updateError.message);
-          }
-          
-        } else {
-          // CRIAR NOVA POSIÇÃO (posição externa ou não rastreada)
-          console.log(`[ACCOUNT] 🆕 Criando nova posição ${symbol} (origem externa ou não rastreada)`);
-          
-          try {
-            const positionData = {
-              simbolo: symbol,
-              quantidade: absPositionAmt,
-              preco_medio: entryPrice,
-              status: 'OPEN',
-              data_hora_abertura: formatDateForMySQL(new Date(eventTime)),
-              side: side,
-              leverage: 1, // Será atualizado se necessário
-              data_hora_ultima_atualizacao: formatDateForMySQL(new Date()),
-              preco_entrada: entryPrice,
-              preco_corrente: entryPrice,
-              orign_sig: `EXTERNAL_${reason}`, // Identificar como externa
-              quantidade_aberta: absPositionAmt,
-              conta_id: accountId
-              // ✅ REMOVIDO: observacoes que causava erro
-            };
-            
-            const positionId = await insertPosition(connection, positionData);
-            console.log(`[ACCOUNT] ✅ Nova posição externa ${symbol} criada com ID ${positionId}`);
-            
-          } catch (createError) {
-            console.error(`[ACCOUNT] ❌ Erro ao criar nova posição ${symbol}:`, createError.message);
-          }
+        // Atualizar sinal com position_id
+        if (recentSignal[0]) {
+          await connection.query(
+            `UPDATE webhook_signals SET position_id = ? WHERE id = ?`,
+            [newPositionId, recentSignal[0].id]
+          );
         }
       }
     }
-    
-    console.log(`[ACCOUNT] ✅ Processamento de posições concluído para conta ${accountId}`);
-    
-  } catch (error) {
-    console.error(`[ACCOUNT] ❌ Erro ao processar atualizações de posições:`, error.message);
   }
 }
 

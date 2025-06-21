@@ -760,19 +760,39 @@ function mapOrderType(binanceOrderType) {
  * Determina o tipo de ordem do bot baseado nas características da ordem
  */
 function determineOrderBotType(order) {
-  if (order.R === true) {
-    // Reduce only
-    if (order.o.includes('TAKE_PROFIT')) {
-      return 'REDUCAO_PARCIAL';
-    } else if (order.o.includes('STOP')) {
-      return 'STOP_LOSS';
-    } else {
-      return 'REDUCAO_PARCIAL';
-    }
-  } else {
-    // Não é reduce only
+  const orderType = order.o; // LIMIT, MARKET, STOP_MARKET, etc.
+  const reduceOnly = order.R === true;
+  const closePosition = order.cp === true;
+  const stopPrice = parseFloat(order.sp || '0');
+  
+  // ✅ DETECTAR TIPO DE ORDEM BASEADO NAS CARACTERÍSTICAS
+  if (orderType === 'STOP_MARKET' && closePosition) {
+    return 'STOP_LOSS';
+  }
+  
+  if (orderType === 'TAKE_PROFIT_MARKET' && closePosition) {
+    return 'TAKE_PROFIT';
+  }
+  
+  if (orderType === 'LIMIT' && reduceOnly) {
+    return 'REDUCAO_PARCIAL';
+  }
+  
+  if (orderType === 'LIMIT' || orderType === 'MARKET') {
     return 'ENTRADA';
   }
+  
+  return 'UNKNOWN';
+}
+
+function detectTargetLevel(symbol, price, orignSig, db) {
+  // Buscar preços dos alvos no sinal original
+  const signalId = orignSig.replace('WEBHOOK_', '');
+  
+  // Retornar target baseado na proximidade do preço
+  // (implementação similar à sugerida anteriormente)
+  
+  return null; // ou número do target
 }
 
 /**

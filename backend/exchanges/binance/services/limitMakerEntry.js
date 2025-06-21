@@ -854,83 +854,65 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
         isEntryComplete = true;
     }
 
-    // ✅ INSERIR POSIÇÃO NO BANCO - VERSÃO MELHORADA
-    console.log(`[LIMIT_ENTRY] Verificando se posição já existe antes de inserir...`);
+    console.log(`[LIMIT_ENTRY] ✅ Entrada executada: ${totalFilledSize.toFixed(quantityPrecision)}/${totalEntrySize.toFixed(quantityPrecision)} (${(fillRatio * 100).toFixed(1)}%)`);
+    console.log(`[LIMIT_ENTRY] 📡 Aguardando confirmação da posição via webhook para criar SL/TP/RPs...`);
 
-    const [existingDbPositions] = await connection.query(
-      'SELECT id FROM posicoes WHERE simbolo = ? AND status = ? AND conta_id = ?',
-      [signal.symbol, 'OPEN', accountId]
-    );
-
-    if (existingDbPositions.length > 0) {
-      console.log(`[LIMIT_ENTRY] ✅ Posição já existe no banco para ${signal.symbol} (ID: ${existingDbPositions[0].id}), atualizando dados...`);
-
-      positionId = existingDbPositions[0].id;
-
-      await connection.query(
-        `UPDATE posicoes SET
-         quantidade = ?,
-         preco_medio = ?,
-         preco_entrada = ?,
-         preco_corrente = ?,
-         data_hora_ultima_atualizacao = NOW()
-         WHERE id = ?`,
-        [totalFilledSize, averageEntryPrice, averageEntryPrice, averageEntryPrice, positionId]
-      );
-
-      console.log(`[LIMIT_ENTRY] ✅ Posição ${positionId} atualizada no banco para ${signal.symbol}`);
-
-    } else {
-      const positionData = {
-        simbolo: signal.symbol,
-        quantidade: totalFilledSize,
-        preco_medio: averageEntryPrice,
-        status: 'OPEN',
-        data_hora_abertura: formatDateForMySQL(new Date(executionStartTime)),
-        side: binanceSide,
-        leverage: leverage,
-        data_hora_ultima_atualizacao: formatDateForMySQL(new Date()),
-        preco_entrada: averageEntryPrice,
-        preco_corrente: averageEntryPrice,
-        orign_sig: `WEBHOOK_${signal.id}`,
-        quantidade_aberta: totalFilledSize,
-        conta_id: accountId
-      };
-
-      positionId = await insertPosition(connection, positionData, signal.id);
-      if (!positionId) throw new Error(`Falha ao inserir posição no banco de dados para Sinal ID ${signal.id}`);
-      console.log(`[LIMIT_ENTRY] ✅ Nova posição ID ${positionId} criada no banco de dados para Sinal ID ${signal.id}`);
-    }
-
+    // ❌ REMOVER TODO O BLOCO DE INSERÇÃO DE ORDENS DE ENTRADA:
+    /*
     // ✅ REGISTRAR ORDENS NO BANCO - VERSÃO MELHORADA
     for (const fill of partialFills) {
       const orderData = {
         tipo_ordem: (marketOrderResponseForDb && fill.orderId === String(marketOrderResponseForDb.orderId)) ? 'MARKET' : 'LIMIT',
         preco: fill.price,
         quantidade: fill.qty,
-        id_posicao: positionId,
-        status: 'FILLED',
-        data_hora_criacao: formatDateForMySQL(new Date()),
-        id_externo: String(fill.orderId || `fill_${Date.now()}_${Math.random().toString(36).substring(7)}`).substring(0, 90),
-        side: binanceSide,
-        simbolo: signal.symbol,
-        tipo_ordem_bot: 'ENTRADA',
-        target: null,
-        reduce_only: false,
-        close_position: false,
-        last_update: formatDateForMySQL(new Date()),
-        orign_sig: `WEBHOOK_${signal.id}`,
-        preco_executado: fill.price,
-        quantidade_executada: fill.qty,
-        conta_id: accountId // ✅ ADICIONADO
+        // ... resto dos dados
       };
       await insertNewOrder(connection, orderData);
     }
+    */
 
+    // ✅ SUBSTITUIR POR LOG APENAS:
+    console.log(`[LIMIT_ENTRY] 📊 Ordens de entrada executadas: ${partialFills.length} fills`);
+    partialFills.forEach((fill, index) => {
+      console.log(`[LIMIT_ENTRY]   Fill ${index + 1}: ${fill.qty.toFixed(quantityPrecision)} @ ${fill.price.toFixed(pricePrecision)} (ID: ${fill.orderId})`);
+    });
+    console.log(`[LIMIT_ENTRY] 📡 Aguardando confirmação das ordens via webhook para inserir no banco...`);
+
+    // ✅ ATUALIZAR APENAS O STATUS DO SINAL
     await connection.query(
-      `UPDATE webhook_signals SET status = 'EXECUTADO', position_id = ?, entry_order_id = ?, entry_price = ? WHERE id = ?`,
-      [positionId, (partialFills.length > 0 ? partialFills[0].orderId : null), averageEntryPrice, signal.id]
+      `UPDATE webhook_signals SET status = 'EXECUTADO', entry_price = ? WHERE id = ?`,
+      [averageEntryPrice, signal.id]
     );
+
+    // ✅ AGUARDAR UM POUCO PARA O WEBHOOK PROCESSAR AS ORDENS DE ENTRADA
+    console.log(`[LIMIT_ENTRY] ⏳ Aguardando ${WAIT_FOR_WEBHOOK_MS}ms para webhook processar ordens de entrada...`);
+    await new Promise(resolve => setTimeout(resolve, WAIT_FOR_WEBHOOK_MS));
+
+    // ✅ BUSCAR POSIÇÃO CRIADA PELO WEBHOOK
+    let positionId = null;
+    let maxRetries = 10;
+    let retries = 0;
+
+    while (!positionId && retries < maxRetries) {
+      const [webhookPosition] = await connection.query(
+        `SELECT id FROM posicoes WHERE simbolo = ? AND status = 'OPEN' AND conta_id = ? ORDER BY id DESC LIMIT 1`,
+        [signal.symbol, accountId]
+      );
+      
+      if (webhookPosition.length > 0) {
+        positionId = webhookPosition[0].id;
+        console.log(`[LIMIT_ENTRY] ✅ Posição encontrada no banco (criada via webhook): ID ${positionId}`);
+        break;
+      }
+      
+      retries++;
+      console.log(`[LIMIT_ENTRY] ⏳ Aguardando posição ser criada via webhook... tentativa ${retries}/${maxRetries}`);
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
+    if (!positionId) {
+      console.warn(`[LIMIT_ENTRY] ⚠️ Posição não foi criada pelo webhook após ${maxRetries} tentativas. Criando SL/TP/RPs sem position_id...`);
+    }
 
     // ✅ CRIAR SL/TP/RPS - VERSÃO TOTALMENTE CORRIGIDA DA DEV
     let slTpRpsCreated = false;
@@ -959,7 +941,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       // ✅ CRIAR STOP LOSS - VERSÃO SEM INSERÇÃO NO BANCO
       if (slPriceVal && slPriceVal > 0) {
         try {
-          // ✅ VERIFICAR SE JÁ EXISTE SL ATIVO PARA ESTE SINAL
+          // ✅ VERIFICAR SE JÁ EXISTE SL ATIVO PARA ESTE SINAL (sem depender de positionId)
           const [existingSl] = await connection.query(`
             SELECT COUNT(*) as count 
             FROM ordens 
@@ -1391,6 +1373,9 @@ function calculateAveragePrice(fills) {
 
     return totalQty > 0 ? totalCost / totalQty : 0;
 }
+
+// ✅ CONSTANTES PARA AGUARDAR WEBHOOK
+const WAIT_FOR_WEBHOOK_MS = 3000; // 3 segundos para webhook processar
 
 module.exports = {
     executeLimitMakerEntry
