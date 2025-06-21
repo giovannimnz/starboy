@@ -406,8 +406,8 @@ try {
       }
     });
 
-    // ✅ NOVO: Job avançado de monitoramento de posições a cada 2 minutos
-    accountJobs.advancedPositionMonitoring = schedule.scheduleJob('*/2 * * * *', async () => {
+    // ✅ NOVO: Job avançado de monitoramento de posições a cada 1 minuto
+    accountJobs.advancedPositionMonitoring = schedule.scheduleJob('*/1 * * * *', async () => {
       if (isShuttingDown) return;
       try {
         await runAdvancedPositionMonitoring(accountId);
@@ -416,8 +416,8 @@ try {
       }
     });
 
-    // ✅ MELHORADO: Job de sincronização com fechamento a cada 5 minutos
-    accountJobs.syncAndCloseGhosts = schedule.scheduleJob('*/5 * * * *', async () => {
+    // ✅ MELHORADO: Job de sincronização com fechamento a cada 1 minuto
+    accountJobs.syncAndCloseGhosts = schedule.scheduleJob('*/1 * * * *', async () => {
       if (isShuttingDown) return;
       try {
         console.log(`[MONITOR] 🔄 Executando sincronização completa para conta ${accountId}...`);
@@ -446,8 +446,8 @@ try {
       }
     });
 
-    // ✅ NOVO: Job de log de status a cada 10 minutos
-    accountJobs.logStatus = schedule.scheduleJob('*/10 * * * *', async () => {
+    // ✅ NOVO: Job de log de status a cada 5 minutos
+    accountJobs.logStatus = schedule.scheduleJob('*/5 * * * *', async () => {
       if (isShuttingDown) return;
       try {
         await logOpenPositionsAndOrders(accountId);
