@@ -7,7 +7,7 @@ const api = require('../api/rest');
 const { initializeTelegramBot, stopAllTelegramBots } = require('./telegramBot');
 const { startPriceMonitoring, onPriceUpdate } = require('./priceMonitoring');
 const { checkNewTrades } = require('./signalProcessor');
-const { syncPositionsWithExchange, logOpenPositionsAndOrdersVisual } = require('./positionSync');
+const { syncPositionsWithExchange, syncOrdersWithExchange, logOpenPositionsAndOrdersVisual } = require('./positionSync');
 const orderHandlers = require('./orderHandlers');
 const accountHandlers = require('./accountHandlers');
 const { checkExpiredSignals } = require('./signalTimeout');
@@ -369,6 +369,7 @@ try {
     
     try {
       await syncPositionsWithExchange(accountId);
+      await syncOrdersWithExchange(accountId);
       console.log(`[MONITOR] ✅ Sincronização de posições concluída para conta ${accountId}.`);
     } catch (syncError) {
       console.error(`[MONITOR] ⚠️ Erro ao sincronizar posições para conta ${accountId}:`, syncError.message);

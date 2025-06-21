@@ -1,5 +1,5 @@
 const { getDatabaseInstance, moveClosedPositionsAndOrders } = require('../../../core/database/conexao');
-const { getAllOpenPositions } = require('../api/rest');
+const { getAllOpenPositions, getOpenOrders } = require('../api/rest');
 
 /**
  * Sincroniza posições do banco com a corretora
@@ -307,8 +307,70 @@ async function syncPositionsWithAutoClose(accountId) {
   }
 }
 
+/**
+ * Sincroniza ordens abertas com a corretora
+ * @param {number} accountId - ID da conta
+ */
+async function syncOrdersWithExchange(accountId) {
+  try {
+    const db = await getDatabaseInstance();
+    if (!db) {
+      throw new Error(`Falha ao conectar ao banco para conta ${accountId}`);
+    }
+
+    // Obter todos os símbolos com posição aberta OU já conhecidos no banco
+    const [symbolsRows] = await db.query(
+      `SELECT DISTINCT simbolo FROM posicoes WHERE conta_id = ?`, [accountId]
+    );
+    const symbols = symbolsRows.map(r => r.simbolo);
+
+    for (const symbol of symbols) {
+      // Buscar ordens abertas na corretora para o símbolo
+      const openOrders = await getOpenOrders(accountId, symbol);
+
+      for (const order of openOrders) {
+        // Verificar se já existe no banco
+        const [existing] = await db.query(
+          `SELECT id_externo FROM ordens WHERE id_externo = ? AND conta_id = ?`,
+          [order.orderId, accountId]
+        );
+        if (existing.length === 0) {
+          // Inserir ordem nova
+          await db.query(
+            `INSERT INTO ordens 
+              (id_externo, simbolo, tipo_ordem, preco, quantidade, status, side, conta_id, data_hora_criacao, tipo_ordem_bot, last_update)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, NOW())`,
+            [
+              order.orderId,
+              order.symbol,
+              order.type,
+              order.price,
+              order.origQty,
+              order.status,
+              order.side,
+              accountId,
+              order.type, // ou mapeie para tipo_ordem_bot se necessário
+            ]
+          );
+          console.log(`[SYNC_ORDERS] Nova ordem ${order.orderId} (${order.symbol}) inserida no banco`);
+        } else {
+          // Atualizar status se necessário
+          await db.query(
+            `UPDATE ordens SET status = ?, last_update = NOW() WHERE id_externo = ? AND conta_id = ?`,
+            [order.status, order.orderId, accountId]
+          );
+        }
+      }
+    }
+    console.log(`[SYNC_ORDERS] Sincronização de ordens concluída para conta ${accountId}`);
+  } catch (error) {
+    console.error(`[SYNC_ORDERS] Erro ao sincronizar ordens:`, error.message);
+  }
+}
+
 module.exports = {
   syncPositionsWithExchange,
   logOpenPositionsAndOrdersVisual,
-  syncPositionsWithAutoClose
+  syncPositionsWithAutoClose,
+  syncOrdersWithExchange
 };
