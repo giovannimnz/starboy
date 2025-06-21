@@ -11,11 +11,16 @@ import sys
 import traceback
 from typing import Dict, Tuple, Union, List, Optional
 from dotenv import load_dotenv
+from pathlib import Path
 import pathlib
 import re
 
-# Importar a classe DIVAPAnalyzer do arquivo divap_check
-from divap_check import DIVAPAnalyzer, DB_CONFIG, BINANCE_CONFIG
+sys.path.append(str(Path(__file__).parent / '../analysis'))
+try:
+    from analysis.divap_check import DIVAPAnalyzer, DB_CONFIG, BINANCE_CONFIG
+except ImportError as e:
+    print(f"[ERRO] Não foi possível importar DIVAPAnalyzer: {e}")
+    DIVAPAnalyzer = None
 
 # Configuração de logging
 logging.basicConfig(

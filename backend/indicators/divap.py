@@ -23,7 +23,7 @@ from urllib.parse import urlencode
 import warnings
 
 # --- NOVO: Importa as funções de atualização do arquivo externo ---
-from bracket_updater import update_leverage_brackets, test_binance_credentials, test_database_connection
+from exchange_bracket_updater import update_leverage_brackets, test_binance_credentials, test_database_connection
 
 # --- Configuração de Logging e Avisos ---
 logging.basicConfig(level=logging.ERROR)
@@ -49,9 +49,9 @@ GRUPO_FONTE_MAPEAMENTO = {
 }
 
 # --- Importações e Configurações de Módulos Locais ---
-sys.path.append(str(Path(__file__).parent / 'backtest'))
+sys.path.append(str(Path(__file__).parent / 'analysis'))
 try:
-    from backtest.divap_check import DIVAPAnalyzer
+    from analysis.divap_check import DIVAPAnalyzer
 except ImportError as e:
     print(f"[ERRO] Não foi possível importar DIVAPAnalyzer: {e}")
     DIVAPAnalyzer = None
@@ -112,7 +112,7 @@ def initialize_bracket_scheduler():
     try:
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] Executando testes de conexão...")
         
-        # Chama as funções de teste importadas do `bracket_updater.py`
+        # Chama as funções de teste importadas do `exchange_bracket_updater.py`
         binance_ok = test_binance_credentials()
         db_ok = test_database_connection()
         

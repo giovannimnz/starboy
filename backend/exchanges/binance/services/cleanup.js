@@ -127,45 +127,63 @@ async function cancelOrphanOrders(accountId) {
     let canceledCount = 0;
     let updatedCount = 0;
     
+    // Antes de cancelar, verifique se a posição ainda está aberta!
     for (const order of potentialOrphanOrders) {
-      try {
-        // ✅ TENTAR CANCELAR NA CORRETORA
-        await cancelOrder(order.simbolo, order.id_externo, accountId);
-        
-        // ✅ SE CHEGOU AQUI, ORDEM AINDA EXISTIA E FOI CANCELADA
-        console.log(`[CLEANUP] ✅ Ordem ${order.id_externo} cancelada na corretora`);
-        
-        await db.query(`
-          UPDATE ordens 
-          SET status = 'CANCELED', 
-              last_update = NOW()
-          WHERE id_externo = ? AND conta_id = ?
-        `, [order.id_externo, accountId]);
-        
-        canceledCount++;
-        
-      } catch (cancelError) {
-        // ✅ VERIFICAR SE É ERRO "ORDEM NÃO EXISTE"
-        if (cancelError.message.includes('Unknown order sent') || 
-            cancelError.message.includes('Order does not exist')) {
+      // Buscar status da posição no banco
+      const [posRows] = await db.query(
+        'SELECT status FROM posicoes WHERE id = ? AND conta_id = ?',
+        [order.id_posicao, accountId]
+      );
+      const posStatus = posRows[0]?.status;
+
+      // Buscar posição na corretora (opcional, para garantir)
+      // const exchangePositions = await getAllOpenPositions(accountId);
+      // const stillOpenOnExchange = exchangePositions.some(p => p.simbolo === order.simbolo && Math.abs(p.quantidade) > 0);
+
+      // Só cancela se a posição está FECHADA ou não existe mais
+      if (posStatus === 'CLOSED' || !posStatus) {
+        try {
+          // ✅ TENTAR CANCELAR NA CORRETORA
+          await cancelOrder(order.simbolo, order.id_externo, accountId);
           
-          console.log(`[CLEANUP] ✅ Ordem ${order.id_externo} confirmada como já cancelada/executada na corretora`);
+          // ✅ SE CHEGOU AQUI, ORDEM AINDA EXISTIA E FOI CANCELADA
+          console.log(`[CLEANUP] ✅ Ordem ${order.id_externo} cancelada na corretora`);
           
-          // ✅ MARCAR COMO CANCELED NO BANCO (porque não existe mais na corretora)
           await db.query(`
             UPDATE ordens 
             SET status = 'CANCELED', 
-                last_update = NOW(),
-                observacao = 'Órfã - não existe na corretora'
+                last_update = NOW()
             WHERE id_externo = ? AND conta_id = ?
           `, [order.id_externo, accountId]);
           
-          updatedCount++;
+          canceledCount++;
           
-        } else {
-          // ✅ ERRO REAL DE CANCELAMENTO
-          console.error(`[CLEANUP] ❌ Erro real ao cancelar ordem ${order.id_externo}:`, cancelError.message);
+        } catch (cancelError) {
+          // ✅ VERIFICAR SE É ERRO "ORDEM NÃO EXISTE"
+          if (cancelError.message.includes('Unknown order sent') || 
+              cancelError.message.includes('Order does not exist')) {
+            
+            console.log(`[CLEANUP] ✅ Ordem ${order.id_externo} confirmada como já cancelada/executada na corretora`);
+            
+            // ✅ MARCAR COMO CANCELED NO BANCO (porque não existe mais na corretora)
+            await db.query(`
+              UPDATE ordens 
+              SET status = 'CANCELED', 
+                  last_update = NOW(),
+                  observacao = 'Órfã - não existe na corretora'
+              WHERE id_externo = ? AND conta_id = ?
+            `, [order.id_externo, accountId]);
+            
+            updatedCount++;
+            
+          } else {
+            // ✅ ERRO REAL DE CANCELAMENTO
+            console.error(`[CLEANUP] ❌ Erro real ao cancelar ordem ${order.id_externo}:`, cancelError.message);
+          }
         }
+      } else {
+        console.log(`[CLEANUP] ⚠️ Ordem ${order.id_externo} NÃO será cancelada pois a posição ${order.simbolo} ainda está aberta!`);
+        continue;
       }
     }
     

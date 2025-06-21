@@ -369,7 +369,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       }
 
       wsRetryCount++;
-      console.log(`[LIMIT_ENTRY] Aguardando WebSocket... tentativa ${wsRetryCount}/${MAX_RETRY_ATTEMPTS}`);
+      //console.log(`[LIMIT_ENTRY] Aguardando WebSocket... tentativa ${wsRetryCount}/${MAX_RETRY_ATTEMPTS}`);
       await new Promise(resolve => setTimeout(resolve, RETRY_INTERVAL_MS));
     }
 
