@@ -1837,6 +1837,42 @@ async function getOrderStatus(symbol, orderId, accountId) {
 }
 
 /**
+ * Obtém ordens abertas da corretora (Binance Futures)
+ * @param {number} accountId - ID da conta
+ * @param {string|null} symbol - (Opcional) Símbolo do par, ex: 'BTCUSDT'
+ * @param {string|number|null} orderId - (Opcional) ID da ordem específica
+ * @returns {Promise<Array|Object>} - Lista de ordens abertas ou uma ordem específica
+ */
+async function getOpenOrders(accountId, symbol = null, orderId = null) {
+  try {
+    if (!accountId || typeof accountId !== 'number') {
+      throw new Error(`AccountId inválido: ${accountId}`);
+    }
+
+    // Buscar uma ordem específica (precisa do symbol)
+    if (orderId && symbol) {
+      const params = { symbol, orderId: String(orderId) };
+      const order = await makeAuthenticatedRequest(accountId, 'GET', '/v1/order', params);
+      return order;
+    }
+
+    // Buscar todas as ordens abertas de um symbol
+    if (symbol) {
+      const params = { symbol };
+      const orders = await makeAuthenticatedRequest(accountId, 'GET', '/v1/openOrders', params);
+      return Array.isArray(orders) ? orders : [];
+    }
+
+    // Buscar todas as ordens abertas da conta
+    const orders = await makeAuthenticatedRequest(accountId, 'GET', '/v1/openOrders', {});
+    return Array.isArray(orders) ? orders : [];
+  } catch (error) {
+    console.error(`[API] Erro em getOpenOrders:`, error.message);
+    return [];
+  }
+}
+
+/**
  * Cancela uma ordem
  * @param {string} symbol - Símbolo
  * @param {string|number} orderId - ID da ordem
@@ -1913,6 +1949,7 @@ module.exports = {
   newReduceOnlyOrder,
   newStopOrder,
   editOrder,
+  getOpenOrders,
   getOrderStatus,
   cancelOrder,
   getRecentOrders,
