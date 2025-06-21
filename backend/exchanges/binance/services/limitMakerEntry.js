@@ -956,7 +956,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       console.log(`  - TP4: ${targetPrices.tp4 || 'N/A'}`);
       console.log(`  - TP5: ${targetPrices.tp5 || 'N/A'}`);
 
-      // ✅ CRIAR STOP LOSS - VERSÃO CORRIGIDA COM VERIFICAÇÃO
+      // ✅ CRIAR STOP LOSS - VERSÃO SEM INSERÇÃO NO BANCO
       if (slPriceVal && slPriceVal > 0) {
         try {
           // ✅ VERIFICAR SE JÁ EXISTE SL ATIVO PARA ESTE SINAL
@@ -972,22 +972,9 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
           if (existingSl[0]?.count > 0) {
             console.log(`[LIMIT_ENTRY] ⚠️ STOP_LOSS já existe para sinal ${signal.id}. Pulando criação.`);
           } else {
-            // VALIDAR SE O PREÇO DE SL FAZ SENTIDO
-            const isValidSlPrice = (binanceSide === 'BUY' && slPriceVal < averageEntryPrice) || 
-                                  (binanceSide === 'SELL' && slPriceVal > averageEntryPrice);
+            console.log(`[LIMIT_ENTRY] 🛡️ Enviando SL para corretora: STOP_MARKET ${binanceOppositeSide} @ stopPrice=${slPriceVal} (closePosition=true)`);
             
-            if (!isValidSlPrice) {
-              console.warn(`[LIMIT_ENTRY] ⚠️ Preço de SL inválido: ${slPriceVal} para ${binanceSide} @ ${averageEntryPrice}. Ajustando...`);
-              const slAdjustment = binanceSide === 'BUY' ? 0.98 : 1.02;
-              const adjustedSlPrice = averageEntryPrice * slAdjustment;
-              slPriceVal = await rest.roundPriceToTickSize(signal.symbol, adjustedSlPrice, numericAccountId);
-              
-              console.log(`[LIMIT_ENTRY] 🔧 SL ajustado: ${slPriceVal}`);
-            }
-            
-            console.log(`[LIMIT_ENTRY] 🛡️ Criando SL: STOP_MARKET ${binanceOppositeSide} @ stopPrice=${slPriceVal} (closePosition=true)`);
-            
-            // ✅ RESTO DO CÓDIGO DE CRIAÇÃO DO SL (mantém como está)
+            // ✅ APENAS ENVIAR PARA CORRETORA - NÃO INSERIR NO BANCO
             const slResponse = await newStopOrder(
               numericAccountId,
               signal.symbol,
@@ -1002,29 +989,10 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
             
             if (slResponse && (slResponse.data?.orderId || slResponse.orderId)) {
               const slOrderId = slResponse.data?.orderId || slResponse.orderId;
-              console.log(`[LIMIT_ENTRY] ✅ SL STOP_MARKET criado: ${slOrderId} @ stopPrice=${slPriceVal} (closePosition=true)`);
+              console.log(`[LIMIT_ENTRY] ✅ SL enviado para corretora: ${slOrderId} @ stopPrice=${slPriceVal}`);
+              console.log(`[LIMIT_ENTRY] 📡 Aguardando confirmação via webhook para inserir no banco...`);
               
-              const slOrderData = {
-                tipo_ordem: 'STOP_MARKET',
-                preco: slPriceVal,
-                quantidade: 0,
-                id_posicao: positionId,
-                status: 'NEW',
-                data_hora_criacao: formatDateForMySQL(new Date()),
-                id_externo: String(slOrderId).substring(0, 90),
-                side: binanceOppositeSide,
-                simbolo: signal.symbol,
-                tipo_ordem_bot: 'STOP_LOSS',
-                target: null,
-                reduce_only: false,
-                close_position: true,
-                orign_sig: `WEBHOOK_${signal.id}`,
-                last_update: formatDateForMySQL(new Date()),
-                conta_id: accountId
-              };
-              
-              await insertNewOrder(connection, slOrderData);
-              
+              // ✅ APENAS ATUALIZAR O SIGNAL COM O ORDER_ID
               await connection.query(
                 `UPDATE webhook_signals SET sl_order_id = ? WHERE id = ?`,
                 [String(slOrderId), signal.id]
@@ -1032,13 +1000,13 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
             }
           }
         } catch (slError) {
-          console.error(`[LIMIT_ENTRY] ❌ Erro ao criar SL STOP_MARKET:`, slError.response?.data || slError.message);
+          console.error(`[LIMIT_ENTRY] ❌ Erro ao enviar SL para corretora:`, slError.response?.data || slError.message);
         }
       } else {
         console.warn(`[LIMIT_ENTRY] ⚠️ Preço de SL inválido ou não fornecido (${slPriceVal}). SL não será criado.`);
       }
 
-      // CRIAR REDUÇÕES PARCIAIS - VERSÃO CORRIGIDA
+      // CRIAR REDUÇÕES PARCIAIS - VERSÃO SEM INSERÇÃO NO BANCO
       const reductionPercentages = [0.25, 0.30, 0.25, 0.10]; // 25%, 30%, 25%, 10%
       let cumulativeQtyForRps = 0;
 
@@ -1071,8 +1039,9 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
           
           if (rpQty > 0) {
             try {
-              console.log(`[LIMIT_ENTRY] 📊 Criando RP${i+1} ÚNICO para sinal ${signal.id}: ${(rpPercentage*100)}% de ${totalFilledSize.toFixed(quantityPrecision)} = ${rpQty.toFixed(quantityPrecision)}`);
+              console.log(`[LIMIT_ENTRY] 📊 Enviando RP${i+1} para corretora: ${(rpPercentage*100)}% de ${totalFilledSize.toFixed(quantityPrecision)} = ${rpQty.toFixed(quantityPrecision)}`);
               
+              // ✅ APENAS ENVIAR PARA CORRETORA - NÃO INSERIR NO BANCO
               const rpResponse = await newReduceOnlyOrder(
                 numericAccountId,
                 signal.symbol,
@@ -1083,43 +1052,17 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
               
               if (rpResponse && (rpResponse.data?.orderId || rpResponse.orderId)) {
                 const rpOrderId = rpResponse.data?.orderId || rpResponse.orderId;
-                console.log(`[LIMIT_ENTRY] ✅ RP${i+1} ÚNICO criado para sinal ${signal.id}: ${rpOrderId} (${(rpPercentage*100)}%)`);
-                
-                const rpOrderData = {
-                  tipo_ordem: 'LIMIT',
-                  preco: rpPrice,
-                  quantidade: rpQty,
-                  id_posicao: positionId,
-                  status: 'NEW',
-                  data_hora_criacao: formatDateForMySQL(new Date()),
-                  id_externo: String(rpOrderId).substring(0, 90),
-                  side: binanceOppositeSide,
-                  simbolo: signal.symbol,
-                  tipo_ordem_bot: 'REDUCAO_PARCIAL',
-                  target: i + 1, // ✅ TARGET ESPECÍFICO PARA CADA RP
-                  reduce_only: true,
-                  close_position: false,
-                  last_update: formatDateForMySQL(new Date()),
-                  orign_sig: `WEBHOOK_${signal.id}`, // ✅ USAR ID DO SINAL ESPECÍFICO
-                  observacao: `RP${i+1} - ${(rpPercentage*100)}% - Sinal ${signal.id}`, // ✅ IDENTIFICAR SINAL
-                  preco_executado: 0,
-                  quantidade_executada: 0,
-                  dados_originais_ws: JSON.stringify(rpResponse),
-                  conta_id: accountId,
-                  renew_sl_firs: null,
-                  renew_sl_seco: null
-                };
-                
-                await insertNewOrder(connection, rpOrderData);
-                console.log(`[LIMIT_ENTRY] ✅ RP${i+1} salvo no banco para sinal ${signal.id} com target=${i+1}`);
+                console.log(`[LIMIT_ENTRY] ✅ RP${i+1} enviado para corretora: ${rpOrderId} (${(rpPercentage*100)}%)`);
+                console.log(`[LIMIT_ENTRY] 📡 Aguardando confirmação via webhook para inserir no banco...`);
               }
             } catch (rpError) {
-              console.error(`[LIMIT_ENTRY] ❌ Erro ao criar RP${i+1} para sinal ${signal.id}:`, rpError.response?.data || rpError.message);
+              console.error(`[LIMIT_ENTRY] ❌ Erro ao enviar RP${i+1} para corretora:`, rpError.response?.data || rpError.message);
             }
           }
         }
       }
       
+      // ✅ CRIAR TAKE_PROFIT_MARKET TP5 - VERSÃO SEM INSERÇÃO NO BANCO
       if (targetPrices.tp5 && targetPrices.tp5 > 0) {
         try {
           const [existingTp5] = await connection.query(`
@@ -1134,9 +1077,9 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
           if (existingTp5[0]?.count > 0) {
             console.log(`[LIMIT_ENTRY] ⚠️ TAKE_PROFIT (TP5) já existe para sinal ${signal.id}. Pulando criação.`);
           } else {
-            console.log(`[LIMIT_ENTRY] 🏁 Criando TAKE_PROFIT_MARKET para TP5 (${targetPrices.tp5})`);
+            console.log(`[LIMIT_ENTRY] 🏁 Enviando TAKE_PROFIT_MARKET TP5 para corretora (${targetPrices.tp5})`);
 
-            // Envia ordem TAKE_PROFIT_MARKET (closePosition = true)
+            // ✅ APENAS ENVIAR PARA CORRETORA - NÃO INSERIR NO BANCO
             const tp5Response = await rest.newStopOrder(
               numericAccountId,
               signal.symbol,
@@ -1151,39 +1094,12 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
 
             if (tp5Response && (tp5Response.data?.orderId || tp5Response.orderId)) {
               const tp5OrderId = tp5Response.data?.orderId || tp5Response.orderId;
-              console.log(`[LIMIT_ENTRY] ✅ TAKE_PROFIT_MARKET TP5 criado: ${tp5OrderId} @ ${targetPrices.tp5}`);
-
-              const tp5OrderData = {
-                tipo_ordem: 'TAKE_PROFIT_MARKET',
-                preco: targetPrices.tp5,
-                quantidade: 0, // closePosition = true
-                id_posicao: positionId,
-                status: 'NEW',
-                data_hora_criacao: formatDateForMySQL(new Date()),
-                id_externo: String(tp5OrderId).substring(0, 90),
-                side: binanceOppositeSide,
-                simbolo: signal.symbol,
-                tipo_ordem_bot: 'TAKE_PROFIT',
-                target: 5,
-                reduce_only: false,
-                close_position: true,
-                last_update: formatDateForMySQL(new Date()),
-                orign_sig: `WEBHOOK_${signal.id}`,
-                observacao: `TP5 - TAKE_PROFIT_MARKET - Sinal ${signal.id}`,
-                preco_executado: 0,
-                quantidade_executada: 0,
-                dados_originais_ws: JSON.stringify(tp5Response),
-                conta_id: accountId,
-                renew_sl_firs: null,
-                renew_sl_seco: null
-              };
-
-              await insertNewOrder(connection, tp5OrderData);
-              console.log(`[LIMIT_ENTRY] ✅ TP5 TAKE_PROFIT_MARKET salvo no banco para sinal ${signal.id}`);
+              console.log(`[LIMIT_ENTRY] ✅ TAKE_PROFIT_MARKET TP5 enviado para corretora: ${tp5OrderId} @ ${targetPrices.tp5}`);
+              console.log(`[LIMIT_ENTRY] 📡 Aguardando confirmação via webhook para inserir no banco...`);
             }
           }
         } catch (tp5Error) {
-          console.error(`[LIMIT_ENTRY] ❌ Erro ao criar TAKE_PROFIT_MARKET TP5 para sinal ${signal.id}:`, tp5Error.response?.data || tp5Error.message);
+          console.error(`[LIMIT_ENTRY] ❌ Erro ao enviar TAKE_PROFIT_MARKET TP5 para corretora:`, tp5Error.response?.data || tp5Error.message);
         }
       }
       
