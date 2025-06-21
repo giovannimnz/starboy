@@ -182,7 +182,7 @@ async function cancelOrphanOrders(accountId) {
           }
         }
       } else {
-        console.log(`[CLEANUP] ⚠️ Ordem ${order.id_externo} NÃO será cancelada pois a posição ${order.simbolo} ainda está aberta!`);
+        //console.log(`[CLEANUP] ⚠️ Ordem ${order.id_externo} NÃO será cancelada pois a posição ${order.simbolo} ainda está aberta!`);
         continue;
       }
     }
