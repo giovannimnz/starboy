@@ -1,12 +1,9 @@
-nsA// starboy/posicoes/monitoramento.js - CORREÇÃO DOS IMPORTS NO TOPO
 const path = require('path');
 const schedule = require('node-schedule');
 const { getDatabaseInstance } = require('../../../core/database/conexao');
 const { verifyAndFixEnvironmentConsistency, getFuturesAccountBalanceDetails } = require('../api/rest');
 const websockets = require('../api/websocket');
 const api = require('../api/rest');
-
-// NOVOS IMPORTS - ADICIONAR OS FALTANTES
 const { initializeTelegramBot, stopAllTelegramBots } = require('./telegramBot');
 const { startPriceMonitoring, onPriceUpdate } = require('./priceMonitoring');
 const { checkNewTrades } = require('./signalProcessor');
@@ -17,7 +14,6 @@ const { checkExpiredSignals } = require('./signalTimeout');
 const { runPeriodicCleanup, monitorWebSocketHealth, updatePositionPricesWithTrailing, runAdvancedPositionMonitoring } = require('./enhancedMonitoring');
 const { cleanupOrphanSignals, forceCloseGhostPositions, cancelOrphanOrders } = require('./cleanup');
 const { syncAndCloseGhostPositions } = require('./positionHistory');
-// ✅ ADICIONAR IMPORT FALTANTE:
 const { checkOrderTriggers } = require('./trailingStopLoss');
 
 // === DEBUGGING ROBUSTO ===
