@@ -218,9 +218,11 @@ async function moveOrdersToHistory(accountId) {
       LEFT JOIN posicoes p ON o.id_posicao = p.id
       WHERE o.conta_id = ? 
         AND (
-          (o.status = 'CANCELED' AND o.last_update > DATE_SUB(NOW(), INTERVAL 1 HOUR))
+          (o.status = 'CANCELED' AND o.last_update > DATE_SUB(NOW(), INTERVAL 1 MINUTE))
           OR 
-          (o.status = 'FILLED' AND (p.id IS NULL OR p.status != 'OPEN') AND o.last_update < DATE_SUB(NOW(), INTERVAL 5 MINUTE))
+          (o.status = 'FILLED' AND (p.id IS NULL OR p.status != 'OPEN') AND o.last_update < DATE_SUB(NOW(), INTERVAL 1 MINUTE))
+          OR 
+          (o.status = 'EXPIRED' AND (p.id IS NULL OR p.status != 'OPEN') AND o.last_update < DATE_SUB(NOW(), INTERVAL 1 MINUTE))
         )
     `, [accountId]);
     
