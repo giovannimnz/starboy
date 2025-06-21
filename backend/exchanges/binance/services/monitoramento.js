@@ -551,12 +551,19 @@ try {
     console.log(`[MONITOR]   - Position History: ✅`);
     console.log(`[MONITOR]   - Cleanup System: ✅`);
     console.log(`[MONITOR]   - WebSocket API: ✅`);
+
+    try {
+      await logOpenPositionsAndOrdersVisual(accountId);
+    } catch (error) {
+      console.error(`[MONITOR] ⚠️ Erro ao executar logOpenPositionsAndOrdersVisual na inicialização:`, error.message);
+    }
     return accountJobs;
 
   } catch (error) {
     console.error(`[MONITOR] ❌ Erro crítico durante inicialização para conta ${accountId}:`, error.message);
     throw error;
   }
+
 }
 
 /**
