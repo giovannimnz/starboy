@@ -1,6 +1,6 @@
 const { getDatabaseInstance, insertPosition, insertNewOrder, formatDateForMySQL } = require('../../../core/database/conexao');
 const websockets = require('../api/websocket');
-const api = require('../api/rest');
+const rest = require('../api/rest');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 const {  getRecentOrders, editOrder, roundPriceToTickSize, newMarketOrder, newLimitMakerOrder, newReduceOnlyOrder, cancelOrder, newStopOrder, getOpenOrders, getOrderStatus, getAllOpenPositions, getFuturesAccountBalanceDetails, getPrecision, getTickSize, getPrecisionCached, validateQuantity, adjustQuantityToRequirements,} = require('../api/rest');
@@ -245,7 +245,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       currentPriceTrigger = parseFloat(signal.entry_price);
       console.log(`[LIMIT_ENTRY] Usando entry_price do sinal: ${currentPriceTrigger}`);
     } else {
-      currentPriceTrigger = await api.getPrice(signal.symbol, numericAccountId);
+      currentPriceTrigger = await rest.getPrice(signal.symbol, numericAccountId);
       console.log(`[LIMIT_ENTRY] Preço obtido via API: ${currentPriceTrigger}`);
     }
 
@@ -439,7 +439,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
         
         if (apiFilledCount > 0) {
           totalFilledSize = partialFills.reduce((sum, pf) => sum + pf.qty, 0);
-          console.log(`[LIMIT_ENTRY] ${apiFilledCount} ordens sincronizadas via API. Total: ${totalFilledSize.toFixed(quantityPrecision)}`);
+          console.log(`[LIMIT_ENTRY] ${apiFilledCount} ordens sincronizadas via rest. Total: ${totalFilledSize.toFixed(quantityPrecision)}`);
         }
         
         if (totalFilledSize >= totalEntrySize) {
@@ -967,7 +967,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
             console.warn(`[LIMIT_ENTRY] ⚠️ Preço de SL inválido: ${slPriceVal} para ${binanceSide} @ ${averageEntryPrice}. Ajustando...`);
             const slAdjustment = binanceSide === 'BUY' ? 0.98 : 1.02;
             const adjustedSlPrice = averageEntryPrice * slAdjustment;
-            slPriceVal = await api.roundPriceToTickSize(signal.symbol, adjustedSlPrice, numericAccountId); // Reassign to `slPriceVal`
+            slPriceVal = await rest.roundPriceToTickSize(signal.symbol, adjustedSlPrice, numericAccountId); // Reassign to `slPriceVal`
             
             console.log(`[LIMIT_ENTRY] 🔧 SL ajustado: ${slPriceVal}`);
           }
@@ -1125,7 +1125,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
             console.log(`[LIMIT_ENTRY] 🏁 Criando TAKE_PROFIT_MARKET para TP5 (${targetPrices.tp5})`);
 
             // Envia ordem TAKE_PROFIT_MARKET (closePosition = true)
-            const tp5Response = await api.newStopOrder(
+            const tp5Response = await rest.newStopOrder(
               numericAccountId,
               signal.symbol,
               null, // quantity = null para closePosition
@@ -1222,12 +1222,12 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
       console.warn(`[LIMIT_ENTRY] ⚠️ Erro ao enviar notificação de erro:`, telegramError.message);
     }
 
-    // CANCELAR ORDEM ATIVA SE EXISTIR USANDO API.JS
+    // CANCELAR ORDEM ATIVA SE EXISTIR USANDO rest.JS
     if (activeOrderId) {
       try {
         console.log(`[LIMIT_ENTRY] (Catch Principal) Tentando cancelar ordem ativa ${activeOrderId} antes do rollback.`);
         
-        // ✅ USAR cancelOrder DO API.JS
+        // ✅ USAR cancelOrder DO rest.JS
         await cancelOrder(signal.symbol, activeOrderId, numericAccountId); 
         
         console.log(`[LIMIT_ENTRY] (Catch Principal) Ordem ${activeOrderId} cancelada com sucesso.`);
@@ -1403,8 +1403,8 @@ async function getAvailableBalance(accountId) {
             throw new Error(`AccountId inválido: ${accountId}`);
         }
 
-        // ✅ USAR getFuturesAccountBalanceDetails DO API.JS
-        const balanceDetails = await api.getFuturesAccountBalanceDetails(accountId);
+        // ✅ USAR getFuturesAccountBalanceDetails DO rest.JS
+        const balanceDetails = await rest.getFuturesAccountBalanceDetails(accountId);
 
         if (!balanceDetails || !balanceDetails.success) {
             console.log(`[LIMIT_ENTRY] ⚠️ Resposta de saldo inválida, usando valor padrão`);
