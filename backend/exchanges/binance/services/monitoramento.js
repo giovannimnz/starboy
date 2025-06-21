@@ -1,4 +1,4 @@
-// starboy/posicoes/monitoramento.js - CORREÇÃO DOS IMPORTS NO TOPO
+nsA// starboy/posicoes/monitoramento.js - CORREÇÃO DOS IMPORTS NO TOPO
 const path = require('path');
 const schedule = require('node-schedule');
 const { getDatabaseInstance } = require('../../../core/database/conexao');
@@ -10,7 +10,7 @@ const api = require('../api/rest');
 const { initializeTelegramBot, stopAllTelegramBots } = require('./telegramBot');
 const { startPriceMonitoring, onPriceUpdate } = require('./priceMonitoring');
 const { checkNewTrades } = require('./signalProcessor');
-const { syncPositionsWithExchange, logOpenPositionsAndOrders } = require('./positionSync');
+const { syncPositionsWithExchange, logOpenPositionsAndOrdersVisual } = require('./positionSync');
 const orderHandlers = require('./orderHandlers');
 const accountHandlers = require('./accountHandlers');
 const { checkExpiredSignals } = require('./signalTimeout');
@@ -450,7 +450,7 @@ try {
     accountJobs.logStatus = schedule.scheduleJob('*/5 * * * *', async () => {
       if (isShuttingDown) return;
       try {
-        await logOpenPositionsAndOrders(accountId);
+        await logOpenPositionsAndOrdersVisual(accountId);
       } catch (error) {
         console.error(`[MONITOR] ⚠️ Erro no log de status para conta ${accountId}:`, error.message);
       }

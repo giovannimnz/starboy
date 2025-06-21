@@ -137,69 +137,66 @@ async function syncPositionsWithExchange(accountId) {
  * Exibe log de posições abertas e ordens pendentes
  * @param {number} accountId - ID da conta
  */
-async function logOpenPositionsAndOrders(accountId) {
+async function logOpenPositionsAndOrdersVisual(accountId) {
   try {
-    // CORREÇÃO: Validar accountId
-    if (!accountId || typeof accountId !== 'number') {
-      console.error(`[LOG] AccountId inválido: ${accountId} (tipo: ${typeof accountId})`);
-      return;
-    }
-
     const db = await getDatabaseInstance();
     if (!db) {
-      console.error(`[LOG] Não foi possível conectar ao banco para conta ${accountId}`);
+      console.error('[MONITOR] Falha ao obter instância do banco de dados');
       return;
     }
 
-    // Obter posições do banco
-    const [dbPositions] = await db.query(`
-      SELECT simbolo, quantidade, side, preco_entrada, preco_corrente, status
-      FROM posicoes 
-      WHERE status = 'OPEN' AND conta_id = ?
-      ORDER BY simbolo
-    `, [accountId]);
-
+    // Obter posições abertas do banco
+    const [dbPositions] = await db.query(`SELECT id, simbolo, quantidade, preco_entrada, preco_corrente, side FROM posicoes WHERE status = 'OPEN'${accountId ? ' AND conta_id = ?' : ''}`, accountId ? [accountId] : []);
+    
     // Obter ordens pendentes
     const [pendingOrders] = await db.query(`
-      SELECT simbolo, tipo_ordem_bot, side, quantidade, preco, status
+      SELECT simbolo, tipo_ordem_bot, tipo_ordem, preco, quantidade, status, side 
       FROM ordens 
-      WHERE status IN ('NEW', 'OPEN') AND conta_id = ?
+      WHERE status IN ('NEW', 'PARTIALLY_FILLED')${accountId ? ' AND conta_id = ?' : ''}
       ORDER BY simbolo, tipo_ordem_bot
-    `, [accountId]);
+    `, accountId ? [accountId] : []);
 
-    // CORREÇÃO: Chamar getAllOpenPositions apenas com accountId
+    // Obter posições abertas da corretora para comparação
     const exchangePositions = await getAllOpenPositions(accountId);
 
-    console.log('\n=== POSIÇÕES ABERTAS E ORDENS PENDENTES ===');
-    console.log(`[MONITOR] Posições no banco: ${dbPositions.length} | Posições na corretora: ${exchangePositions.length}`);
-    
-    // Mostrar posições do banco
+    // Barra visual
+    const bar = (count, emoji) => count > 0 ? emoji.repeat(Math.min(count, 20)) : '';
+    const pad = (str, len) => (str + ' '.repeat(len)).slice(0, len);
+
+    console.log('\n=== 📊 VISUALIZAÇÃO DE POSIÇÕES E ORDENS ===');
+    console.log(
+      `Banco:   |${bar(dbPositions.length, '🟩')}${pad('', 20 - dbPositions.length)}| ${dbPositions.length} posições`
+    );
+    console.log(
+      `Corretora:|${bar(exchangePositions.length, '🟦')}${pad('', 20 - exchangePositions.length)}| ${exchangePositions.length} posições`
+    );
+    console.log(
+      `Ordens:  |${bar(pendingOrders.length, '🟨')}${pad('', 20 - pendingOrders.length)}| ${pendingOrders.length} pendentes`
+    );
+    console.log('-------------------------------------------');
+
+    // Mostrar detalhes (opcional)
     if (dbPositions.length > 0) {
       console.log('\n📊 Posições no Banco:');
       dbPositions.forEach(pos => {
-        console.log(`  ${pos.simbolo}: ${pos.quantidade} (${pos.side}) @ ${pos.preco_entrada} | Atual: ${pos.preco_corrente}`);
+        console.log(`  ${pad(pos.simbolo, 8)} | ${pad(pos.side, 4)} | ${pad(pos.quantidade, 8)} @ ${pad(pos.preco_entrada, 10)} | Atual: ${pos.preco_corrente}`);
       });
     }
-    
-    // Mostrar posições da corretora
     if (exchangePositions.length > 0) {
       console.log('\n🏦 Posições na Corretora:');
       exchangePositions.forEach(pos => {
-        console.log(`  ${pos.simbolo}: ${pos.quantidade} (${pos.lado}) @ ${pos.precoEntrada} | Mark: ${pos.precoAtual}`);
+        console.log(`  ${pad(pos.simbolo, 8)} | ${pad(pos.side, 4)} | ${pad(pos.quantidade, 8)} @ ${pad(pos.preco_entrada, 10)}`);
       });
     }
-    
-    // Mostrar ordens pendentes
     if (pendingOrders.length > 0) {
       console.log('\n📋 Ordens Pendentes:');
       pendingOrders.forEach(order => {
-        console.log(`  ${order.simbolo}: ${order.tipo_ordem_bot} ${order.side} ${order.quantidade} @ ${order.preco} (${order.status})`);
+        console.log(`  ${pad(order.simbolo, 8)} | ${pad(order.tipo_ordem_bot, 10)} | ${pad(order.side, 4)} | ${pad(order.quantidade, 8)} @ ${pad(order.preco, 10)} (${order.status})`);
       });
     }
-    
     console.log('===========================================\n');
   } catch (error) {
-    console.error(`[LOG] Erro ao obter posições e ordens para conta ${accountId}:`, error);
+    console.error('[MONITOR] Erro ao obter posições e ordens:', error);
   }
 }
 
@@ -312,6 +309,6 @@ async function syncPositionsWithAutoClose(accountId) {
 
 module.exports = {
   syncPositionsWithExchange,
-  logOpenPositionsAndOrders,
-  syncPositionsWithAutoClose // ✅ NOVA FUNÇÃO
+  logOpenPositionsAndOrdersVisual,
+  syncPositionsWithAutoClose
 };
