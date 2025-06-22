@@ -84,7 +84,12 @@ def update_exchange_info_database(exchange_name):
         
         # FASE 3: OBTER DADOS DO BANCO (APENAS DA EXCHANGE ATUAL)
         print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [EXCHANGE-INFO] Buscando dados do banco para a exchange '{exchange_name}'...")
-        cursor.execute("SELECT id, symbol FROM exchange_symbols WHERE exchange = %s", (exchange_name,))
+        cursor.execute("""
+        SELECT id, symbol, status, pair, contract_type, base_asset, quote_asset, margin_asset,
+           price_precision, quantity_precision, base_asset_precision, quote_precision,
+           onboard_date, liquidation_fee, market_take_bound
+        FROM exchange_symbols WHERE exchange = %s
+        """, (exchange_name,))
         db_symbols_map = {row['symbol']: row for row in cursor.fetchall()}
         
         # FASE 4: PROCESSAR DIFERENÇAS
