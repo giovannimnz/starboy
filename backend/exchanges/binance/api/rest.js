@@ -1800,7 +1800,7 @@ async function newReduceOnlyOrder(accountId, symbol, quantity, side, price) {
  */
 async function getOrderStatus(symbol, orderId, accountId) {
   try {
-    console.log(`[API] Obtendo status da ordem ${orderId} para ${symbol} (conta ${accountId})...`);
+    //console.log(`[API] Obtendo status da ordem ${orderId} para ${symbol} (conta ${accountId})...`);
     
     const params = {
       symbol: symbol,
@@ -1810,7 +1810,7 @@ async function getOrderStatus(symbol, orderId, accountId) {
     const response = await makeAuthenticatedRequest(accountId, 'GET', '/v1/order', params);
     
     if (response) {
-      console.log(`[API] ✅ Status da ordem ${orderId}: ${response.status}`);
+      //console.log(`[API] ✅ Status da ordem ${orderId}: ${response.status}`);
       return response;
     } else {
       console.error(`[API] Resposta inválida ao obter status da ordem ${orderId}`);

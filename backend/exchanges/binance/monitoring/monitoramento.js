@@ -411,13 +411,13 @@ try {
   console.error(`[MONITOR] ⚠️ Erro durante limpeza avançada para conta ${accountId}:`, cleanupError.message);
 }
 
-    // === ETAPA 10: Verificar sinais pendentes ===
-    console.log(`📋 ETAPA 10: Verificando sinais pendentes para conta ${accountId}...`);
+    // === ETAPA 10: Verificar sinais ===
+    console.log(`📋 ETAPA 10: Monitorar sinais para conta ${accountId}...`);
     
     try {
-      await checkNewTrades(accountId);
+      await runSignalMonitoring(accountId);
     } catch (signalCheckError) {
-      console.error(`[MONITOR] ⚠️ Erro ao verificar sinais pendentes para conta ${accountId}:`, signalCheckError.message);
+      console.error(`[MONITOR] ⚠️ Erro ao monitorar sinais para conta ${accountId}:`, signalCheckError.message);
     }
 
 // === ETAPA 11: Iniciar monitoramento de preços ===

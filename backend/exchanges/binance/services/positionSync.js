@@ -13,7 +13,7 @@ async function syncPositionsWithExchange(accountId) {
       throw new Error(`AccountId inválido em syncPositionsWithExchange: ${accountId} (tipo: ${typeof accountId})`);
     }
 
-    console.log(`[SYNC] Iniciando sincronização de posições para conta ${accountId}...`);
+    //console.log(`[SYNC] Iniciando sincronização de posições para conta ${accountId}...`);
     
     const db = await getDatabaseInstance();
     if (!db) {
@@ -21,12 +21,12 @@ async function syncPositionsWithExchange(accountId) {
     }
 
     // CORREÇÃO CRÍTICA: Log de debug antes da chamada
-    console.log(`[SYNC] Chamando getAllOpenPositions com accountId: ${accountId} (tipo: ${typeof accountId})`);
+    //console.log(`[SYNC] Chamando getAllOpenPositions com accountId: ${accountId} (tipo: ${typeof accountId})`);
     
     // CORREÇÃO CRÍTICA: Chamar getAllOpenPositions apenas com accountId (número)
     const exchangePositions = await getAllOpenPositions(accountId);
     
-    console.log(`[SYNC] Obtidas ${exchangePositions.length} posições da corretora para conta ${accountId}`);
+    //console.log(`[SYNC] Obtidas ${exchangePositions.length} posições da corretora para conta ${accountId}`);
 
     // Obter posições do banco de dados
     const [dbPositions] = await db.query(`
@@ -38,7 +38,7 @@ async function syncPositionsWithExchange(accountId) {
       ORDER BY simbolo
     `, [accountId]);
 
-    console.log(`[SYNC] Encontradas ${dbPositions.length} posições no banco para conta ${accountId}`);
+    //console.log(`[SYNC] Encontradas ${dbPositions.length} posições no banco para conta ${accountId}`);
 
     let syncResults = {
       exchangePositions: exchangePositions.length,
@@ -54,7 +54,7 @@ async function syncPositionsWithExchange(accountId) {
       const dbPos = dbPositions.find(p => p.simbolo === exchangePos.simbolo);
       
       if (!dbPos) {
-        console.warn(`[SYNC] Posição ${exchangePos.simbolo} existe na corretora mas não no banco (conta ${accountId})`);
+        //console.warn(`[SYNC] Posição ${exchangePos.simbolo} existe na corretora mas não no banco (conta ${accountId})`);
         syncResults.missingInDb++;
         
         // Opcional: Criar posição no banco automaticamente
@@ -76,7 +76,7 @@ async function syncPositionsWithExchange(accountId) {
             accountId
           ]);
           
-          console.log(`[SYNC] ✅ Posição ${exchangePos.simbolo} criada no banco para conta ${accountId}`);
+          //console.log(`[SYNC] ✅ Posição ${exchangePos.simbolo} criada no banco para conta ${accountId}`);
           syncResults.updated++;
         } catch (createError) {
           console.error(`[SYNC] Erro ao criar posição ${exchangePos.simbolo} no banco:`, createError.message);
@@ -115,7 +115,7 @@ async function syncPositionsWithExchange(accountId) {
             WHERE id = ?
           `, [dbPos.id]);
           
-          console.log(`[SYNC] ✅ Posição ${dbPos.simbolo} marcada como fechada no banco (conta ${accountId})`);
+          //console.log(`[SYNC] ✅ Posição ${dbPos.simbolo} marcada como fechada no banco (conta ${accountId})`);
           syncResults.updated++;
         } catch (closeError) {
           console.error(`[SYNC] Erro ao fechar posição ${dbPos.simbolo} no banco:`, closeError.message);
@@ -124,7 +124,7 @@ async function syncPositionsWithExchange(accountId) {
       }
     }
 
-    console.log(`[SYNC] ✅ Sincronização concluída para conta ${accountId}:`, syncResults);
+    //console.log(`[SYNC] ✅ Sincronização concluída para conta ${accountId}:`, syncResults);
     return syncResults;
 
   } catch (error) {
