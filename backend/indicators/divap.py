@@ -36,7 +36,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", message=".*telethon.*")
 
 # --- Constantes e Configurações Globais ---
-ENABLE_DIVAP_VERIFICATION = True
+ENABLE_DIVAP_VERIFICATION = False
 PREJUIZO_MAXIMO_PERCENTUAL_DO_CAPITAL_TOTAL = 4.90
 TAXA_ENTRADA = 0.02
 TAXA_SAIDA = 0.05
