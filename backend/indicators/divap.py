@@ -765,7 +765,7 @@ def extract_trade_info(message_text):
             capital_pct = min(100.0, max(0.1, capital_pct))
             capital_pct = round(capital_pct, 2)
             
-            print(f" [INFO] Capital calculado: {capital_pct:.2f}% (risco máximo: {PREJUIZO_MAXIMO_PERCENTUAL_DO_CAPITAL_TOTAL}%)")
+            print(f" [INFO] Capital calculado: {capital_pct:.2f}% (risco máximo: {PREJUIZO_MAXIMO_PERCENTUAL_DO_CAPITAL_TOTAL}%)\n")
         else:
             capital_pct = original_capital_pct
             print(f"   ⚠️ Usando capital original: {capital_pct:.2f}%")
@@ -774,7 +774,7 @@ def extract_trade_info(message_text):
         tp = all_tps[0] if all_tps else entry
         
         print(f"{'='*80}\n")
-        print(f"\n🎯 [EXTRACT_SUCCESS] Sinal extraído com sucesso:\n")
+        print(f"🎯 [EXTRACT_SUCCESS] Sinal extraído com sucesso:\n")
         print(f"       Símbolo: {symbol} | Timeframe: {timeframe}")
         print(f"       Lado: {side} | Entrada: {entry} | Stop: {stop_loss}")
         print(f"       TPs: {all_tps}")
@@ -1118,7 +1118,8 @@ async def handle_new_message(event):
                             message_source=message_source                         
                         )
                         
-                        print(f"\n[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Processo completo - sinal enviado e salvo!")
+                        print(f"\n[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Processo completo - sinal enviado e salvo!\n")
+                        print("="*80)
                     else:
                         print(f"   ❌ Falha ao salvar sinal no banco")
 
@@ -1152,7 +1153,8 @@ async def handle_new_message(event):
                         message_source=message_source
                     )
                     
-                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Sinal cancelado salvo no banco")
+                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Sinal cancelado salvo no banco\n")
+                    print("="*80)
 
             else: 
                 print(f"   ❌ Não foi possível extrair trade info da mensagem")
