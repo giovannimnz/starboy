@@ -2,12 +2,13 @@ import asyncio
 from telethon import TelegramClient
 from senhas import api_hash, api_id
 
-'''PRODUÇÃO'''
-sessao = 'divap'
-
-'''DESENVOLVIMENTO
-sessao = 'divap-dev'
+'''PRODUÇÃO
+sessao = 'divap
 '''
+
+'''DESENVOLVIMENTO'''
+sessao = 'divap-dev'
+
 
 async def main():
     client = TelegramClient(sessao, api_id, api_hash)
