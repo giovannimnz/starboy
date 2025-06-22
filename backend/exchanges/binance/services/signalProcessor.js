@@ -707,8 +707,8 @@ function calculateEstimatedPositionCost(signal) {
 
 async function onPriceUpdate(symbol, currentPrice, db, accountId) {
   try {
-    // ✅ DEBUG: Log de entrada da função
-    console.log(`[SIGNAL] 🔄 onPriceUpdate chamado: ${symbol} = ${currentPrice} (conta ${accountId})`);
+    // ✅ DEBUG: Confirmar que está sendo chamado via WebSocket
+    console.log(`[SIGNAL] 📊 onPriceUpdate via WebSocket: ${symbol} = ${currentPrice} (conta ${accountId})`);
     
     // Validação básica
     if (!symbol || !currentPrice || currentPrice <= 0 || !accountId) {
@@ -718,21 +718,16 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
     
     // 1. ATUALIZAR CACHE DE PREÇOS
     const cacheUpdated = updatePriceCache(symbol, currentPrice, accountId);
-    console.log(`[SIGNAL] 💾 Cache atualizado: ${cacheUpdated}`);
     
-    // 2. ✅ USAR A VERSÃO DO ENHANCEDMONITORING (não duplicar)
+    // 2. ATUALIZAR POSIÇÕES (usar enhancedMonitoring)
     try {
       const { updatePositionPricesWithTrailing } = require('./enhancedMonitoring');
       await updatePositionPricesWithTrailing(db, symbol, currentPrice, accountId);
-      console.log(`[SIGNAL] 📈 Posições atualizadas para ${symbol}`);
     } catch (positionError) {
       console.error(`[SIGNAL] ❌ Erro ao atualizar posições:`, positionError.message);
     }
     
-    // 3. ✅ DEBUG: Buscar sinais ANTES da query
-    console.log(`[SIGNAL] 🔍 Buscando sinais AGUARDANDO_ACIONAMENTO para ${symbol}...`);
-    
-    // VERIFICAR SINAIS AGUARDANDO ACIONAMENTO
+    // 3. VERIFICAR SINAIS AGUARDANDO ACIONAMENTO
     const [pendingSignals] = await db.query(`
       SELECT id, symbol, side, entry_price, sl_price, timeframe, 
              created_at, timeout_at, max_lifetime_minutes, chat_id
@@ -743,14 +738,12 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
       ORDER BY created_at ASC
     `, [symbol, accountId]);
     
-    console.log(`[SIGNAL] 📋 Query executada: ${pendingSignals.length} sinais encontrados`);
-    
     if (pendingSignals.length === 0) {
-      console.log(`[SIGNAL] ❌ Nenhum sinal aguardando para ${symbol} (conta ${accountId})`);
+      // ✅ DEBUG: Mostrar quando não há sinais
+      // console.log(`[SIGNAL] ℹ️ Nenhum sinal aguardando para ${symbol} (conta ${accountId})`);
       return;
     }
     
-    // ✅ DEBUG: Mostrar quantos sinais foram encontrados
     console.log(`[SIGNAL] 🔍 Encontrados ${pendingSignals.length} sinais aguardando para ${symbol}`);
     
     const now = new Date();
@@ -760,10 +753,9 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
       const slPrice = parseFloat(signal.sl_price || 0);
       const side = signal.side.toUpperCase();
       
-      // ✅ DEBUG: Log para cada sinal verificado
       console.log(`[SIGNAL] 🔍 Verificando sinal ${signal.id}: ${side} ${symbol} entrada=${entryPrice}, atual=${currentPrice}, sl=${slPrice}`);
       
-      // 4. VERIFICAR TIMEOUT PRIMEIRO
+      // 4. VERIFICAR TIMEOUT
       let isTimedOut = false;
       if (signal.timeframe) {
         const timeframeMs = timeframeToMs(signal.timeframe);
@@ -780,7 +772,7 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
         console.log(`[SIGNAL] ⏰ Sinal ${signal.id} expirou por timeout_at`);
       }
       
-      // 5. VERIFICAR SE STOP LOSS FOI ATINGIDO
+      // 5. VERIFICAR STOP LOSS
       let stopLossHit = false;
       if (slPrice > 0) {
         if (side === 'BUY' || side === 'COMPRA') {
@@ -794,24 +786,21 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
         }
       }
       
-      // ✅ 6. CORREÇÃO CRÍTICA: LÓGICA DE GATILHO IGUAL À VERSÃO _DEV
+      // 6. ✅ VERIFICAR GATILHO DE ENTRADA
       let entryTriggered = false;
       if (entryPrice > 0) {
         if (side === 'BUY' || side === 'COMPRA') {
-          // ✅ CORREÇÃO: Usar >= como na versão _dev
           entryTriggered = currentPrice >= entryPrice;
-          console.log(`[SIGNAL] 🔍 LONG ${symbol}: ${currentPrice} >= ${entryPrice} = ${entryTriggered}`);
+          console.log(`[SIGNAL] 🎯 LONG ${symbol}: ${currentPrice} >= ${entryPrice} = ${entryTriggered}`);
         } else if (side === 'SELL' || side === 'VENDA') {
-          // ✅ CORREÇÃO: Usar <= como na versão _dev
           entryTriggered = currentPrice <= entryPrice;
-          console.log(`[SIGNAL] 🔍 SHORT ${symbol}: ${currentPrice} <= ${entryPrice} = ${entryTriggered}`);
+          console.log(`[SIGNAL] 🎯 SHORT ${symbol}: ${currentPrice} <= ${entryPrice} = ${entryTriggered}`);
         }
       }
       
-      // ✅ DEBUG: Status das verificações
       console.log(`[SIGNAL] 📊 Status sinal ${signal.id}: timeout=${isTimedOut}, stopLoss=${stopLossHit}, gatilho=${entryTriggered}`);
       
-      // 7. TOMAR AÇÕES BASEADAS NAS VERIFICAÇÕES
+      // 7. EXECUTAR AÇÕES
       if (isTimedOut) {
         console.log(`[SIGNAL] ⏰ Cancelando sinal ${signal.id} por timeout`);
         await cancelSignal(db, signal.id, 'TIMEOUT_ENTRY', 
@@ -835,7 +824,7 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
           
           console.log(`[SIGNAL] 🔄 Status atualizado para PROCESSANDO, chamando executeLimitMakerEntry...`);
           
-          // ✅ ENVIAR PARA limitMakerEntry
+          // ✅ CHAMAR limitMakerEntry
           const entryResult = await executeLimitMakerEntry(signal, currentPrice, accountId);
           
           if (entryResult && entryResult.success) {
@@ -875,70 +864,26 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
           );
         }
       } else {
-        // ✅ LOG PERIÓDICO CONTROLADO (APENAS A CADA 1 MINUTO)
+        // ✅ LOG PERIÓDICO (A CADA 1 MINUTO)
         const logKey = `${symbol}_${signal.id}`;
         const currentTime = Date.now();
         const lastLogTime = lastPriceLogTime.get(logKey) || 0;
         
-        // ✅ VERIFICAR SE JÁ PASSOU 1 MINUTO (60000ms) DESDE O ÚLTIMO LOG
         if (currentTime - lastLogTime >= 60000) {
           const createdAt = new Date(signal.created_at);
           const elapsedMinutes = Math.round((now - createdAt) / 60000);
           const totalMinutes = signal.max_lifetime_minutes || 0;
           
-          // ✅ MOSTRAR LOG APENAS A CADA 1 MINUTO
           console.log(`[SIGNAL] 📊 Sinal ${signal.id} (${symbol}): Atual=${currentPrice}, Entrada=${entryPrice}, SL=${slPrice} | ${elapsedMinutes}/${totalMinutes}min`);
           
-          // ✅ ATUALIZAR O TIMESTAMP DO ÚLTIMO LOG
           lastPriceLogTime.set(logKey, currentTime);
         }
       }
     }
     
   } catch (error) {
-    console.error(`[PRICE] ❌ Erro no processamento para ${symbol}:`, error.message);
-    console.error(`[PRICE] Stack trace:`, error.stack);
-  }
-}
-
-async function updatePositionPrices(db, symbol, currentPrice, accountId) {
-  try {
-    // 1. Buscar posições abertas para o símbolo
-    const [positions] = await db.query(
-      'SELECT * FROM posicoes WHERE simbolo = ? AND status = "OPEN" AND conta_id = ?',
-      [symbol, accountId]
-    );
-
-    if (positions.length === 0) {
-      // Log mais detalhado para diagnosticar
-      //console.log(`[PRICE UPDATE] Nenhuma posição aberta encontrada para ${symbol} (conta ${accountId})`);
-      return;
-    }
-
-    // Log mais detalhado para ajudar no diagnóstico
-    console.log(`[PRICE UPDATE] Atualizando ${positions.length} posições para ${symbol}. Preço atual: ${currentPrice} (conta ${accountId})`);
-
-    // 2. Para cada posição, atualizar o preço corrente
-    for (const position of positions) {
-      try {
-        await db.query(`
-          UPDATE posicoes 
-          SET preco_corrente = ?, data_hora_ultima_atualizacao = NOW()
-          WHERE id = ?
-        `, [currentPrice, position.id]);
-
-        console.log(`[PRICE UPDATE] Posição ${position.id} (${symbol}): preço atualizado para ${currentPrice}`);
-
-        // Verificar trailing stops se necessário
-        const { checkOrderTriggers } = require('./trailingStopLoss');
-        await checkOrderTriggers(db, position, currentPrice, accountId);
-
-      } catch (positionError) {
-        console.error(`[PRICE UPDATE] Erro ao atualizar posição ${position.id}:`, positionError.message);
-      }
-    }
-  } catch (error) {
-    console.error(`[PRICE UPDATE] Erro ao atualizar preços das posições para ${symbol}: ${error.message}`, error);
+    console.error(`[SIGNAL] ❌ Erro no processamento via WebSocket para ${symbol}:`, error.message);
+    console.error(`[SIGNAL] Stack trace:`, error.stack);
   }
 }
 
@@ -966,7 +911,6 @@ module.exports = {
   checkSignalTriggers,
   updatePriceCache,
   getPriceFromCache,
-  //updatePositionPrices,
 
   
   // Funções utilitárias

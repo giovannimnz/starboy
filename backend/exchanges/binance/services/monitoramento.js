@@ -555,6 +555,58 @@ async function startPriceMonitoringInline(accountId) {
       }
     });
 
+    accountJobs.verifyWebSocketHealth = schedule.scheduleJob('*/2 * * * *', async () => {
+  if (isShuttingDown) return;
+  try {
+    const db = await getDatabaseInstance();
+    
+    // Verificar se há sinais aguardando
+    const [signals] = await db.query(`
+      SELECT symbol FROM webhook_signals 
+      WHERE conta_id = ? AND status = 'AGUARDANDO_ACIONAMENTO'
+      GROUP BY symbol
+      LIMIT 5
+    `, [accountId]);
+    
+    if (signals.length > 0) {
+      console.log(`[MONITOR] 🔍 Verificando saúde do WebSocket para ${signals.length} símbolos:`);
+      
+      for (const signal of signals) {
+        try {
+          const priceWebsockets = websockets.getPriceWebsockets(accountId);
+          
+          if (priceWebsockets && priceWebsockets.has(signal.symbol)) {
+            const ws = priceWebsockets.get(signal.symbol);
+            const isOpen = ws && ws.readyState === 1; // WebSocket.OPEN
+            
+            if (isOpen) {
+              console.log(`[MONITOR]   ✅ ${signal.symbol}: WebSocket ativo`);
+            } else {
+              console.log(`[MONITOR]   ❌ ${signal.symbol}: WebSocket inativo (readyState: ${ws?.readyState})`);
+              
+              // Tentar recriar o WebSocket
+              console.log(`[MONITOR] 🔄 Recriando WebSocket para ${signal.symbol}...`);
+              await websockets.ensurePriceWebsocketExists(signal.symbol, accountId);
+            }
+          } else {
+            console.log(`[MONITOR]   ❌ ${signal.symbol}: WebSocket não encontrado`);
+            
+            // Criar WebSocket
+            console.log(`[MONITOR] 🆕 Criando WebSocket para ${signal.symbol}...`);
+            await websockets.ensurePriceWebsocketExists(signal.symbol, accountId);
+          }
+          
+        } catch (wsError) {
+          console.error(`[MONITOR] ❌ Erro ao verificar WebSocket ${signal.symbol}:`, wsError.message);
+        }
+      }
+    }
+    
+  } catch (error) {
+    console.error(`[MONITOR] ❌ Erro na verificação de saúde do WebSocket:`, error.message);
+  }
+});
+
     // ✅ NOVO: Job de verificação de sinais expirados a cada 1 minuto (mais frequente)
 accountJobs.checkExpiredSignals = schedule.scheduleJob('*/1 * * * *', async () => {
   if (isShuttingDown) return;

@@ -913,12 +913,19 @@ function forceCleanupAccount(accountId) {
 
 
 module.exports = {
+  // Funções de UserDataStream
   startUserDataStream,
-  setupBookDepthWebsocket,
+  handleUserDataMessage,
+  stopUserDataStream,
+  
+  // Funções de WebSocket de preços
   ensurePriceWebsocketExists,
+  handlePriceUpdate,
+  setupBookDepthWebsocket,
   stopPriceMonitoring,
-  reset,
-  getPriceWebsockets,
+  getPriceWebsockets,  // ✅ ESTA LINHA ESTAVA FALTANDO
+  
+  // Funções de WebSocket API
   startWebSocketApi,
   authenticateWebSocketApi,
   sendWebSocketApiRequest,
@@ -927,14 +934,19 @@ module.exports = {
   cleanupWebSocketApi,
   isWebSocketApiAuthenticated,
   isWebSocketApiConnected,
+  ensureWebSocketApiExists,
+  
+  // Funções de callbacks e handlers
   setMonitoringCallbacks,
   getHandlers,
   getCredentials,
-  ensureWebSocketApiExists,
+  
+  // Funções utilitárias
   getAllAccountConnections,
   handleWebSocketApiMessage,
   createEd25519Signature,
   forceCleanupAccount,
   loadNobleEd25519,
-  getAccountConnectionState
+  getAccountConnectionState,
+  reset
 };
