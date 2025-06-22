@@ -536,8 +536,8 @@ def extract_trade_info(message_text):
         basic_terms = ["entrada", "alvo", "stop"]
         has_basic_structure = all(term in message_lower for term in basic_terms)
         
-        print(f"   Contém DIVAP: {has_divap}")
-        print(f"   Contém estrutura básica: {has_basic_structure}")
+        print(f"\n   ✅ Contém DIVAP: {has_divap}")
+        print(f"   ✅ Contém estrutura básica: {has_basic_structure}")
         
         if not (has_divap or has_basic_structure):
             print(f"   ❌ Não contém termos necessários")
@@ -745,7 +745,7 @@ def extract_trade_info(message_text):
                 break
         
         print(f"   ✅ Capital percentual extraído: {original_capital_pct}%")
-        print(f"   Lado detectado: {side}")
+        print(f"   ✅ Lado detectado: {side}\n")
         
         # ===== CÁLCULOS FINAIS =====
         
