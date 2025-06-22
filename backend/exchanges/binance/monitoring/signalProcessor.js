@@ -1,7 +1,7 @@
 const api = require('../api/rest');
 const websockets = require('../api/websocket');
 const { getDatabaseInstance } = require('../../../core/database/conexao');
-const { executeLimitMakerEntry } = require('../services/limitMakerEntry');
+const { executeLimitMakerEntry } = require('../strategies/limitMakerEntry');
 const { sendTelegramMessage } = require('../telegram/telegramBot');
 
 // Set para rastrear sinais em processamento
