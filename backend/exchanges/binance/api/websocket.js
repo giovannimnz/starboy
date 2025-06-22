@@ -918,6 +918,7 @@ module.exports = {
   ensurePriceWebsocketExists,
   stopPriceMonitoring,
   reset,
+  getPriceWebsockets,
   startWebSocketApi,
   authenticateWebSocketApi,
   sendWebSocketApiRequest,
