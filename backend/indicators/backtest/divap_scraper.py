@@ -11,7 +11,6 @@ import pathlib
 from pathlib import Path
 import logging
 import warnings
-from datetime import timezone
 
 # Importar configurações do divap.py
 sys.path.append(str(Path(__file__).parent.parent))
@@ -32,13 +31,21 @@ load_dotenv(dotenv_path=env_path)
 
 # --- Configurações Globais ---
 GRUPOS_ORIGEM_DISPONIVEIS = {
-    -1002059628218: "divap-manual",
-    -1002444455075: "divap"
+    -1002444455075: "IA de Divap",
+    -1002059628218: "Manual Divap"
 }
 
 GRUPOS_DESTINO_DISPONIVEIS = {
-    -1002016807368: "Starboy - Entradas",
     -4118022548: "Starboy - Dev Entradas",
+    -1002016807368: "Starboy - Entradas"
+}
+
+# ✅ LIMITES DA API TELEGRAM
+TELEGRAM_RATE_LIMITS = {
+    'messages_per_second': 1,      # 1 mensagem por segundo
+    'messages_per_minute': 20,     # 20 mensagens por minuto
+    'burst_limit': 5,              # Máximo 5 mensagens em rajada
+    'delay_between_messages': 3    # 3 segundos entre mensagens para segurança
 }
 
 # Cliente Telegram
@@ -53,8 +60,7 @@ class DivapScraper:
             'data_inicio': None,
             'data_fim': None,
             'verificar_divap': False,
-            'salvar_banco': False,
-            'apenas_teste': False
+            'salvar_banco': False
         }
         self.estatisticas = {
             'total_mensagens': 0,
@@ -65,6 +71,10 @@ class DivapScraper:
             'salvas_banco': 0,
             'erros': 0
         }
+        # ✅ CONTROLE DE RATE LIMITING
+        self.message_count = 0
+        self.start_time = datetime.now()
+        self.last_message_time = None
 
     async def inicializar(self):
         """Inicializa o cliente Telegram"""
@@ -120,12 +130,11 @@ class DivapScraper:
             except ValueError:
                 print("❌ Digite um número válido!")
 
-        # 3. Configurar período de datas - ✅ CORRIGIDO PARA INCLUIR TIMEZONE
+        # 3. Configurar período de datas
         print("\n📅 PERÍODO DE SCRAPING:")
         while True:
             try:
                 data_inicio_str = input("Data de início (DD/MM/AAAA): ").strip()
-                # ✅ APLICAR TIMEZONE UTC
                 self.config['data_inicio'] = datetime.strptime(data_inicio_str, "%d/%m/%Y").replace(tzinfo=timezone.utc)
                 break
             except ValueError:
@@ -134,7 +143,6 @@ class DivapScraper:
         while True:
             try:
                 data_fim_str = input("Data de fim (DD/MM/AAAA): ").strip()
-                # ✅ APLICAR TIMEZONE UTC E AJUSTAR PARA 23:59:59
                 self.config['data_fim'] = datetime.strptime(data_fim_str, "%d/%m/%Y").replace(
                     hour=23, minute=59, second=59, tzinfo=timezone.utc
                 )
@@ -162,11 +170,7 @@ class DivapScraper:
 
         # 5. Configurar salvamento no banco
         while True:
-            resp = input("\n💾 Salvar no banco de dados? (s/n): ")
-
-            # Remover espaços em branco no início e no fim da resposta
-            resp = resp.strip()
-
+            resp = input("\n💾 Salvar no banco de dados? (s/n): ").strip().lower()
             if resp in ['s', 'sim', 'y', 'yes']:
                 self.config['salvar_banco'] = True
                 print("✅ Salvamento no banco ativado")
@@ -178,20 +182,6 @@ class DivapScraper:
             else:
                 print("❌ Responda com 's' para sim ou 'n' para não")
 
-        # 6. Modo teste
-        while True:
-            resp = input("\n🧪 Modo teste (só mostra, não envia)? (s/n): ").strip().lower()
-            if resp in ['s', 'sim', 'y', 'yes']:
-                self.config['apenas_teste'] = True
-                print("✅ Modo teste ativado - mensagens não serão enviadas")
-                break
-            elif resp in ['n', 'nao', 'não', 'no']:
-                self.config['apenas_teste'] = False
-                print("✅ Modo normal ativado - mensagens serão enviadas")
-                break
-            else:
-                print("❌ Responda com 's' para sim ou 'n' para não")
-
         # Resumo da configuração
         print(f"\n📋 RESUMO DA CONFIGURAÇÃO:")
         print(f"   🔍 Grupo origem: {nome_origem}")
@@ -199,7 +189,6 @@ class DivapScraper:
         print(f"   📅 Período: {self.config['data_inicio'].strftime('%d/%m/%Y')} até {self.config['data_fim'].strftime('%d/%m/%Y')}")
         print(f"   🔬 Verificação DIVAP: {'Sim' if self.config['verificar_divap'] else 'Não'}")
         print(f"   💾 Salvar no banco: {'Sim' if self.config['salvar_banco'] else 'Não'}")
-        print(f"   🧪 Modo teste: {'Sim' if self.config['apenas_teste'] else 'Não'}")
 
         while True:
             confirmacao = input("\n✅ Confirmar configuração? (s/n): ").strip().lower()
@@ -217,20 +206,39 @@ class DivapScraper:
             print(f"\n🔍 Buscando mensagens históricas...")
             print(f"   📅 Período: {self.config['data_inicio']} até {self.config['data_fim']}")
             
-            # Buscar todas as mensagens no período
+            # Verificar acesso ao grupo primeiro
+            try:
+                entity = await self.client.get_entity(self.config['grupo_origem'])
+                print(f"✅ Grupo encontrado: {entity.title}")
+            except Exception as e:
+                print(f"❌ Erro ao acessar grupo: {e}")
+                return []
+            
+            # Buscar mensagens
             mensagens = []
+            total_processadas = 0
+            
+            print("🔍 Buscando mensagens por período...")
+            
             async for message in self.client.iter_messages(
                 self.config['grupo_origem'],
-                offset_date=self.config['data_fim'],
-                reverse=True
+                limit=1000
             ):
+                total_processadas += 1
+                
+                if total_processadas % 100 == 0:
+                    print(f"   📊 Processadas {total_processadas} mensagens")
+                
                 if message.date < self.config['data_inicio']:
+                    print(f"   ⏹️ Chegou antes do período desejado após {total_processadas} mensagens")
                     break
                 
-                if message.date <= self.config['data_fim'] and message.text:
+                if (message.date >= self.config['data_inicio'] and 
+                    message.date <= self.config['data_fim'] and 
+                    message.text):
                     mensagens.append(message)
                     
-            print(f"✅ Encontradas {len(mensagens)} mensagens no período")
+            print(f"✅ Encontradas {len(mensagens)} mensagens no período (processadas {total_processadas} no total)")
             self.estatisticas['total_mensagens'] = len(mensagens)
             return mensagens
             
@@ -246,7 +254,7 @@ class DivapScraper:
         print(f"\n🔍 Filtrando mensagens válidas...")
         
         for i, message in enumerate(mensagens, 1):
-            if i % 50 == 0:  # Progress feedback
+            if i % 50 == 0:
                 print(f"   Processando {i}/{len(mensagens)}...")
                 
             try:
@@ -266,12 +274,124 @@ class DivapScraper:
         self.estatisticas['mensagens_validas'] = len(mensagens_validas)
         return mensagens_validas
 
-    async def processar_mensagem(self, item):
-        """Processa uma mensagem individual"""
+    def exibir_resumo_por_dia(self, mensagens_validas):
+        """✅ NOVA FUNÇÃO: Exibe resumo de mensagens por dia antes do processamento"""
+        if not mensagens_validas:
+            return True
+        
+        # Agrupar mensagens por dia
+        mensagens_por_dia = {}
+        for item in mensagens_validas:
+            message = item['message']
+            trade_info = item['trade_info']
+            data = message.date.date()
+            
+            if data not in mensagens_por_dia:
+                mensagens_por_dia[data] = []
+            
+            mensagens_por_dia[data].append({
+                'hora': message.date.strftime('%H:%M:%S'),
+                'symbol': trade_info['symbol'],
+                'side': trade_info['side'],
+                'message_id': message.id
+            })
+        
+        # Exibir resumo
+        print(f"\n📊 RESUMO DE MENSAGENS ELEGÍVEIS PARA ENCAMINHAMENTO:")
+        print("="*80)
+        
+        total_dias = len(mensagens_por_dia)
+        total_mensagens = len(mensagens_validas)
+        
+        for data in sorted(mensagens_por_dia.keys()):
+            mensagens_do_dia = mensagens_por_dia[data]
+            print(f"\n📅 {data.strftime('%d/%m/%Y')} - {len(mensagens_do_dia)} mensagens:")
+            
+            for msg in mensagens_do_dia:
+                print(f"   🕒 {msg['hora']} - {msg['symbol']} {msg['side']} (ID: {msg['message_id']})")
+        
+        print(f"\n" + "="*80)
+        print(f"📈 RESUMO GERAL:")
+        print(f"   📅 Total de dias: {total_dias}")
+        print(f"   📧 Total de mensagens: {total_mensagens}")
+        print(f"   ⚡ Taxa de envio: 1 mensagem a cada {TELEGRAM_RATE_LIMITS['delay_between_messages']} segundos")
+        
+        # Calcular tempo estimado
+        tempo_total_segundos = total_mensagens * TELEGRAM_RATE_LIMITS['delay_between_messages']
+        tempo_total_minutos = tempo_total_segundos / 60
+        
+        if tempo_total_minutos < 60:
+            tempo_str = f"{tempo_total_minutos:.1f} minutos"
+        else:
+            horas = int(tempo_total_minutos // 60)
+            minutos = int(tempo_total_minutos % 60)
+            tempo_str = f"{horas}h{minutos:02d}m"
+        
+        print(f"   ⏱️ Tempo estimado: {tempo_str}")
+        print("="*80)
+        
+        # Confirmação do usuário
+        print(f"\n⚠️ ATENÇÃO: As mensagens acima serão enviadas para o grupo destino!")
+        print(f"   🎯 Destino: {GRUPOS_DESTINO_DISPONIVEIS[self.config['grupo_destino']]}")
+        print(f"   💾 Salvar no banco: {'Sim' if self.config['salvar_banco'] else 'Não'}")
+        print(f"   🔍 Verificar DIVAP: {'Sim' if self.config['verificar_divap'] else 'Não'}")
+        
+        while True:
+            confirmacao = input(f"\n✅ Confirmar o encaminhamento de {total_mensagens} mensagens? (s/n): ").strip().lower()
+            if confirmacao in ['s', 'sim', 'y', 'yes']:
+                print(f"✅ Encaminhamento confirmado! Iniciando processamento...")
+                return True
+            elif confirmacao in ['n', 'nao', 'não', 'no']:
+                print(f"❌ Encaminhamento cancelado pelo usuário")
+                return False
+            else:
+                print("❌ Responda com 's' para sim ou 'n' para não")
+
+    async def aplicar_rate_limiting(self):
+        """✅ NOVA FUNÇÃO: Aplica rate limiting para respeitar limites da API Telegram"""
+        now = datetime.now()
+        
+        # Se é a primeira mensagem, apenas registra o tempo
+        if self.last_message_time is None:
+            self.last_message_time = now
+            self.message_count = 1
+            return
+        
+        # Calcular tempo desde a última mensagem
+        time_since_last = (now - self.last_message_time).total_seconds()
+        
+        # Aplicar delay mínimo entre mensagens
+        min_delay = TELEGRAM_RATE_LIMITS['delay_between_messages']
+        if time_since_last < min_delay:
+            delay_needed = min_delay - time_since_last
+            print(f"   ⏳ Rate limiting: aguardando {delay_needed:.1f}s...")
+            await asyncio.sleep(delay_needed)
+        
+        # Verificar limite por minuto
+        time_since_start = (now - self.start_time).total_seconds()
+        if time_since_start < 60 and self.message_count >= TELEGRAM_RATE_LIMITS['messages_per_minute']:
+            wait_time = 60 - time_since_start
+            print(f"   ⏳ Limite por minuto atingido. Aguardando {wait_time:.1f}s...")
+            await asyncio.sleep(wait_time)
+            # Reset contadores
+            self.message_count = 0
+            self.start_time = datetime.now()
+        
+        # Atualizar contadores
+        self.message_count += 1
+        self.last_message_time = datetime.now()
+
+    async def processar_mensagem(self, item, index, total):
+        """Processa uma mensagem individual com rate limiting"""
         message = item['message']
         trade_info = item['trade_info']
         
         try:
+            print(f"\n📤 Processando {index}/{total}: {trade_info['symbol']} {trade_info['side']} ({message.date})")
+            
+            # Aplicar rate limiting antes de cada mensagem
+            await self.aplicar_rate_limiting()
+            
             # Determinar source baseado no grupo origem
             message_source = GRUPOS_ORIGEM_DISPONIVEIS.get(self.config['grupo_origem'], 'divap')
             
@@ -286,9 +406,10 @@ class DivapScraper:
                         self.estatisticas['divap_confirmados'] += 1
                     else:
                         self.estatisticas['divap_rejeitados'] += 1
+                        print(f"   ❌ DIVAP rejeitado: {error_message}")
                 except Exception as e:
-                    print(f"⚠️ Erro na verificação DIVAP: {e}")
-                    is_valid_divap = True  # Permitir em caso de erro
+                    print(f"   ⚠️ Erro na verificação DIVAP: {e}")
+                    is_valid_divap = True
 
             # Preparar dados para envio/salvamento
             trade_info['id_mensagem_origem_sinal'] = message.id
@@ -302,71 +423,66 @@ class DivapScraper:
                 grupo_origem_nome = message_source.capitalize()
                 message_text_to_send = format_trade_message(trade_info, grupo_origem_nome)
                 
-                if not self.config['apenas_teste']:
-                    # Enviar mensagem
-                    sent_message = await self.client.send_message(
-                        self.config['grupo_destino'], 
-                        message_text_to_send
-                    )
-                    
-                    trade_info['message_id'] = sent_message.id
-                    trade_info['divap_confirmado'] = 1
-                    trade_info['cancelado_checker'] = 0
-                    
-                    self.estatisticas['enviadas'] += 1
-                    
-                    # Salvar no banco se habilitado
-                    if self.config['salvar_banco']:
-                        signal_id = save_to_database(trade_info)
-                        if signal_id:
-                            self.estatisticas['salvas_banco'] += 1
-                            
-                            # Salvar mensagens relacionadas
-                            save_message_to_database(
-                                message_id=message.id,
-                                chat_id=self.config['grupo_origem'],
-                                text=message.text,
-                                is_reply=False,
-                                reply_to_message_id=None,
-                                symbol=trade_info['symbol'],
-                                signal_id=signal_id,
-                                created_at=message.date.strftime("%Y-%m-%d %H:%M:%S"),
-                                message_source=message_source
-                            )
-                            
-                            save_message_to_database(
-                                message_id=sent_message.id,
-                                chat_id=self.config['grupo_destino'],
-                                text=message_text_to_send,
-                                is_reply=False,
-                                reply_to_message_id=None,
-                                symbol=trade_info['symbol'],
-                                signal_id=signal_id,
-                                created_at=sent_message.date.strftime("%Y-%m-%d %H:%M:%S"),
-                                message_source=message_source
-                            )
-                else:
-                    print(f"🧪 [TESTE] Mensagem que seria enviada:")
-                    print(f"   📊 {trade_info['symbol']} {trade_info['side']}")
-                    print(f"   📅 {message.date}")
-                    print(f"   📝 Preview: {message_text_to_send[:100]}...")
+                # Enviar mensagem
+                sent_message = await self.client.send_message(
+                    self.config['grupo_destino'], 
+                    message_text_to_send
+                )
+                
+                trade_info['message_id'] = sent_message.id
+                trade_info['divap_confirmado'] = 1
+                trade_info['cancelado_checker'] = 0
+                
+                self.estatisticas['enviadas'] += 1
+                print(f"   ✅ Mensagem enviada (ID: {sent_message.id})")
+                
+                # Salvar no banco se habilitado
+                if self.config['salvar_banco']:
+                    signal_id = save_to_database(trade_info)
+                    if signal_id:
+                        self.estatisticas['salvas_banco'] += 1
+                        
+                        # Salvar mensagens relacionadas
+                        save_message_to_database(
+                            message_id=message.id,
+                            chat_id=self.config['grupo_origem'],
+                            text=message.text,
+                            is_reply=False,
+                            reply_to_message_id=None,
+                            symbol=trade_info['symbol'],
+                            signal_id=signal_id,
+                            created_at=message.date.strftime("%Y-%m-%d %H:%M:%S"),
+                            message_source=message_source
+                        )
+                        
+                        save_message_to_database(
+                            message_id=sent_message.id,
+                            chat_id=self.config['grupo_destino'],
+                            text=message_text_to_send,
+                            is_reply=False,
+                            reply_to_message_id=None,
+                            symbol=trade_info['symbol'],
+                            signal_id=signal_id,
+                            created_at=sent_message.date.strftime("%Y-%m-%d %H:%M:%S"),
+                            message_source=message_source
+                        )
+                        print(f"   💾 Salvo no banco (ID: {signal_id})")
                     
             else:
                 # DIVAP não confirmado
-                if self.config['salvar_banco'] and not self.config['apenas_teste']:
+                if self.config['salvar_banco']:
                     trade_info['divap_confirmado'] = 0
                     trade_info['cancelado_checker'] = 1
                     trade_info['status'] = 'CANCELED'
                     trade_info['error_message'] = error_message
                     
                     save_to_database(trade_info)
-                    
-                print(f"❌ DIVAP não confirmado para {trade_info['symbol']}: {error_message}")
+                    print(f"   💾 Salvo como cancelado no banco")
 
             return True
             
         except Exception as e:
-            print(f"❌ Erro ao processar mensagem {message.id}: {e}")
+            print(f"   ❌ Erro ao processar mensagem {message.id}: {e}")
             self.estatisticas['erros'] += 1
             return False
 
@@ -394,18 +510,23 @@ class DivapScraper:
                 print("❌ Nenhuma mensagem válida encontrada")
                 return False
 
+            # ✅ NOVA FUNCIONALIDADE: Exibir resumo e pedir confirmação
+            if not self.exibir_resumo_por_dia(mensagens_validas):
+                print("❌ Operação cancelada pelo usuário")
+                return False
+
             # Processar mensagens
-            print(f"\n📤 Processando {len(mensagens_validas)} mensagens...")
+            print(f"\n📤 Iniciando envio de {len(mensagens_validas)} mensagens...")
+            print(f"⚡ Taxa de envio: 1 mensagem a cada {TELEGRAM_RATE_LIMITS['delay_between_messages']} segundos")
             
             for i, item in enumerate(mensagens_validas, 1):
-                print(f"Processando {i}/{len(mensagens_validas)}: {item['trade_info']['symbol']} {item['trade_info']['side']}")
-                
-                sucesso = await self.processar_mensagem(item)
+                sucesso = await self.processar_mensagem(item, i, len(mensagens_validas))
                 item['processed'] = sucesso
                 
-                # Pausa entre mensagens para evitar rate limit
-                if not self.config['apenas_teste'] and i < len(mensagens_validas):
-                    await asyncio.sleep(1)
+                # Mostrar progresso a cada 5 mensagens
+                if i % 5 == 0 or i == len(mensagens_validas):
+                    progresso = (i / len(mensagens_validas)) * 100
+                    print(f"\n📊 Progresso: {i}/{len(mensagens_validas)} ({progresso:.1f}%)")
 
             return True
             
@@ -417,6 +538,7 @@ class DivapScraper:
     def mostrar_estatisticas(self):
         """Mostra estatísticas finais do processo"""
         print(f"\n📊 ESTATÍSTICAS FINAIS:")
+        print("="*50)
         print(f"   📈 Total de mensagens analisadas: {self.estatisticas['total_mensagens']}")
         print(f"   ✅ Mensagens com sinais válidos: {self.estatisticas['mensagens_validas']}")
         
@@ -424,15 +546,17 @@ class DivapScraper:
             print(f"   🔍 DIVAP confirmados: {self.estatisticas['divap_confirmados']}")
             print(f"   ❌ DIVAP rejeitados: {self.estatisticas['divap_rejeitados']}")
         
-        if not self.config['apenas_teste']:
-            print(f"   📤 Mensagens enviadas: {self.estatisticas['enviadas']}")
-            
-            if self.config['salvar_banco']:
-                print(f"   💾 Sinais salvos no banco: {self.estatisticas['salvas_banco']}")
-        else:
-            print(f"   🧪 Modo teste - mensagens não foram enviadas")
+        print(f"   📤 Mensagens enviadas: {self.estatisticas['enviadas']}")
+        
+        if self.config['salvar_banco']:
+            print(f"   💾 Sinais salvos no banco: {self.estatisticas['salvas_banco']}")
             
         print(f"   ⚠️ Erros encontrados: {self.estatisticas['erros']}")
+        
+        # Taxa de sucesso
+        if self.estatisticas['mensagens_validas'] > 0:
+            taxa_envio = (self.estatisticas['enviadas'] / self.estatisticas['mensagens_validas']) * 100
+            print(f"   📊 Taxa de envio: {taxa_envio:.1f}%")
 
     async def encerrar(self):
         """Encerra o cliente Telegram"""
@@ -450,6 +574,9 @@ async def main():
     print("="*70)
     print("Este utilitário permite extrair e reprocessar mensagens históricas")
     print("dos grupos DIVAP em um período específico.")
+    print("\n⚠️ IMPORTANTE: Respeita os limites da API do Telegram")
+    print(f"   • Máximo {TELEGRAM_RATE_LIMITS['messages_per_minute']} mensagens por minuto")
+    print(f"   • Delay de {TELEGRAM_RATE_LIMITS['delay_between_messages']} segundos entre mensagens")
     print("="*70)
 
     scraper = DivapScraper()
