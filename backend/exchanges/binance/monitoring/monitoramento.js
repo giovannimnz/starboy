@@ -386,7 +386,6 @@ try {
 
   // ✅ LIMPEZA SIMPLIFICADA DE ORDENS ÓRFÃS (Nova versão)
   console.log(`[MONITOR] 🔍 Verificando ordens órfãs para conta ${accountId}...`);
-  const { cancelOrphanOrders } = require('../services/cleanup');
   const orphanResult = await cancelOrphanOrders(accountId);
 
   if (orphanResult > 0) {
