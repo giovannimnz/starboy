@@ -440,6 +440,193 @@ async function handlePositionFromOrder(connection, order, accountId) {
 }
 
 /**
+ * ✅ NOVA FUNÇÃO: Mover ordem automaticamente quando FILLED ou CANCELLED
+ */
+async function autoMoveOrderOnCompletion(orderId, newStatus, accountId) {
+  if (!['FILLED', 'CANCELED', 'CANCELLED', 'EXPIRED', 'REJECTED'].includes(newStatus)) {
+    return false; // ✅ Só move ordens "finalizadas"
+  }
+
+  try {
+    const db = await getDatabaseInstance();
+    console.log(`[ORDER_AUTO_MOVE] 🔄 Movendo ordem ${orderId} (${newStatus}) para histórico...`);
+
+    const connection = await db.getConnection();
+    await connection.beginTransaction();
+
+    try {
+      // ✅ 1. BUSCAR ORDEM ATUAL
+      const [orderToMove] = await connection.query(`
+        SELECT * FROM ordens 
+        WHERE id_externo = ? AND conta_id = ?
+      `, [orderId, accountId]);
+
+      if (orderToMove.length === 0) {
+        await connection.rollback();
+        connection.release();
+        return false;
+      }
+
+      const order = orderToMove[0];
+
+      // ✅ 2. VERIFICAR COLUNAS DA TABELA DESTINO
+      const [destColumns] = await connection.query(`SHOW COLUMNS FROM ordens_fechadas`);
+      const destColumnNames = destColumns.map(col => col.Field);
+
+      // ✅ 3. PREPARAR DADOS COM STATUS ATUALIZADO
+      const insertData = {
+        tipo_ordem: order.tipo_ordem,
+        preco: order.preco,
+        quantidade: order.quantidade,
+        id_posicao: order.id_posicao,
+        status: newStatus, // ✅ USAR STATUS ATUALIZADO
+        data_hora_criacao: order.data_hora_criacao,
+        id_externo: order.id_externo,
+        side: order.side,
+        simbolo: order.simbolo,
+        tipo_ordem_bot: order.tipo_ordem_bot,
+        target: order.target,
+        reduce_only: order.reduce_only,
+        close_position: order.close_position,
+        last_update: new Date(),
+        conta_id: order.conta_id,
+        preco_executado: order.preco_executado || 0,
+        quantidade_executada: order.quantidade_executada || 0,
+        observacao: order.observacao ? 
+          `${order.observacao} | Auto-movida: ${newStatus}` : 
+          `Auto-movida para histórico: ${newStatus}`
+      };
+
+      // ✅ 4. ADICIONAR CAMPOS OPCIONAIS
+      if (destColumnNames.includes('orign_sig') && order.orign_sig) {
+        insertData.orign_sig = order.orign_sig;
+      }
+      if (destColumnNames.includes('dados_originais_ws') && order.dados_originais_ws) {
+        insertData.dados_originais_ws = order.dados_originais_ws;
+      }
+
+      // ✅ 5. CONSTRUIR QUERY DINÂMICA
+      const columns = Object.keys(insertData).filter(key => 
+        destColumnNames.includes(key) && insertData[key] !== undefined
+      );
+      const values = columns.map(col => insertData[col]);
+      const placeholders = columns.map(() => '?').join(', ');
+
+      // ✅ 6. INSERIR EM ORDENS_FECHADAS
+      await connection.query(
+        `INSERT INTO ordens_fechadas (${columns.join(', ')}) VALUES (${placeholders})`,
+        values
+      );
+
+      // ✅ 7. REMOVER DA TABELA ATIVA
+      await connection.query(
+        'DELETE FROM ordens WHERE id_externo = ? AND conta_id = ?',
+        [orderId, accountId]
+      );
+
+      await connection.commit();
+      connection.release();
+
+      console.log(`[ORDER_AUTO_MOVE] ✅ Ordem ${orderId} (${newStatus}) movida automaticamente para ordens_fechadas`);
+      return true;
+
+    } catch (moveError) {
+      await connection.rollback();
+      connection.release();
+      throw moveError;
+    }
+
+  } catch (error) {
+    console.error(`[ORDER_AUTO_MOVE] ❌ Erro ao mover ordem ${orderId}:`, error.message);
+    return false;
+  }
+}
+
+// ✅ MODIFICAR FUNÇÃO EXISTENTE handleOrderUpdate
+async function handleOrderUpdate(accountId, orderUpdateData) {
+  try {
+    const db = await getDatabaseInstance();
+    const orderId = orderUpdateData.i?.toString() || orderUpdateData.orderId?.toString();
+    const newStatus = orderUpdateData.X || orderUpdateData.status;
+    const symbol = orderUpdateData.s || orderUpdateData.symbol;
+
+    if (!orderId || !newStatus) {
+      console.warn(`[ORDER] ⚠️ Dados incompletos na atualização da ordem:`, orderUpdateData);
+      return;
+    }
+
+    console.log(`[ORDER] 📨 Atualização recebida: ${orderId} (${symbol}) - ${orderUpdateData.o || 'N/A'}/${newStatus} - Executado: ${orderUpdateData.z || 0}/${orderUpdateData.q || 0}`);
+
+    // ✅ 1. PRIMEIRO, ATUALIZAR A ORDEM NO BANCO
+    const [result] = await db.query(`
+      UPDATE ordens 
+      SET status = ?, 
+          last_update = NOW(),
+          quantidade_executada = COALESCE(?, quantidade_executada),
+          preco_executado = CASE 
+            WHEN ? > 0 THEN ? 
+            ELSE preco_executado 
+          END,
+          dados_originais_ws = ?
+      WHERE id_externo = ? AND conta_id = ?
+    `, [
+      newStatus,
+      orderUpdateData.z || null,
+      orderUpdateData.ap || 0,
+      orderUpdateData.ap || 0,
+      JSON.stringify(orderUpdateData),
+      orderId,
+      accountId
+    ]);
+
+    if (result.affectedRows === 0) {
+      console.warn(`[ORDER] ⚠️ Ordem ${orderId} não encontrada no banco para atualização`);
+      return;
+    }
+
+    // ✅ 2. VERIFICAR SE DEVE MOVER AUTOMATICAMENTE
+    const shouldMove = ['FILLED', 'CANCELED', 'CANCELLED', 'EXPIRED', 'REJECTED'].includes(newStatus);
+    
+    if (shouldMove) {
+      console.log(`[ORDER] 🎯 Status final detectado (${newStatus}) - iniciando movimento automático...`);
+      
+      const moved = await autoMoveOrderOnCompletion(orderId, newStatus, accountId);
+      
+      if (moved) {
+        console.log(`[ORDER] ✅ Ordem ${orderId} movida automaticamente para histórico`);
+        
+        // ✅ 3. VERIFICAR SE DEVE FECHAR POSIÇÃO (para ordens FILLED de fechamento)
+        if (newStatus === 'FILLED') {
+          const closureResult = await checkPositionClosureAfterOrderExecution(orderId, accountId);
+          if (closureResult) {
+            console.log(`[ORDER] 🏁 Posição fechada automaticamente após execução da ordem ${orderId}`);
+          }
+        }
+      } else {
+        console.warn(`[ORDER] ⚠️ Falha ao mover ordem ${orderId} automaticamente`);
+      }
+    } else {
+      console.log(`[ORDER] ℹ️ Status ${newStatus} - ordem mantida na tabela ativa`);
+    }
+
+    // ✅ 4. LOGS DETALHADOS PARA DEBUGGING
+    if (newStatus === 'FILLED') {
+      const executedQty = parseFloat(orderUpdateData.z || 0);
+      const avgPrice = parseFloat(orderUpdateData.ap || 0);
+      const totalValue = executedQty * avgPrice;
+      
+      console.log(`[ORDER] 💰 Detalhes da execução:`);
+      console.log(`[ORDER]   - Quantidade: ${executedQty}`);
+      console.log(`[ORDER]   - Preço médio: ${avgPrice}`);
+      console.log(`[ORDER]   - Valor total: ${totalValue.toFixed(2)} USDT`);
+    }
+
+  } catch (error) {
+    console.error(`[ORDER] ❌ Erro ao processar atualização da ordem:`, error.message);
+  }
+}
+
+/**
  * Processa atualizações de conta via WebSocket (ACCOUNT_UPDATE)
  */
 async function handleAccountUpdate(message, accountId, db = null) {
@@ -920,5 +1107,6 @@ module.exports = {
   unregisterOrderHandlers,
   initializeOrderHandlers,
   handleTradeExecution,
-  checkPositionClosureAfterOrderExecution
+  checkPositionClosureAfterOrderExecution,
+  autoMoveOrderOnCompletion
 };

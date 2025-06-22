@@ -115,123 +115,105 @@ async function cancelOrphanOrders(accountId) {
    
     const db = await getDatabaseInstance();
     
-    // ✅ BUSCAR TODAS AS ORDENS ATIVAS NO BANCO (sem critério de tempo)
+    // ✅ BUSCAR APENAS ORDENS ATIVAS (excluir já finalizadas)
     const [activeOrders] = await db.query(`
       SELECT id_externo, simbolo, tipo_ordem_bot, quantidade, preco, status, id_posicao, orign_sig
       FROM ordens 
       WHERE status IN ('NEW', 'PARTIALLY_FILLED', 'PENDING_CANCEL')
         AND conta_id = ?
     `, [accountId]);
-    
+
     if (activeOrders.length === 0) {
-      console.log(`[CLEANUP] Nenhuma ordem ativa encontrada para conta ${accountId}`);
       return 0;
     }
-    
-    console.log(`[CLEANUP] 🔍 Verificando ${activeOrders.length} ordens ativas na corretora para conta ${accountId}...`);
-    
-    let updatedCount = 0;
-    let skippedCount = 0;
-    
+
+    console.log(`[CLEANUP] 🔍 Verificando ${activeOrders.length} ordens ATIVAS para órfãs (conta ${accountId})...`);
+
+    let orphanCount = 0;
+    let preservedCount = 0;
+
     for (const order of activeOrders) {
       try {
-        console.log(`[CLEANUP] 🔍 Verificando ordem ${order.id_externo} (${order.tipo_ordem_bot})...`);
-        
-        // ✅ VERIFICAÇÃO ÚNICA: Ordem ainda existe na corretora?
-        let orderExistsOnExchange = false;
-        let orderStatusOnExchange = null;
-        
-        try {
-          const { getOrderStatus } = require('../api/rest');
-          const orderStatus = await getOrderStatus(order.simbolo, order.id_externo, accountId);
+        // ✅ VERIFICAR SE ORDEM EXISTE NA CORRETORA
+        const { getOrderStatus } = require('../api/rest');
+        const orderStatus = await getOrderStatus(order.simbolo, order.id_externo, accountId);
+
+        if (orderStatus && orderStatus.orderId) {
+          const exchangeStatus = orderStatus.status;
           
-          if (orderStatus && orderStatus.orderId && orderStatus.status) {
-            orderExistsOnExchange = true;
-            orderStatusOnExchange = orderStatus.status;
-            console.log(`[CLEANUP] ✅ Ordem ${order.id_externo} existe na corretora (status: ${orderStatusOnExchange})`);
+          // ✅ SE STATUS MUDOU PARA FINALIZADO, MOVER IMEDIATAMENTE
+          if (['FILLED', 'CANCELED', 'CANCELLED', 'EXPIRED', 'REJECTED'].includes(exchangeStatus)) {
+            console.log(`[CLEANUP] 🎯 Ordem ${order.id_externo} finalizada na corretora (${exchangeStatus}) - movendo...`);
+            
+            // Atualizar status no banco primeiro
+            await db.query(`
+              UPDATE ordens 
+              SET status = ?, last_update = NOW()
+              WHERE id_externo = ? AND conta_id = ?
+            `, [exchangeStatus, order.id_externo, accountId]);
+            
+            // Mover automaticamente
+            const { autoMoveOrderOnCompletion } = require('./orderHandlers');
+            const moved = await autoMoveOrderOnCompletion(order.id_externo, exchangeStatus, accountId);
+            
+            if (moved) {
+              console.log(`[CLEANUP] ✅ Ordem finalizada ${order.id_externo} movida para histórico`);
+              orphanCount++; // Contar como processada
+            }
+            
+          } else if (exchangeStatus !== order.status) {
+            // ✅ SINCRONIZAR STATUS SEM MOVER
+            console.log(`[CLEANUP] 🔄 Sincronizando status: ${order.status} → ${exchangeStatus}`);
+            await db.query(`
+              UPDATE ordens 
+              SET status = ?, last_update = NOW()
+              WHERE id_externo = ? AND conta_id = ?
+            `, [exchangeStatus, order.id_externo, accountId]);
+            preservedCount++;
           } else {
-            orderExistsOnExchange = false;
-            console.log(`[CLEANUP] ❌ Ordem ${order.id_externo} NÃO existe na corretora`);
+            // ✅ ORDEM OK - PRESERVAR
+            preservedCount++;
           }
           
-        } catch (orderCheckError) {
-          // Se deu erro ao verificar, verificar tipo de erro
-          if (orderCheckError.message.includes('Unknown order sent') || 
-              orderCheckError.message.includes('Order does not exist') ||
-              orderCheckError.message.includes('-2013')) {
-            
-            orderExistsOnExchange = false;
-            console.log(`[CLEANUP] ❌ Ordem ${order.id_externo} confirmada como NÃO existente na corretora`);
-            
-          } else {
-            // Erro de rede ou outro - não assumir nada
-            console.warn(`[CLEANUP] ⚠️ Erro ao verificar ordem ${order.id_externo}:`, orderCheckError.message);
-            skippedCount++;
-            continue;
-          }
-        }
-        
-        // ✅ DECISÃO SIMPLES: Se não existe na corretora = órfã
-        if (!orderExistsOnExchange) {
-          console.log(`[CLEANUP] 🗑️ Ordem ${order.id_externo} é órfã - atualizando status no banco...`);
+        } else {
+          // ✅ ORDEM NÃO EXISTE = ÓRFÃ
+          console.log(`[CLEANUP] 🗑️ Ordem órfã detectada: ${order.id_externo} - marcando como CANCELED`);
           
-          // ✅ ATUALIZAR STATUS NO BANCO (não tentar cancelar na corretora)
           await db.query(`
             UPDATE ordens 
             SET status = 'CANCELED', 
                 last_update = NOW(),
                 observacao = CONCAT(
                   IFNULL(observacao, ''), 
-                  ' | Órfã detectada via cleanup - não existe na corretora'
+                  ' | Órfã - não existe na corretora'
                 )
             WHERE id_externo = ? AND conta_id = ?
           `, [order.id_externo, accountId]);
           
-          console.log(`[CLEANUP] ✅ Ordem órfã ${order.id_externo} marcada como CANCELED no banco`);
-          updatedCount++;
+          // ✅ MOVER ÓRFÃ PARA HISTÓRICO IMEDIATAMENTE
+          const { autoMoveOrderOnCompletion } = require('./orderHandlers');
+          const moved = await autoMoveOrderOnCompletion(order.id_externo, 'CANCELED', accountId);
           
-        } else {
-          // ✅ ORDEM VÁLIDA - PRESERVAR
-          console.log(`[CLEANUP] 🛡️ Ordem ${order.id_externo} preservada - existe na corretora (${orderStatusOnExchange})`);
-          skippedCount++;
-          
-          // ✅ OPCIONAL: Sincronizar status se diferente
-          if (orderStatusOnExchange && orderStatusOnExchange !== order.status) {
-            console.log(`[CLEANUP] 🔄 Sincronizando status: ${order.status} → ${orderStatusOnExchange}`);
-            
-            await db.query(`
-              UPDATE ordens 
-              SET status = ?, 
-                  last_update = NOW(),
-                  observacao = CONCAT(
-                    IFNULL(observacao, ''), 
-                    ' | Status sincronizado via cleanup'
-                  )
-              WHERE id_externo = ? AND conta_id = ?
-            `, [orderStatusOnExchange, order.id_externo, accountId]);
+          if (moved) {
+            orphanCount++;
+            console.log(`[CLEANUP] ✅ Órfã ${order.id_externo} movida para histórico`);
           }
         }
-        
+
       } catch (orderError) {
-        console.error(`[CLEANUP] ⚠️ Erro ao processar ordem ${order.id_externo}:`, orderError.message);
-        skippedCount++;
+        console.error(`[CLEANUP] ⚠️ Erro ao verificar ordem ${order.id_externo}:`, orderError.message);
+        preservedCount++;
       }
     }
-    
+
     console.log(`[CLEANUP] 📊 Resumo para conta ${accountId}:`);
-    console.log(`  - Ordens órfãs atualizadas no banco: ${updatedCount}`);
-    console.log(`  - Ordens preservadas (válidas): ${skippedCount}`);
-    
-    // ✅ MOVER ORDENS CANCELED PARA HISTÓRICO
-    if (updatedCount > 0) {
-      const movedToHistory = await moveOrdersToHistory(accountId);
-      console.log(`[CLEANUP] 📚 ${movedToHistory} ordens movidas para ordens_fechadas`);
-    }
-    
-    return updatedCount;
-    
+    console.log(`  - Ordens processadas/movidas: ${orphanCount}`);
+    console.log(`  - Ordens preservadas (ativas): ${preservedCount}`);
+
+    return orphanCount;
+
   } catch (error) {
-    console.error(`[CLEANUP] ❌ Erro ao processar ordens órfãs para conta ${accountId}:`, error.message);
+    console.error(`[CLEANUP] ❌ Erro ao processar ordens para conta ${accountId}:`, error.message);
     return 0;
   }
 }

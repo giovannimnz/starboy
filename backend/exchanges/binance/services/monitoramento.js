@@ -419,59 +419,65 @@ try {
       }
     });
 
-    // ✅ MELHORADO: Job de sincronização com fechamento a cada 1 minuto
-accountJobs.syncAndCloseGhosts = schedule.scheduleJob('*/2 * * * *', async () => { // ✅ A cada 2 minutos
-  if (isShuttingDown) return;
-  try {
-    console.log(`[MONITOR] 🔄 Executando sincronização completa para conta ${accountId}...`);
-    
-    // ✅ 1. VERIFICAR E MOVER POSIÇÕES ÓRFÃS
-    const { syncAndCloseGhostPositions } = require('./positionHistory');
-    const closedPositions = await syncAndCloseGhostPositions(accountId);
-    
-    // ✅ 2. VERIFICAR ORDENS ÓRFÃS (Nova lógica simplificada)
-    const { cancelOrphanOrders, moveOrdersToHistory } = require('./cleanup');
-    const orphanResult = await cancelOrphanOrders(accountId);
-    const movedOrders = await moveOrdersToHistory(accountId);
-    
-    // ✅ 3. VERIFICAR CONSISTÊNCIA FINAL
-    await runAdvancedPositionMonitoring(accountId);
-    
-    // ✅ 4. LOG APENAS SE HOUVER ATIVIDADE
-    if (closedPositions > 0 || orphanResult > 0 || movedOrders > 0) {
-      console.log(`[MONITOR] 📊 Sincronização completa para conta ${accountId}:`);
-      console.log(`[MONITOR]   - Posições fechadas: ${closedPositions}`);
-      console.log(`[MONITOR]   - Ordens órfãs processadas: ${orphanResult}`);
-      console.log(`[MONITOR]   - Ordens movidas para histórico: ${movedOrders}`);
-    }
-    
-  } catch (error) {
-    console.error(`[MONITOR] ⚠️ Erro na sincronização completa para conta ${accountId}:`, error.message);
-  }
-});
-
-accountJobs.checkOrphanOrders = schedule.scheduleJob('*/30 * * * * *', async () => { // ✅ A cada 30 segundos
+    // ✅ MODIFICAR O JOB DE ÓRFÃS PARA SER MAIS SIMPLES
+accountJobs.checkOrphanOrders = schedule.scheduleJob('*/45 * * * * *', async () => { // ✅ A cada 45 segundos
   if (isShuttingDown) return;
   try {
     const { cancelOrphanOrders } = require('./cleanup');
-    const orphanResult = await cancelOrphanOrders(accountId);
+    const processedCount = await cancelOrphanOrders(accountId);
     
-    // ✅ Log apenas se encontrar órfãs
-    if (orphanResult > 0) {
-      console.log(`[MONITOR] 🗑️ ${orphanResult} ordens órfãs processadas para conta ${accountId}`);
-      
-      // ✅ Mover para histórico imediatamente
-      const { moveOrdersToHistory } = require('./cleanup');
-      const moved = await moveOrdersToHistory(accountId);
-      if (moved > 0) {
-        console.log(`[MONITOR] 📚 ${moved} ordens órfãs movidas para histórico`);
-      }
+    // ✅ Log apenas se houver atividade
+    if (processedCount > 0) {
+      console.log(`[MONITOR] 🔄 ${processedCount} ordens processadas/movidas automaticamente (conta ${accountId})`);
     }
     
   } catch (error) {
-    console.error(`[MONITOR] ⚠️ Erro na verificação de ordens órfãs para conta ${accountId}:`, error.message);
+    console.error(`[MONITOR] ⚠️ Erro na verificação automática para conta ${accountId}:`, error.message);
   }
 });
+
+    // ✅ MANTER APENAS JOB DE LIMPEZA DE POSIÇÕES FECHADAS
+    accountJobs.cleanupClosedPositions = schedule.scheduleJob('*/3 * * * *', async () => {
+      if (isShuttingDown) return;
+      try {
+        const db = await getDatabaseInstance();
+        
+        // ✅ Buscar posições CLOSED para mover
+        const [closedPositions] = await db.query(`
+          SELECT id, simbolo, status, data_hora_fechamento, observacoes 
+          FROM posicoes 
+          WHERE status = 'CLOSED' AND conta_id = ?
+          AND data_hora_fechamento < DATE_SUB(NOW(), INTERVAL 1 MINUTE)
+        `, [accountId]);
+        
+        if (closedPositions.length > 0) {
+          console.log(`[MONITOR] 📚 Movendo ${closedPositions.length} posições CLOSED para histórico...`);
+          
+          for (const position of closedPositions) {
+            try {
+              const { movePositionToHistoryPhysically } = require('./enhancedMonitoring');
+              const moved = await movePositionToHistoryPhysically(
+                db, 
+                position.id, 
+                'CLOSED', 
+                position.observacoes || 'Auto-movida - posição fechada',
+                accountId
+              );
+              
+              if (moved) {
+                console.log(`[MONITOR] ✅ Posição ${position.simbolo} movida para histórico`);
+              }
+              
+            } catch (moveError) {
+              console.error(`[MONITOR] ❌ Erro ao mover posição ${position.simbolo}:`, moveError.message);
+            }
+          }
+        }
+        
+      } catch (error) {
+        console.error(`[MONITOR] ⚠️ Erro na limpeza de posições CLOSED:`, error.message);
+      }
+    });
 
     // ✅ NOVO: Job de log de status a cada 5 minutos
     accountJobs.logStatus = schedule.scheduleJob('*/5 * * * *', async () => {
@@ -480,129 +486,6 @@ accountJobs.checkOrphanOrders = schedule.scheduleJob('*/30 * * * * *', async () 
         await logOpenPositionsAndOrdersVisual(accountId);
       } catch (error) {
         console.error(`[MONITOR] ⚠️ Erro no log de status para conta ${accountId}:`, error.message);
-      }
-    });
-
-accountJobs.cleanupClosedPositions = schedule.scheduleJob('*/3 * * * *', async () => {
-  if (isShuttingDown) return;
-  try {
-    const db = await getDatabaseInstance();
-    
-    // ✅ Buscar posições CLOSED que ainda não foram movidas
-    const [closedPositions] = await db.query(`
-      SELECT id, simbolo, status, data_hora_fechamento, observacoes 
-      FROM posicoes 
-      WHERE status = 'CLOSED' AND conta_id = ?
-      AND data_hora_fechamento < DATE_SUB(NOW(), INTERVAL 1 MINUTE)
-    `, [accountId]);
-    
-    if (closedPositions.length > 0) {
-      console.log(`[MONITOR] 📚 Encontradas ${closedPositions.length} posições CLOSED para mover para histórico...`);
-      
-      for (const position of closedPositions) {
-        try {
-          // ✅ 1. VERIFICAR ORDENS RELACIONADAS PRIMEIRO
-          const [relatedOrders] = await db.query(`
-            SELECT id_externo, status FROM ordens 
-            WHERE id_posicao = ? AND conta_id = ?
-          `, [position.id, accountId]);
-          
-          // ✅ 2. PROCESSAR ORDENS ÓRFÃS RELACIONADAS
-          let orphansProcessed = 0;
-          for (const order of relatedOrders) {
-            if (order.status === 'NEW' || order.status === 'PARTIALLY_FILLED') {
-              // Verificar se ordem ainda existe na corretora
-              const { checkOrderExistsOnExchange } = require('./cleanup');
-              try {
-                const orderCheck = await checkOrderExistsOnExchange(
-                  position.simbolo, 
-                  order.id_externo, 
-                  accountId
-                );
-                
-                if (!orderCheck.exists) {
-                  // Marcar como órfã
-                  await db.query(`
-                    UPDATE ordens 
-                    SET status = 'CANCELED', 
-                        last_update = NOW(),
-                        observacao = CONCAT(
-                          IFNULL(observacao, ''), 
-                          ' | Órfã detectada - posição CLOSED'
-                        )
-                    WHERE id_externo = ? AND conta_id = ?
-                  `, [order.id_externo, accountId]);
-                  
-                  orphansProcessed++;
-                }
-              } catch (checkError) {
-                console.warn(`[MONITOR] ⚠️ Erro ao verificar ordem ${order.id_externo}:`, checkError.message);
-              }
-            }
-          }
-          
-          if (orphansProcessed > 0) {
-            console.log(`[MONITOR] 🗑️ ${orphansProcessed} ordens órfãs processadas para posição ${position.simbolo}`);
-          }
-          
-          // ✅ 3. MOVER TODAS AS ORDENS PARA HISTÓRICO
-          let movedOrders = 0;
-          for (const order of relatedOrders) {
-            const { moveOrderToHistoryPhysically } = require('./enhancedMonitoring');
-            const moved = await moveOrderToHistoryPhysically(db, order.id_externo, accountId);
-            if (moved) movedOrders++;
-          }
-          
-          // ✅ 4. MOVER POSIÇÃO PARA HISTÓRICO
-          const { movePositionToHistoryPhysically } = require('./enhancedMonitoring');
-          const moved = await movePositionToHistoryPhysically(
-            db, 
-            position.id, 
-            'CLOSED', 
-            position.observacoes || 'Limpeza automática - posição CLOSED',
-            accountId
-          );
-          
-          if (moved) {
-            console.log(`[MONITOR] ✅ Posição CLOSED ${position.simbolo} (ID: ${position.id}) movida para histórico (${movedOrders} ordens movidas, ${orphansProcessed} órfãs processadas)`);
-          }
-          
-        } catch (moveError) {
-          console.error(`[MONITOR] ❌ Erro ao mover posição CLOSED ${position.simbolo}:`, moveError.message);
-        }
-      }
-    }
-    
-  } catch (error) {
-    console.error(`[MONITOR] ⚠️ Erro na limpeza de posições CLOSED para conta ${accountId}:`, error.message);
-  }
-});
-
-    // ✅ MELHORADO: Job de verificação de trailing stops mais inteligente
-    accountJobs.checkTrailingStops = schedule.scheduleJob('*/30 * * * * *', async () => {
-      if (isShuttingDown) return;
-      try {
-        const db = await getDatabaseInstance();
-        
-        const [openPositions] = await db.query(`
-          SELECT * FROM posicoes 
-          WHERE status = 'OPEN' AND conta_id = ?
-          AND data_hora_ultima_atualizacao > DATE_SUB(NOW(), INTERVAL 10 MINUTE)
-        `, [accountId]);
-        
-        for (const position of openPositions) {
-          try {
-            const currentPrice = await api.getPrice(position.simbolo, accountId);
-            if (currentPrice && currentPrice > 0) {
-              // ✅ CORREÇÃO CRÍTICA: Passar accountId como parâmetro
-              await checkOrderTriggers(db, position, currentPrice, accountId);
-            }
-          } catch (posError) {
-            console.error(`[MONITOR] ⚠️ Erro ao verificar trailing para ${position.simbolo}:`, posError.message);
-          }
-        }
-      } catch (error) {
-        console.error(`[MONITOR] ⚠️ Erro na verificação de trailing stops para conta ${accountId}:`, error.message);
       }
     });
 
