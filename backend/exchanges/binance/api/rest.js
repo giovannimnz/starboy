@@ -518,14 +518,17 @@ async function getPrice(symbol, accountId) {
   }
 }
 
-/**
- * Obtém todas as posições abertas
- */
+
+const RECV_WINDOW = 10000; // 10 segundos (mais flexível)
+
 async function getAllOpenPositions(accountId) {
   try {
     console.log(`[API] Obtendo posições abertas para conta ${accountId}...`);
     
-    const response = await makeAuthenticatedRequest(accountId, 'GET', '/v2/positionRisk', {});
+    // ✅ ADICIONAR recvWindow aos parâmetros
+    const response = await makeAuthenticatedRequest(accountId, 'GET', '/v2/positionRisk', {
+      recvWindow: RECV_WINDOW
+    });
     
     if (!Array.isArray(response)) {
       console.error(`[API] Resposta inválida ao obter posições para conta ${accountId}:`, response);
@@ -546,10 +549,18 @@ async function getAllOpenPositions(accountId) {
         tipo: pos.marginType === 'isolated' ? 'ISOLATED' : 'CROSS'
       }));
 
-    //console.log(`[API] ✅ ${openPositions.length} posições abertas encontradas para conta ${accountId}`);
+    console.log(`[API] ✅ ${openPositions.length} posições abertas encontradas para conta ${accountId}`);
     return openPositions;
+    
   } catch (error) {
     console.error(`[API] Erro ao obter posições abertas para conta ${accountId}:`, error.message);
+    
+    // ✅ FALLBACK: Retornar array vazio em vez de lançar erro
+    if (error.message && error.message.includes('recvWindow')) {
+      console.warn(`[API] ⚠️ Problema de timestamp, retornando posições vazias temporariamente`);
+      return [];
+    }
+    
     throw error;
   }
 }
