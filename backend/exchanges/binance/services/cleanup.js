@@ -106,15 +106,7 @@ async function cancelOrphanOrders(accountId) {
       console.error(`[CLEANUP] AccountId inválido: ${accountId}`);
       return 0;
     }
-    
-    // ✅ ADICIONAR FLAG DE SEGURANÇA
-    const ENABLE_ORPHAN_CLEANUP = process.env.ENABLE_ORPHAN_CLEANUP === 'true' || false;
-    
-    if (!ENABLE_ORPHAN_CLEANUP) {
-      console.log(`[CLEANUP] 🛡️ Limpeza de órfãs DESABILITADA por segurança (ENABLE_ORPHAN_CLEANUP=false)`);
-      return 0;
-    }
-    
+   
     const db = await getDatabaseInstance();
     
     // ✅ BUSCAR TODAS AS ORDENS ATIVAS NO BANCO (sem critério de tempo)

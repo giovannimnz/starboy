@@ -420,34 +420,58 @@ try {
     });
 
     // ✅ MELHORADO: Job de sincronização com fechamento a cada 1 minuto
-    accountJobs.syncAndCloseGhosts = schedule.scheduleJob('*/1 * * * *', async () => {
-      if (isShuttingDown) return;
-      try {
-        console.log(`[MONITOR] 🔄 Executando sincronização completa para conta ${accountId}...`);
-        
-        // ✅ 1. VERIFICAR E MOVER POSIÇÕES ÓRFÃS
-        const { syncAndCloseGhostPositions } = require('./positionHistory');
-        const closedPositions = await syncAndCloseGhostPositions(accountId);
-        
-        // ✅ 2. VERIFICAR E LIMPAR ORDENS ÓRFÃS
-        const { cancelOrphanOrders, moveOrdersToHistory } = require('./cleanup');
-        const canceledOrders = await cancelOrphanOrders(accountId);
-        const movedOrders = await moveOrdersToHistory(accountId);
-        
-        // ✅ 3. VERIFICAR CONSISTÊNCIA FINAL
-        await runAdvancedPositionMonitoring(accountId);
-        
-        if (closedPositions > 0 || canceledOrders > 0 || movedOrders > 0) {
-          console.log(`[MONITOR] 📊 Sincronização completa para conta ${accountId}:`);
-          console.log(`[MONITOR]   - Posições fechadas: ${closedPositions}`);
-          console.log(`[MONITOR]   - Ordens canceladas: ${canceledOrders}`);
-          console.log(`[MONITOR]   - Ordens movidas: ${movedOrders}`);
-        }
-        
-      } catch (error) {
-        console.error(`[MONITOR] ⚠️ Erro na sincronização completa para conta ${accountId}:`, error.message);
+accountJobs.syncAndCloseGhosts = schedule.scheduleJob('*/2 * * * *', async () => { // ✅ A cada 2 minutos
+  if (isShuttingDown) return;
+  try {
+    console.log(`[MONITOR] 🔄 Executando sincronização completa para conta ${accountId}...`);
+    
+    // ✅ 1. VERIFICAR E MOVER POSIÇÕES ÓRFÃS
+    const { syncAndCloseGhostPositions } = require('./positionHistory');
+    const closedPositions = await syncAndCloseGhostPositions(accountId);
+    
+    // ✅ 2. VERIFICAR ORDENS ÓRFÃS (Nova lógica simplificada)
+    const { cancelOrphanOrders, moveOrdersToHistory } = require('./cleanup');
+    const orphanResult = await cancelOrphanOrders(accountId);
+    const movedOrders = await moveOrdersToHistory(accountId);
+    
+    // ✅ 3. VERIFICAR CONSISTÊNCIA FINAL
+    await runAdvancedPositionMonitoring(accountId);
+    
+    // ✅ 4. LOG APENAS SE HOUVER ATIVIDADE
+    if (closedPositions > 0 || orphanResult > 0 || movedOrders > 0) {
+      console.log(`[MONITOR] 📊 Sincronização completa para conta ${accountId}:`);
+      console.log(`[MONITOR]   - Posições fechadas: ${closedPositions}`);
+      console.log(`[MONITOR]   - Ordens órfãs processadas: ${orphanResult}`);
+      console.log(`[MONITOR]   - Ordens movidas para histórico: ${movedOrders}`);
+    }
+    
+  } catch (error) {
+    console.error(`[MONITOR] ⚠️ Erro na sincronização completa para conta ${accountId}:`, error.message);
+  }
+});
+
+accountJobs.checkOrphanOrders = schedule.scheduleJob('*/30 * * * * *', async () => { // ✅ A cada 30 segundos
+  if (isShuttingDown) return;
+  try {
+    const { cancelOrphanOrders } = require('./cleanup');
+    const orphanResult = await cancelOrphanOrders(accountId);
+    
+    // ✅ Log apenas se encontrar órfãs
+    if (orphanResult > 0) {
+      console.log(`[MONITOR] 🗑️ ${orphanResult} ordens órfãs processadas para conta ${accountId}`);
+      
+      // ✅ Mover para histórico imediatamente
+      const { moveOrdersToHistory } = require('./cleanup');
+      const moved = await moveOrdersToHistory(accountId);
+      if (moved > 0) {
+        console.log(`[MONITOR] 📚 ${moved} ordens órfãs movidas para histórico`);
       }
-    });
+    }
+    
+  } catch (error) {
+    console.error(`[MONITOR] ⚠️ Erro na verificação de ordens órfãs para conta ${accountId}:`, error.message);
+  }
+});
 
     // ✅ NOVO: Job de log de status a cada 5 minutos
     accountJobs.logStatus = schedule.scheduleJob('*/5 * * * *', async () => {
@@ -459,12 +483,12 @@ try {
       }
     });
 
-    accountJobs.cleanupClosedPositions = schedule.scheduleJob('*/3 * * * *', async () => {
+accountJobs.cleanupClosedPositions = schedule.scheduleJob('*/3 * * * *', async () => {
   if (isShuttingDown) return;
   try {
     const db = await getDatabaseInstance();
     
-    // Buscar posições CLOSED que ainda não foram movidas
+    // ✅ Buscar posições CLOSED que ainda não foram movidas
     const [closedPositions] = await db.query(`
       SELECT id, simbolo, status, data_hora_fechamento, observacoes 
       FROM posicoes 
@@ -477,12 +501,51 @@ try {
       
       for (const position of closedPositions) {
         try {
-          // Mover ordens relacionadas primeiro
+          // ✅ 1. VERIFICAR ORDENS RELACIONADAS PRIMEIRO
           const [relatedOrders] = await db.query(`
-            SELECT id_externo FROM ordens 
+            SELECT id_externo, status FROM ordens 
             WHERE id_posicao = ? AND conta_id = ?
           `, [position.id, accountId]);
           
+          // ✅ 2. PROCESSAR ORDENS ÓRFÃS RELACIONADAS
+          let orphansProcessed = 0;
+          for (const order of relatedOrders) {
+            if (order.status === 'NEW' || order.status === 'PARTIALLY_FILLED') {
+              // Verificar se ordem ainda existe na corretora
+              const { checkOrderExistsOnExchange } = require('./cleanup');
+              try {
+                const orderCheck = await checkOrderExistsOnExchange(
+                  position.simbolo, 
+                  order.id_externo, 
+                  accountId
+                );
+                
+                if (!orderCheck.exists) {
+                  // Marcar como órfã
+                  await db.query(`
+                    UPDATE ordens 
+                    SET status = 'CANCELED', 
+                        last_update = NOW(),
+                        observacao = CONCAT(
+                          IFNULL(observacao, ''), 
+                          ' | Órfã detectada - posição CLOSED'
+                        )
+                    WHERE id_externo = ? AND conta_id = ?
+                  `, [order.id_externo, accountId]);
+                  
+                  orphansProcessed++;
+                }
+              } catch (checkError) {
+                console.warn(`[MONITOR] ⚠️ Erro ao verificar ordem ${order.id_externo}:`, checkError.message);
+              }
+            }
+          }
+          
+          if (orphansProcessed > 0) {
+            console.log(`[MONITOR] 🗑️ ${orphansProcessed} ordens órfãs processadas para posição ${position.simbolo}`);
+          }
+          
+          // ✅ 3. MOVER TODAS AS ORDENS PARA HISTÓRICO
           let movedOrders = 0;
           for (const order of relatedOrders) {
             const { moveOrderToHistoryPhysically } = require('./enhancedMonitoring');
@@ -490,7 +553,7 @@ try {
             if (moved) movedOrders++;
           }
           
-          // Mover posição
+          // ✅ 4. MOVER POSIÇÃO PARA HISTÓRICO
           const { movePositionToHistoryPhysically } = require('./enhancedMonitoring');
           const moved = await movePositionToHistoryPhysically(
             db, 
@@ -501,7 +564,7 @@ try {
           );
           
           if (moved) {
-            console.log(`[MONITOR] ✅ Posição CLOSED ${position.simbolo} (ID: ${position.id}) movida para histórico (${movedOrders} ordens movidas)`);
+            console.log(`[MONITOR] ✅ Posição CLOSED ${position.simbolo} (ID: ${position.id}) movida para histórico (${movedOrders} ordens movidas, ${orphansProcessed} órfãs processadas)`);
           }
           
         } catch (moveError) {
@@ -546,18 +609,21 @@ try {
     // Armazenar jobs para cleanup no shutdown
     scheduledJobs[accountId] = accountJobs;
 
-    console.log(`[MONITOR] ✅ Sistema de monitoramento avançado inicializado com sucesso para conta ${accountId}!`);
-    console.log(`[MONITOR] 📊 Jobs agendados: ${Object.keys(accountJobs).length}`);
-    console.log(`[MONITOR] 📋 Jobs ativos:`);
-    Object.keys(accountJobs).forEach(jobName => { console.log(`[MONITOR]   - ${jobName}: ${accountJobs[jobName] ? '✅' : '❌'}`); });
-    console.log(`[MONITOR] 🎯 Funcionalidades ativas:`);
-    console.log(`[MONITOR]   - Trailing Stop Loss: ✅`);
-    console.log(`[MONITOR]   - Signal Timeout: ✅`);
-    console.log(`[MONITOR]   - Telegram Bot: ✅`);
-    console.log(`[MONITOR]   - Enhanced Monitoring: ✅`);
-    console.log(`[MONITOR]   - Position History: ✅`);
-    console.log(`[MONITOR]   - Cleanup System: ✅`);
-    console.log(`[MONITOR]   - WebSocket API: ✅`);
+console.log(`[MONITOR] ✅ Sistema de monitoramento avançado inicializado com sucesso para conta ${accountId}!`);
+console.log(`[MONITOR] 📊 Jobs agendados: ${Object.keys(accountJobs).length}`);
+console.log(`[MONITOR] 📋 Jobs ativos:`);
+Object.keys(accountJobs).forEach(jobName => { 
+  console.log(`[MONITOR]   - ${jobName}: ${accountJobs[jobName] ? '✅' : '❌'}`); 
+});
+console.log(`[MONITOR] 🎯 Funcionalidades ativas:`);
+console.log(`[MONITOR]   - Trailing Stop Loss: ✅`);
+console.log(`[MONITOR]   - Signal Timeout: ✅`);
+console.log(`[MONITOR]   - Telegram Bot: ✅`);
+console.log(`[MONITOR]   - Enhanced Monitoring: ✅`);
+console.log(`[MONITOR]   - Position History: ✅`);
+console.log(`[MONITOR]   - Cleanup System (Órfãs Simplificado): ✅`); // ✅ ATUALIZADO
+console.log(`[MONITOR]   - Orphan Order Detection: ✅`); // ✅ NOVO
+console.log(`[MONITOR]   - WebSocket API: ✅`);
 
     try {
       await logOpenPositionsAndOrdersVisual(accountId);
