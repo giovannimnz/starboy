@@ -110,16 +110,22 @@ def update_exchange_info_database(exchange_name):
                 symbol_id = cursor.lastrowid
                 inserts += 1
             else:
-                # ATUALIZAR símbolo existente
+                # ATUALIZAR símbolo existente SOMENTE SE ALGUM CAMPO MUDOU
                 symbol_id = db_symbols_map[symbol]['id']
-                update_cols = ', '.join([f"{key} = %s" for key in symbol_values.keys()])
-                sql = f"UPDATE exchange_symbols SET {update_cols} WHERE id = %s AND exchange = %s"
-                cursor.execute(sql, (*symbol_values.values(), symbol_id, exchange_name))
-                updates += 1
+                db_row = db_symbols_map[symbol]
+                needs_update = False
+                for key in symbol_values:
+                    if str(db_row.get(key)) != str(symbol_values[key]):
+                        needs_update = True
+                        break
+                if needs_update:
+                    update_cols = ', '.join([f"{key} = %s" for key in symbol_values.keys()])
+                    sql = f"UPDATE exchange_symbols SET {update_cols} WHERE id = %s AND exchange = %s"
+                    cursor.execute(sql, (*symbol_values.values(), symbol_id, exchange_name))
+                    updates += 1
 
             # Sincronizar filtros: Deletar os antigos e inserir os novos
             cursor.execute("DELETE FROM exchange_filters WHERE symbol_id = %s", (symbol_id,))
-            
             for f in symbol_data.get('filters', []):
                 filter_values = {'symbol_id': symbol_id, 'filter_type': f.get('filterType'), 'min_price': f.get('minPrice'),
                                  'max_price': f.get('maxPrice'), 'tick_size': f.get('tickSize'), 'min_qty': f.get('minQty'),

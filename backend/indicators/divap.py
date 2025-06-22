@@ -111,29 +111,40 @@ def initialize_bracket_scheduler():
     Testa conexões, executa uma atualização inicial de brackets e exchange info, e inicia o scheduler.
     """
     try:
+        print("\n" + "="*80)
+        print("🟦🟦🟦   INICIALIZAÇÃO DO SISTEMA DE ATUALIZAÇÃO   🟦🟦🟦")
+        print("="*80 + "\n")
+
+        print("════════════════════════════════════════════════════════════════════════════════")
+        print("🟨 ATUALIZAÇÃO DE BRACKETS (LEVERAGE) 🟨")
+        print("════════════════════════════════════════════════════════════════════════════════")
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] Executando testes de conexão...")
-        
-        # Chama as funções de teste importadas do `exchange_bracket_updater.py`
+
         binance_ok = test_binance_credentials()
         db_ok = test_database_connection()
-        
+
         if not (binance_ok and db_ok):
             print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] ❌ Testes falharam. O agendador não será iniciado.")
             return
-        
+
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] Executando atualização inicial de brackets...")
-        # Chama a função de atualização importada
         update_leverage_brackets()
-        
+
+        print("\n" + "═"*80)
+        print("🟩 ATUALIZAÇÃO DE EXCHANGE INFO 🟩")
+        print("═"*80)
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] Executando atualização inicial de exchange info...")
-        # Chama a função de atualização de exchange info
         update_exchange_info_database(CURRENT_EXCHANGE)
-        
+
+        print("\n" + "="*80)
+        print("🟦🟦🟦   INICIALIZAÇÃO DO MONITORAMENTO   🟦🟦🟦")
+        print("="*80 + "\n")
+
         # Inicia o scheduler em uma thread para não bloquear o programa principal
         scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
         scheduler_thread.start()
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] ✅ Agendador iniciado com sucesso.")
-        
+
     except Exception as e:
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] ❌ Erro crítico ao inicializar o agendador: {e}")
 
@@ -1152,7 +1163,7 @@ async def main():
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🔍 Inicializando analisador DIVAP...")
         initialize_divap_analyzer()
     else:
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ⚠️ Verificação DIVAP DESATIVADA")
+        print(f"[{datetime.now().strftime('%d-%m-%S')}] ⚠️ Verificação DIVAP DESATIVADA")
 
     # 3. Conecta o cliente Telegram
     print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 📱 Conectando cliente Telegram...")
