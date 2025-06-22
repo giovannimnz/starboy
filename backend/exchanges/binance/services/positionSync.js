@@ -320,7 +320,7 @@ async function syncOrdersWithExchange(accountId) {
 
     console.log(`[SYNC_ORDERS] 🔄 Iniciando sincronização de ordens para conta ${accountId}...`);
 
-    // ✅ DEFINIR STATUS FINALIZADOS QUE DEVEM SER MOVIDOS
+    // ✅ STATUS FINALIZADOS QUE DEVEM SER MOVIDOS AUTOMATICAMENTE
     const finalizedStatuses = ['FILLED', 'CANCELED', 'CANCELLED', 'EXPIRED', 'REJECTED'];
 
     // Obter todos os símbolos com posição aberta OU já conhecidos no banco
@@ -334,172 +334,229 @@ async function syncOrdersWithExchange(accountId) {
       ordersInserted: 0,
       ordersUpdated: 0,
       ordersMoved: 0,
-      positionsLinked: 0
+      positionsLinked: 0,
+      orphansProcessed: 0
     };
 
+    // ✅ PRIMEIRO: PROCESSAR ORDENS DA CORRETORA
     for (const symbol of symbols) {
-      // Buscar ordens abertas na corretora para o símbolo
-      const openOrders = await getOpenOrders(accountId, symbol);
-      console.log(`[SYNC_ORDERS] 📋 ${symbol}: ${openOrders.length} ordens na corretora`);
+      try {
+        // Buscar ordens abertas na corretora para o símbolo
+        const openOrders = await getOpenOrders(accountId, symbol);
+        console.log(`[SYNC_ORDERS] 📋 ${symbol}: ${openOrders.length} ordens na corretora`);
 
-      for (const order of openOrders) {
-        syncStats.ordersChecked++;
+        for (const order of openOrders) {
+          syncStats.ordersChecked++;
 
-        // Verificar se já existe no banco
-        const [existing] = await db.query(
-          `SELECT id_externo, status FROM ordens WHERE id_externo = ? AND conta_id = ?`,
-          [order.orderId, accountId]
-        );
-
-        if (existing.length === 0) {
-          // ✅ INSERIR ORDEM NOVA
-          await db.query(
-            `INSERT INTO ordens 
-              (id_externo, simbolo, tipo_ordem, preco, quantidade, status, side, conta_id, data_hora_criacao, tipo_ordem_bot, last_update)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, NOW())`,
-            [
-              order.orderId,
-              order.symbol,
-              order.type,
-              order.price,
-              order.origQty,
-              order.status,
-              order.side,
-              accountId,
-              order.type, // ou mapeie para tipo_ordem_bot se necessário
-            ]
+          // Verificar se já existe no banco
+          const [existing] = await db.query(
+            `SELECT id_externo, status, data_hora_criacao FROM ordens WHERE id_externo = ? AND conta_id = ?`,
+            [order.orderId, accountId]
           );
-          console.log(`[SYNC_ORDERS] ➕ Nova ordem ${order.orderId} (${order.symbol}) inserida: ${order.status}`);
-          syncStats.ordersInserted++;
-        } else {
-          // ✅ ATUALIZAR STATUS SE NECESSÁRIO
-          const currentStatus = existing[0].status;
-          if (currentStatus !== order.status) {
+
+          if (existing.length === 0) {
+            // ✅ INSERIR ORDEM NOVA
             await db.query(
-              `UPDATE ordens SET status = ?, last_update = NOW() WHERE id_externo = ? AND conta_id = ?`,
-              [order.status, order.orderId, accountId]
+              `INSERT INTO ordens 
+                (id_externo, simbolo, tipo_ordem, preco, quantidade, status, side, conta_id, data_hora_criacao, tipo_ordem_bot, last_update)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, NOW())`,
+              [
+                order.orderId,
+                order.symbol,
+                order.type,
+                order.price,
+                order.origQty,
+                order.status,
+                order.side,
+                accountId,
+                order.type, // ou mapeie para tipo_ordem_bot se necessário
+              ]
             );
-            console.log(`[SYNC_ORDERS] 🔄 Status atualizado ${order.orderId}: ${currentStatus} → ${order.status}`);
+            console.log(`[SYNC_ORDERS] ➕ Nova ordem ${order.orderId} (${order.symbol}) inserida: ${order.status}`);
+            syncStats.ordersInserted++;
+          } else {
+            // ✅ ATUALIZAR STATUS SE NECESSÁRIO
+            const currentStatus = existing[0].status;
+            if (currentStatus !== order.status) {
+              await db.query(
+                `UPDATE ordens SET status = ?, last_update = NOW() WHERE id_externo = ? AND conta_id = ?`,
+                [order.status, order.orderId, accountId]
+              );
+              console.log(`[SYNC_ORDERS] 🔄 Status atualizado ${order.orderId}: ${currentStatus} → ${order.status}`);
+              syncStats.ordersUpdated++;
+            }
+          }
+
+          // ✅ VERIFICAR SE DEVE MOVER PARA HISTÓRICO (STATUS FINALIZADO NA CORRETORA)
+          if (finalizedStatuses.includes(order.status)) {
+            console.log(`[SYNC_ORDERS] 🎯 Status finalizado na corretora: ${order.orderId} (${order.status}) - movendo para histórico...`);
+            
+            try {
+              const { autoMoveOrderOnCompletion } = require('./orderHandlers');
+              const moved = await autoMoveOrderOnCompletion(order.orderId, order.status, accountId);
+              
+              if (moved) {
+                syncStats.ordersMoved++;
+                console.log(`[SYNC_ORDERS] ✅ Ordem ${order.orderId} (${order.status}) movida para ordens_fechadas`);
+              } else {
+                console.warn(`[SYNC_ORDERS] ⚠️ Falha ao mover ordem ${order.orderId} para histórico`);
+              }
+            } catch (moveError) {
+              console.error(`[SYNC_ORDERS] ❌ Erro ao mover ordem ${order.orderId}:`, moveError.message);
+            }
+          } else {
+            // ✅ PARA ORDENS ATIVAS, ASSOCIAR id_posicao CORRETO
+            const [posRows] = await db.query(
+              `SELECT id FROM posicoes WHERE simbolo = ? AND status = 'OPEN' AND conta_id = ? LIMIT 1`,
+              [order.symbol, accountId]
+            );
+            
+            if (posRows.length > 0) {
+              const posId = posRows[0].id;
+              const [updateResult] = await db.query(
+                `UPDATE ordens SET id_posicao = ? WHERE id_externo = ? AND conta_id = ? AND (id_posicao IS NULL OR id_posicao != ?)`,
+                [posId, order.orderId, accountId, posId]
+              );
+              
+              if (updateResult.affectedRows > 0) {
+                syncStats.positionsLinked++;
+                console.log(`[SYNC_ORDERS] 🔗 Ordem ${order.orderId} vinculada à posição ${posId} (${order.symbol})`);
+              }
+            }
+          }
+        }
+      } catch (symbolError) {
+        console.error(`[SYNC_ORDERS] ❌ Erro ao processar símbolo ${symbol}:`, symbolError.message);
+      }
+    }
+
+    // ✅ SEGUNDO: VERIFICAR TODAS AS ORDENS NO BANCO (ATIVAS + FINALIZADAS ANTIGAS)
+    console.log(`[SYNC_ORDERS] 🔍 Verificando ordens no banco de dados...`);
+    
+    const [allDbOrders] = await db.query(`
+      SELECT id_externo, simbolo, status, tipo_ordem_bot, data_hora_criacao,
+             TIMESTAMPDIFF(MINUTE, data_hora_criacao, NOW()) as minutes_old
+      FROM ordens 
+      WHERE conta_id = ?
+      ORDER BY data_hora_criacao DESC
+    `, [accountId]);
+
+    console.log(`[SYNC_ORDERS] 📊 Encontradas ${allDbOrders.length} ordens no banco para verificação`);
+
+    for (const dbOrder of allDbOrders) {
+      try {
+        // ✅ REGRA 1: VERIFICAR SE STATUS NO BANCO É FINALIZADO
+        if (finalizedStatuses.includes(dbOrder.status)) {
+          console.log(`[SYNC_ORDERS] 🎯 Ordem ${dbOrder.id_externo} com status finalizado no banco (${dbOrder.status}) - movendo...`);
+          
+          const { autoMoveOrderOnCompletion } = require('./orderHandlers');
+          const moved = await autoMoveOrderOnCompletion(dbOrder.id_externo, dbOrder.status, accountId);
+          
+          if (moved) {
+            syncStats.ordersMoved++;
+            console.log(`[SYNC_ORDERS] ✅ Ordem finalizada ${dbOrder.id_externo} movida do banco para histórico`);
+          }
+          continue; // Próxima ordem
+        }
+
+        // ✅ REGRA 2: VERIFICAR SE ORDEM EXISTE NA CORRETORA
+        const { getOrderStatus } = require('../api/rest');
+        let orderStatus = null;
+        let orderExistsOnExchange = false;
+
+        try {
+          orderStatus = await getOrderStatus(dbOrder.simbolo, dbOrder.id_externo, accountId);
+          orderExistsOnExchange = orderStatus && orderStatus.orderId;
+        } catch (checkError) {
+          console.warn(`[SYNC_ORDERS] ⚠️ Erro ao verificar ordem ${dbOrder.id_externo} na corretora:`, checkError.message);
+          orderExistsOnExchange = false;
+        }
+
+        if (!orderExistsOnExchange) {
+          // ✅ REGRA 3: ORDEM NÃO EXISTE NA CORRETORA
+          const minutesOld = dbOrder.minutes_old || 0;
+          
+          if (minutesOld > 1) {
+            // ✅ ORDEM TEM MAIS DE 1 MINUTO E NÃO EXISTE NA CORRETORA - MOVER
+            console.log(`[SYNC_ORDERS] 🗑️ Ordem órfã detectada: ${dbOrder.id_externo} (${minutesOld} min) - não existe na corretora`);
+            
+            // Marcar como CANCELED primeiro
+            await db.query(`
+              UPDATE ordens 
+              SET status = 'CANCELED', 
+                  last_update = NOW(),
+                  observacao = CONCAT(
+                    IFNULL(observacao, ''), 
+                    ' | Órfã - não existe na corretora (${minutesOld} min old)'
+                  )
+              WHERE id_externo = ? AND conta_id = ?
+            `, [dbOrder.id_externo, accountId]);
+            
+            // Mover para histórico
+            const { autoMoveOrderOnCompletion } = require('./orderHandlers');
+            const moved = await autoMoveOrderOnCompletion(dbOrder.id_externo, 'CANCELED', accountId);
+            
+            if (moved) {
+              syncStats.orphansProcessed++;
+              console.log(`[SYNC_ORDERS] ✅ Ordem órfã ${dbOrder.id_externo} movida para histórico`);
+            }
+          } else {
+            console.log(`[SYNC_ORDERS] ⏳ Ordem ${dbOrder.id_externo} não encontrada na corretora, mas tem apenas ${minutesOld} min - aguardando...`);
+          }
+          
+        } else {
+          // ✅ REGRA 4: ORDEM EXISTE NA CORRETORA - VERIFICAR STATUS
+          const exchangeStatus = orderStatus.status;
+          
+          if (finalizedStatuses.includes(exchangeStatus)) {
+            console.log(`[SYNC_ORDERS] 🎯 Ordem ${dbOrder.id_externo} finalizada na corretora (${exchangeStatus}) - sincronizando e movendo...`);
+            
+            // Atualizar status no banco primeiro
+            await db.query(`
+              UPDATE ordens 
+              SET status = ?, last_update = NOW()
+              WHERE id_externo = ? AND conta_id = ?
+            `, [exchangeStatus, dbOrder.id_externo, accountId]);
+            
+            // Mover para histórico
+            const { autoMoveOrderOnCompletion } = require('./orderHandlers');
+            const moved = await autoMoveOrderOnCompletion(dbOrder.id_externo, exchangeStatus, accountId);
+            
+            if (moved) {
+              syncStats.ordersMoved++;
+              console.log(`[SYNC_ORDERS] ✅ Ordem ${dbOrder.id_externo} (${exchangeStatus}) sincronizada e movida para histórico`);
+            }
+          } else if (exchangeStatus !== dbOrder.status) {
+            // ✅ SINCRONIZAR STATUS SEM MOVER (ordem ainda ativa)
+            console.log(`[SYNC_ORDERS] 🔄 Sincronizando status ativo: ${dbOrder.status} → ${exchangeStatus}`);
+            await db.query(`
+              UPDATE ordens 
+              SET status = ?, last_update = NOW()
+              WHERE id_externo = ? AND conta_id = ?
+            `, [exchangeStatus, dbOrder.id_externo, accountId]);
             syncStats.ordersUpdated++;
           }
         }
 
-        // ✅ VERIFICAR SE DEVE MOVER PARA HISTÓRICO (STATUS FINALIZADO)
-        if (finalizedStatuses.includes(order.status)) {
-          console.log(`[SYNC_ORDERS] 🎯 Status finalizado detectado: ${order.orderId} (${order.status}) - movendo para histórico...`);
-          
-          try {
-            // ✅ IMPORTAR E USAR A FUNÇÃO DE MOVIMENTO AUTOMÁTICO
-            const { autoMoveOrderOnCompletion } = require('./orderHandlers');
-            const moved = await autoMoveOrderOnCompletion(order.orderId, order.status, accountId);
-            
-            if (moved) {
-              syncStats.ordersMoved++;
-              console.log(`[SYNC_ORDERS] ✅ Ordem ${order.orderId} (${order.status}) movida para ordens_fechadas`);
-            } else {
-              console.warn(`[SYNC_ORDERS] ⚠️ Falha ao mover ordem ${order.orderId} para histórico`);
-            }
-          } catch (moveError) {
-            console.error(`[SYNC_ORDERS] ❌ Erro ao mover ordem ${order.orderId}:`, moveError.message);
-          }
-        } else {
-          // ✅ PARA ORDENS ATIVAS, ASSOCIAR id_posicao CORRETO
-          const [posRows] = await db.query(
-            `SELECT id FROM posicoes WHERE simbolo = ? AND status = 'OPEN' AND conta_id = ? LIMIT 1`,
-            [order.symbol, accountId]
-          );
-          
-          if (posRows.length > 0) {
-            const posId = posRows[0].id;
-            const [updateResult] = await db.query(
-              `UPDATE ordens SET id_posicao = ? WHERE id_externo = ? AND conta_id = ? AND (id_posicao IS NULL OR id_posicao != ?)`,
-              [posId, order.orderId, accountId, posId]
-            );
-            
-            if (updateResult.affectedRows > 0) {
-              syncStats.positionsLinked++;
-              console.log(`[SYNC_ORDERS] 🔗 Ordem ${order.orderId} vinculada à posição ${posId} (${order.symbol})`);
-            }
-          }
-        }
+      } catch (orderError) {
+        console.error(`[SYNC_ORDERS] ❌ Erro ao processar ordem ${dbOrder.id_externo}:`, orderError.message);
       }
     }
 
-    // ✅ VERIFICAR ORDENS NO BANCO QUE NÃO EXISTEM MAIS NA CORRETORA
-    console.log(`[SYNC_ORDERS] 🔍 Verificando ordens órfãs no banco...`);
-    
-    const [dbOrders] = await db.query(`
-      SELECT id_externo, simbolo, status, tipo_ordem_bot
-      FROM ordens 
-      WHERE conta_id = ? AND status NOT IN (${finalizedStatuses.map(() => '?').join(',')})
-    `, [accountId, ...finalizedStatuses]);
-
-    let orphanCount = 0;
-    for (const dbOrder of dbOrders) {
-      // Verificar se ordem ainda existe na corretora
-      const { getOrderStatus } = require('../api/rest');
-      try {
-        const orderStatus = await getOrderStatus(dbOrder.simbolo, dbOrder.id_externo, accountId);
-        
-        if (!orderStatus || !orderStatus.orderId) {
-          // ✅ ORDEM NÃO EXISTE MAIS NA CORRETORA - MARCAR COMO CANCELED E MOVER
-          console.log(`[SYNC_ORDERS] 🗑️ Ordem órfã detectada: ${dbOrder.id_externo} - marcando como CANCELED`);
-          
-          await db.query(`
-            UPDATE ordens 
-            SET status = 'CANCELED', 
-                last_update = NOW(),
-                observacao = CONCAT(
-                  IFNULL(observacao, ''), 
-                  ' | Órfã - não existe na corretora (sync)'
-                )
-            WHERE id_externo = ? AND conta_id = ?
-          `, [dbOrder.id_externo, accountId]);
-          
-          // Mover para histórico
-          const { autoMoveOrderOnCompletion } = require('./orderHandlers');
-          const moved = await autoMoveOrderOnCompletion(dbOrder.id_externo, 'CANCELED', accountId);
-          
-          if (moved) {
-            orphanCount++;
-            console.log(`[SYNC_ORDERS] ✅ Ordem órfã ${dbOrder.id_externo} movida para histórico`);
-          }
-        } else if (finalizedStatuses.includes(orderStatus.status)) {
-          // ✅ ORDEM FINALIZADA NA CORRETORA MAS AINDA ATIVA NO BANCO
-          console.log(`[SYNC_ORDERS] 🎯 Ordem ${dbOrder.id_externo} finalizada na corretora (${orderStatus.status}) - atualizando e movendo...`);
-          
-          await db.query(`
-            UPDATE ordens 
-            SET status = ?, last_update = NOW()
-            WHERE id_externo = ? AND conta_id = ?
-          `, [orderStatus.status, dbOrder.id_externo, accountId]);
-          
-          const { autoMoveOrderOnCompletion } = require('./orderHandlers');
-          const moved = await autoMoveOrderOnCompletion(dbOrder.id_externo, orderStatus.status, accountId);
-          
-          if (moved) {
-            syncStats.ordersMoved++;
-            console.log(`[SYNC_ORDERS] ✅ Ordem atrasada ${dbOrder.id_externo} (${orderStatus.status}) movida para histórico`);
-          }
-        }
-      } catch (checkError) {
-        console.warn(`[SYNC_ORDERS] ⚠️ Erro ao verificar ordem ${dbOrder.id_externo}:`, checkError.message);
-      }
-    }
-
-    // ✅ RELATÓRIO FINAL
+    // ✅ RELATÓRIO FINAL DETALHADO
     console.log(`[SYNC_ORDERS] ✅ Sincronização concluída para conta ${accountId}:`);
     console.log(`[SYNC_ORDERS]   📊 Ordens verificadas: ${syncStats.ordersChecked}`);
     console.log(`[SYNC_ORDERS]   ➕ Ordens inseridas: ${syncStats.ordersInserted}`);
     console.log(`[SYNC_ORDERS]   🔄 Ordens atualizadas: ${syncStats.ordersUpdated}`);
     console.log(`[SYNC_ORDERS]   📚 Ordens movidas para histórico: ${syncStats.ordersMoved}`);
     console.log(`[SYNC_ORDERS]   🔗 Posições vinculadas: ${syncStats.positionsLinked}`);
-    console.log(`[SYNC_ORDERS]   🗑️ Órfãs processadas: ${orphanCount}`);
+    console.log(`[SYNC_ORDERS]   🗑️ Órfãs processadas: ${syncStats.orphansProcessed}`);
+    console.log(`[SYNC_ORDERS]   🎯 Total de movimentos: ${syncStats.ordersMoved + syncStats.orphansProcessed}`);
 
     return {
       success: true,
       stats: syncStats,
-      orphansProcessed: orphanCount
+      totalMoved: syncStats.ordersMoved + syncStats.orphansProcessed
     };
 
   } catch (error) {
