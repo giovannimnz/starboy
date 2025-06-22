@@ -5,12 +5,11 @@ const { verifyAndFixEnvironmentConsistency, getFuturesAccountBalanceDetails } = 
 const websockets = require('../api/websocket');
 const api = require('../api/rest');
 const { initializeTelegramBot, stopAllTelegramBots } = require('./telegramBot');
-const { startPriceMonitoring, onPriceUpdate } = require('./priceMonitoring');
+const { onPriceUpdate, cancelSignal } = require('./signalProcessor');
 const { checkNewTrades } = require('./signalProcessor');
 const { syncPositionsWithExchange, syncOrdersWithExchange, logOpenPositionsAndOrdersVisual } = require('./positionSync');
 const orderHandlers = require('./orderHandlers');
 const accountHandlers = require('./accountHandlers');
-const { checkExpiredSignals } = require('./signalTimeout');
 const { runPeriodicCleanup, monitorWebSocketHealth, updatePositionPricesWithTrailing, runAdvancedPositionMonitoring } = require('./enhancedMonitoring');
 const { cleanupOrphanSignals, forceCloseGhostPositions, cancelOrphanOrders } = require('./cleanup');
 const { syncAndCloseGhostPositions } = require('./positionHistory');
@@ -332,7 +331,7 @@ try {
               const { updatePositionPricesWithTrailing } = require('./enhancedMonitoring');
               await updatePositionPricesWithTrailing(db, symbol, price, accountId);
               
-              const { onPriceUpdate } = require('./priceMonitoring');
+              const { onPriceUpdate } = require('./signalProcessor');
               await onPriceUpdate(symbol, price, db, accountId);
             } catch (error) {
               console.error(`[MONITOR] ⚠️ Erro em onPriceUpdate para ${symbol} conta ${accountId}:`, error.message);

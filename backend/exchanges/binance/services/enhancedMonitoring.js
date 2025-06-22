@@ -2,7 +2,6 @@ const { getDatabaseInstance } = require('../../../core/database/conexao');
 const api = require('../api/rest');
 const websockets = require('../api/websocket');
 const { checkOrderTriggers } = require('./trailingStopLoss');
-const { checkExpiredSignals } = require('./signalTimeout');
 const { cleanupOrphanSignals, forceCloseGhostPositions } = require('./cleanup');
 
 /**

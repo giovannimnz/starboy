@@ -1,5 +1,5 @@
 const { getDatabaseInstance, insertNewOrder, formatDateForMySQL } = require('../../../core/database/conexao');
-const { newStopOrder, cancelOrder, getOpenOrders } = require('../api/rest'); // ✅ Import correto
+const { newStopOrder, cancelOrder, getOpenOrders } = require('../api/rest');
 const { sendTelegramMessage, formatAlertMessage } = require('./telegramBot');
 
 // Controle de verificações para evitar spam
