@@ -260,6 +260,38 @@ try {
       console.warn('⚠️ Erro ao verificar status da sessão:', sessionError.message);
     }
 
+    // === ETAPA 6.5: Registrar callbacks de monitoramento ===
+console.log(`🔄 ETAPA 6.5: Registrando callbacks de WebSocket para conta ${accountId}...`);
+
+try {
+  // Importar funções necessárias
+  const { onPriceUpdate } = require('./signalProcessor');
+
+  // Garantir que onPriceUpdate está registrado
+  const currentHandlers = websockets.getHandlers(accountId);
+  const updatedHandlers = {
+    ...currentHandlers,
+    onPriceUpdate: async (symbol, price, db, acctId) => {
+      try {
+        console.log(`[MONITOR] 📊 Preço recebido: ${symbol} = ${price} (conta ${acctId})`);
+        await onPriceUpdate(symbol, price, db, acctId);
+      } catch (error) {
+        console.error(`[MONITOR] ❌ Erro em onPriceUpdate:`, error.message);
+      }
+    }
+  };
+
+  // Registrar os handlers atualizados
+  websockets.setMonitoringCallbacks(updatedHandlers, accountId);
+  
+  // Verificar registro
+  const finalHandlers = websockets.getHandlers(accountId);
+  console.log(`[MONITOR] 🔍 Verificação final do callback onPriceUpdate: ${typeof finalHandlers.onPriceUpdate}`);
+  
+} catch (callbackError) {
+  console.error(`[MONITOR] ❌ Erro ao registrar callbacks para conta ${accountId}:`, callbackError.message);
+}
+
     // === ETAPA 7: CONFIGURAR HANDLERS SEPARADAMENTE ===
     console.log(`🔧 ETAPA 7: Configurando handlers para conta ${accountId}...`);
     
