@@ -9,35 +9,39 @@ const { cleanupOrphanSignals, forceCloseGhostPositions } = require('./cleanup');
  */
 async function updatePositionPricesWithTrailing(db, symbol, currentPrice, accountId) {
   try {
-    if (!accountId || typeof accountId !== 'number') {
-      console.error(`[ENHANCED] AccountId inválido: ${accountId}`);
-      return;
-    }
+    console.log(`[ENHANCED] Atualizando preços para ${symbol}: ${currentPrice} (conta ${accountId})`);
     
     // Buscar posições abertas para o símbolo
-    const [positions] = await db.query(`
-      SELECT * FROM posicoes 
-      WHERE simbolo = ? AND status = 'OPEN' AND conta_id = ?
-    `, [symbol, accountId]);
-    
+    const [positions] = await db.query(
+      'SELECT * FROM posicoes WHERE simbolo = ? AND status = "OPEN" AND conta_id = ?',
+      [symbol, accountId]
+    );
+
+    if (positions.length === 0) {
+      return;
+    }
+
+    console.log(`[ENHANCED] Atualizando ${positions.length} posições para ${symbol}`);
+
+    // Para cada posição, atualizar o preço corrente
     for (const position of positions) {
-      // Atualizar preço corrente
-      await db.query(`
-        UPDATE posicoes 
-        SET preco_corrente = ?, data_hora_ultima_atualizacao = NOW()
-        WHERE id = ?
-      `, [currentPrice, position.id]);
-      
-      // Verificar trailing stops
       try {
+        await db.query(`
+          UPDATE posicoes 
+          SET preco_corrente = ?, data_hora_ultima_atualizacao = NOW()
+          WHERE id = ?
+        `, [currentPrice, position.id]);
+
+        // Verificar trailing stops se necessário
+        const { checkOrderTriggers } = require('./trailingStopLoss');
         await checkOrderTriggers(db, position, currentPrice, accountId);
-      } catch (trailingError) {
-        console.error(`[ENHANCED] Erro no trailing stop para posição ${position.id}:`, trailingError.message);
+
+      } catch (positionError) {
+        console.error(`[ENHANCED] Erro ao atualizar posição ${position.id}:`, positionError.message);
       }
     }
-    
   } catch (error) {
-    console.error(`[ENHANCED] Erro ao atualizar preços para ${symbol} conta ${accountId}:`, error.message);
+    console.error(`[ENHANCED] ❌ Erro ao atualizar preços para ${symbol} conta ${accountId}: ${error.message}`);
   }
 }
 
