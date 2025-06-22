@@ -592,6 +592,7 @@ async function handlePriceUpdate(symbol, tickerData, accountId) {
         hasOnPriceUpdate: !!(accountState.monitoringCallbacks?.onPriceUpdate),
         callbackType: typeof accountState.monitoringCallbacks?.onPriceUpdate
       });*/
+      return;
     }
   } catch (error) {
     console.error(`[WEBSOCKETS] ❌ Erro ao processar atualização de preço para ${symbol}:`, error.message);
