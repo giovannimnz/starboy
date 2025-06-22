@@ -587,12 +587,11 @@ async function handlePriceUpdate(symbol, tickerData, accountId) {
       console.log(`[WEBSOCKET] ✅ onPriceUpdate executado para ${symbol}`);
     } else {
       //console.warn(`[WEBSOCKET] ⚠️ Callback onPriceUpdate não encontrado para conta ${accountId}`);
-      /*console.warn(`[WEBSOCKET] Estado dos callbacks:`, {
+      console.warn(`[WEBSOCKET] Estado dos callbacks:`, {
         hasCallbacks: !!accountState.monitoringCallbacks,
         hasOnPriceUpdate: !!(accountState.monitoringCallbacks?.onPriceUpdate),
         callbackType: typeof accountState.monitoringCallbacks?.onPriceUpdate
-      });*/
-      return;
+      });
     }
   } catch (error) {
     console.error(`[WEBSOCKETS] ❌ Erro ao processar atualização de preço para ${symbol}:`, error.message);
