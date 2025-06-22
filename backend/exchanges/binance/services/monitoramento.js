@@ -460,79 +460,73 @@ async function startPriceMonitoringInline(accountId) {
       return 0;
     }
 
-    // Obter posições abertas ou com ordens de entrada pendentes
-    const [pendingEntries] = await db.query(`
-      SELECT o.simbolo
-      FROM ordens o
-      WHERE o.conta_id = ? AND o.tipo_ordem_bot = 'ENTRADA' AND o.status = 'OPEN'
-      GROUP BY o.simbolo
-    `, [accountId]);
-
-    const [openPositions] = await db.query(`
-      SELECT simbolo
-      FROM posicoes
-      WHERE conta_id = ? AND status = 'OPEN'
-    `, [accountId]);
-
-    // ✅ CRÍTICO: Obter sinais em AGUARDANDO_ACIONAMENTO
+    // ✅ PRIORITÁRIO: Símbolos com sinais AGUARDANDO_ACIONAMENTO
     const [pendingSignals] = await db.query(`
-      SELECT symbol, timeframe, created_at, timeout_at, max_lifetime_minutes
+      SELECT DISTINCT symbol
       FROM webhook_signals
       WHERE conta_id = ? AND status = 'AGUARDANDO_ACIONAMENTO'
     `, [accountId]);
 
-    console.log(`[MONITOR] Encontrados ${pendingSignals.length} sinais pendentes para monitoramento (conta ${accountId})`);
+    // ✅ SECUNDÁRIO: Símbolos com posições abertas
+    const [openPositions] = await db.query(`
+      SELECT DISTINCT simbolo as symbol
+      FROM posicoes
+      WHERE conta_id = ? AND status = 'OPEN'
+    `, [accountId]);
+
+    // ✅ TERCIÁRIO: Símbolos com ordens de entrada pendentes
+    const [pendingEntries] = await db.query(`
+      SELECT DISTINCT simbolo as symbol
+      FROM ordens
+      WHERE conta_id = ? AND tipo_ordem_bot = 'ENTRADA' AND status IN ('NEW', 'PARTIALLY_FILLED')
+    `, [accountId]);
 
     const symbols = new Set();
 
-    // Adicionar símbolos com ordens pendentes
-    pendingEntries.forEach(entry => symbols.add(entry.simbolo));
+    // ✅ PRIORIZAR SINAIS (mais importante)
+    pendingSignals.forEach(signal => {
+      symbols.add(signal.symbol);
+      console.log(`[MONITOR] ⭐ Símbolo prioritário (sinal aguardando): ${signal.symbol}`);
+    });
 
-    // Adicionar símbolos com posições abertas
-    openPositions.forEach(position => symbols.add(position.simbolo));
+    // ✅ ADICIONAR POSIÇÕES ABERTAS
+    openPositions.forEach(position => {
+      if (!symbols.has(position.symbol)) {
+        symbols.add(position.symbol);
+        console.log(`[MONITOR] 📊 Símbolo (posição aberta): ${position.symbol}`);
+      }
+    });
 
-    // ✅ CRÍTICO: Adicionar símbolos com sinais pendentes
-    pendingSignals.forEach(signal => symbols.add(signal.symbol));
+    // ✅ ADICIONAR ORDENS PENDENTES
+    pendingEntries.forEach(entry => {
+      if (!symbols.has(entry.symbol)) {
+        symbols.add(entry.symbol);
+        console.log(`[MONITOR] 🔄 Símbolo (entrada pendente): ${entry.symbol}`);
+      }
+    });
 
-    // ✅ DEBUG: Mostrar símbolos que serão monitorados
-    console.log(`[MONITOR] Símbolos para monitoramento:`, Array.from(symbols));
+    console.log(`[MONITOR] 📋 Total de símbolos para monitoramento: ${symbols.size}`);
+    console.log(`[MONITOR] 📋 Símbolos: ${Array.from(symbols).join(', ')}`);
+
+    // ✅ VERIFICAR se há sinais expirados durante período offline
+    if (pendingSignals.length > 0) {
+      console.log(`[MONITOR] 🔍 Verificando ${pendingSignals.length} sinais para possível expiração...`);
+      
+      const { checkExpiredSignals } = require('./signalProcessor');
+      const expiredCount = await checkExpiredSignals(accountId);
+      
+      if (expiredCount > 0) {
+        console.log(`[MONITOR] ⏰ ${expiredCount} sinais expirados cancelados durante inicialização`);
+      }
+    }
 
     // Iniciar websockets para cada símbolo
     for (const symbol of symbols) {
-      console.log(`[MONITOR] Iniciando monitoramento de preço para ${symbol} (conta ${accountId})`);
-      await websockets.ensurePriceWebsocketExists(symbol, accountId);
-    }
-
-    // ✅ VERIFICAR sinais expirados durante período offline
-    if (pendingSignals.length > 0) {
-      console.log(`[MONITOR] Verificando se há sinais expirados durante período offline...`);
-      const now = new Date();
-      
-      for (const signal of pendingSignals) {
-        const createdAt = new Date(signal.created_at);
-        const ageMs = now.getTime() - createdAt.getTime();
-        
-        // Verificar se expirou
-        let shouldExpire = false;
-        let expireReason = '';
-        
-        if (signal.timeframe) {
-          const { timeframeToMs } = require('./signalProcessor');
-          const timeframeMs = timeframeToMs(signal.timeframe);
-          if (timeframeMs > 0) {
-            const maxLifetime = timeframeMs * 3;
-            if (ageMs > maxLifetime) {
-              shouldExpire = true;
-              expireReason = `Expirado durante offline (${signal.timeframe} * 3)`;
-            }
-          }
-        }
-        
-        if (shouldExpire) {
-          console.log(`[MONITOR] ⏰ Cancelando sinal ${signal.symbol} expirado durante offline: ${expireReason}`);
-          const { cancelSignal } = require('./signalProcessor');
-          await cancelSignal(db, signal.id, 'TIMEOUT_ENTRY', expireReason, accountId);
-        }
+      try {
+        console.log(`[MONITOR] 🌐 Iniciando WebSocket para ${symbol} (conta ${accountId})`);
+        await websockets.ensurePriceWebsocketExists(symbol, accountId);
+      } catch (wsError) {
+        console.error(`[MONITOR] ❌ Erro ao iniciar WebSocket para ${symbol}:`, wsError.message);
       }
     }
 

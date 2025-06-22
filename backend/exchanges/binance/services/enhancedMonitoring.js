@@ -11,37 +11,67 @@ async function updatePositionPricesWithTrailing(db, symbol, currentPrice, accoun
   try {
     console.log(`[ENHANCED] Atualizando preços para ${symbol}: ${currentPrice} (conta ${accountId})`);
     
-    // Buscar posições abertas para o símbolo
-    const [positions] = await db.query(
-      'SELECT * FROM posicoes WHERE simbolo = ? AND status = "OPEN" AND conta_id = ?',
-      [symbol, accountId]
-    );
-
-    if (positions.length === 0) {
-      return;
-    }
-
-    console.log(`[ENHANCED] Atualizando ${positions.length} posições para ${symbol}`);
-
-    // Para cada posição, atualizar o preço corrente
-    for (const position of positions) {
-      try {
-        await db.query(`
-          UPDATE posicoes 
-          SET preco_corrente = ?, data_hora_ultima_atualizacao = NOW()
-          WHERE id = ?
-        `, [currentPrice, position.id]);
-
-        // Verificar trailing stops se necessário
-        const { checkOrderTriggers } = require('./trailingStopLoss');
-        await checkOrderTriggers(db, position, currentPrice, accountId);
-
-      } catch (positionError) {
-        console.error(`[ENHANCED] Erro ao atualizar posição ${position.id}:`, positionError.message);
+    // ✅ 1. VERIFICAR GATILHOS DE ENTRADA PRIMEIRO - IMPORTAÇÃO CORRIGIDA
+    try {
+      const { checkSignalTriggers } = require('./signalProcessor');
+      await checkSignalTriggers(symbol, currentPrice, db, accountId);
+    } catch (signalError) {
+      // ✅ NÃO LOGAR ERRO SE NÃO HOUVER SINAIS
+      if (!signalError.message.includes('not defined')) {
+        console.error(`[ENHANCED] Erro ao verificar gatilhos de sinal:`, signalError.message);
       }
     }
+    
+    // ✅ 2. ATUALIZAR PREÇOS DAS POSIÇÕES
+    const [positions] = await db.query(`
+      SELECT * FROM posicoes 
+      WHERE simbolo = ? AND status = 'OPEN' AND conta_id = ?
+    `, [symbol, accountId]);
+    
+    if (positions.length === 0) {
+      // ✅ SEM POSIÇÕES, VERIFICAR SE HÁ SINAIS AGUARDANDO
+      const [signals] = await db.query(`
+        SELECT COUNT(*) as count FROM webhook_signals 
+        WHERE symbol = ? AND conta_id = ? AND status = 'AGUARDANDO_ACIONAMENTO'
+      `, [symbol, accountId]);
+      
+      if (signals[0].count === 0) {
+        // ✅ SEM POSIÇÕES E SEM SINAIS, NÃO FAZER NADA
+        return;
+      }
+    }
+    
+    for (const position of positions) {
+      // Atualizar preço corrente
+      await db.query(`
+        UPDATE posicoes 
+        SET preco_corrente = ?, data_hora_ultima_atualizacao = NOW()
+        WHERE id = ?
+      `, [currentPrice, position.id]);
+      
+      // ✅ 3. VERIFICAR TRAILING STOPS
+      try {
+        const { checkOrderTriggers } = require('./trailingStopLoss');
+        await checkOrderTriggers(db, position, currentPrice, accountId);
+      } catch (trailingError) {
+        console.error(`[ENHANCED] Erro no trailing stop para posição ${position.id}:`, trailingError.message);
+      }
+    }
+    
+    // ✅ 4. LOG PERIÓDICO APENAS PARA SÍMBOLOS COM ATIVIDADE
+    const now = Date.now();
+    const lastLogKey = `${symbol}_${accountId}`;
+    if (!global.lastPriceLog) global.lastPriceLog = {};
+    
+    if (!global.lastPriceLog[lastLogKey] || (now - global.lastPriceLog[lastLogKey]) > 60000) {
+      if (positions.length > 0) {
+        console.log(`[ENHANCED] 📊 ${symbol} @ ${currentPrice} - ${positions.length} posições ativas (conta ${accountId})`);
+        global.lastPriceLog[lastLogKey] = now;
+      }
+    }
+    
   } catch (error) {
-    console.error(`[ENHANCED] ❌ Erro ao atualizar preços para ${symbol} conta ${accountId}: ${error.message}`);
+    console.error(`[ENHANCED] ❌ Erro ao atualizar preços para ${symbol} conta ${accountId}:`, error.message);
   }
 }
 

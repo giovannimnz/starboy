@@ -707,12 +707,25 @@ function calculateEstimatedPositionCost(signal) {
 
 async function onPriceUpdate(symbol, currentPrice, db, accountId) {
   try {
-    // ✅ DEBUG: Confirmar que está sendo chamado via WebSocket
-    console.log(`[SIGNAL] 📊 onPriceUpdate via WebSocket: ${symbol} = ${currentPrice} (conta ${accountId})`);
+    // ✅ LOG CONDICIONAL: Só mostrar se houver atividade relevante
+    let hasRelevantActivity = false;
+    
+    // ✅ CORRIGIDO: Renomeado para evitar redeclaração
+    const [pendingSignalsCount] = await db.query(`
+      SELECT COUNT(*) as count FROM webhook_signals
+      WHERE symbol = ? AND conta_id = ? AND status = 'AGUARDANDO_ACIONAMENTO'
+    `, [symbol, accountId]);
+    
+    if (pendingSignalsCount[0].count > 0) {
+      hasRelevantActivity = true;
+      console.log(`[SIGNAL] 📊 onPriceUpdate via WebSocket: ${symbol} = ${currentPrice} (conta ${accountId}) - ${pendingSignalsCount[0].count} sinais aguardando`);
+    }
     
     // Validação básica
     if (!symbol || !currentPrice || currentPrice <= 0 || !accountId) {
-      console.log(`[SIGNAL] ⚠️ Parâmetros inválidos: symbol=${symbol}, price=${currentPrice}, accountId=${accountId}`);
+      if (hasRelevantActivity) {
+        console.log(`[SIGNAL] ⚠️ Parâmetros inválidos: symbol=${symbol}, price=${currentPrice}, accountId=${accountId}`);
+      }
       return;
     }
     
@@ -727,7 +740,7 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
       console.error(`[SIGNAL] ❌ Erro ao atualizar posições:`, positionError.message);
     }
     
-    // 3. VERIFICAR SINAIS AGUARDANDO ACIONAMENTO
+    // 3. VERIFICAR SINAIS AGUARDANDO ACIONAMENTO (mantém o nome original)
     const [pendingSignals] = await db.query(`
       SELECT id, symbol, side, entry_price, sl_price, timeframe, 
              created_at, timeout_at, max_lifetime_minutes, chat_id
