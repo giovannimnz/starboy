@@ -9,7 +9,6 @@ const { onPriceUpdate, checkNewTrades, checkExpiredSignals, checkCanceledSignals
 const { syncPositionsWithExchange, syncOrdersWithExchange, logOpenPositionsAndOrdersVisual } = require('../services/positionSync');
 const orderHandlers = require('../handlers/orderHandlers');
 const accountHandlers = require('../handlers/accountHandlers');
-const { runPeriodicCleanup, updatePositionPricesWithTrailing } = require('./enhancedMonitoring');
 const { cleanupOrphanSignals, forceCloseGhostPositions, cancelOrphanOrders } = require('../services/cleanup');
 const { syncAndCloseGhostPositions } = require('../services/positionHistory');
 const { checkOrderTriggers } = require('./trailingStopLoss');
@@ -754,7 +753,7 @@ async function gracefulShutdown(accountIdToShutdown) {
     console.log(`[MONITOR] 🧹 2/7 - Executando limpeza final para conta ${accountIdToShutdown}...`);
     try {
       // Última limpeza antes de fechar
-      await runPeriodicCleanup(accountIdToShutdown);
+      await cleanupOrphanSignals(accountIdToShutdown);
       console.log(`[MONITOR]   ✅ Limpeza final concluída para conta ${accountIdToShutdown}`);
     } catch (finalCleanupError) {
       console.error(`[MONITOR]   ⚠️ Erro na limpeza final para conta ${accountIdToShutdown}:`, finalCleanupError.message);
