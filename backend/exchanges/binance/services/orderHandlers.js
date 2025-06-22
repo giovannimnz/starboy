@@ -606,23 +606,56 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId) {
 
 /**
  * ✅ FUNÇÃO CORRIGIDA: Processa atualizações de ordens via WebSocket
+ * Suporta MÚLTIPLOS formatos de entrada
  */
-async function handleOrderUpdate(accountId, orderUpdateData) {
+async function handleOrderUpdate(messageOrAccountId, orderDataOrDb = null, db = null) {
   try {
-    const db = await getDatabaseInstance();
+    let accountId, orderUpdateData, connection;
     
-    // ✅ SUPORTAR TANTO FORMATO DIRETO QUANTO FORMATO ENCAPSULADO
-    let orderData;
-    if (orderUpdateData.o) {
-      // Formato do USER_DATA_STREAM: { e: 'ORDER_TRADE_UPDATE', o: { ... } }
-      orderData = orderUpdateData.o;
-    } else if (orderUpdateData.i && orderUpdateData.s) {
-      // Formato direto: { i: orderId, s: symbol, ... }
-      orderData = orderUpdateData;
+    // ✅ DETECTAR FORMATO DA CHAMADA
+    if (typeof messageOrAccountId === 'number') {
+      // FORMATO NOVO: handleOrderUpdate(accountId, orderUpdateData)
+      accountId = messageOrAccountId;
+      orderUpdateData = orderDataOrDb;
+      connection = db;
     } else {
-      console.warn(`[ORDER] ⚠️ Formato de dados não reconhecido:`, orderUpdateData);
+      // FORMATO ANTIGO: handleOrderUpdate(orderMsg, accountId, db)
+      const orderMsg = messageOrAccountId;
+      accountId = orderDataOrDb;
+      connection = db;
+      
+      // ✅ VALIDAÇÃO DO FORMATO ANTIGO - CORREÇÃO AQUI
+      if (!orderMsg) {
+        console.error(`[ORDER] Mensagem de ordem inválida para conta ${accountId}`);
+        return;
+      }
+      
+      // ✅ EXTRAIR DADOS CORRETAMENTE BASEADO NO FORMATO BINANCE
+      if (orderMsg.e === 'ORDER_TRADE_UPDATE' && orderMsg.o) {
+        // Formato padrão da Binance: { e: 'ORDER_TRADE_UPDATE', o: { ... } }
+        orderUpdateData = orderMsg.o;
+      } else if (orderMsg.i && orderMsg.s) {
+        // Formato direto: { i: orderId, s: symbol, ... }
+        orderUpdateData = orderMsg;
+      } else {
+        console.error(`[ORDER] Formato de mensagem não reconhecido para conta ${accountId}:`, {
+          hasE: orderMsg.e,
+          hasO: !!orderMsg.o,
+          hasI: !!orderMsg.i,
+          hasS: !!orderMsg.s
+        });
+        return;
+      }
+    }
+
+    // ✅ VALIDAÇÃO UNIFICADA
+    if (!accountId || typeof accountId !== 'number') {
+      console.error(`[ORDER] AccountId inválido: ${accountId} (tipo: ${typeof accountId})`);
       return;
     }
+
+    // ✅ PROCESSAR DADOS DA ORDEM - AGORA orderUpdateData JÁ ESTÁ CORRETO
+    const orderData = orderUpdateData;
     
     const orderId = orderData.i?.toString();
     const symbol = orderData.s;
@@ -631,13 +664,23 @@ async function handleOrderUpdate(accountId, orderUpdateData) {
     
     if (!orderId || !symbol || !orderStatus) {
       console.warn(`[ORDER] ⚠️ Dados incompletos: orderId=${orderId}, symbol=${symbol}, status=${orderStatus}`);
+      console.warn(`[ORDER] ⚠️ Dados recebidos:`, JSON.stringify(orderData, null, 2));
       return;
     }
 
     console.log(`[ORDER] 📨 Processando atualização: ${orderId} (${symbol}) - ${executionType}/${orderStatus}`);
 
+    // ✅ OBTER CONEXÃO COM BANCO
+    if (!connection) {
+      connection = await getDatabaseInstance(accountId);
+      if (!connection) {
+        console.error(`[ORDER] Não foi possível obter conexão com banco para conta ${accountId}`);
+        return;
+      }
+    }
+
     // ✅ 1. VERIFICAR SE ORDEM EXISTE NO BANCO
-    const [existingOrders] = await db.query(
+    const [existingOrders] = await connection.query(
       'SELECT * FROM ordens WHERE id_externo = ? AND simbolo = ? AND conta_id = ?',
       [orderId, symbol, accountId]
     );
@@ -652,11 +695,13 @@ async function handleOrderUpdate(accountId, orderUpdateData) {
 
     // ✅ 2. INSERIR ORDEM SE NÃO EXISTE (ORDEM EXTERNA)
     if (shouldInsert) {
-      await insertExternalOrder(db, orderData, accountId);
+      await insertExternalOrder(connection, orderData, accountId);
     }
 
     // ✅ 3. ATUALIZAR ORDEM EXISTENTE
-    await updateExistingOrder(db, orderData, accountId, existingOrders[0]);
+    if (orderExists) {
+      await updateExistingOrder(connection, orderData, accountId, existingOrders[0]);
+    }
 
     // ✅ 4. VERIFICAR SE DEVE MOVER PARA HISTÓRICO
     const finalStatuses = ['FILLED', 'CANCELED', 'CANCELLED', 'EXPIRED', 'REJECTED'];
@@ -700,15 +745,24 @@ async function handleOrderUpdate(accountId, orderUpdateData) {
       console.log(`[ORDER]   - Quantidade: ${executedQty}`);
       console.log(`[ORDER]   - Preço médio: ${avgPrice}`);
       console.log(`[ORDER]   - Valor total: ${totalValue.toFixed(2)} USDT`);
+    } else if (orderStatus === 'NEW') {
+      console.log(`[ORDER] ✅ Nova ordem registrada:`);
+      console.log(`[ORDER]   - ID: ${orderId}`);
+      console.log(`[ORDER]   - Símbolo: ${symbol}`);
+      console.log(`[ORDER]   - Tipo: ${orderData.o} (${orderData.R ? 'REDUCE_ONLY' : 'NORMAL'})`);
+      console.log(`[ORDER]   - Side: ${orderData.S}`);
+      console.log(`[ORDER]   - Quantidade: ${orderData.q}`);
+      console.log(`[ORDER]   - Preço: ${orderData.p}`);
     }
 
   } catch (error) {
     console.error(`[ORDER] ❌ Erro ao processar atualização da ordem:`, error.message);
+    console.error(`[ORDER] Stack trace:`, error.stack);
   }
 }
 
 /**
- * ✅ NOVA FUNÇÃO: Inserir ordem externa no banco
+ * ✅ FUNÇÃO MELHORADA: Inserir ordem externa no banco
  */
 async function insertExternalOrder(dbConnection, orderData, accountId) {
   try {
@@ -739,38 +793,42 @@ async function insertExternalOrder(dbConnection, orderData, accountId) {
     // ✅ DETECTAR TIPO DE ORDEM BOT
     const orderBotType = determineOrderBotTypeFromExternal(orderData);
     
-    // ✅ PREPARAR DADOS DA ORDEM
+    // ✅ PREPARAR DADOS DA ORDEM COM MAPEAMENTO CORRETO DOS CAMPOS
     const orderInsertData = {
-      tipo_ordem: mapOrderType(orderData.o),
-      preco: parseFloat(orderData.p || '0'),
-      quantidade: parseFloat(orderData.q || '0'),
-      id_posicao: positionId,
-      status: orderData.X,
-      data_hora_criacao: formatDateForMySQL(new Date(orderData.T || Date.now())),
-      id_externo: orderData.i.toString(),
-      side: orderData.S,
-      simbolo: orderData.s,
-      tipo_ordem_bot: orderBotType,
-      target: null,
-      reduce_only: orderData.R === true ? 1 : 0,
-      close_position: orderData.cp === true ? 1 : 0,
-      last_update: formatDateForMySQL(new Date()),
-      orign_sig: 'EXTERNAL_ORDER', // Marcar como ordem externa
-      observacao: `Ordem externa detectada via WebSocket`,
-      preco_executado: parseFloat(orderData.ap || '0'),
-      quantidade_executada: parseFloat(orderData.z || '0'),
-      dados_originais_ws: JSON.stringify(orderData),
-      conta_id: accountId
+      tipo_ordem: mapOrderType(orderData.o),                    // LIMIT, MARKET, etc.
+      preco: parseFloat(orderData.p || '0'),                    // Preço original
+      quantidade: parseFloat(orderData.q || '0'),               // Quantidade original
+      id_posicao: positionId,                                   // ID da posição relacionada
+      status: orderData.X,                                      // Status da ordem (NEW, FILLED, etc.)
+      data_hora_criacao: formatDateForMySQL(new Date(orderData.T || Date.now())), // Timestamp da ordem
+      id_externo: orderData.i.toString(),                      // Order ID da Binance
+      side: orderData.S,                                        // BUY ou SELL
+      simbolo: orderData.s,                                     // Symbol (BTCUSDT, etc.)
+      tipo_ordem_bot: orderBotType,                            // ENTRADA, STOP_LOSS, etc.
+      target: null,                                             // Target level (se aplicável)
+      reduce_only: orderData.R === true ? 1 : 0,              // 1 se reduce-only, 0 se não
+      close_position: orderData.cp === true ? 1 : 0,          // 1 se close-position, 0 se não
+      last_update: formatDateForMySQL(new Date()),             // Timestamp de atualização
+      orign_sig: 'EXTERNAL_ORDER',                            // Marcar como ordem externa
+      observacao: `Ordem externa criada via ${orderData.c || 'web/api'}`, // Client Order ID como observação
+      preco_executado: parseFloat(orderData.ap || '0'),       // Preço médio executado
+      quantidade_executada: parseFloat(orderData.z || '0'),    // Quantidade executada acumulada
+      dados_originais_ws: JSON.stringify(orderData),           // Dados originais do WebSocket
+      conta_id: accountId,                                      // ID da conta
+      commission: parseFloat(orderData.n || '0'),              // Comissão
+      commission_asset: orderData.N || 'USDT',                 // Asset da comissão
+      trade_id: orderData.t || null                            // Trade ID
     };
 
-    // ✅ INSERIR NO BANCO
+    // ✅ INSERIR NO BANCO COM TODAS AS COLUNAS
     const insertQuery = `
       INSERT INTO ordens (
         tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao,
         id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only,
         close_position, last_update, orign_sig, observacao, preco_executado,
-        quantidade_executada, dados_originais_ws, conta_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        quantidade_executada, dados_originais_ws, conta_id, commission,
+        commission_asset, trade_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
     
     const insertValues = [
@@ -780,13 +838,22 @@ async function insertExternalOrder(dbConnection, orderData, accountId) {
       orderInsertData.tipo_ordem_bot, orderInsertData.target, orderInsertData.reduce_only,
       orderInsertData.close_position, orderInsertData.last_update, orderInsertData.orign_sig,
       orderInsertData.observacao, orderInsertData.preco_executado, orderInsertData.quantidade_executada,
-      orderInsertData.dados_originais_ws, orderInsertData.conta_id
+      orderInsertData.dados_originais_ws, orderInsertData.conta_id, orderInsertData.commission,
+      orderInsertData.commission_asset, orderInsertData.trade_id
     ];
 
     const [result] = await connection.query(insertQuery, insertValues);
     const orderDbId = result.insertId;
     
-    console.log(`[ORDER] ✅ Ordem externa ${orderData.i} inserida no banco com ID ${orderDbId}`);
+    console.log(`[ORDER] ✅ Ordem externa ${orderData.i} inserida no banco:`);
+    console.log(`[ORDER]   - ID Banco: ${orderDbId}`);
+    console.log(`[ORDER]   - Símbolo: ${orderData.s}`);
+    console.log(`[ORDER]   - Tipo: ${orderBotType} (${orderData.o})`);
+    console.log(`[ORDER]   - Side: ${orderData.S}`);
+    console.log(`[ORDER]   - Quantidade: ${orderData.q}`);
+    console.log(`[ORDER]   - Preço: ${orderData.p}`);
+    console.log(`[ORDER]   - Reduce Only: ${orderData.R === true ? 'SIM' : 'NÃO'}`);
+    console.log(`[ORDER]   - Close Position: ${orderData.cp === true ? 'SIM' : 'NÃO'}`);
     
     // ✅ ENVIAR NOTIFICAÇÃO TELEGRAM PARA ORDENS IMPORTANTES
     try {
@@ -812,6 +879,7 @@ async function insertExternalOrder(dbConnection, orderData, accountId) {
     
   } catch (error) {
     console.error(`[ORDER] ❌ Erro ao inserir ordem externa ${orderData.i}:`, error.message);
+    console.error(`[ORDER] ❌ Dados da ordem:`, JSON.stringify(orderData, null, 2));
     throw error;
   }
 }
@@ -856,21 +924,38 @@ async function updateExistingOrder(dbConnection, orderData, accountId, existingO
 }
 
 /**
- * ✅ NOVA FUNÇÃO: Determinar tipo de ordem bot para ordens externas
+ * ✅ FUNÇÃO MELHORADA: Determinar tipo de ordem bot para ordens externas
  */
 function determineOrderBotTypeFromExternal(orderData) {
   const orderType = orderData.o; // LIMIT, MARKET, STOP_MARKET, etc.
   const reduceOnly = orderData.R === true;
   const closePosition = orderData.cp === true;
-  const stopPrice = parseFloat(orderData.sp || '0');
+  const clientOrderId = orderData.c || '';
   
-  // ✅ DETECTAR BASEADO NAS CARACTERÍSTICAS
+  // ✅ DETECTAR TIPOS ESPECIAIS PELO CLIENT ORDER ID
+  if (clientOrderId.startsWith('autoclose-')) {
+    return 'LIQUIDATION';
+  }
+  
+  if (clientOrderId === 'adl_autoclose') {
+    return 'ADL';
+  }
+  
+  if (clientOrderId.startsWith('settlement_autoclose-')) {
+    return 'SETTLEMENT';
+  }
+  
+  // ✅ DETECTAR BASEADO NO TIPO DE ORDEM E CARACTERÍSTICAS
   if (orderType === 'STOP_MARKET' && (closePosition || reduceOnly)) {
     return 'STOP_LOSS';
   }
   
   if (orderType === 'TAKE_PROFIT_MARKET' && (closePosition || reduceOnly)) {
     return 'TAKE_PROFIT';
+  }
+  
+  if (orderType === 'TRAILING_STOP_MARKET') {
+    return 'TRAILING_STOP';
   }
   
   if (orderType === 'LIMIT' && reduceOnly) {
@@ -882,11 +967,16 @@ function determineOrderBotTypeFromExternal(orderData) {
   }
   
   if (orderType === 'MARKET' && !reduceOnly && !closePosition) {
-    return 'ENTRADA';
+    return 'ENTRADA_MARKET';
   }
   
   if (orderType === 'MARKET' && (reduceOnly || closePosition)) {
     return 'FECHAMENTO_MANUAL';
+  }
+  
+  // ✅ DETECTAR PELO CLIENT ORDER ID SE FOR DO PRÓPRIO BOT
+  if (clientOrderId.includes('web_') || clientOrderId.includes('gui_')) {
+    return 'MANUAL_WEB';
   }
   
   return 'EXTERNA';
@@ -900,107 +990,6 @@ function shouldNotifyExternalOrder(orderBotType, orderData) {
   const largeValue = parseFloat(orderData.q || 0) * parseFloat(orderData.p || 0) > 50; // > $50
   
   return importantTypes.includes(orderBotType) || largeValue;
-}
-
-// ✅ MODIFICAR FUNÇÃO EXISTENTE handleOrderUpdate
-async function handleOrderUpdate(accountId, orderUpdateData) {
-  try {
-    const db = await getDatabaseInstance();
-    
-    // ✅ SUPORTAR TANTO FORMATO DIRETO QUANTO FORMATO ENCAPSULADO
-    let orderData;
-    if (orderUpdateData.o) {
-      // Formato do USER_DATA_STREAM: { e: 'ORDER_TRADE_UPDATE', o: { ... } }
-      orderData = orderUpdateData.o;
-    } else if (orderUpdateData.i && orderUpdateData.s) {
-      // Formato direto: { i: orderId, s: symbol, ... }
-      orderData = orderUpdateData;
-    } else {
-      console.warn(`[ORDER] ⚠️ Formato de dados não reconhecido:`, orderUpdateData);
-      return;
-    }
-    
-    const orderId = orderData.i?.toString();
-    const symbol = orderData.s;
-    const orderStatus = orderData.X;
-    const executionType = orderData.x;
-    
-    if (!orderId || !symbol || !orderStatus) {
-      console.warn(`[ORDER] ⚠️ Dados incompletos: orderId=${orderId}, symbol=${symbol}, status=${orderStatus}`);
-      return;
-    }
-
-    console.log(`[ORDER] 📨 Processando atualização: ${orderId} (${symbol}) - ${executionType}/${orderStatus}`);
-
-    // ✅ 1. VERIFICAR SE ORDEM EXISTE NO BANCO
-    const [existingOrders] = await db.query(
-      'SELECT * FROM ordens WHERE id_externo = ? AND simbolo = ? AND conta_id = ?',
-      [orderId, symbol, accountId]
-    );
-
-    const orderExists = existingOrders.length > 0;
-    let shouldInsert = false;
-
-    if (!orderExists) {
-      console.log(`[ORDER] 🆕 Ordem externa detectada: ${orderId} - inserindo no banco...`);
-      shouldInsert = true;
-    }
-
-    // ✅ 2. INSERIR ORDEM SE NÃO EXISTE (ORDEM EXTERNA)
-    if (shouldInsert) {
-      await insertExternalOrder(db, orderData, accountId);
-    }
-
-    // ✅ 3. ATUALIZAR ORDEM EXISTENTE
-    await updateExistingOrder(db, orderData, accountId, existingOrders[0]);
-
-    // ✅ 4. VERIFICAR SE DEVE MOVER PARA HISTÓRICO
-    const finalStatuses = ['FILLED', 'CANCELED', 'CANCELLED', 'EXPIRED', 'REJECTED'];
-    
-    if (finalStatuses.includes(orderStatus)) {
-      console.log(`[ORDER] 🎯 Status final detectado (${orderStatus}) - iniciando movimento automático...`);
-      
-      // Aguardar um pouco para garantir que a atualização foi processada
-      await new Promise(resolve => setTimeout(resolve, 500));
-      
-      const moved = await autoMoveOrderOnCompletion(orderId, orderStatus, accountId);
-      
-      if (moved) {
-        console.log(`[ORDER] ✅ Ordem ${orderId} (${orderStatus}) movida automaticamente para histórico`);
-        
-        // Verificar fechamento de posição para ordens FILLED
-        if (orderStatus === 'FILLED') {
-          try {
-            const closureResult = await checkPositionClosureAfterOrderExecution(orderId, accountId);
-            if (closureResult) {
-              console.log(`[ORDER] 🏁 Posição fechada automaticamente após execução da ordem ${orderId}`);
-            }
-          } catch (closureError) {
-            console.error(`[ORDER] ⚠️ Erro ao verificar fechamento de posição:`, closureError.message);
-          }
-        }
-      } else {
-        console.warn(`[ORDER] ⚠️ Falha ao mover ordem ${orderId} automaticamente`);
-      }
-    }
-
-    // ✅ 5. LOGS DETALHADOS
-    if (orderStatus === 'FILLED') {
-      const executedQty = parseFloat(orderData.z || 0);
-      const avgPrice = parseFloat(orderData.ap || 0);
-      const totalValue = executedQty * avgPrice;
-      
-      console.log(`[ORDER] 💰 Ordem FILLED processada:`);
-      console.log(`[ORDER]   - ID: ${orderId}`);
-      console.log(`[ORDER]   - Símbolo: ${symbol}`);
-      console.log(`[ORDER]   - Quantidade: ${executedQty}`);
-      console.log(`[ORDER]   - Preço médio: ${avgPrice}`);
-      console.log(`[ORDER]   - Valor total: ${totalValue.toFixed(2)} USDT`);
-    }
-
-  } catch (error) {
-    console.error(`[ORDER] ❌ Erro ao processar atualização da ordem:`, error.message);
-  }
 }
 
 /**
