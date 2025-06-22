@@ -165,15 +165,15 @@ def get_database_connection():
 
 def signal_handler_sync():
     """Função síncrona para lidar com o sinal de encerramento."""
-    print("\n[INFO] Sinal de encerramento recebido. Encerrando...")
+    #print("\n[INFO] Sinal de encerramento recebido. Encerrando...")
     shutdown_event.set()
 
 async def shutdown(client_instance):
     """Encerra o cliente e outras conexões de forma elegante."""
-    print("[INFO] Iniciando processo de encerramento...")
+    #print("[INFO] Iniciando processo de encerramento...")
     try:
         schedule.clear()
-        print("[INFO] Jobs do scheduler limpos.")
+        #print("[INFO] Jobs do scheduler limpos.")
 
         if divap_analyzer:
             divap_analyzer.close_connections()
