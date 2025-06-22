@@ -1162,15 +1162,14 @@ async def main():
     # 2. Inicializa o analisador de padrões DIVAP
     if ENABLE_DIVAP_VERIFICATION:
         #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🔍 Inicializando analisador DIVAP...")
-        if initialize_divap_analyzer():
-            log_alinhado('[INFO]', '✅ Analisador DIVAP inicializado com sucesso')
-        else:
-            log_alinhado('[ERRO]', '❌ Falha ao inicializar analisador DIVAP')
+        initialize_divap_analyzer()
+    else:
+        print(f"[{datetime.now().strftime('%d-%m-%S')}] ⚠️ Verificação DIVAP DESATIVADA")
 
     # 3. Conecta o cliente Telegram
     #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 📱 Conectando cliente Telegram...")
     await client.start()
-    log_alinhado(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}]", "✅ Cliente Telegram conectado com sucesso")
+    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Cliente Telegram conectado com sucesso")
 
     # Configurar tratamento de sinais
     try:
@@ -1266,18 +1265,3 @@ if __name__ == '__main__':
         if 'loop' in locals() and loop.is_running():
             loop.stop()
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [END] Script encerrado.")
-
-def log_alinhado(ident, msg):
-    """
-    Exibe logs alinhados para melhor leitura.
-    Exemplo:
-        [INFO]           ✅ Analisador DIVAP inicializado com sucesso
-        [22-06-2025 | 16:20:19] ✅ Cliente Telegram conectado com sucesso
-    """
-    ident = str(ident)
-    largura = 22  # ajuste conforme necessário
-    print(f"{ident:<{largura}}{msg}")
-
-# Exemplo de uso:
-# log_alinhado('[INFO]', '✅ Analisador DIVAP inicializado com sucesso')
-# log_alinhado(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}]", '✅ Cliente Telegram conectado com sucesso')
