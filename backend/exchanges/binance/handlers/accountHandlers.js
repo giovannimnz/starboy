@@ -1,6 +1,6 @@
 const { getDatabaseInstance, insertPosition, formatDateForMySQL } = require('../../../core/database/conexao');
 const websockets = require('../api/websocket');
-const { sendTelegramMessage, formatBalanceMessage, formatAlertMessage } = require('../services/telegramBot');
+const { sendTelegramMessage, formatBalanceMessage, formatAlertMessage } = require('../telegram/telegramBot');
 
 /**
  * Processa atualizações de conta via WebSocket (ACCOUNT_UPDATE)
