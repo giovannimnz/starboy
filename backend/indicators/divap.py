@@ -379,7 +379,7 @@ def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent, si
         if bracket_leverage_limits:
             max_leverage = max(bracket_leverage_limits)
             print(f"[DEBUG] Alavancagem máxima: {max_leverage}x")
-            print(f"\n[DEBUG] {symbol}: Distância até SL: {sl_distance_pct:.6f} ({sl_distance_pct*100:.2f}%)")
+            print(f"[DEBUG] {symbol}: Distância até SL: {sl_distance_pct:.6f} ({sl_distance_pct*100:.2f}%)")
         else:
             print(f"[AVISO] Nenhum bracket elegível encontrado para o valor da ordem. Usando alavancagem conservadora.")
             max_leverage = min(20, target_leverage)
@@ -765,7 +765,7 @@ def extract_trade_info(message_text):
             capital_pct = min(100.0, max(0.1, capital_pct))
             capital_pct = round(capital_pct, 2)
             
-            print(f"     ✅ Capital calculado: {capital_pct:.2f}% (risco máximo: {PREJUIZO_MAXIMO_PERCENTUAL_DO_CAPITAL_TOTAL}%)")
+            print(f" [INFO] Capital calculado: {capital_pct:.2f}% (risco máximo: {PREJUIZO_MAXIMO_PERCENTUAL_DO_CAPITAL_TOTAL}%)")
         else:
             capital_pct = original_capital_pct
             print(f"   ⚠️ Usando capital original: {capital_pct:.2f}%")
