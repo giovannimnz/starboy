@@ -118,13 +118,9 @@ async function logOpenPositionsAndOrders(accountId) {
  */
 async function updatePositionPricesWithTrailing(db, symbol, currentPrice, accountId) {
   try {
-    if (!accountId || typeof accountId !== 'number') {
-      console.error(`[ENHANCED] AccountId inválido: ${accountId}`);
-      return;
-    }
+    console.log(`[ENHANCED] Atualizando preços para ${symbol}: ${currentPrice} (conta ${accountId})`);
     
     // ✅ 1. VERIFICAR GATILHOS DE ENTRADA PRIMEIRO
-    const { checkSignalTriggers } = require('./priceMonitoring');
     await checkSignalTriggers(symbol, currentPrice, db, accountId);
     
     // ✅ 2. ATUALIZAR PREÇOS DAS POSIÇÕES
