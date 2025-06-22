@@ -3,6 +3,7 @@ const api = require('../api/rest');
 const websockets = require('../api/websocket');
 const { checkOrderTriggers } = require('./trailingStopLoss');
 const { cleanupOrphanSignals, forceCloseGhostPositions } = require('./cleanup');
+const signalProcessor = require('./signalProcessor');
 
 /**
  * Atualiza preços das posições com trailing stop
@@ -13,13 +14,10 @@ async function updatePositionPricesWithTrailing(db, symbol, currentPrice, accoun
     
     // ✅ 1. VERIFICAR GATILHOS DE ENTRADA PRIMEIRO - IMPORTAÇÃO CORRIGIDA
     try {
-      const { checkSignalTriggers } = require('./signalProcessor');
-      await checkSignalTriggers(symbol, currentPrice, db, accountId);
+      // ✅ USAR REFERÊNCIA DO IMPORT NO TOPO DO ARQUIVO
+      await signalProcessor.checkSignalTriggers(symbol, currentPrice, db, accountId);
     } catch (signalError) {
-      // ✅ NÃO LOGAR ERRO SE NÃO HOUVER SINAIS
-      if (!signalError.message.includes('not defined')) {
-        console.error(`[ENHANCED] Erro ao verificar gatilhos de sinal:`, signalError.message);
-      }
+      console.error(`[ENHANCED] Erro ao verificar gatilhos de sinal para ${symbol}:`, signalError.message);
     }
     
     // ✅ 2. ATUALIZAR PREÇOS DAS POSIÇÕES
