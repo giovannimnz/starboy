@@ -928,28 +928,39 @@ async def verify_divap_pattern(trade_info):
         print(f"[ERRO] Falha na verificação DIVAP: {e}")
         return (True, None)
 
-def format_trade_message(trade_info, selected_tp):
-    """Formata a mensagem de trade para envio"""
+def format_trade_message(trade_info, selected_tp, grupo_origem_nome=None):
+    """
+    Formata a mensagem de trade para envio no padrão solicitado:
+    """
+    nome_indicador = grupo_origem_nome or "Divap"
     capital_value = trade_info['capital_pct']
-    
     if capital_value == int(capital_value):
         capital_str = f"{int(capital_value)}%"
     else:
         capital_str = f"{capital_value:.2f}%"
-    
-    message_text = (
-        f"#{trade_info['symbol']} {trade_info['side']}\n"
-        f"⚡ Alavancagem: {trade_info['leverage']}x\n"
-        f"💰 Capital: {capital_str}\n"
-        f"📈 Entrada: {trade_info['entry']}\n"
+
+    # Cabeçalho
+    header = f"#{trade_info['symbol']}  {trade_info['side']}\n{trade_info.get('timeframe', '15m')}\n{nome_indicador}\n"
+
+    # Corpo
+    corpo = (
+        f"\nALAVANCAGEM: {trade_info['leverage']}x\n"
+        f"MARGEM: CRUZADA\n"
+        f"CAPITAL: {capital_str}\n"
+        f"\nENTRADA: {trade_info['entry']}\n"
     )
-    
-    if selected_tp:
-        message_text += f"🎯 Alvo: {selected_tp}\n"
-    
-    message_text += f"🛑 Stop: {trade_info['stop_loss']}"
-    
-    return message_text
+
+    # Alvos (TPs)
+    tps = trade_info.get('all_tps', [])
+    if tps:
+        for idx, tp in enumerate(tps, 1):
+            corpo += f"\nALVO {idx}: {tp}"
+    else:
+        corpo += f"\nALVO 1: {selected_tp}"
+
+    corpo += f"\n\nSTOP LOSS: {trade_info['stop_loss']}"
+
+    return header + corpo
 
 async def debug_message_handler(event):
     """Handler de debug para mostrar TODAS as mensagens recebidas"""
@@ -1050,7 +1061,8 @@ async def handle_new_message(event):
                     elif selected_tp is None:
                         selected_tp = trade_info['entry']
 
-                    message_text_to_send = format_trade_message(trade_info, selected_tp)
+                    grupo_origem_nome = message_source.capitalize() if message_source else "Divap"
+                    message_text_to_send = format_trade_message(trade_info, selected_tp, grupo_origem_nome)
                     print(f"\n📤 [SENDING] Enviando sinal (Origem: {incoming_message_id}):")
                     print(f"{'-'*60}")
                     print(f"{message_text_to_send}")
