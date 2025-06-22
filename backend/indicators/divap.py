@@ -865,7 +865,7 @@ def initialize_divap_analyzer():
             )
             divap_analyzer.connect_db()
             divap_analyzer.connect_exchange()
-            print("[INFO] ✅ Analisador DIVAP inicializado com sucesso")
+            print("                 [INFO] ✅ Analisador DIVAP inicializado com sucesso")
             return True
         except Exception as e:
             print(f"[ERRO] ❌ Falha ao inicializar analisador DIVAP: {e}")
@@ -1192,7 +1192,7 @@ async def main():
             origem = await client.get_entity(grupo_id)
             tipo = "Canal" if getattr(origem, "broadcast", False) else "Supergrupo" if getattr(origem, "megagroup", False) else "Grupo"
             nome = getattr(origem, 'title', 'Sem título')
-            print(f"[INFO] ✅ {tipo} de origem: {nome} (ID: {grupo_id})")
+            print(f"                 [INFO] ✅ {tipo} de origem: {nome} (ID: {grupo_id})")
             grupos_acessiveis.append(grupo_id)
         except Exception as e:
             print(f"[ERRO] ❌ Não foi possível acessar o grupo/canal {grupo_id}: {e}")
@@ -1205,7 +1205,7 @@ async def main():
         destino = await client.get_entity(GRUPO_DESTINO_ID)
         tipo = "Canal" if getattr(destino, "broadcast", False) else "Supergrupo" if getattr(destino, "megagroup", False) else "Grupo"
         nome = getattr(destino, 'title', 'Sem título')
-        print(f"[INFO] ✅ Enviando para {tipo} de destino: {nome} (ID: {GRUPO_DESTINO_ID})")
+        print(f"                 [INFO] ✅ Enviando para {tipo} de destino: {nome} (ID: {GRUPO_DESTINO_ID})")
     except Exception as e:
         print(f"[ERRO] ❌ Não foi possível acessar o grupo/canal de destino {GRUPO_DESTINO_ID}: {e}")
         return
