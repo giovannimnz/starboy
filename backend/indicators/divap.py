@@ -1162,14 +1162,15 @@ async def main():
     # 2. Inicializa o analisador de padrões DIVAP
     if ENABLE_DIVAP_VERIFICATION:
         #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🔍 Inicializando analisador DIVAP...")
-        initialize_divap_analyzer()
-    else:
-        print(f"[{datetime.now().strftime('%d-%m-%S')}] ⚠️ Verificação DIVAP DESATIVADA")
+        if initialize_divap_analyzer():
+            log_alinhado('[INFO]', '✅ Analisador DIVAP inicializado com sucesso')
+        else:
+            log_alinhado('[ERRO]', '❌ Falha ao inicializar analisador DIVAP')
 
     # 3. Conecta o cliente Telegram
     #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 📱 Conectando cliente Telegram...")
     await client.start()
-    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Cliente Telegram conectado com sucesso")
+    log_alinhado(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}]", "✅ Cliente Telegram conectado com sucesso")
 
     # Configurar tratamento de sinais
     try:
