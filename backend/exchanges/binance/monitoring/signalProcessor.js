@@ -257,7 +257,55 @@ async function checkSignalTriggers(symbol, currentPrice, db, accountId) {
  */
 async function processSignal(signal, db, accountId) {
   const signalId = signal.id;
-  
+
+  // NOVO: Se já estiver cancelado, envie mensagem de cancelamento e finalize
+  if (
+    signal.status &&
+    (signal.status.toUpperCase() === 'CANCELED' || signal.status.toUpperCase() === 'CANCELADO')
+    && !signal.sent_msg // só envia se ainda não enviou
+  ) {
+    try {
+      const side = signal.side === 'BUY' || signal.side === 'COMPRA' ? '🟢 COMPRA' : '🔴 VENDA';
+      const motivo = signal.error_message || 'Sinal cancelado pelo sistema';
+      const tps = [
+        signal.tp1_price, signal.tp2_price, signal.tp3_price,
+        signal.tp4_price, signal.tp5_price
+      ].filter(tp => tp !== undefined && tp !== null && tp !== '');
+
+      let tpsText = '';
+      tps.forEach((tp, idx) => {
+        tpsText += `\nALVO ${idx + 1}: ${tp}`;
+      });
+
+      const cancelMsg =
+        `⏰ <b>SINAL CANCELADO</b>\n\n` +
+        `#${signal.symbol}  ${side}\n` +
+        `${signal.timeframe || ''}\n${signal.message_source || 'Divap'}\n\n` +
+        `ALAVANCAGEM: ${signal.leverage || ''}x\n` +
+        `MARGEM: CRUZADA\n` +
+        `CAPITAL: ${signal.capital_pct ? parseFloat(signal.capital_pct).toFixed(2) + '%' : ''}\n\n` +
+        `ENTRADA: ${signal.entry_price}\n` +
+        `${tpsText}\n\n` +
+        `STOP LOSS: ${signal.sl_price}\n\n` +
+        `📝 <b>Motivo:</b>\n${motivo}\n\n` +
+        `🆔 Sinal: #${signalId}\n` +
+        `⏰ ${new Date().toLocaleString('pt-BR')}`;
+
+      await sendTelegramMessage(accountId, cancelMsg, signal.chat_id);
+
+      // Atualizar sent_msg para não reenviar
+      await db.query(
+        'UPDATE webhook_signals SET sent_msg = 1, updated_at = NOW() WHERE id = ?',
+        [signalId]
+      );
+
+      console.log(`[SIGNAL] 📢 Mensagem de cancelamento enviada para sinal ${signalId}`);
+    } catch (err) {
+      console.error(`[SIGNAL] ❌ Erro ao enviar mensagem de cancelamento para sinal ${signalId}:`, err.message);
+    }
+    return { success: false, error: 'Sinal já estava cancelado' };
+  }
+
   try {
     console.log(`[SIGNAL] 🔄 Processando sinal ${signalId} para ${signal.symbol}: ${signal.side} aguardando entrada em ${signal.entry_price}`);
     
