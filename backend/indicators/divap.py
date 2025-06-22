@@ -1265,3 +1265,18 @@ if __name__ == '__main__':
         if 'loop' in locals() and loop.is_running():
             loop.stop()
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [END] Script encerrado.")
+
+def log_alinhado(ident, msg):
+    """
+    Exibe logs alinhados para melhor leitura.
+    Exemplo:
+        [INFO]           ✅ Analisador DIVAP inicializado com sucesso
+        [22-06-2025 | 16:20:19] ✅ Cliente Telegram conectado com sucesso
+    """
+    ident = str(ident)
+    largura = 22  # ajuste conforme necessário
+    print(f"{ident:<{largura}}{msg}")
+
+# Exemplo de uso:
+# log_alinhado('[INFO]', '✅ Analisador DIVAP inicializado com sucesso')
+# log_alinhado(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}]", '✅ Cliente Telegram conectado com sucesso')
