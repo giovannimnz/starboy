@@ -773,6 +773,7 @@ def extract_trade_info(message_text):
         # TP principal (primeiro alvo)
         tp = all_tps[0] if all_tps else entry
         
+        print(f"{'='*80}\n")
         print(f"\n🎯 [EXTRACT_SUCCESS] Sinal extraído com sucesso:\n")
         print(f"       Símbolo: {symbol} | Timeframe: {timeframe}")
         print(f"       Lado: {side} | Entrada: {entry} | Stop: {stop_loss}")
@@ -1038,6 +1039,7 @@ async def handle_new_message(event):
                 #print(f"   🎯 Trade info extraído com sucesso!")
                 
                 if ENABLE_DIVAP_VERIFICATION:
+                    print(f"{'='*80}\n")
                     print(f"🔍 Verificando padrão DIVAP...")
                     is_valid_divap, error_message = await verify_divap_pattern(trade_info)
                 else:
