@@ -1076,7 +1076,7 @@ async def handle_new_message(event):
                     signal_id_from_webhook_db = save_to_database(trade_info) 
                     
                     if signal_id_from_webhook_db:
-                        print(f"   ✅ Sinal salvo com ID: {signal_id_from_webhook_db}")
+                        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Sinal salvo com ID: {signal_id_from_webhook_db}")
                         
                         # Salvar mensagens
                         save_message_to_database( 
@@ -1103,7 +1103,7 @@ async def handle_new_message(event):
                             message_source=message_source                         
                         )
                         
-                        print(f"   ✅ Processo completo - sinal enviado e salvo!")
+                        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Processo completo - sinal enviado e salvo!")
                     else:
                         print(f"   ❌ Falha ao salvar sinal no banco")
 
