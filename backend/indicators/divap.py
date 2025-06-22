@@ -40,8 +40,8 @@ ENABLE_DIVAP_VERIFICATION = True
 PREJUIZO_MAXIMO_PERCENTUAL_DO_CAPITAL_TOTAL = 4.90
 TAXA_ENTRADA = 0.02
 TAXA_SAIDA = 0.05
-ALVO_SELECIONADO = None
-GRUPOS_ORIGEM_IDS = [-4192806079, -1002444455075]
+
+GRUPOS_ORIGEM_IDS = [-1002059628218, -1002444455075]
 GRUPO_DESTINO_ID = -1002016807368
 CONTA_ID = 1
 GRUPO_FONTE_MAPEAMENTO = {
@@ -929,9 +929,9 @@ async def verify_divap_pattern(trade_info):
         print(f"[ERRO] Falha na verificação DIVAP: {e}")
         return (True, None)
 
-def format_trade_message(trade_info, selected_tp, grupo_origem_nome=None):
+def format_trade_message(trade_info, grupo_origem_nome=None):
     """
-    Formata a mensagem de trade para envio no padrão solicitado:
+    Formata a mensagem de trade para envio no padrão solicitado - SEMPRE com todos os TPs
     """
     nome_indicador = grupo_origem_nome or "Divap"
     capital_value = trade_info['capital_pct']
@@ -951,13 +951,14 @@ def format_trade_message(trade_info, selected_tp, grupo_origem_nome=None):
         f"\nENTRADA: {trade_info['entry']}\n"
     )
 
-    # Alvos (TPs)
+    # ✅ SEMPRE TODOS OS ALVOS (TPs)
     tps = trade_info.get('all_tps', [])
     if tps:
         for idx, tp in enumerate(tps, 1):
             corpo += f"\nALVO {idx}: {tp}"
     else:
-        corpo += f"\nALVO 1: {selected_tp}"
+        # Fallback se não houver all_tps
+        corpo += f"\nALVO 1: {trade_info.get('tp', trade_info['entry'])}"
 
     corpo += f"\n\nSTOP LOSS: {trade_info['stop_loss']}"
 
@@ -1049,29 +1050,14 @@ async def handle_new_message(event):
                 if is_valid_divap:
                     print(f"       ✅ DIVAP confirmado - Processando sinal...\n")
                     
-                    # Processar sinal válido
-                    selected_tp = None
-                    if ALVO_SELECIONADO is not None:
-                        if trade_info.get('all_tps') and len(trade_info['all_tps']) >= ALVO_SELECIONADO:
-                            selected_tp = trade_info['all_tps'][ALVO_SELECIONADO - 1]
-                        elif trade_info.get('tp'):
-                            selected_tp = trade_info.get('tp')
-                        elif trade_info.get('all_tps'):
-                            selected_tp = trade_info['all_tps'][0]
-                    
-                    if selected_tp is None and trade_info.get('all_tps'):
-                        selected_tp = trade_info['all_tps'][0]
-                    elif selected_tp is None:
-                        selected_tp = trade_info['entry']
-
                     grupo_origem_nome = message_source.capitalize() if message_source else "Divap"
-                    message_text_to_send = format_trade_message(trade_info, selected_tp, grupo_origem_nome)
+                    message_text_to_send = format_trade_message(trade_info, grupo_origem_nome)
                     print(f"\n📤 [SENDING] Enviando sinal (Origem: {incoming_message_id}):")
                     print(f"{'='*60}")
                     print(f"{message_text_to_send}")
                     print(f"{'='*60}")
 
-                    trade_info['tp'] = selected_tp
+                    trade_info['tp'] = trade_info.get('all_tps', [trade_info['entry']])[0] if trade_info.get('all_tps') else trade_info['entry']
                     trade_info['id_mensagem_origem_sinal'] = incoming_message_id
                     trade_info['chat_id_origem_sinal'] = incoming_chat_id
                     trade_info['chat_id'] = GRUPO_DESTINO_ID
