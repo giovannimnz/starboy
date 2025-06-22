@@ -423,15 +423,111 @@ try {
       console.error(`[MONITOR] ⚠️ Erro ao verificar sinais pendentes para conta ${accountId}:`, signalCheckError.message);
     }
 
-    // === ETAPA 11: Iniciar monitoramento de preços ===
-    console.log(`📈 ETAPA 11: Iniciando monitoramento de preços para conta ${accountId}...`);
-    
-    try {
-      const symbolsCount = await startPriceMonitoring(accountId);
-      console.log(`[MONITOR] ✅ Monitoramento de preços iniciado para ${symbolsCount} símbolos da conta ${accountId}.`);
-    } catch (priceError) {
-      console.error(`[MONITOR] ⚠️ Erro ao iniciar monitoramento de preços para conta ${accountId}:`, priceError.message);
+// === ETAPA 11: Iniciar monitoramento de preços ===
+console.log(`📈 ETAPA 11: Iniciando monitoramento de preços para conta ${accountId}...`);
+
+try {
+  // ✅ VERSÃO CORRIGIDA: Usar função inline em vez de duplicar
+  const symbolsCount = await startPriceMonitoringInline(accountId);
+  console.log(`[MONITOR] ✅ Monitoramento de preços iniciado para ${symbolsCount} símbolos da conta ${accountId}.`);
+} catch (priceError) {
+  console.error(`[MONITOR] ⚠️ Erro ao iniciar monitoramento de preços para conta ${accountId}:`, priceError.message);
+}
+
+/**
+ * ✅ FUNÇÃO INLINE CORRIGIDA: Inicia monitoramento de preços
+ */
+async function startPriceMonitoringInline(accountId) {
+  try {
+    const db = await getDatabaseInstance();
+    if (!db) {
+      console.error('[MONITOR] Falha ao obter instância do banco de dados');
+      return 0;
     }
+
+    // Obter posições abertas ou com ordens de entrada pendentes
+    const [pendingEntries] = await db.query(`
+      SELECT o.simbolo
+      FROM ordens o
+      WHERE o.conta_id = ? AND o.tipo_ordem_bot = 'ENTRADA' AND o.status = 'OPEN'
+      GROUP BY o.simbolo
+    `, [accountId]);
+
+    const [openPositions] = await db.query(`
+      SELECT simbolo
+      FROM posicoes
+      WHERE conta_id = ? AND status = 'OPEN'
+    `, [accountId]);
+
+    // ✅ CRÍTICO: Obter sinais em AGUARDANDO_ACIONAMENTO
+    const [pendingSignals] = await db.query(`
+      SELECT symbol, timeframe, created_at, timeout_at, max_lifetime_minutes
+      FROM webhook_signals
+      WHERE conta_id = ? AND status = 'AGUARDANDO_ACIONAMENTO'
+    `, [accountId]);
+
+    console.log(`[MONITOR] Encontrados ${pendingSignals.length} sinais pendentes para monitoramento (conta ${accountId})`);
+
+    const symbols = new Set();
+
+    // Adicionar símbolos com ordens pendentes
+    pendingEntries.forEach(entry => symbols.add(entry.simbolo));
+
+    // Adicionar símbolos com posições abertas
+    openPositions.forEach(position => symbols.add(position.simbolo));
+
+    // ✅ CRÍTICO: Adicionar símbolos com sinais pendentes
+    pendingSignals.forEach(signal => symbols.add(signal.symbol));
+
+    // ✅ DEBUG: Mostrar símbolos que serão monitorados
+    console.log(`[MONITOR] Símbolos para monitoramento:`, Array.from(symbols));
+
+    // Iniciar websockets para cada símbolo
+    for (const symbol of symbols) {
+      console.log(`[MONITOR] Iniciando monitoramento de preço para ${symbol} (conta ${accountId})`);
+      await websockets.ensurePriceWebsocketExists(symbol, accountId);
+    }
+
+    // ✅ VERIFICAR sinais expirados durante período offline
+    if (pendingSignals.length > 0) {
+      console.log(`[MONITOR] Verificando se há sinais expirados durante período offline...`);
+      const now = new Date();
+      
+      for (const signal of pendingSignals) {
+        const createdAt = new Date(signal.created_at);
+        const ageMs = now.getTime() - createdAt.getTime();
+        
+        // Verificar se expirou
+        let shouldExpire = false;
+        let expireReason = '';
+        
+        if (signal.timeframe) {
+          const { timeframeToMs } = require('./signalProcessor');
+          const timeframeMs = timeframeToMs(signal.timeframe);
+          if (timeframeMs > 0) {
+            const maxLifetime = timeframeMs * 3;
+            if (ageMs > maxLifetime) {
+              shouldExpire = true;
+              expireReason = `Expirado durante offline (${signal.timeframe} * 3)`;
+            }
+          }
+        }
+        
+        if (shouldExpire) {
+          console.log(`[MONITOR] ⏰ Cancelando sinal ${signal.symbol} expirado durante offline: ${expireReason}`);
+          const { cancelSignal } = require('./signalProcessor');
+          await cancelSignal(db, signal.id, 'TIMEOUT_ENTRY', expireReason, accountId);
+        }
+      }
+    }
+
+    return symbols.size;
+
+  } catch (error) {
+    console.error('[MONITOR] Erro ao iniciar monitoramento de preços:', error);
+    return 0;
+  }
+}
 
     // === ETAPA 12: Sincronizar posições ===
     console.log(`🔄 ETAPA 12: Sincronizando posições para conta ${accountId}...`);

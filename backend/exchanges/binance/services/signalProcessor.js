@@ -705,9 +705,6 @@ function calculateEstimatedPositionCost(signal) {
   return marginRequired * 1.1; // 10% de margem de segurança
 }
 
-/**
- * ✅ VERSÃO CORRIGIDA: onPriceUpdate com gatilho corrigido
- */
 async function onPriceUpdate(symbol, currentPrice, db, accountId) {
   try {
     // Validação básica
@@ -718,11 +715,11 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
     // 1. ATUALIZAR CACHE DE PREÇOS
     updatePriceCache(symbol, currentPrice, accountId);
     
-    // 2. ATUALIZAR PREÇOS DAS POSIÇÕES ABERTAS
+    // 2. ✅ USAR A VERSÃO DO ENHANCEDMONITORING (não duplicar)
     const { updatePositionPricesWithTrailing } = require('./enhancedMonitoring');
     await updatePositionPricesWithTrailing(db, symbol, currentPrice, accountId);
     
-    // ✅ 3. VERIFICAR SINAIS AGUARDANDO ACIONAMENTO - CORREÇÃO CRÍTICA
+    // 3. VERIFICAR SINAIS AGUARDANDO ACIONAMENTO
     const [pendingSignals] = await db.query(`
       SELECT id, symbol, side, entry_price, sl_price, timeframe, 
              created_at, timeout_at, max_lifetime_minutes, chat_id
@@ -733,10 +730,10 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
       ORDER BY created_at ASC
     `, [symbol, accountId]);
     
+    if (pendingSignals.length === 0) return;
+    
     // ✅ DEBUG: Mostrar quantos sinais foram encontrados
-    if (pendingSignals.length > 0) {
-      console.log(`[SIGNAL] 🔍 Encontrados ${pendingSignals.length} sinais aguardando para ${symbol}`);
-    }
+    console.log(`[SIGNAL] 🔍 Encontrados ${pendingSignals.length} sinais aguardando para ${symbol}`);
     
     const now = new Date();
     
@@ -779,17 +776,17 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
         }
       }
       
-      // ✅ 6. VERIFICAR GATILHO DE ENTRADA - LÓGICA CORRIGIDA E COM DEBUG
+      // ✅ 6. CORREÇÃO CRÍTICA: LÓGICA DE GATILHO IGUAL À VERSÃO _DEV
       let entryTriggered = false;
       if (entryPrice > 0) {
         if (side === 'BUY' || side === 'COMPRA') {
-          // ✅ CORREÇÃO: Para LONG, só entra quando preço ULTRAPASSA (>) a entrada
-          entryTriggered = currentPrice > entryPrice;
-          console.log(`[SIGNAL] 🔍 LONG ${symbol}: ${currentPrice} > ${entryPrice} = ${entryTriggered}`);
+          // ✅ CORREÇÃO: Usar >= como na versão _dev
+          entryTriggered = currentPrice >= entryPrice;
+          console.log(`[SIGNAL] 🔍 LONG ${symbol}: ${currentPrice} >= ${entryPrice} = ${entryTriggered}`);
         } else if (side === 'SELL' || side === 'VENDA') {
-          // ✅ CORREÇÃO: Para SHORT, só entra quando preço FICA ABAIXO (<) da entrada
-          entryTriggered = currentPrice < entryPrice;
-          console.log(`[SIGNAL] 🔍 SHORT ${symbol}: ${currentPrice} < ${entryPrice} = ${entryTriggered}`);
+          // ✅ CORREÇÃO: Usar <= como na versão _dev
+          entryTriggered = currentPrice <= entryPrice;
+          console.log(`[SIGNAL] 🔍 SHORT ${symbol}: ${currentPrice} <= ${entryPrice} = ${entryTriggered}`);
         }
       }
       
@@ -882,6 +879,47 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
   }
 }
 
+async function updatePositionPrices(db, symbol, currentPrice, accountId) {
+  try {
+    // 1. Buscar posições abertas para o símbolo
+    const [positions] = await db.query(
+      'SELECT * FROM posicoes WHERE simbolo = ? AND status = "OPEN" AND conta_id = ?',
+      [symbol, accountId]
+    );
+
+    if (positions.length === 0) {
+      // Log mais detalhado para diagnosticar
+      //console.log(`[PRICE UPDATE] Nenhuma posição aberta encontrada para ${symbol} (conta ${accountId})`);
+      return;
+    }
+
+    // Log mais detalhado para ajudar no diagnóstico
+    console.log(`[PRICE UPDATE] Atualizando ${positions.length} posições para ${symbol}. Preço atual: ${currentPrice} (conta ${accountId})`);
+
+    // 2. Para cada posição, atualizar o preço corrente
+    for (const position of positions) {
+      try {
+        await db.query(`
+          UPDATE posicoes 
+          SET preco_corrente = ?, data_hora_ultima_atualizacao = NOW()
+          WHERE id = ?
+        `, [currentPrice, position.id]);
+
+        console.log(`[PRICE UPDATE] Posição ${position.id} (${symbol}): preço atualizado para ${currentPrice}`);
+
+        // Verificar trailing stops se necessário
+        const { checkOrderTriggers } = require('./trailingStopLoss');
+        await checkOrderTriggers(db, position, currentPrice, accountId);
+
+      } catch (positionError) {
+        console.error(`[PRICE UPDATE] Erro ao atualizar posição ${position.id}:`, positionError.message);
+      }
+    }
+  } catch (error) {
+    console.error(`[PRICE UPDATE] Erro ao atualizar preços das posições para ${symbol}: ${error.message}`, error);
+  }
+}
+
 async function checkPositionExists(db, symbol, accountId) {
   try {
     const [rows] = await db.query(
@@ -906,6 +944,8 @@ module.exports = {
   checkSignalTriggers,
   updatePriceCache,
   getPriceFromCache,
+  //updatePositionPrices,
+
   
   // Funções utilitárias
   timeframeToMs,
