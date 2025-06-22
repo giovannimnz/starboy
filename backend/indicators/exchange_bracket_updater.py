@@ -195,7 +195,8 @@ def update_leverage_brackets():
         #print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] Iniciando atualização de brackets...")
         success = update_leverage_brackets_database()
         if success:
-            print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ✅ Processo de atualização de brackets bem-sucedido.")
+            #print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ✅ Atualização de brackets bem-sucedida.")
+            pass
         else:
             print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ❌ Falha no processo de atualização de brackets.")
     except Exception as e:

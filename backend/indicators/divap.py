@@ -118,7 +118,7 @@ def initialize_bracket_scheduler():
         print("════════════════════════════════════════════════════════════════════════════════")
         print("🟨 ATUALIZAÇÃO DE BRACKETS (LEVERAGE) 🟨")
         print("════════════════════════════════════════════════════════════════════════════════")
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] Executando testes de conexão...")
+        #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] Executando testes de conexão...")
 
         binance_ok = test_binance_credentials()
         db_ok = test_database_connection()
