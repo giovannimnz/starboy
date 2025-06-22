@@ -6,7 +6,7 @@ const websockets = require('../api/websocket');
 const api = require('../api/rest');
 const { initializeTelegramBot, stopAllTelegramBots } = require('../telegram/telegramBot');
 const { onPriceUpdate, checkNewTrades, checkExpiredSignals, checkCanceledSignals } = require('./signalProcessor');
-const { syncPositionsWithExchange, syncOrdersWithExchange, logOpenPositionsAndOrdersVisual, runAdvancedPositionMonitoring } = require('../services/positionSync');
+const { syncPositionsWithExchange, syncOrdersWithExchange, logOpenPositionsAndOrdersVisual } = require('../services/positionSync');
 const orderHandlers = require('../handlers/orderHandlers');
 const accountHandlers = require('../handlers/accountHandlers');
 const { runPeriodicCleanup, updatePositionPricesWithTrailing } = require('./enhancedMonitoring');
@@ -626,10 +626,10 @@ accountJobs.checkExpiredSignals = schedule.scheduleJob('*/1 * * * *', async () =
 });
 
     // ✅ NOVO: Job avançado de monitoramento de posições a cada 1 minuto
-    accountJobs.runAdvancedPositionMonitoring = schedule.scheduleJob('*/1 * * * *', async () => {
+    accountJobs.syncPositionsWithAutoClose = schedule.scheduleJob('*/1 * * * *', async () => {
       if (isShuttingDown) return;
       try {
-        await runAdvancedPositionMonitoring(accountId);
+        await syncPositionsWithAutoClose(accountId);
       } catch (error) {
         console.error(`[MONITOR] ⚠️ Erro no monitoramento avançado para conta ${accountId}:`, error.message);
       }
@@ -654,8 +654,7 @@ accountJobs.checkExpiredSignals = schedule.scheduleJob('*/1 * * * *', async () =
           
           for (const position of closedPositions) {
             try {
-              const { movePositionToHistoryPhysically } = require('./enhancedMonitoring');
-              const moved = await movePositionToHistoryPhysically(
+              const moved = await moveOrdersToHistory(
                 db, 
                 position.id, 
                 'CLOSED', 
