@@ -1044,10 +1044,10 @@ async def handle_new_message(event):
                     is_valid_divap, error_message = await verify_divap_pattern(trade_info)
                 else:
                     is_valid_divap, error_message = True, None
-                    print(f"\n   ⚠️ Verificação DIVAP desativada - sinal aceito")                
+                    print(f"\n   ⚠️ Verificação DIVAP desativada - Sinal aceito")                
 
                 if is_valid_divap:
-                    print(f"       ✅ DIVAP confirmado - processando sinal...\n")
+                    print(f"       ✅ DIVAP confirmado - Processando sinal...\n")
                     
                     # Processar sinal válido
                     selected_tp = None
