@@ -1007,7 +1007,7 @@ async function checkCanceledSignals(accountId) {
 
         const cancelMsg =
           `🚫 <b>SINAL CANCELADO</b>\n\n` +
-          `📊 <b>${signal.symbol}<b> | ${side}\n` +
+          `📊 <b>${signal.symbol}</b> | ${side}\n` +
           `📉 ${signal.timeframe} | ${signal.message_source}\n\n` +
           `💰 ENTRADA: ${formatNumberClean(signal.entry_price)}\n\n` +
           `📝 <b>Motivo:</b>\n${motivo}\n\n` +
