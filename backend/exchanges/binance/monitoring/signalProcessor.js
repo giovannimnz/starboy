@@ -951,7 +951,24 @@ async function checkPositionExists(db, symbol, accountId) {
 }
 
 /**
- * ✅ NOVA FUNÇÃO: Processa sinais que já chegaram cancelados
+ * ✅ FUNÇÃO UTILITÁRIA: Remove zeros à direita de números
+ */
+function formatNumberClean(value) {
+  if (value === null || value === undefined || value === '') {
+    return 'N/A';
+  }
+  
+  const num = parseFloat(value);
+  if (isNaN(num)) {
+    return 'N/A';
+  }
+  
+  // Converter para string e remover zeros à direita
+  return num.toString();
+}
+
+/**
+ * ✅ NOVA FUNÇÃO: Processa sinais que já chegaram cancelados (VERSÃO CORRIGIDA)
  */
 async function checkCanceledSignals(accountId) {
   try {
@@ -976,17 +993,23 @@ async function checkCanceledSignals(accountId) {
         
         const side = signal.side === 'BUY' || signal.side === 'COMPRA' ? 'COMPRA' : 'VENDA';
         const motivo = signal.error_message || 'Sinal cancelado pelo sistema';
+        
+        // ✅ FORMATAR TPS SEM ZEROS À DIREITA
         const tps = [
           signal.tp1_price, signal.tp2_price, signal.tp3_price,
           signal.tp4_price, signal.tp5_price
         ].filter(tp => tp !== undefined && tp !== null && tp !== '');
 
+        let tpsText = '';
+        tps.forEach((tp, idx) => {
+          tpsText += `\nALVO ${idx + 1}: ${formatNumberClean(tp)}`;
+        });
 
         const cancelMsg =
           `⏰ <b>SINAL CANCELADO</b>\n\n` +
           `#${signal.symbol}  ${side}\n` +
-          `${signal.timeframe || ''}\n${signal.message_source || 'Divap'}\n` +
-          `ENTRADA: ${signal.entry_price}\n\n` +
+          `${signal.timeframe || ''}\n${signal.message_source || 'Divap'}\n\n` +
+          `ENTRADA: ${formatNumberClean(signal.entry_price)}\n\n` +
           `📝 <b>Motivo:</b>\n${motivo}\n\n` +
           `🆔 Sinal: #${signal.id}\n` +
           `⏰ ${new Date().toLocaleString('pt-BR')}`;
