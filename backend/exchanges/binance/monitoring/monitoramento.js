@@ -520,7 +520,7 @@ async function startPriceMonitoringInline(accountId) {
 }
 
     // === ETAPA 12: Sincronizar posições ===
-    console.log(`🔄 ETAPA 12: Sincronizando posições para conta ${accountId}...`);
+    //console.log(`🔄 ETAPA 12: Sincronizando posições para conta ${accountId}...`);
     
     try {
       await syncPositionsWithExchange(accountId);
@@ -536,10 +536,10 @@ async function startPriceMonitoringInline(accountId) {
     const accountJobs = {};
 
     // Job principal: verificar sinais pendentes a cada 15 segundos
-    accountJobs.checkNewTrades = schedule.scheduleJob('*/15 * * * * *', async () => {
+    accountJobs.runSignalMonitoring = schedule.scheduleJob('*/15 * * * * *', async () => {
       if (isShuttingDown) return;
       try {
-        await checkNewTrades(accountId);
+        await runSignalMonitoring(accountId);
       } catch (error) {
         console.error(`[MONITOR] ⚠️ Erro na verificação periódica de sinais para conta ${accountId}:`, error.message);
       }
@@ -559,7 +559,7 @@ async function startPriceMonitoringInline(accountId) {
     `, [accountId]);
     
     if (signals.length > 0) {
-      console.log(`[MONITOR] 🔍 Verificando saúde do WebSocket para ${signals.length} símbolos:`);
+      //console.log(`[MONITOR] 🔍 Verificando saúde do WebSocket para ${signals.length} símbolos:`);
       
       for (const signal of signals) {
         try {
@@ -570,7 +570,7 @@ async function startPriceMonitoringInline(accountId) {
             const isOpen = ws && ws.readyState === 1; // WebSocket.OPEN
             
             if (isOpen) {
-              console.log(`[MONITOR]   ✅ ${signal.symbol}: WebSocket ativo`);
+              //console.log(`[MONITOR]   ✅ ${signal.symbol}: WebSocket ativo`);
             } else {
               console.log(`[MONITOR]   ❌ ${signal.symbol}: WebSocket inativo (readyState: ${ws?.readyState})`);
               
@@ -864,11 +864,7 @@ async function runSignalMonitoring(accountId) {
   try {
     // Verificar novos sinais (PENDING)
     const newSignals = await checkNewTrades(accountId);
-    
-    // ✅ NOVA LINHA: Verificar sinais cancelados
     const canceledSignals = await checkCanceledSignals(accountId);
-    
-    // Verificar sinais expirados
     const expiredSignals = await checkExpiredSignals(accountId);
     
     const totalProcessed = newSignals + canceledSignals + expiredSignals;
