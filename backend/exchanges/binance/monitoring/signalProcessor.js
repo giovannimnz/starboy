@@ -985,9 +985,7 @@ async function checkCanceledSignals(accountId) {
         const cancelMsg =
           `⏰ <b>SINAL CANCELADO</b>\n\n` +
           `#${signal.symbol}  ${side}\n` +
-          `${signal.timeframe || ''}\n${signal.message_source || 'Divap'}\n\n` +
-          `ALAVANCAGEM: ${signal.leverage || ''}x\n` +
-          `CAPITAL: ${signal.capital_pct ? parseFloat(signal.capital_pct).toFixed(2) + '%' : ''}\n` +
+          `${signal.timeframe || ''}\n${signal.message_source || 'Divap'}\n` +
           `ENTRADA: ${signal.entry_price}\n\n` +
           `📝 <b>Motivo:</b>\n${motivo}\n\n` +
           `🆔 Sinal: #${signal.id}\n` +
