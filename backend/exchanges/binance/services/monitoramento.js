@@ -319,31 +319,37 @@ try {
       console.error(`[MONITOR] ⚠️ Erro ao iniciar UserDataStream para conta ${accountId}:`, userDataError.message);
     }
 
-    // === ETAPA 9: Limpeza e preparação de sinais ===
-    console.log(`🧹 ETAPA 9: Executando limpeza avançada para conta ${accountId}...`);
+// === ETAPA 9: Limpeza e preparação de sinais ===
+console.log(`🧹 ETAPA 9: Executando limpeza avançada para conta ${accountId}...`);
 
-    try {
-      // ✅ LIMPEZA COMPLETA DE ORDENS ÓRFÃS
-      console.log(`[MONITOR] 🗑️ Limpando ordens órfãs...`);
-      const canceledOrders = await cancelOrphanOrders(accountId);
-      if (canceledOrders > 0) {
-        console.log(`[MONITOR] ✅ ${canceledOrders} ordens órfãs processadas para conta ${accountId}`);
-      }
-      
-      // ✅ MOVER ORDENS CANCELED PARA HISTÓRICO
-      const { moveOrdersToHistory } = require('./cleanup');
-      const movedOrders = await moveOrdersToHistory(accountId);
-      if (movedOrders > 0) {
-        console.log(`[MONITOR] 📚 ${movedOrders} ordens movidas para histórico para conta ${accountId}`);
-      }
-      
-      // Resto da limpeza...
-      await cleanupOrphanSignals(accountId);
-      
-      console.log(`[MONITOR] ✅ Limpeza avançada concluída para conta ${accountId}`);
-    } catch (cleanupError) {
-      console.error(`[MONITOR] ⚠️ Erro durante limpeza avançada para conta ${accountId}:`, cleanupError.message);
-    }
+try {
+  // ✅ LIMPEZA SIMPLIFICADA DE ORDENS ÓRFÃS (Nova versão)
+  console.log(`[MONITOR] 🔍 Verificando ordens órfãs para conta ${accountId}...`);
+  
+  const { cancelOrphanOrders } = require('./cleanup');
+  const orphanResult = await cancelOrphanOrders(accountId);
+  
+  if (orphanResult > 0) {
+    console.log(`[MONITOR] ✅ ${orphanResult} ordens órfãs processadas para conta ${accountId}`);
+  } else {
+    console.log(`[MONITOR] ✅ Nenhuma ordem órfã encontrada para conta ${accountId}`);
+  }
+  
+  // ✅ MOVER ORDENS CANCELED PARA HISTÓRICO
+  const { moveOrdersToHistory } = require('./cleanup');
+  const movedOrders = await moveOrdersToHistory(accountId);
+  if (movedOrders > 0) {
+    console.log(`[MONITOR] 📚 ${movedOrders} ordens movidas para histórico para conta ${accountId}`);
+  }
+  
+  // ✅ LIMPEZA DE SINAIS ÓRFÃOS (mantém como estava)
+  console.log(`[MONITOR] 🗑️ Limpando sinais órfãos...`);
+  await cleanupOrphanSignals(accountId);
+  
+  console.log(`[MONITOR] ✅ Limpeza avançada concluída para conta ${accountId}`);
+} catch (cleanupError) {
+  console.error(`[MONITOR] ⚠️ Erro durante limpeza avançada para conta ${accountId}:`, cleanupError.message);
+}
 
     // === ETAPA 10: Verificar sinais pendentes ===
     console.log(`📋 ETAPA 10: Verificando sinais pendentes para conta ${accountId}...`);
