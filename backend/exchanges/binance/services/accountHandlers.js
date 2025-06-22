@@ -71,9 +71,9 @@ async function handleAccountUpdate(message, accountId, db = null) {
 }
 
 /**
- * Processa atualizações de saldo - VERSÃO MELHORADA
+ * ✅ VERSÃO COMPLETA: Processa atualizações de saldo com TODOS os campos
  */
-async function handleBalanceUpdates(connection, balances, accountId, reason) {
+async function handleBalanceUpdates(connection, balances, accountId, reason, eventTime, transactionTime) {
   try {
     console.log(`[ACCOUNT] 💰 Processando ${balances.length} atualizações de saldo para conta ${accountId} (motivo: ${reason})`);
     
@@ -88,7 +88,7 @@ async function handleBalanceUpdates(connection, balances, accountId, reason) {
         console.log(`[ACCOUNT] 💰 ${asset}: Wallet=${walletBalance.toFixed(4)}, Cross=${crossWalletBalance.toFixed(4)}, Change=${balanceChange >= 0 ? '+' : ''}${balanceChange.toFixed(4)}`);
       }
       
-      // ATUALIZAR SALDO USDT NA TABELA CONTAS
+      // ATUALIZAR SALDO USDT NA TABELA CONTAS COM TODOS OS CAMPOS
       if (asset === 'USDT' && Math.abs(balanceChange) > 0.001) {
         try {
           const [currentData] = await connection.query(
@@ -101,19 +101,52 @@ async function handleBalanceUpdates(connection, balances, accountId, reason) {
           const calculoBasadaEm5Porcento = crossWalletBalance * 0.05;
           const novaBaseCalculo = Math.max(calculoBasadaEm5Porcento, previousBaseCalculo);
           
-          await connection.query(
-            `UPDATE contas SET 
-             saldo = ?,
-             saldo_base_calculo = ?,
-             ultima_atualizacao = NOW()
-             WHERE id = ?`,
-            [walletBalance, novaBaseCalculo, accountId]
-          );
+          // ✅ VERIFICAR QUAIS COLUNAS EXISTEM
+          const [columns] = await connection.query(`SHOW COLUMNS FROM contas`);
+          const existingColumns = columns.map(col => col.Field);
           
-          console.log(`[ACCOUNT] ✅ Saldo USDT atualizado: ${walletBalance.toFixed(2)} (base: ${novaBaseCalculo.toFixed(2)})`);
+          // ✅ CONSTRUIR UPDATE DINÂMICO
+          let updateQuery = `UPDATE contas SET 
+                           saldo = ?,
+                           saldo_base_calculo = ?,
+                           ultima_atualizacao = NOW()`;
+          let updateValues = [walletBalance, novaBaseCalculo];
+          
+          // ✅ ADICIONAR CAMPOS NOVOS SE EXISTIREM
+          if (existingColumns.includes('saldo_cross_wallet')) {
+            updateQuery += `, saldo_cross_wallet = ?`;
+            updateValues.push(crossWalletBalance);
+          }
+          
+          if (existingColumns.includes('balance_change')) {
+            updateQuery += `, balance_change = ?`;
+            updateValues.push(balanceChange);
+          }
+          
+          if (existingColumns.includes('last_event_reason')) {
+            updateQuery += `, last_event_reason = ?`;
+            updateValues.push(reason);
+          }
+          
+          if (existingColumns.includes('event_time')) {
+            updateQuery += `, event_time = ?`;
+            updateValues.push(eventTime);
+          }
+          
+          if (existingColumns.includes('transaction_time')) {
+            updateQuery += `, transaction_time = ?`;
+            updateValues.push(transactionTime);
+          }
+          
+          updateQuery += ` WHERE id = ?`;
+          updateValues.push(accountId);
+          
+          await connection.query(updateQuery, updateValues);
+          
+          console.log(`[ACCOUNT] ✅ Saldo USDT atualizado COMPLETO: ${walletBalance.toFixed(2)} (cross: ${crossWalletBalance.toFixed(2)}, change: ${balanceChange.toFixed(4)}, reason: ${reason})`);
           
           // ✅ NOTIFICAÇÃO TELEGRAM PARA MUDANÇAS SIGNIFICATIVAS
-          if (Math.abs(balanceChange) > 10 || reason === 'REALIZED_PNL') { // Mudanças > $10 ou PnL realizado
+          if (Math.abs(balanceChange) > 10 || reason === 'FUNDING_FEE' || reason === 'REALIZED_PNL') {
             try {
               const message = formatBalanceMessage(accountId, previousBalance, walletBalance, reason);
               await sendTelegramMessage(accountId, message);
@@ -135,60 +168,227 @@ async function handleBalanceUpdates(connection, balances, accountId, reason) {
 }
 
 /**
- * Processa atualizações de posições - VERSÃO CORRIGIDA SEM OBSERVACOES E SEM VALIDAÇÃO DE PREÇO MÍNIMO
+ * ✅ VERSÃO COMPLETA: Processa atualizações de posições com TODOS os campos
  */
-async function handlePositionUpdates(connection, positions, accountId, reason, eventTime) {
-  for (const positionData of positions) {
-    const symbol = positionData.s;
-    const positionAmt = parseFloat(positionData.pa || '0');
+async function handlePositionUpdates(connection, positions, accountId, reason, eventTime, transactionTime) {
+  try {
+    console.log(`[ACCOUNT] 📊 Processando ${positions.length} atualizações de posição para conta ${accountId} (motivo: ${reason})`);
     
-    if (Math.abs(positionAmt) > 0.000001) {
-      // POSIÇÃO ABERTA OU AUMENTADA
+    for (const positionData of positions) {
+      const symbol = positionData.s;
+      const positionAmt = parseFloat(positionData.pa || '0');
+      const entryPrice = parseFloat(positionData.ep || '0');
+      const breakevenPrice = parseFloat(positionData.bep || '0');
+      const accumulatedRealized = parseFloat(positionData.cr || '0');
+      const unrealizedPnl = parseFloat(positionData.up || '0');
+      const marginType = positionData.mt || 'cross';
+      const isolatedWallet = parseFloat(positionData.iw || '0');
+      const positionSide = positionData.ps || 'BOTH';
       
-      // Verificar se é nova posição
-      const [existingPositions] = await connection.query(
-        'SELECT id FROM posicoes WHERE simbolo = ? AND status = ? AND conta_id = ?',
-        [symbol, 'OPEN', accountId]
-      );
+      console.log(`[ACCOUNT] 📊 ${symbol}: Amount=${positionAmt}, Entry=${entryPrice}, UnrealizedPnL=${unrealizedPnl.toFixed(2)}, MarginType=${marginType}`);
       
-      if (existingPositions.length === 0) {
-        // ✅ NOVA POSIÇÃO - BUSCAR SINAL ORIGINAL
-        const [recentSignal] = await connection.query(`
-          SELECT id, side, leverage 
-          FROM webhook_signals 
-          WHERE symbol = ? AND status IN ('ENTRADA_EM_PROGRESSO', 'EXECUTADO') 
-          AND created_at > DATE_SUB(NOW(), INTERVAL 10 MINUTE)
-          ORDER BY id DESC LIMIT 1
-        `, [symbol]);
+      if (Math.abs(positionAmt) > 0.000001) {
+        // ✅ POSIÇÃO ABERTA OU AUMENTADA
         
-        const positionData = {
-          simbolo: symbol,
-          quantidade: Math.abs(positionAmt),
-          preco_medio: parseFloat(positionData.ep || '0'),
-          status: 'OPEN',
-          data_hora_abertura: formatDateForMySQL(new Date()),
-          side: positionAmt > 0 ? 'BUY' : 'SELL',
-          leverage: recentSignal[0]?.leverage || 1,
-          data_hora_ultima_atualizacao: formatDateForMySQL(new Date()),
-          preco_entrada: parseFloat(positionData.ep || '0'),
-          preco_corrente: parseFloat(positionData.ep || '0'),
-          orign_sig: recentSignal[0] ? `WEBHOOK_${recentSignal[0].id}` : null,
-          quantidade_aberta: Math.abs(positionAmt),
-          conta_id: accountId
-        };
+        // Verificar se é nova posição
+        const [existingPositions] = await connection.query(
+          'SELECT id FROM posicoes WHERE simbolo = ? AND status = ? AND conta_id = ?',
+          [symbol, 'OPEN', accountId]
+        );
         
-        const newPositionId = await insertPosition(connection, positionData, recentSignal[0]?.id);
-        console.log(`[ACCOUNT_UPDATE] ✅ Nova posição criada via webhook: ${symbol} (ID: ${newPositionId})`);
+        if (existingPositions.length === 0) {
+          // ✅ NOVA POSIÇÃO - BUSCAR SINAL ORIGINAL
+          const [recentSignal] = await connection.query(`
+            SELECT id, side, leverage 
+            FROM webhook_signals 
+            WHERE symbol = ? AND status IN ('ENTRADA_EM_PROGRESSO', 'EXECUTADO') 
+            AND created_at > DATE_SUB(NOW(), INTERVAL 10 MINUTE)
+            ORDER BY id DESC LIMIT 1
+          `, [symbol]);
+          
+          // ✅ VERIFICAR COLUNAS DA TABELA POSICOES
+          const [columns] = await connection.query(`SHOW COLUMNS FROM posicoes`);
+          const existingColumns = columns.map(col => col.Field);
+          
+          // ✅ PREPARAR DADOS COMPLETOS DA POSIÇÃO
+          const completePositionData = {
+            simbolo: symbol,
+            quantidade: Math.abs(positionAmt),
+            preco_medio: entryPrice,
+            status: 'OPEN',
+            data_hora_abertura: formatDateForMySQL(new Date()),
+            side: positionAmt > 0 ? 'BUY' : 'SELL',
+            leverage: recentSignal[0]?.leverage || 1,
+            data_hora_ultima_atualizacao: formatDateForMySQL(new Date()),
+            preco_entrada: entryPrice,
+            preco_corrente: entryPrice,
+            orign_sig: recentSignal[0] ? `WEBHOOK_${recentSignal[0].id}` : null,
+            quantidade_aberta: Math.abs(positionAmt),
+            conta_id: accountId
+          };
+          
+          // ✅ ADICIONAR CAMPOS NOVOS SE EXISTIREM
+          if (existingColumns.includes('breakeven_price')) {
+            completePositionData.breakeven_price = breakevenPrice;
+          }
+          if (existingColumns.includes('accumulated_realized')) {
+            completePositionData.accumulated_realized = accumulatedRealized;
+          }
+          if (existingColumns.includes('unrealized_pnl')) {
+            completePositionData.unrealized_pnl = unrealizedPnl;
+          }
+          if (existingColumns.includes('margin_type')) {
+            completePositionData.margin_type = marginType;
+          }
+          if (existingColumns.includes('isolated_wallet')) {
+            completePositionData.isolated_wallet = isolatedWallet;
+          }
+          if (existingColumns.includes('position_side')) {
+            completePositionData.position_side = positionSide;
+          }
+          if (existingColumns.includes('event_reason')) {
+            completePositionData.event_reason = reason;
+          }
+          if (existingColumns.includes('webhook_data_raw')) {
+            completePositionData.webhook_data_raw = JSON.stringify({
+              ...positionData,
+              eventTime: eventTime,
+              transactionTime: transactionTime,
+              reason: reason
+            });
+          }
+          
+          const newPositionId = await insertPosition(connection, completePositionData, recentSignal[0]?.id);
+          console.log(`[ACCOUNT_UPDATE] ✅ Nova posição COMPLETA criada: ${symbol} (ID: ${newPositionId}) com todos os campos do webhook`);
+          
+          // Atualizar sinal com position_id
+          if (recentSignal[0]) {
+            await connection.query(
+              `UPDATE webhook_signals SET position_id = ? WHERE id = ?`,
+              [newPositionId, recentSignal[0].id]
+            );
+          }
+          
+        } else {
+          // ✅ ATUALIZAR POSIÇÃO EXISTENTE COM TODOS OS CAMPOS
+          const positionId = existingPositions[0].id;
+          
+          // Verificar colunas novamente
+          const [columns] = await connection.query(`SHOW COLUMNS FROM posicoes`);
+          const existingColumns = columns.map(col => col.Field);
+          
+          let updateQuery = `UPDATE posicoes SET 
+                           quantidade = ?,
+                           preco_medio = ?,
+                           preco_entrada = ?,
+                           preco_corrente = ?,
+                           data_hora_ultima_atualizacao = NOW()`;
+          let updateValues = [Math.abs(positionAmt), entryPrice, entryPrice, entryPrice];
+          
+          // ✅ ADICIONAR CAMPOS NOVOS SE EXISTIREM
+          if (existingColumns.includes('breakeven_price')) {
+            updateQuery += `, breakeven_price = ?`;
+            updateValues.push(breakevenPrice);
+          }
+          if (existingColumns.includes('accumulated_realized')) {
+            updateQuery += `, accumulated_realized = ?`;
+            updateValues.push(accumulatedRealized);
+          }
+          if (existingColumns.includes('unrealized_pnl')) {
+            updateQuery += `, unrealized_pnl = ?`;
+            updateValues.push(unrealizedPnl);
+          }
+          if (existingColumns.includes('margin_type')) {
+            updateQuery += `, margin_type = ?`;
+            updateValues.push(marginType);
+          }
+          if (existingColumns.includes('isolated_wallet')) {
+            updateQuery += `, isolated_wallet = ?`;
+            updateValues.push(isolatedWallet);
+          }
+          if (existingColumns.includes('position_side')) {
+            updateQuery += `, position_side = ?`;
+            updateValues.push(positionSide);
+          }
+          if (existingColumns.includes('event_reason')) {
+            updateQuery += `, event_reason = ?`;
+            updateValues.push(reason);
+          }
+          if (existingColumns.includes('webhook_data_raw')) {
+            updateQuery += `, webhook_data_raw = ?`;
+            updateValues.push(JSON.stringify({
+              ...positionData,
+              eventTime: eventTime,
+              transactionTime: transactionTime,
+              reason: reason
+            }));
+          }
+          
+          updateQuery += ` WHERE id = ?`;
+          updateValues.push(positionId);
+          
+          await connection.query(updateQuery, updateValues);
+          
+          console.log(`[ACCOUNT_UPDATE] ✅ Posição ${symbol} atualizada COMPLETAMENTE com todos os campos do webhook`);
+        }
         
-        // Atualizar sinal com position_id
-        if (recentSignal[0]) {
-          await connection.query(
-            `UPDATE webhook_signals SET position_id = ? WHERE id = ?`,
-            [newPositionId, recentSignal[0].id]
-          );
+      } else {
+        // ✅ POSIÇÃO FECHADA (Position Amount = 0)
+        console.log(`[ACCOUNT_UPDATE] 🏁 Posição ${symbol} fechada (Amount=0) - atualizando status...`);
+        
+        const [positionToClose] = await connection.query(
+          'SELECT id FROM posicoes WHERE simbolo = ? AND status = ? AND conta_id = ?',
+          [symbol, 'OPEN', accountId]
+        );
+        
+        if (positionToClose.length > 0) {
+          // Verificar colunas para atualização final
+          const [columns] = await connection.query(`SHOW COLUMNS FROM posicoes`);
+          const existingColumns = columns.map(col => col.Field);
+          
+          let closeQuery = `UPDATE posicoes SET 
+                          status = 'CLOSED',
+                          quantidade = 0,
+                          data_hora_fechamento = NOW(),
+                          data_hora_ultima_atualizacao = NOW()`;
+          let closeValues = [];
+          
+          // ✅ ADICIONAR CAMPOS FINAIS
+          if (existingColumns.includes('accumulated_realized')) {
+            closeQuery += `, accumulated_realized = ?`;
+            closeValues.push(accumulatedRealized);
+          }
+          if (existingColumns.includes('unrealized_pnl')) {
+            closeQuery += `, unrealized_pnl = 0`; // Zero ao fechar
+          }
+          if (existingColumns.includes('event_reason')) {
+            closeQuery += `, event_reason = ?`;
+            closeValues.push(reason);
+          }
+          if (existingColumns.includes('webhook_data_raw')) {
+            closeQuery += `, webhook_data_raw = ?`;
+            closeValues.push(JSON.stringify({
+              ...positionData,
+              eventTime: eventTime,
+              transactionTime: transactionTime,
+              reason: reason,
+              action: 'POSITION_CLOSED'
+            }));
+          }
+          
+          closeQuery += ` WHERE id = ?`;
+          closeValues.push(positionToClose[0].id);
+          
+          await connection.query(closeQuery, closeValues);
+          
+          console.log(`[ACCOUNT_UPDATE] ✅ Posição ${symbol} marcada como FECHADA com dados completos do webhook`);
         }
       }
     }
+    
+  } catch (error) {
+    console.error(`[ACCOUNT] ❌ Erro ao processar atualizações de posição:`, error.message);
+    throw error;
   }
 }
 
