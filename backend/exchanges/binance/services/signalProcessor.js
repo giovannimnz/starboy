@@ -707,19 +707,32 @@ function calculateEstimatedPositionCost(signal) {
 
 async function onPriceUpdate(symbol, currentPrice, db, accountId) {
   try {
+    // ✅ DEBUG: Log de entrada da função
+    console.log(`[SIGNAL] 🔄 onPriceUpdate chamado: ${symbol} = ${currentPrice} (conta ${accountId})`);
+    
     // Validação básica
     if (!symbol || !currentPrice || currentPrice <= 0 || !accountId) {
+      console.log(`[SIGNAL] ⚠️ Parâmetros inválidos: symbol=${symbol}, price=${currentPrice}, accountId=${accountId}`);
       return;
     }
     
     // 1. ATUALIZAR CACHE DE PREÇOS
-    updatePriceCache(symbol, currentPrice, accountId);
+    const cacheUpdated = updatePriceCache(symbol, currentPrice, accountId);
+    console.log(`[SIGNAL] 💾 Cache atualizado: ${cacheUpdated}`);
     
     // 2. ✅ USAR A VERSÃO DO ENHANCEDMONITORING (não duplicar)
-    const { updatePositionPricesWithTrailing } = require('./enhancedMonitoring');
-    await updatePositionPricesWithTrailing(db, symbol, currentPrice, accountId);
+    try {
+      const { updatePositionPricesWithTrailing } = require('./enhancedMonitoring');
+      await updatePositionPricesWithTrailing(db, symbol, currentPrice, accountId);
+      console.log(`[SIGNAL] 📈 Posições atualizadas para ${symbol}`);
+    } catch (positionError) {
+      console.error(`[SIGNAL] ❌ Erro ao atualizar posições:`, positionError.message);
+    }
     
-    // 3. VERIFICAR SINAIS AGUARDANDO ACIONAMENTO
+    // 3. ✅ DEBUG: Buscar sinais ANTES da query
+    console.log(`[SIGNAL] 🔍 Buscando sinais AGUARDANDO_ACIONAMENTO para ${symbol}...`);
+    
+    // VERIFICAR SINAIS AGUARDANDO ACIONAMENTO
     const [pendingSignals] = await db.query(`
       SELECT id, symbol, side, entry_price, sl_price, timeframe, 
              created_at, timeout_at, max_lifetime_minutes, chat_id
@@ -730,7 +743,12 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
       ORDER BY created_at ASC
     `, [symbol, accountId]);
     
-    if (pendingSignals.length === 0) return;
+    console.log(`[SIGNAL] 📋 Query executada: ${pendingSignals.length} sinais encontrados`);
+    
+    if (pendingSignals.length === 0) {
+      console.log(`[SIGNAL] ❌ Nenhum sinal aguardando para ${symbol} (conta ${accountId})`);
+      return;
+    }
     
     // ✅ DEBUG: Mostrar quantos sinais foram encontrados
     console.log(`[SIGNAL] 🔍 Encontrados ${pendingSignals.length} sinais aguardando para ${symbol}`);
@@ -789,6 +807,9 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
           console.log(`[SIGNAL] 🔍 SHORT ${symbol}: ${currentPrice} <= ${entryPrice} = ${entryTriggered}`);
         }
       }
+      
+      // ✅ DEBUG: Status das verificações
+      console.log(`[SIGNAL] 📊 Status sinal ${signal.id}: timeout=${isTimedOut}, stopLoss=${stopLossHit}, gatilho=${entryTriggered}`);
       
       // 7. TOMAR AÇÕES BASEADAS NAS VERIFICAÇÕES
       if (isTimedOut) {
@@ -876,6 +897,7 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
     
   } catch (error) {
     console.error(`[PRICE] ❌ Erro no processamento para ${symbol}:`, error.message);
+    console.error(`[PRICE] Stack trace:`, error.stack);
   }
 }
 
