@@ -1,5 +1,5 @@
 const { getDatabaseInstance } = require('../../../core/database/conexao');
-const { getAllOpenPositions, cancelOrder } = require('../api/rest');
+const { getAllOpenPositions, cancelOrder, getOrderStatus } = require('../api/rest');
 
 /**
  * Limpa sinais órfãos e inconsistências
@@ -135,7 +135,6 @@ async function cancelOrphanOrders(accountId) {
     for (const order of activeOrders) {
       try {
         // ✅ VERIFICAR SE ORDEM EXISTE NA CORRETORA
-        const { getOrderStatus } = require('../api/rest');
         const orderStatus = await getOrderStatus(order.simbolo, order.id_externo, accountId);
 
         if (orderStatus && orderStatus.orderId) {
@@ -342,7 +341,6 @@ async function moveOrdersToHistory(accountId) {
  */
 async function checkOrderExistsOnExchange(symbol, orderId, accountId) {
   try {
-    const { getOrderStatus } = require('../api/rest');
     const orderStatus = await getOrderStatus(symbol, orderId, accountId);
     
     if (orderStatus && orderStatus.orderId && orderStatus.status) {

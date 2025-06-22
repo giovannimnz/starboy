@@ -592,7 +592,7 @@ async function logOpenPositionsAndOrdersVisual(accountId) {
     `, [accountId]);
     
     // Posições da corretora  
-    const exchangePositions = await api.getAllOpenPositions(accountId);
+    const exchangePositions = await getAllOpenPositions(accountId);
     
     console.log(`[SYNC_CHECK] 📊 Banco: ${dbPositions.length} posições | Corretora: ${exchangePositions.length} posições`);
     

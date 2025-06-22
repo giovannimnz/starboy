@@ -1941,5 +1941,6 @@ module.exports = {
   getRecentOrders,
   
   // WebSocket
-  getListenKey
+  getListenKey,
+  checkServerTime
 };
