@@ -762,13 +762,12 @@ async function handleOrderUpdate(messageOrAccountId, orderDataOrDb = null, db = 
 }
 
 /**
- * ✅ FUNÇÃO MELHORADA: Inserir ordem externa no banco
+ * ✅ FUNÇÃO MELHORADA: Inserir ordem externa com TODOS os campos do webhook
  */
 async function insertExternalOrder(dbConnection, orderData, accountId) {
   try {
-    console.log(`[ORDER] 📝 Inserindo ordem externa: ${orderData.i} (${orderData.s})`);
+    console.log(`[ORDER] 📝 Inserindo ordem externa COMPLETA: ${orderData.i} (${orderData.s})`);
     
-    // ✅ USAR CONEXÃO PASSADA OU OBTER NOVA
     let connection = dbConnection;
     if (!connection) {
       connection = await getDatabaseInstance(accountId);
@@ -776,8 +775,6 @@ async function insertExternalOrder(dbConnection, orderData, accountId) {
     
     // ✅ BUSCAR POSIÇÃO RELACIONADA
     let positionId = null;
-    
-    // Se é reduce-only ou close position, deve ter uma posição existente
     if (orderData.R === true || orderData.cp === true) {
       const [existingPositions] = await connection.query(
         'SELECT id FROM posicoes WHERE simbolo = ? AND status = ? AND conta_id = ?',
@@ -790,96 +787,96 @@ async function insertExternalOrder(dbConnection, orderData, accountId) {
       }
     }
     
-    // ✅ DETECTAR TIPO DE ORDEM BOT
     const orderBotType = determineOrderBotTypeFromExternal(orderData);
     
-    // ✅ PREPARAR DADOS DA ORDEM COM MAPEAMENTO CORRETO DOS CAMPOS
+    // ✅ MAPEAMENTO COMPLETO DOS CAMPOS
     const orderInsertData = {
-      tipo_ordem: mapOrderType(orderData.o),                    // LIMIT, MARKET, etc.
-      preco: parseFloat(orderData.p || '0'),                    // Preço original
-      quantidade: parseFloat(orderData.q || '0'),               // Quantidade original
-      id_posicao: positionId,                                   // ID da posição relacionada
-      status: orderData.X,                                      // Status da ordem (NEW, FILLED, etc.)
-      data_hora_criacao: formatDateForMySQL(new Date(orderData.T || Date.now())), // Timestamp da ordem
-      id_externo: orderData.i.toString(),                      // Order ID da Binance
-      side: orderData.S,                                        // BUY ou SELL
-      simbolo: orderData.s,                                     // Symbol (BTCUSDT, etc.)
-      tipo_ordem_bot: orderBotType,                            // ENTRADA, STOP_LOSS, etc.
-      target: null,                                             // Target level (se aplicável)
-      reduce_only: orderData.R === true ? 1 : 0,              // 1 se reduce-only, 0 se não
-      close_position: orderData.cp === true ? 1 : 0,          // 1 se close-position, 0 se não
-      last_update: formatDateForMySQL(new Date()),             // Timestamp de atualização
-      orign_sig: 'EXTERNAL_ORDER',                            // Marcar como ordem externa
-      observacao: `Ordem externa criada via ${orderData.c || 'web/api'}`, // Client Order ID como observação
-      preco_executado: parseFloat(orderData.ap || '0'),       // Preço médio executado
-      quantidade_executada: parseFloat(orderData.z || '0'),    // Quantidade executada acumulada
-      dados_originais_ws: JSON.stringify(orderData),           // Dados originais do WebSocket
-      conta_id: accountId,                                      // ID da conta
-      commission: parseFloat(orderData.n || '0'),              // Comissão
-      commission_asset: orderData.N || 'USDT',                 // Asset da comissão
-      trade_id: orderData.t || null                            // Trade ID
+      // Campos básicos existentes
+      tipo_ordem: mapOrderType(orderData.o),
+      preco: parseFloat(orderData.p || '0'),
+      quantidade: parseFloat(orderData.q || '0'),
+      id_posicao: positionId,
+      status: orderData.X,
+      data_hora_criacao: formatDateForMySQL(new Date(orderData.T || Date.now())),
+      id_externo: orderData.i.toString(),
+      side: orderData.S,
+      simbolo: orderData.s,
+      tipo_ordem_bot: orderBotType,
+      target: null,
+      reduce_only: orderData.R === true ? 1 : 0,
+      close_position: orderData.cp === true ? 1 : 0,
+      last_update: formatDateForMySQL(new Date()),
+      orign_sig: 'EXTERNAL_ORDER',
+      observacao: `Ordem externa: ${orderData.c || 'N/A'}`,
+      preco_executado: parseFloat(orderData.ap || '0'),
+      quantidade_executada: parseFloat(orderData.z || '0'),
+      dados_originais_ws: JSON.stringify(orderData),
+      conta_id: accountId,
+      commission: parseFloat(orderData.n || '0'),
+      commission_asset: orderData.N || 'USDT',
+      trade_id: orderData.t || null,
+      
+      // ✅ NOVOS CAMPOS DO WEBHOOK (se as colunas existirem)
+      client_order_id: orderData.c || null,
+      time_in_force: orderData.f || null,
+      stop_price: parseFloat(orderData.sp || '0') || null,
+      execution_type: orderData.x || null,
+      last_filled_quantity: parseFloat(orderData.l || '0') || null,
+      last_filled_price: parseFloat(orderData.L || '0') || null,
+      order_trade_time: orderData.T || null,
+      bids_notional: parseFloat(orderData.b || '0') || null,
+      ask_notional: parseFloat(orderData.a || '0') || null,
+      is_maker_side: orderData.m === true ? 1 : 0,
+      stop_price_working_type: orderData.wt || null,
+      original_order_type: orderData.ot || null,
+      position_side: orderData.ps || null,
+      activation_price: parseFloat(orderData.AP || '0') || null,
+      callback_rate: parseFloat(orderData.cr || '0') || null,
+      price_protection: orderData.pP === true ? 1 : 0,
+      realized_profit: parseFloat(orderData.rp || '0') || null,
+      stp_mode: orderData.V || null,
+      price_match_mode: orderData.pm || null,
+      gtd_auto_cancel_time: orderData.gtd || null
     };
 
-    // ✅ INSERIR NO BANCO COM TODAS AS COLUNAS
-    const insertQuery = `
-      INSERT INTO ordens (
-        tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao,
-        id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only,
-        close_position, last_update, orign_sig, observacao, preco_executado,
-        quantidade_executada, dados_originais_ws, conta_id, commission,
-        commission_asset, trade_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `;
+    // ✅ VERIFICAR QUAIS COLUNAS EXISTEM NA TABELA
+    const [columns] = await connection.query(`SHOW COLUMNS FROM ordens`);
+    const existingColumns = columns.map(col => col.Field);
     
-    const insertValues = [
-      orderInsertData.tipo_ordem, orderInsertData.preco, orderInsertData.quantidade,
-      orderInsertData.id_posicao, orderInsertData.status, orderInsertData.data_hora_criacao,
-      orderInsertData.id_externo, orderInsertData.side, orderInsertData.simbolo,
-      orderInsertData.tipo_ordem_bot, orderInsertData.target, orderInsertData.reduce_only,
-      orderInsertData.close_position, orderInsertData.last_update, orderInsertData.orign_sig,
-      orderInsertData.observacao, orderInsertData.preco_executado, orderInsertData.quantidade_executada,
-      orderInsertData.dados_originais_ws, orderInsertData.conta_id, orderInsertData.commission,
-      orderInsertData.commission_asset, orderInsertData.trade_id
-    ];
+    // ✅ FILTRAR APENAS CAMPOS QUE EXISTEM NA TABELA
+    const validData = {};
+    Object.keys(orderInsertData).forEach(key => {
+      if (existingColumns.includes(key) && orderInsertData[key] !== undefined) {
+        validData[key] = orderInsertData[key];
+      }
+    });
 
-    const [result] = await connection.query(insertQuery, insertValues);
+    // ✅ CONSTRUIR QUERY DINÂMICA
+    const columnNames = Object.keys(validData);
+    const values = Object.values(validData);
+    const placeholders = columnNames.map(() => '?').join(', ');
+    
+    const insertQuery = `
+      INSERT INTO ordens (${columnNames.join(', ')}) 
+      VALUES (${placeholders})
+    `;
+
+    const [result] = await connection.query(insertQuery, values);
     const orderDbId = result.insertId;
     
-    console.log(`[ORDER] ✅ Ordem externa ${orderData.i} inserida no banco:`);
+    console.log(`[ORDER] ✅ Ordem externa COMPLETA ${orderData.i} inserida:`);
     console.log(`[ORDER]   - ID Banco: ${orderDbId}`);
-    console.log(`[ORDER]   - Símbolo: ${orderData.s}`);
-    console.log(`[ORDER]   - Tipo: ${orderBotType} (${orderData.o})`);
-    console.log(`[ORDER]   - Side: ${orderData.S}`);
-    console.log(`[ORDER]   - Quantidade: ${orderData.q}`);
-    console.log(`[ORDER]   - Preço: ${orderData.p}`);
-    console.log(`[ORDER]   - Reduce Only: ${orderData.R === true ? 'SIM' : 'NÃO'}`);
-    console.log(`[ORDER]   - Close Position: ${orderData.cp === true ? 'SIM' : 'NÃO'}`);
-    
-    // ✅ ENVIAR NOTIFICAÇÃO TELEGRAM PARA ORDENS IMPORTANTES
-    try {
-      if (shouldNotifyExternalOrder(orderBotType, orderData)) {
-        const message = formatOrderMessage(
-          orderData.s,
-          orderData.S,
-          orderBotType,
-          parseFloat(orderData.q || 0),
-          parseFloat(orderData.p || 0),
-          orderData.X,
-          'EXTERNA'
-        );
-        
-        await sendTelegramMessage(accountId, message);
-        console.log(`[ORDER] 📱 Notificação de ordem externa enviada`);
-      }
-    } catch (telegramError) {
-      console.warn(`[ORDER] ⚠️ Erro ao enviar notificação de ordem externa:`, telegramError.message);
-    }
+    console.log(`[ORDER]   - Client Order ID: ${orderData.c || 'N/A'}`);
+    console.log(`[ORDER]   - Execution Type: ${orderData.x}`);
+    console.log(`[ORDER]   - Time in Force: ${orderData.f}`);
+    console.log(`[ORDER]   - Stop Price: ${orderData.sp || 'N/A'}`);
+    console.log(`[ORDER]   - Position Side: ${orderData.ps || 'N/A'}`);
+    console.log(`[ORDER]   - Campos salvos: ${columnNames.length}/${Object.keys(orderInsertData).length}`);
     
     return orderDbId;
     
   } catch (error) {
-    console.error(`[ORDER] ❌ Erro ao inserir ordem externa ${orderData.i}:`, error.message);
-    console.error(`[ORDER] ❌ Dados da ordem:`, JSON.stringify(orderData, null, 2));
+    console.error(`[ORDER] ❌ Erro ao inserir ordem externa COMPLETA:`, error.message);
     throw error;
   }
 }
