@@ -666,103 +666,73 @@ let exchangeInfoCache = null;
 let lastCacheTime = 0;
 const CACHE_DURATION = 10 * 60 * 1000; // 10 minutos
 
+/**
+ * Obtém precisão de um símbolo a partir do banco de dados local (exchangeinfo)
+ * @param {string} symbol - Símbolo
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Informações de precisão
+ */
 async function getPrecision(symbol, accountId) {
-    const now = Date.now();
     try {
-        if (!exchangeInfoCache || (now - lastCacheTime > CACHE_DURATION)) {
-            console.log(`[API] Cache de exchangeInfo inválido/expirado. Buscando da API...`);
-            const response = await makeAuthenticatedRequest(accountId, 'GET', '/v1/exchangeInfo');
+        const db = await getDatabaseInstance(accountId);
+        // Buscar dados do símbolo
+        const [symbols] = await db.query(
+            `SELECT * FROM exchange_symbols WHERE symbol = ? LIMIT 1`, [symbol]
+        );
+        if (!symbols.length) throw new Error(`Símbolo ${symbol} não encontrado em exchange_symbols`);
 
-            // CORREÇÃO: Aceitar tanto response.data.symbols quanto response.symbols
-            let symbolsArr = null;
-            if (response.data && Array.isArray(response.data.symbols)) {
-                symbolsArr = response.data.symbols;
-            } else if (Array.isArray(response.symbols)) {
-                symbolsArr = response.symbols;
-            }
+        const symbolRow = symbols[0];
+        const symbolId = symbolRow.id;
 
-            if (!symbolsArr) {
-                console.error('[API] Erro Crítico: Resposta de exchangeInfo da API é inválida ou malformada.', response);
-                throw new Error('Resposta inválida da API para exchangeInfo');
-            }
+        // Buscar filtros
+        const [filters] = await db.query(
+            `SELECT * FROM exchange_filters WHERE symbol_id = ?`, [symbolId]
+        );
 
-            exchangeInfoCache = symbolsArr;
-            lastCacheTime = now;
-            console.log(`[API] Cache de exchangeInfo atualizado com sucesso.`);
+        // Montar objeto de filtros
+        const filterMap = {};
+        for (const f of filters) {
+            filterMap[f.filter_type] = f;
         }
 
-        const symbolInfo = exchangeInfoCache.find(s => s.symbol === symbol);
+        // Extrair informações principais
+        const lotSize = filterMap['LOT_SIZE'];
+        const priceFilter = filterMap['PRICE_FILTER'];
+        const minNotionalFilter = filterMap['MIN_NOTIONAL'];
+        const marketLotSize = filterMap['MARKET_LOT_SIZE'];
 
-        if (symbolInfo) {
-            const priceFilter = symbolInfo.filters.find(f => f.filterType === 'PRICE_FILTER');
-            const lotSizeFilter = symbolInfo.filters.find(f => f.filterType === 'LOT_SIZE');
-            const minNotionalFilter = symbolInfo.filters.find(f => f.filterType === 'MIN_NOTIONAL'); // ✅ NOVO
-            const marketLotSizeFilter = symbolInfo.filters.find(f => f.filterType === 'MARKET_LOT_SIZE'); // ✅ NOVO
-            
-            const quantityPrecision = lotSizeFilter ? Math.max(0, Math.log10(1 / parseFloat(lotSizeFilter.stepSize))) : 0;
-            const pricePrecision = symbolInfo.pricePrecision || 2;
-            const tickSize = priceFilter ? parseFloat(priceFilter.tickSize) : 0.01;
-            
-            // ✅ EXTRAIR QUANTIDADES MÍNIMAS E MÁXIMAS
-            // ✅ EXTRAIR QUANTIDADES MÍNIMAS E MÁXIMAS
-            const minQty = lotSizeFilter ? parseFloat(lotSizeFilter.minQty) : 0.001;
-            const maxQty = lotSizeFilter ? parseFloat(lotSizeFilter.maxQty) : 10000000;
-            const stepSize = lotSizeFilter ? parseFloat(lotSizeFilter.stepSize) : 0.001;
-            
-            // ✅ QUANTIDADE MÍNIMA PARA MARKET ORDERS
-            const marketMinQty = marketLotSizeFilter ? parseFloat(marketLotSizeFilter.minQty) : minQty;
-            const marketMaxQty = marketLotSizeFilter ? parseFloat(marketLotSizeFilter.maxQty) : maxQty;
-            
-            // ✅ VALOR NOTIONAL MÍNIMO - CORREÇÃO CRÍTICA
-            let minNotional = 0;
-            if (minNotionalFilter) {
-              const minNotionalValue = parseFloat(minNotionalFilter.minNotional);
-              minNotional = isNaN(minNotionalValue) ? 0 : minNotionalValue;
-            } else {
-              // FALLBACK: Para pares USDT, geralmente é 20
-              if (symbol && symbol.includes('USDT')) {
-                minNotional = 20; // Valor padrão para pares USDT
-              }
-            }
-            
-            // ✅ FALLBACK ADICIONAL: Se ainda for 0, usar 20 para USDT pairs
-            if (minNotional === 0 && symbol && symbol.includes('USDT')) {
-              minNotional = 20;
-              console.log(`[API] Usando minNotional fallback de 20 USDT para ${symbol}`);
-            }
-
-            const precision = {
-                quantityPrecision: Math.floor(quantityPrecision),
-                pricePrecision: pricePrecision,
-                tickSize: tickSize,
-                // ✅ NOVOS CAMPOS PARA VALIDAÇÃO
-                minQty: minQty,
-                maxQty: maxQty,
-                stepSize: stepSize,
-                marketMinQty: marketMinQty,
-                marketMaxQty: marketMaxQty,
-                minNotional: minNotional // ✅ GARANTIDO QUE NÃO SEJA NaN
-            };
-
-            console.log(`[API] ✅ Precisão completa obtida para ${symbol}:`, {
-                quantityPrecision: precision.quantityPrecision,
-                pricePrecision: precision.pricePrecision,
-                tickSize: precision.tickSize,
-                minQty: precision.minQty,
-                maxQty: precision.maxQty,
-                minNotional: precision.minNotional, // ✅ Mostrar no log
-                // ✅ DEBUG ADICIONAL
-                hasMinNotionalFilter: !!minNotionalFilter,
-                originalMinNotional: minNotionalFilter ? minNotionalFilter.minNotional : 'N/A'
-            });
-            
-            return precision;
+        // Agora, se faltar algum campo, retorna null ou lança erro
+        if (
+            symbolRow.quantity_precision == null ||
+            symbolRow.price_precision == null ||
+            !lotSize || !priceFilter
+        ) {
+            throw new Error(`Dados de precisão incompletos para ${symbol}`);
         }
 
-        throw new Error(`Informações de precisão não encontradas para o símbolo ${symbol}`);
+        const quantityPrecision = symbolRow.quantity_precision;
+        const pricePrecision = symbolRow.price_precision;
+        const tickSize = priceFilter.tick_size ? parseFloat(priceFilter.tick_size) : null;
+        const minQty = lotSize.min_qty ? parseFloat(lotSize.min_qty) : null;
+        const maxQty = lotSize.max_qty ? parseFloat(lotSize.max_qty) : null;
+        const stepSize = lotSize.step_size ? parseFloat(lotSize.step_size) : null;
+        const marketMinQty = marketLotSize && marketLotSize.min_qty ? parseFloat(marketLotSize.min_qty) : null;
+        const marketMaxQty = marketLotSize && marketLotSize.max_qty ? parseFloat(marketLotSize.max_qty) : null;
+        const minNotional = minNotionalFilter && minNotionalFilter.min_notional ? parseFloat(minNotionalFilter.min_notional) : null;
 
+        return {
+            quantityPrecision,
+            pricePrecision,
+            tickSize,
+            minQty,
+            maxQty,
+            stepSize,
+            marketMinQty,
+            marketMaxQty,
+            minNotional
+        };
     } catch (error) {
-        console.error(`[API] ERRO GRAVE em getPrecision para ${symbol}:`, error.message);
+        console.error(`[API] ERRO em getPrecision (banco):`, error.message);
         throw error;
     }
 }
