@@ -1153,7 +1153,7 @@ async def handle_new_message(event):
                         message_source=message_source
                     )
                     
-                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Sinal salvo no banco com status CANCELADO ❌\n")
+                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Sinal salvo no banco com status ❌ CANCELADO ❌\n")
                     print("="*80)
 
             else: 
