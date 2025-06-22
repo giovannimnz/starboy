@@ -1307,28 +1307,31 @@ async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3000, accountI
 // FUNÇÕES AUXILIARES (mantidas como estavam)
 async function getAvailableBalance(accountId) {
     try {
-        console.log(`[LIMIT_ENTRY] Obtendo saldo disponível para conta ${accountId}...`);
+        console.log(`[LIMIT_ENTRY] Obtendo saldo_base_calculo para conta ${accountId}...`);
 
         if (!accountId || typeof accountId !== 'number') {
             throw new Error(`AccountId inválido: ${accountId}`);
         }
 
-        // ✅ USAR getFuturesAccountBalanceDetails DO rest.JS
-        const balanceDetails = await rest.getFuturesAccountBalanceDetails(accountId);
+        // ✅ USAR saldo_base_calculo DO BANCO EM VEZ DO SALDO DISPONÍVEL DA CORRETORA
+        const db = await getDatabaseInstance(accountId);
+        
+        const [rows] = await db.query(
+            'SELECT saldo_base_calculo FROM contas WHERE id = ? AND ativa = 1',
+            [accountId]
+        );
 
-        if (!balanceDetails || !balanceDetails.success) {
-            console.log(`[LIMIT_ENTRY] ⚠️ Resposta de saldo inválida, usando valor padrão`);
-            return 1000;
+        if (rows.length === 0) {
+            throw new Error(`Conta ${accountId} não encontrada ou não está ativa`);
         }
 
-        const saldoDisponivel = parseFloat(balanceDetails.saldo_disponivel || balanceDetails.saldo || 0);
-        console.log(`[LIMIT_ENTRY] ✅ Saldo disponível: ${saldoDisponivel} USDT`);
+        const saldoBaseCalculo = parseFloat(rows[0].saldo_base_calculo || 0);
+        
+        console.log(`[LIMIT_ENTRY] ✅ saldo obtido: ${saldoBaseCalculo} USDT`);
+        return saldoBaseCalculo;
 
-        return saldoDisponivel;
     } catch (error) {
-        console.error(`[LIMIT_ENTRY] Erro ao obter saldo para conta ${accountId}:`, error.message);
-        console.log(`[LIMIT_ENTRY] ⚠️ Usando valor padrão devido ao erro`);
-        return 1000;
+        console.error(`[LIMIT_ENTRY] Erro ao obter saldo_base_calculo para conta ${accountId}:`, error.message);
     }
 }
 
@@ -1350,7 +1353,14 @@ function calculateOrderSize(availableBalance, capitalPercentage, entryPrice, lev
 
     const formattedSize = parseFloat(truncatedSize.toFixed(quantityPrecision));
 
-    console.log(`[MONITOR] Cálculo: capital=${capital.toFixed(2)}, rawSize=${rawSize}, stepSize=${stepSize}, steps=${stepsFloor}, formatado=${formattedSize}`);
+    // ✅ ATUALIZAR LOG PARA MOSTRAR QUE ESTÁ USANDO saldo_base_calculo
+    console.log(`[MONITOR] Cálculo baseado em saldo_base_calculo:`);
+    console.log(`[MONITOR]   - saldo_base_calculo: ${availableBalance.toFixed(2)} USDT`);
+    console.log(`[MONITOR]   - capital (${(capitalPercentage*100).toFixed(1)}%): ${capital.toFixed(2)} USDT`);
+    console.log(`[MONITOR]   - rawSize: ${rawSize.toFixed(8)}`);
+    console.log(`[MONITOR]   - stepSize: ${stepSize}`);
+    console.log(`[MONITOR]   - steps: ${stepsFloor}`);
+    console.log(`[MONITOR]   - formatado: ${formattedSize}`);
 
     return formattedSize;
 }
