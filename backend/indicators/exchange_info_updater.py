@@ -83,7 +83,7 @@ def update_exchange_info_database(exchange_name):
         cursor = conn.cursor(dictionary=True)
         
         # FASE 3: OBTER DADOS DO BANCO (TODOS OS CAMPOS RELEVANTES)
-        print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [EXCHANGE-INFO] Buscando dados do banco para a exchange '{exchange_name}'...")
+        #print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [EXCHANGE-INFO] Buscando dados do banco para a exchange '{exchange_name}'...")
         cursor.execute("""
         SELECT id, symbol, status, pair, contract_type, base_asset, quote_asset, margin_asset,
                price_precision, quantity_precision, base_asset_precision, quote_precision,
@@ -266,7 +266,7 @@ def update_exchange_info_database(exchange_name):
 # Bloco para execução manual do script
 if __name__ == '__main__':
     print("="*60)
-    print(f"  Executando atualização manual para a exchange: '{CURRENT_EXCHANGE}'")
+    #print(f"  Executando atualização manual para a exchange: '{CURRENT_EXCHANGE}'")
     print("="*60)
     
     conn_test = get_database_connection()
