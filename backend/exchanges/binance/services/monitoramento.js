@@ -622,47 +622,6 @@ async function startPriceMonitoringInline(accountId) {
   }
 });
 
-accountJobs.testWebSocketData = schedule.scheduleJob('*/30 * * * * *', async () => {
-  if (isShuttingDown) return;
-  try {
-    const db = await getDatabaseInstance();
-    
-    // Verificar se há sinais aguardando
-    const [signals] = await db.query(`
-      SELECT symbol FROM webhook_signals 
-      WHERE conta_id = ? AND status = 'AGUARDANDO_ACIONAMENTO'
-      LIMIT 1
-    `, [accountId]);
-    
-    if (signals.length > 0) {
-      const symbol = signals[0].symbol;
-      console.log(`[MONITOR] 🔍 Testando WebSocket para ${symbol}...`);
-      
-      // Verificar se WebSocket existe e está ativo
-      const priceWebsockets = websockets.getPriceWebsockets(accountId);
-      if (priceWebsockets && priceWebsockets.has(symbol)) {
-        const ws = priceWebsockets.get(symbol);
-        const isOpen = ws && ws.readyState === 1;
-        
-        console.log(`[MONITOR] WebSocket ${symbol}: Existe=${!!ws}, Aberto=${isOpen}, ReadyState=${ws?.readyState}`);
-        
-        if (isOpen) {
-          console.log(`[MONITOR] ✅ WebSocket para ${symbol} está funcionando - aguardando dados...`);
-        } else {
-          console.log(`[MONITOR] ❌ WebSocket para ${symbol} não está aberto, recriando...`);
-          await websockets.ensurePriceWebsocketExists(symbol, accountId);
-        }
-      } else {
-        console.log(`[MONITOR] ❌ WebSocket não encontrado para ${symbol}, criando...`);
-        await websockets.ensurePriceWebsocketExists(symbol, accountId);
-      }
-    }
-    
-  } catch (error) {
-    console.error(`[MONITOR] ❌ Erro no teste de WebSocket:`, error.message);
-  }
-});
-
     // ✅ NOVO: Job de verificação de sinais expirados a cada 1 minuto (mais frequente)
 accountJobs.checkExpiredSignals = schedule.scheduleJob('*/1 * * * *', async () => {
   if (isShuttingDown) return;
