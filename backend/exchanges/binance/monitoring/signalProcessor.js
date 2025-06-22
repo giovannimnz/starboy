@@ -981,21 +981,14 @@ async function checkCanceledSignals(accountId) {
           signal.tp4_price, signal.tp5_price
         ].filter(tp => tp !== undefined && tp !== null && tp !== '');
 
-        let tpsText = '';
-        tps.forEach((tp, idx) => {
-          tpsText += `\nALVO ${idx + 1}: ${tp}`;
-        });
 
         const cancelMsg =
           `⏰ <b>SINAL CANCELADO</b>\n\n` +
           `#${signal.symbol}  ${side}\n` +
           `${signal.timeframe || ''}\n${signal.message_source || 'Divap'}\n\n` +
           `ALAVANCAGEM: ${signal.leverage || ''}x\n` +
-          `MARGEM: CRUZADA\n` +
-          `CAPITAL: ${signal.capital_pct ? parseFloat(signal.capital_pct).toFixed(2) + '%' : ''}\n\n` +
-          `ENTRADA: ${signal.entry_price}\n` +
-          `${tpsText}\n\n` +
-          `STOP LOSS: ${signal.sl_price}\n\n` +
+          `CAPITAL: ${signal.capital_pct ? parseFloat(signal.capital_pct).toFixed(2) + '%' : ''}\n` +
+          `ENTRADA: ${signal.entry_price}\n\n` +
           `📝 <b>Motivo:</b>\n${motivo}\n\n` +
           `🆔 Sinal: #${signal.id}\n` +
           `⏰ ${new Date().toLocaleString('pt-BR')}`;
