@@ -513,14 +513,6 @@ async function ensurePriceWebsocketExists(symbol, accountId) {
     try {
       const tickerData = JSON.parse(data);
       
-      // ✅ DEBUG: Mostrar dados recebidos
-      //console.log(`[WEBSOCKET] 📨 Mensagem recebida para ${symbol}:`, {
-        event: tickerData.e,
-        symbol: tickerData.s,
-        close: tickerData.c,
-        timestamp: new Date().toISOString()
-      });
-      
       await handlePriceUpdate(symbol, tickerData, accountId);
     } catch (error) {
       console.error(`[WEBSOCKET] ❌ Erro ao processar dados de preço para ${symbol}:`, error.message);
