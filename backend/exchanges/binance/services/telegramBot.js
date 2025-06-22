@@ -436,19 +436,38 @@ function formatOrderMessage(symbol, side, orderType, quantity, price, status) {
 /**
  * Formata mensagem de mudança de saldo
  */
-function formatBalanceMessage(accountId, oldBalance, newBalance, reason) {
-  const change = newBalance - oldBalance;
-  const changeIcon = change >= 0 ? '📈' : '📉';
-  const changeColor = change >= 0 ? '🟢' : '🔴';
+function formatBalanceMessage(accountId, previousBalance, newBalance, reason, balanceChange = null) {
+  const change = balanceChange !== null ? balanceChange : (newBalance - previousBalance);
+  const changeText = change >= 0 ? `+${change.toFixed(4)}` : change.toFixed(4);
+  const emoji = change >= 0 ? '📈' : '📉';
   
-  return `${changeIcon} <b>SALDO ATUALIZADO</b>\n\n` +
-         `🏦 Conta: ${accountId}\n\n` +
-         `💰 <b>Mudança:</b>\n` +
-         `├ Anterior: $${oldBalance.toFixed(2)}\n` +
-         `├ Atual: $${newBalance.toFixed(2)}\n` +
-         `└ ${changeColor} ${change >= 0 ? '+' : ''}$${change.toFixed(2)}\n\n` +
-         `📝 Motivo: ${reason}\n` +
-         `⏰ ${new Date().toLocaleString('pt-BR')}`;
+  let reasonText = reason;
+  switch (reason) {
+    case 'FUNDING_FEE':
+      reasonText = 'Taxa de Financiamento';
+      break;
+    case 'REALIZED_PNL':
+      reasonText = 'PnL Realizado';
+      break;
+    case 'ORDER':
+      reasonText = 'Execução de Ordem';
+      break;
+    case 'COMMISSION':
+      reasonText = 'Comissão';
+      break;
+    default:
+      reasonText = reason;
+  }
+  
+  return `${emoji} **Atualização de Saldo**
+  
+💰 **Saldo Anterior:** ${previousBalance.toFixed(2)} USDT
+💰 **Novo Saldo:** ${newBalance.toFixed(2)} USDT
+📊 **Mudança:** ${changeText} USDT
+
+🔍 **Motivo:** ${reasonText}
+📋 **Conta:** ${accountId}
+⏰ **Horário:** ${new Date().toLocaleString('pt-BR')}`;
 }
 
 /**

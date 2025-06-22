@@ -73,6 +73,11 @@ async function handleAccountUpdate(message, accountId, db = null) {
 /**
  * ✅ VERSÃO COMPLETA: Processa atualizações de saldo com TODOS os campos
  */
+// starboy/backend/exchanges/binance/services/accountHandlers.js - CORREÇÃO LINHA 100
+
+/**
+ * ✅ VERSÃO CORRIGIDA: Processa atualizações de saldo com lógica correta do saldo_base_calculo
+ */
 async function handleBalanceUpdates(connection, balances, accountId, reason, eventTime, transactionTime) {
   try {
     console.log(`[ACCOUNT] 💰 Processando ${balances.length} atualizações de saldo para conta ${accountId} (motivo: ${reason})`);
@@ -83,14 +88,11 @@ async function handleBalanceUpdates(connection, balances, accountId, reason, eve
       const crossWalletBalance = parseFloat(balance.cw || '0');
       const balanceChange = parseFloat(balance.bc || '0');
       
-      // LOG DETALHADO APENAS PARA MUDANÇAS SIGNIFICATIVAS
-      if (Math.abs(balanceChange) > 0.001 || reason === 'FUNDING_FEE') {
-        console.log(`[ACCOUNT] 💰 ${asset}: Wallet=${walletBalance.toFixed(4)}, Cross=${crossWalletBalance.toFixed(4)}, Change=${balanceChange >= 0 ? '+' : ''}${balanceChange.toFixed(4)}`);
-      }
-      
-      // ATUALIZAR SALDO USDT NA TABELA CONTAS COM TODOS OS CAMPOS
-      if (asset === 'USDT' && Math.abs(balanceChange) > 0.001) {
+      // ✅ ATUALIZAR SALDO USDT SEMPRE
+      if (asset === 'USDT') {
         try {
+          console.log(`[ACCOUNT] 💰 ${asset}: Wallet=${walletBalance.toFixed(4)}, Cross=${crossWalletBalance.toFixed(4)}, Change=${balanceChange >= 0 ? '+' : ''}${balanceChange.toFixed(4)}, Reason=${reason}`);
+          
           const [currentData] = await connection.query(
             'SELECT saldo, saldo_base_calculo FROM contas WHERE id = ?',
             [accountId]
@@ -98,14 +100,22 @@ async function handleBalanceUpdates(connection, balances, accountId, reason, eve
           
           const previousBalance = currentData.length > 0 ? parseFloat(currentData[0].saldo || '0') : 0;
           const previousBaseCalculo = currentData.length > 0 ? parseFloat(currentData[0].saldo_base_calculo || '0') : 0;
-          const calculoBasadaEm5Porcento = crossWalletBalance * 0.05;
-          const novaBaseCalculo = Math.max(calculoBasadaEm5Porcento, previousBaseCalculo);
+          
+          // ✅ CORREÇÃO: Lógica correta do saldo_base_calculo
+          // saldo_base_calculo SÓ AUMENTA, NUNCA DIMINUI
+          let novaBaseCalculo = previousBaseCalculo;
+          if (walletBalance > previousBaseCalculo) {
+            novaBaseCalculo = walletBalance;
+            console.log(`[ACCOUNT] 📈 Saldo base de cálculo atualizado: ${previousBaseCalculo.toFixed(2)} → ${novaBaseCalculo.toFixed(2)} (saldo atual: ${walletBalance.toFixed(2)})`);
+          } else {
+            console.log(`[ACCOUNT] 📊 Saldo base de cálculo mantido: ${previousBaseCalculo.toFixed(2)} (saldo atual: ${walletBalance.toFixed(2)})`);
+          }
           
           // ✅ VERIFICAR QUAIS COLUNAS EXISTEM
           const [columns] = await connection.query(`SHOW COLUMNS FROM contas`);
           const existingColumns = columns.map(col => col.Field);
           
-          // ✅ CONSTRUIR UPDATE DINÂMICO
+          // ✅ CONSTRUIR UPDATE DINÂMICO - SEMPRE ATUALIZAR O SALDO
           let updateQuery = `UPDATE contas SET 
                            saldo = ?,
                            saldo_base_calculo = ?,
@@ -143,14 +153,14 @@ async function handleBalanceUpdates(connection, balances, accountId, reason, eve
           
           await connection.query(updateQuery, updateValues);
           
-          console.log(`[ACCOUNT] ✅ Saldo USDT atualizado COMPLETO: ${walletBalance.toFixed(2)} (cross: ${crossWalletBalance.toFixed(2)}, change: ${balanceChange.toFixed(4)}, reason: ${reason})`);
+          console.log(`[ACCOUNT] ✅ Saldo USDT atualizado: ${walletBalance.toFixed(2)} USDT (base_calc: ${novaBaseCalculo.toFixed(2)}, change: ${balanceChange.toFixed(4)}, reason: ${reason})`);
           
           // ✅ NOTIFICAÇÃO TELEGRAM PARA MUDANÇAS SIGNIFICATIVAS
-          if (Math.abs(balanceChange) > 10 || reason === 'FUNDING_FEE' || reason === 'REALIZED_PNL') {
+          if (Math.abs(balanceChange) > 5 || reason === 'FUNDING_FEE' || reason === 'REALIZED_PNL' || reason === 'ORDER') {
             try {
-              const message = formatBalanceMessage(accountId, previousBalance, walletBalance, reason);
+              const message = formatBalanceMessage(accountId, previousBalance, walletBalance, reason, balanceChange);
               await sendTelegramMessage(accountId, message);
-              console.log(`[ACCOUNT] 📱 Notificação de saldo enviada`);
+              console.log(`[ACCOUNT] 📱 Notificação de saldo enviada para mudança de ${balanceChange.toFixed(4)} USDT`);
             } catch (telegramError) {
               console.warn(`[ACCOUNT] ⚠️ Erro ao enviar notificação de saldo:`, telegramError.message);
             }
@@ -158,6 +168,11 @@ async function handleBalanceUpdates(connection, balances, accountId, reason, eve
           
         } catch (updateError) {
           console.error(`[ACCOUNT] ❌ Erro ao atualizar saldo USDT para conta ${accountId}:`, updateError.message);
+        }
+      } else {
+        // ✅ LOG PARA OUTROS ASSETS (se necessário)
+        if (Math.abs(balanceChange) > 0.001) {
+          console.log(`[ACCOUNT] 💰 ${asset}: Wallet=${walletBalance.toFixed(8)}, Change=${balanceChange >= 0 ? '+' : ''}${balanceChange.toFixed(8)}`);
         }
       }
     }

@@ -1000,7 +1000,6 @@ function formatDateForMySQL(date) {
  * @returns {Promise<Object>} - Objeto com os valores atualizados
  */
 async function updateAccountBalance(db, saldo, accountId) {
-  // CORREÇÃO: Validar accountId obrigatório
   if (!accountId || typeof accountId !== 'number') {
     throw new Error(`AccountId é obrigatório: ${accountId} (tipo: ${typeof accountId})`);
   }
@@ -1013,7 +1012,7 @@ async function updateAccountBalance(db, saldo, accountId) {
       // 1. Buscar saldo atual e saldo_base_calculo para conta específica
       const [currentAccount] = await connection.query(
           'SELECT saldo, saldo_base_calculo FROM contas WHERE id = ?',
-          [accountId] // CORREÇÃO: usar contas em vez de conta
+          [accountId]
       );
 
       if (currentAccount.length === 0) {
@@ -1023,18 +1022,21 @@ async function updateAccountBalance(db, saldo, accountId) {
       const currentSaldo = parseFloat(currentAccount[0].saldo || 0);
       const currentBaseCalculo = parseFloat(currentAccount[0].saldo_base_calculo || 0);
       
-      // 2. Determinar novo saldo_base_calculo
-      let baseCalculo = currentBaseCalculo;
+      // ✅ CORREÇÃO: Lógica correta do saldo_base_calculo
+      // saldo_base_calculo SÓ AUMENTA se o novo saldo for maior
+      let novoBaseCalculo = currentBaseCalculo;
       
       if (saldo > currentBaseCalculo) {
-        baseCalculo = saldo;
-        console.log(`[DB] Atualizando saldo_base_calculo da conta ${accountId}: ${currentBaseCalculo.toFixed(2)} → ${baseCalculo.toFixed(2)}`);
+        novoBaseCalculo = saldo;
+        console.log(`[DB] Atualizando saldo_base_calculo da conta ${accountId}: ${currentBaseCalculo.toFixed(2)} → ${novoBaseCalculo.toFixed(2)}`);
+      } else {
+        console.log(`[DB] Mantendo saldo_base_calculo da conta ${accountId}: ${currentBaseCalculo.toFixed(2)} (saldo atual: ${saldo.toFixed(2)})`);
       }
 
-      // 3. CORREÇÃO: Atualizar valores no banco usando 'ultima_atualizacao'
+      // 3. Atualizar valores no banco
       await connection.query(
           'UPDATE contas SET saldo = ?, saldo_base_calculo = ?, ultima_atualizacao = NOW() WHERE id = ?',
-          [saldo, baseCalculo, accountId] // CORREÇÃO: usar contas e ultima_atualizacao
+          [saldo, novoBaseCalculo, accountId]
       );
 
       await connection.commit();
@@ -1042,7 +1044,7 @@ async function updateAccountBalance(db, saldo, accountId) {
       return {
         accountId: accountId,
         saldo: saldo,
-        saldo_base_calculo: baseCalculo
+        saldo_base_calculo: novoBaseCalculo
       };
     } catch (error) {
       await connection.rollback();

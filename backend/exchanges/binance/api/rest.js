@@ -1114,23 +1114,26 @@ async function getFuturesAccountBalanceDetails(accountId) {
     const previousSaldo = previousBalance.length > 0 ? parseFloat(previousBalance[0].saldo || '0') : 0;
     const previousBaseCalculo = previousBalance.length > 0 ? parseFloat(previousBalance[0].saldo_base_calculo || '0') : 0;
     
-    // Calcular nova base de cálculo (manter o maior entre 5% do saldo atual e base anterior)
-    const calculoBaseada5Porcento = saldoDisponivel * 0.05;
-    const novaBaseCalculo = Math.max(calculoBaseada5Porcento, previousBaseCalculo);
+    // ✅ CORREÇÃO: Lógica correta do saldo_base_calculo
+    // saldo_base_calculo SÓ AUMENTA, NUNCA DIMINUI
+    let novaBaseCalculo = previousBaseCalculo;
+    if (saldoDisponivel > previousBaseCalculo) {
+      novaBaseCalculo = saldoDisponivel;
+      console.log(`[API] Saldo base de cálculo atualizado: ${previousBaseCalculo.toFixed(2)} → ${novaBaseCalculo.toFixed(2)}`);
+    } else {
+      console.log(`[API] Saldo base de cálculo mantido: ${previousBaseCalculo.toFixed(2)} (saldo atual: ${saldoDisponivel.toFixed(2)})`);
+    }
     
     console.log(`[API] Cálculo da base:`);
-    console.log(`  - 5% do saldo disponível: ${calculoBaseada5Porcento.toFixed(2)} USDT`);
+    console.log(`  - Saldo atual: ${saldoDisponivel.toFixed(2)} USDT`);
     console.log(`  - Base anterior: ${previousBaseCalculo.toFixed(2)} USDT`);
-    console.log(`  - Nova base (maior): ${novaBaseCalculo.toFixed(2)} USDT`);
+    console.log(`  - Nova base: ${novaBaseCalculo.toFixed(2)} USDT`);
     
-    // CORREÇÃO: Usar coluna 'ultima_atualizacao' em vez de 'ultima_atualizacao_saldo'
     await db.query(
       'UPDATE contas SET saldo = ?, saldo_base_calculo = ?, ultima_atualizacao = NOW() WHERE id = ?',
-      [saldoTotal, novaBaseCalculo, accountId]
+      [saldoDisponivel, novaBaseCalculo, accountId]
     );
-    
-    //console.log(`[API] ✅ Saldo atualizado no banco para conta ${accountId}`);
-    
+
     // RETORNAR FORMATO PADRONIZADO
     return {
       success: true,
