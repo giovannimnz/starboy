@@ -192,7 +192,7 @@ def update_leverage_brackets():
     Função wrapper para chamar a atualização do banco de dados.
     """
     try:
-        print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] Iniciando atualização de brackets...")
+        #print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] Iniciando atualização de brackets...")
         success = update_leverage_brackets_database()
         if success:
             print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ✅ Processo de atualização de brackets bem-sucedido.")
@@ -206,10 +206,10 @@ def test_binance_credentials():
     Testa se as credenciais da Binance estão funcionando.
     """
     try:
-        print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] Testando credenciais Binance...")
+        #print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] Testando credenciais Binance...")
         result = make_binance_request('/v1/exchangeInfo')
         if result and 'symbols' in result:
-            print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] ✅ Credenciais OK - {len(result['symbols'])} símbolos disponíveis")
+            #print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] ✅ Credenciais OK - {len(result['symbols'])} símbolos disponíveis")
             return True
         else:
             print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] ❌ Falha no teste de credenciais")
@@ -223,7 +223,7 @@ def test_database_connection():
     Testa se a conexão com o banco de dados está funcionando.
     """
     try:
-        print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] Testando conexão com o banco de dados...")
+        #print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] Testando conexão com o banco de dados...")
         conn = get_database_connection()
         if conn:
             cursor = conn.cursor()
@@ -231,7 +231,7 @@ def test_database_connection():
             count = cursor.fetchone()[0]
             cursor.close()
             conn.close()
-            print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] ✅ Conexão com banco OK ({count} registros.)")
+            #print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] ✅ Conexão com banco OK ({count} registros.)")
             return True
         else:
             print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] ❌ Falha na conexão com banco")

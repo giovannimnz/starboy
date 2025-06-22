@@ -127,13 +127,13 @@ def initialize_bracket_scheduler():
             print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] ❌ Testes falharam. O agendador não será iniciado.")
             return
 
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] Executando atualização inicial de brackets...")
+        #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] Executando atualização inicial de brackets...")
         update_leverage_brackets()
 
         print("\n" + "═"*80)
         print("🟩 ATUALIZAÇÃO DE EXCHANGE INFO 🟩")
         print("═"*80)
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] Executando atualização inicial de exchange info...")
+        #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] Executando atualização inicial de exchange info...")
         update_exchange_info_database(CURRENT_EXCHANGE)
 
         print("\n" + "="*80)

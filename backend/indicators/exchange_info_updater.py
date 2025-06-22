@@ -66,7 +66,7 @@ def update_exchange_info_database(exchange_name):
     """Atualiza as informações de símbolos e filtros no banco de dados para uma exchange específica."""
     try:
         # FASE 1: OBTER DADOS DA BINANCE
-        print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [EXCHANGE-INFO] Buscando dados da Binance...")
+        #print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [EXCHANGE-INFO] Buscando dados da Binance...")
         info_data = make_binance_request('/v1/exchangeInfo')
         
         if not info_data or 'symbols' not in info_data:
