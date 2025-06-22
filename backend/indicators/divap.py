@@ -1067,9 +1067,9 @@ async def handle_new_message(event):
                     grupo_origem_nome = message_source.capitalize() if message_source else "Divap"
                     message_text_to_send = format_trade_message(trade_info, selected_tp, grupo_origem_nome)
                     print(f"\n📤 [SENDING] Enviando sinal (Origem: {incoming_message_id}):")
-                    print(f"{'-'*60}")
+                    print(f"{'='*60}")
                     print(f"{message_text_to_send}")
-                    print(f"{'-'*60}")
+                    print(f"{'='*60}")
 
                     trade_info['tp'] = selected_tp
                     trade_info['id_mensagem_origem_sinal'] = incoming_message_id
