@@ -1205,7 +1205,7 @@ async def main():
         destino = await client.get_entity(GRUPO_DESTINO_ID)
         tipo = "Canal" if getattr(destino, "broadcast", False) else "Supergrupo" if getattr(destino, "megagroup", False) else "Grupo"
         nome = getattr(destino, 'title', 'Sem título')
-        print(f"                 [INFO] ✅ Enviando para {tipo} de destino: {nome} (ID: {GRUPO_DESTINO_ID})")
+        print(f"                 [INFO] ✅ {tipo} de destino: {nome} (ID: {GRUPO_DESTINO_ID})")
     except Exception as e:
         print(f"[ERRO] ❌ Não foi possível acessar o grupo/canal de destino {GRUPO_DESTINO_ID}: {e}")
         return
