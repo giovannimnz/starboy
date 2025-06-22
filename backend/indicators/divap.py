@@ -902,7 +902,7 @@ async def verify_divap_pattern(trade_info):
         is_divap_confirmed = analysis_result.get("divap_confirmed", False)
         
         if is_divap_confirmed:
-            print(f"[INFO] ✅ PADRÃO DIVAP CONFIRMADO para {trade_info['symbol']} {trade_info['side']}")
+            print(f"\n[INFO] ✅ PADRÃO DIVAP CONFIRMADO para {trade_info['symbol']} {trade_info['side']}")
             return (True, None)
         else:
             error_msg = "Padrão DIVAP não confirmado"
@@ -1026,14 +1026,14 @@ async def handle_new_message(event):
                 #print(f"   🎯 Trade info extraído com sucesso!")
                 
                 if ENABLE_DIVAP_VERIFICATION:
-                    print(f"\n   🔍 Verificando padrão DIVAP...")
+                    print(f"🔍 Verificando padrão DIVAP...")
                     is_valid_divap, error_message = await verify_divap_pattern(trade_info)
                 else:
                     is_valid_divap, error_message = True, None
                     print(f"\n   ⚠️ Verificação DIVAP desativada - sinal aceito")                
 
                 if is_valid_divap:
-                    print(f"\n   ✅ DIVAP confirmado - processando sinal...\n")
+                    print(f"       ✅ DIVAP confirmado - processando sinal...\n")
                     
                     # Processar sinal válido
                     selected_tp = None
