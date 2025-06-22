@@ -479,6 +479,7 @@ async function ensurePriceWebsocketExists(symbol, accountId) {
   const priceWebsockets = getPriceWebsockets(accountId, true);
   
   if (priceWebsockets.has(symbol) && priceWebsockets.get(symbol).readyState === WebSocket.OPEN) {
+    console.log(`[WEBSOCKET] WebSocket para ${symbol} já existe e está ativo`);
     return;
   }
 
@@ -495,10 +496,13 @@ async function ensurePriceWebsocketExists(symbol, accountId) {
       return;
   }
 
-  console.log(`[WEBSOCKET] Iniciando monitoramento de preço para ${symbol} (conta ${accountId})`);
+  console.log(`[WEBSOCKET] 🔄 Iniciando monitoramento de preço para ${symbol} (conta ${accountId})`);
   console.log(`[WEBSOCKET] Usando URL: ${accountState.wsUrl}`);
 
+  // ✅ CORREÇÃO: Usar ticker em vez de bookTicker para garantir dados mais frequentes
   const wsEndpointUrl = `${accountState.wsUrl}/ws/${symbol.toLowerCase()}@ticker`;
+  console.log(`[WEBSOCKET] Endpoint: ${wsEndpointUrl}`);
+  
   const ws = new WebSocket(wsEndpointUrl);
 
   ws.on('open', () => {
@@ -508,21 +512,32 @@ async function ensurePriceWebsocketExists(symbol, accountId) {
   ws.on('message', async (data) => {
     try {
       const tickerData = JSON.parse(data);
+      
+      // ✅ DEBUG: Mostrar dados recebidos
+      console.log(`[WEBSOCKET] 📨 Mensagem recebida para ${symbol}:`, {
+        event: tickerData.e,
+        symbol: tickerData.s,
+        close: tickerData.c,
+        timestamp: new Date().toISOString()
+      });
+      
       await handlePriceUpdate(symbol, tickerData, accountId);
     } catch (error) {
-      console.error(`[WEBSOCKET] Erro ao processar dados de preço para ${symbol}:`, error);
+      console.error(`[WEBSOCKET] ❌ Erro ao processar dados de preço para ${symbol}:`, error.message);
     }
   });
 
   ws.on('error', (error) => {
-    console.error(`[WEBSOCKET] Erro na conexão de preço para ${symbol}:`, error.message);
+    console.error(`[WEBSOCKET] ❌ Erro na conexão de preço para ${symbol}:`, error.message);
   });
 
-  ws.on('close', () => {
-    console.log(`[WEBSOCKET] Conexão de preço fechada para ${symbol}`);
+  ws.on('close', (code, reason) => {
+    console.log(`[WEBSOCKET] 🔌 Conexão de preço fechada para ${symbol}. Code: ${code}, Reason: ${reason}`);
+    priceWebsockets.delete(symbol);
   });
 
   priceWebsockets.set(symbol, ws);
+  console.log(`[WEBSOCKET] 💾 WebSocket armazenado para ${symbol} (conta ${accountId})`);
 }
 
 /**
@@ -530,6 +545,14 @@ async function ensurePriceWebsocketExists(symbol, accountId) {
  */
 async function handlePriceUpdate(symbol, tickerData, accountId) {
   try {
+    // ✅ DEBUG: Mostrar que dados foram recebidos
+    console.log(`[WEBSOCKET] 📥 Dados recebidos para ${symbol} (conta ${accountId}):`, {
+      bid: tickerData.b,
+      ask: tickerData.a,
+      price: tickerData.c,
+      eventType: tickerData.e
+    });
+    
     const accountState = getAccountConnectionState(accountId, true);
     let db = accountState.dbInstance;
     
@@ -543,22 +566,51 @@ async function handlePriceUpdate(symbol, tickerData, accountId) {
       }
     }
 
-    const bestBid = parseFloat(tickerData.b);
-    const bestAsk = parseFloat(tickerData.a);
-    // CORREÇÃO: Cálculo mais robusto do currentPrice
+    // ✅ CORREÇÃO CRÍTICA: Calcular preço corretamente baseado no tipo de ticker
     let currentPrice;
-    if (!isNaN(bestBid) && !isNaN(bestAsk) && bestBid > 0 && bestAsk > 0) {
-      currentPrice = (bestBid + bestAsk) / 2;
+    
+    if (tickerData.e === 'ticker' || tickerData.e === '24hrTicker') {
+      // Ticker de 24h - usar preço de fechamento atual
+      currentPrice = parseFloat(tickerData.c);
+      console.log(`[WEBSOCKET] 💰 Usando preço de ticker 24h: ${currentPrice}`);
     } else {
-      // Validação movida para validateAndParseWebSocketData
-      return; // Não processar se os preços são inválidos
+      // BookTicker ou outros - usar média de bid/ask
+      const bestBid = parseFloat(tickerData.b);
+      const bestAsk = parseFloat(tickerData.a);
+      
+      if (!isNaN(bestBid) && !isNaN(bestAsk) && bestBid > 0 && bestAsk > 0) {
+        currentPrice = (bestBid + bestAsk) / 2;
+        console.log(`[WEBSOCKET] 💰 Usando média bid/ask: ${currentPrice} (bid: ${bestBid}, ask: ${bestAsk})`);
+      } else {
+        console.warn(`[WEBSOCKET] ⚠️ Preços inválidos para ${symbol}: bid=${bestBid}, ask=${bestAsk}`);
+        return;
+      }
     }
 
+    // ✅ VALIDAÇÃO FINAL DO PREÇO
+    if (!currentPrice || isNaN(currentPrice) || currentPrice <= 0) {
+      console.warn(`[WEBSOCKET] ⚠️ Preço calculado inválido para ${symbol}: ${currentPrice}`);
+      return;
+    }
+
+    console.log(`[WEBSOCKET] ✅ Preço final calculado para ${symbol}: ${currentPrice}`);
+
+    // ✅ CHAMAR CALLBACK onPriceUpdate
     if (accountState.monitoringCallbacks && accountState.monitoringCallbacks.onPriceUpdate) {
+      console.log(`[WEBSOCKET] 🔄 Chamando onPriceUpdate para ${symbol}...`);
       await accountState.monitoringCallbacks.onPriceUpdate(symbol, currentPrice, db, accountId);
+      console.log(`[WEBSOCKET] ✅ onPriceUpdate executado para ${symbol}`);
+    } else {
+      console.warn(`[WEBSOCKET] ⚠️ Callback onPriceUpdate não encontrado para conta ${accountId}`);
+      console.warn(`[WEBSOCKET] Estado dos callbacks:`, {
+        hasCallbacks: !!accountState.monitoringCallbacks,
+        hasOnPriceUpdate: !!(accountState.monitoringCallbacks?.onPriceUpdate),
+        callbackType: typeof accountState.monitoringCallbacks?.onPriceUpdate
+      });
     }
   } catch (error) {
-    console.error(`[WEBSOCKETS] Erro ao processar atualização de preço:`, error);
+    console.error(`[WEBSOCKETS] ❌ Erro ao processar atualização de preço para ${symbol}:`, error.message);
+    console.error(`[WEBSOCKETS] Stack trace:`, error.stack);
   }
 }
 

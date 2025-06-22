@@ -340,8 +340,8 @@ if (!finalHandlers.onPriceUpdate) {
     ...finalHandlers,
     onPriceUpdate: async (symbol, price, db) => {
       try {
-        // ✅ DEBUG: Mostrar que WebSocket está funcionando
-        console.log(`[MONITOR] 📊 Preço via WebSocket: ${symbol} = ${price} (conta ${accountId})`);
+        // ✅ DEBUG MELHORADO: Mostrar que WebSocket está funcionando
+        console.log(`[MONITOR] 📊 Preço via WebSocket: ${symbol} = ${price} (conta ${accountId}) - ${new Date().toLocaleTimeString()}`);
         
         // ✅ CORREÇÃO: Garantir que db está disponível
         let dbConnection = db;
@@ -350,18 +350,33 @@ if (!finalHandlers.onPriceUpdate) {
           dbConnection = await getDatabaseInstance(accountId);
         }
         
+        // ✅ DEBUG: Confirmar que vai chamar as funções
+        console.log(`[MONITOR] 🔄 Chamando updatePositionPricesWithTrailing para ${symbol}...`);
         const { updatePositionPricesWithTrailing } = require('./enhancedMonitoring');
         await updatePositionPricesWithTrailing(dbConnection, symbol, price, accountId);
+        console.log(`[MONITOR] ✅ updatePositionPricesWithTrailing concluído para ${symbol}`);
         
+        console.log(`[MONITOR] 🔄 Chamando onPriceUpdate do signalProcessor para ${symbol}...`);
         const { onPriceUpdate } = require('./signalProcessor');
         await onPriceUpdate(symbol, price, dbConnection, accountId);
+        console.log(`[MONITOR] ✅ onPriceUpdate do signalProcessor concluído para ${symbol}`);
+        
       } catch (error) {
-        console.error(`[MONITOR] ⚠️ Erro em onPriceUpdate para ${symbol} conta ${accountId}:`, error.message);
+        console.error(`[MONITOR] ❌ Erro em onPriceUpdate para ${symbol} conta ${accountId}:`, error.message);
+        console.error(`[MONITOR] Stack trace:`, error.stack);
       }
     }
   }, accountId);
   
   console.log(`[MONITOR] ✅ Callback de preço adicionado para conta ${accountId}`);
+  
+  // ✅ VERIFICAR SE FOI REALMENTE ADICIONADO
+  const verificarCallbacks = websockets.getHandlers(accountId);
+  console.log(`[MONITOR] 🔍 Verificação de callbacks após adição:`, {
+    hasOnPriceUpdate: !!verificarCallbacks.onPriceUpdate,
+    callbackType: typeof verificarCallbacks.onPriceUpdate,
+    totalCallbacks: Object.keys(verificarCallbacks).length
+  });
 }
   
 } catch (handlerError) {
@@ -604,6 +619,47 @@ async function startPriceMonitoringInline(accountId) {
     
   } catch (error) {
     console.error(`[MONITOR] ❌ Erro na verificação de saúde do WebSocket:`, error.message);
+  }
+});
+
+accountJobs.testWebSocketData = schedule.scheduleJob('*/30 * * * * *', async () => {
+  if (isShuttingDown) return;
+  try {
+    const db = await getDatabaseInstance();
+    
+    // Verificar se há sinais aguardando
+    const [signals] = await db.query(`
+      SELECT symbol FROM webhook_signals 
+      WHERE conta_id = ? AND status = 'AGUARDANDO_ACIONAMENTO'
+      LIMIT 1
+    `, [accountId]);
+    
+    if (signals.length > 0) {
+      const symbol = signals[0].symbol;
+      console.log(`[MONITOR] 🔍 Testando WebSocket para ${symbol}...`);
+      
+      // Verificar se WebSocket existe e está ativo
+      const priceWebsockets = websockets.getPriceWebsockets(accountId);
+      if (priceWebsockets && priceWebsockets.has(symbol)) {
+        const ws = priceWebsockets.get(symbol);
+        const isOpen = ws && ws.readyState === 1;
+        
+        console.log(`[MONITOR] WebSocket ${symbol}: Existe=${!!ws}, Aberto=${isOpen}, ReadyState=${ws?.readyState}`);
+        
+        if (isOpen) {
+          console.log(`[MONITOR] ✅ WebSocket para ${symbol} está funcionando - aguardando dados...`);
+        } else {
+          console.log(`[MONITOR] ❌ WebSocket para ${symbol} não está aberto, recriando...`);
+          await websockets.ensurePriceWebsocketExists(symbol, accountId);
+        }
+      } else {
+        console.log(`[MONITOR] ❌ WebSocket não encontrado para ${symbol}, criando...`);
+        await websockets.ensurePriceWebsocketExists(symbol, accountId);
+      }
+    }
+    
+  } catch (error) {
+    console.error(`[MONITOR] ❌ Erro no teste de WebSocket:`, error.message);
   }
 });
 
