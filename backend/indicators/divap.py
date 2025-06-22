@@ -1151,11 +1151,11 @@ async def handle_new_message(event):
 async def main():
     """Função principal que inicializa e executa o bot."""
     print("="*80)
-    print(f"\n[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🚀 INICIANDO DIVAP BOT...")
+    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🚀 INICIANDO DIVAP BOT...")
     print("="*80)
 
     # 1. Inicializa o agendador de atualização de brackets
-    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🔧 Inicializando scheduler de brackets...")
+    print(f"\n[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🔧 Inicializando scheduler de brackets...")
     initialize_bracket_scheduler()
 
     # 2. Inicializa o analisador de padrões DIVAP
