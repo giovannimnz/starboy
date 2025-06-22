@@ -200,6 +200,163 @@ async function logOpenPositionsAndOrdersVisual(accountId) {
   }
 }
 
+async function runAdvancedPositionMonitoring(accountId) {
+  try {
+    //console.log(`[ADVANCED_MONITOR] 🔄 Executando monitoramento completo para conta ${accountId}...`);
+    
+    const db = await getDatabaseInstance();
+    
+    // ✅ 1. VERIFICAR POSIÇÕES DO BANCO vs CORRETORA (INCLUIR CLOSED)
+    const [dbPositions] = await db.query(`
+      SELECT * FROM posicoes 
+      WHERE status IN ('OPEN', 'CLOSED') AND conta_id = ?
+    `, [accountId]);
+    
+    const exchangePositions = await api.getAllOpenPositions(accountId);
+    
+    //console.log(`[ADVANCED_MONITOR] 📊 Banco: ${dbPositions.length} posições | Corretora: ${exchangePositions.length} posições`);
+    
+    const exchangePositionsMap = new Map();
+    exchangePositions.forEach(pos => {
+      exchangePositionsMap.set(pos.simbolo, pos);
+    });
+    
+    let checkedCount = 0;
+    let positionsMovedCount = 0;
+    let filledOrdersMovedCount = 0;
+    
+    // ✅ 2. VERIFICAR CADA POSIÇÃO DO BANCO (OPEN E CLOSED)
+    for (const position of dbPositions) {
+      try {
+        //console.log(`[ADVANCED_MONITOR] 🔍 Verificando posição ${position.simbolo} (ID: ${position.id}, Status: ${position.status})...`);
+        checkedCount++;
+        
+        const exchangePos = exchangePositionsMap.get(position.simbolo);
+        
+        // ✅ LÓGICA DIFERENTE PARA POSIÇÕES OPEN VS CLOSED
+        if (position.status === 'CLOSED') {
+          // Posição já marcada como CLOSED no banco, deve ser movida para histórico
+          //console.log(`[ADVANCED_MONITOR] 📚 Posição ${position.simbolo} (ID: ${position.id}) já está CLOSED, movendo para histórico...`);
+          
+          // ✅ PROCESSAR ORDENS RELACIONADAS
+          const [relatedOrders] = await db.query(`
+            SELECT id_externo, simbolo, tipo_ordem_bot, status, preco_executado, quantidade_executada 
+            FROM ordens 
+            WHERE id_posicao = ? AND conta_id = ?
+          `, [position.id, accountId]);
+          
+          if (relatedOrders.length > 0) {
+            //console.log(`[ADVANCED_MONITOR] 🗑️ Processando ${relatedOrders.length} ordens relacionadas para posição CLOSED...`);
+            
+            for (const order of relatedOrders) {
+              const moved = await moveOrderToHistoryPhysically(db, order.id_externo, accountId);
+              if (moved) {
+                filledOrdersMovedCount++;
+                //console.log(`[ADVANCED_MONITOR] ✅ Ordem ${order.id_externo} (${order.status}) movida para histórico`);
+              }
+            }
+          }
+          
+          // ✅ MOVER POSIÇÃO PARA HISTÓRICO
+          const moved = await movePositionToHistoryPhysically(
+            db, 
+            position.id, 
+            'CLOSED', 
+            position.observacoes || 'Movida automaticamente - status CLOSED detectado',
+            accountId
+          );
+          
+          if (moved) {
+            positionsMovedCount++;
+            //console.log(`[ADVANCED_MONITOR] ✅ Posição CLOSED ${position.simbolo} (ID: ${position.id}) movida para histórico`);
+          }
+          
+        } else if (position.status === 'OPEN') {
+          // Lógica original para posições OPEN
+          if (!exchangePos || Math.abs(parseFloat(exchangePos.quantidade)) <= 0.000001) {
+            //console.log(`[ADVANCED_MONITOR] ⚠️ Posição OPEN ${position.simbolo} (ID: ${position.id}) NÃO EXISTE na corretora!`);
+            
+            // Processar ordens relacionadas e mover posição (lógica existente)
+            const [relatedOrders] = await db.query(`
+              SELECT id_externo, simbolo, tipo_ordem_bot, status, preco_executado, quantidade_executada 
+              FROM ordens 
+              WHERE id_posicao = ? AND conta_id = ?
+            `, [position.id, accountId]);
+            
+            if (relatedOrders.length > 0) {
+              //console.log(`[ADVANCED_MONITOR] 🗑️ Processando ${relatedOrders.length} ordens relacionadas...`);
+              
+              for (const order of relatedOrders) {
+                if (order.status === 'FILLED') {
+                  const moved = await moveOrderToHistoryPhysically(db, order.id_externo, accountId);
+                  if (moved) {
+                    filledOrdersMovedCount++;
+                    //console.log(`[ADVANCED_MONITOR] ✅ Ordem FILLED ${order.id_externo} movida para ordens_fechadas`);
+                  }
+                  
+                } else if (order.status === 'NEW' || order.status === 'PARTIALLY_FILLED') {
+                  await db.query(`
+                    UPDATE ordens 
+                    SET status = 'CANCELED', 
+                        last_update = NOW(),
+                        observacao = 'Auto-cancelada - posição fechada na corretora'
+                    WHERE id_externo = ? AND conta_id = ?
+                  `, [order.id_externo, accountId]);
+                  
+                  const moved = await moveOrderToHistoryPhysically(db, order.id_externo, accountId);
+                  if (moved) {
+                    //console.log(`[ADVANCED_MONITOR] ✅ Ordem ${order.id_externo} (${order.tipo_ordem_bot}) cancelada e movida para histórico`);
+                  }
+                }
+              }
+            }
+            
+            // Mover posição para histórico
+            const moved = await movePositionToHistoryPhysically(
+              db, 
+              position.id, 
+              'CLOSED', 
+              'Monitoramento automático - posição não existe na corretora',
+              accountId
+            );
+            
+            if (moved) {
+              positionsMovedCount++;
+              //console.log(`[ADVANCED_MONITOR] ✅ Posição ${position.simbolo} (ID: ${position.id}) movida fisicamente para posicoes_fechadas`);
+            }
+            
+          } else {
+            // ✅ VERIFICAR TRAILING STOPS PARA POSIÇÕES ATIVAS
+            const currentPrice = await api.getPrice(position.simbolo, accountId);
+            
+            if (currentPrice && currentPrice > 0) {
+              const { checkOrderTriggers } = require('./trailingStopLoss');
+              await checkOrderTriggers(db, position, currentPrice, accountId);
+            }
+          }
+        }
+        
+        // Pausa entre verificações
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+      } catch (posError) {
+        console.error(`[ADVANCED_MONITOR] ❌ Erro ao verificar posição ${position.simbolo}:`, posError.message);
+      }
+    }
+    
+    //console.log(`[ADVANCED_MONITOR] ✅ Monitoramento completo concluído para conta ${accountId}:`);
+    //console.log(`[ADVANCED_MONITOR]   - Posições verificadas: ${checkedCount}`);
+    //console.log(`[ADVANCED_MONITOR]   - Posições movidas fisicamente: ${positionsMovedCount}`);
+    //console.log(`[ADVANCED_MONITOR]   - Ordens movidas: ${filledOrdersMovedCount}`);
+    
+    return { checked: checkedCount, positionsMoved: positionsMovedCount, ordersMoved: filledOrdersMovedCount };
+    
+  } catch (error) {
+    console.error(`[ADVANCED_MONITOR] ❌ Erro no monitoramento completo para conta ${accountId}:`, error.message);
+    return { checked: 0, positionsMoved: 0, ordersMoved: 0 };
+  }
+}
+
 /**
  * ✅ SINCRONIZAÇÃO AVANÇADA COM MOVIMENTAÇÃO AUTOMÁTICA
  * Baseada na versão do _dev
@@ -579,36 +736,73 @@ function pad(str, width, char = ' ') {
   return String(str) + char.repeat(paddingNeeded);
 }
 
-// LINHA 174 - Usar a função pad corrigida
-function logOpenPositionsAndOrdersVisual(exchangePositions, dbPositions, exchangeOrders, dbOrders) {
+async function logOpenPositionsAndOrdersVisual(accountId) {
   try {
-    console.log(`[CONTA-1] ===  VISUALIZAÇÃO DE POSIÇÕES E ORDENS ===`);
+    console.log('\n=== 🔍 DIAGNÓSTICO DE SINCRONIZAÇÃO ===');
     
-    // ✅ VALIDAÇÃO: Garantir que arrays existam
-    const safeExchangePos = Array.isArray(exchangePositions) ? exchangePositions : [];
-    const safeDbPos = Array.isArray(dbPositions) ? dbPositions : [];
-    const safeExchangeOrders = Array.isArray(exchangeOrders) ? exchangeOrders : [];
-    const safeDbOrders = Array.isArray(dbOrders) ? dbOrders : [];
+    const db = await getDatabaseInstance();
     
-    // ✅ CALCULAÇÃO SEGURA DE LARGURA
-    const maxWidth = 15; // Largura fixa máxima
-    const minWidth = 10;  // Largura mínima
+    // Posições do banco
+    const [dbPositions] = await db.query(`
+      SELECT id, simbolo, quantidade, preco_entrada, side, status 
+      FROM posicoes WHERE status = 'OPEN' AND conta_id = ?
+    `, [accountId]);
     
-    console.log(`[CONTA-1] Banco:   |${pad('', maxWidth)}| ${safeDbPos.length} posições`);
-    console.log(`Corretora:|${pad('', maxWidth)}| ${safeExchangePos.length} posições`);
+    // Posições da corretora  
+    const exchangePositions = await api.getAllOpenPositions(accountId);
     
-    // ✅ LOGS ADICIONAIS DE DEBUG (opcional)
-    console.log(`[CONTA-1] [SYNC] DEBUG - exchangePositions: ${safeExchangePos.length}, dbPositions: ${safeDbPos.length}`);
-    console.log(`[CONTA-1] [SYNC] DEBUG - exchangeOrders: ${safeExchangeOrders.length}, dbOrders: ${safeDbOrders.length}`);
+    console.log(`[SYNC_CHECK] 📊 Banco: ${dbPositions.length} posições | Corretora: ${exchangePositions.length} posições`);
     
+    // ✅ DETECTAR DISCREPÂNCIAS
+    const discrepancies = [];
+    
+    dbPositions.forEach(dbPos => {
+      const exchangePos = exchangePositions.find(ex => ex.simbolo === dbPos.simbolo);
+      if (!exchangePos || Math.abs(parseFloat(exchangePos.quantidade)) <= 0.000001) {
+        discrepancies.push({
+          type: 'MISSING_ON_EXCHANGE',
+          symbol: dbPos.simbolo,
+          dbId: dbPos.id,
+          dbQty: dbPos.quantidade
+        });
+      }
+    });
+    
+    exchangePositions.forEach(exPos => {
+      if (Math.abs(parseFloat(exPos.quantidade)) > 0.000001) {
+        const dbPos = dbPositions.find(db => db.simbolo === exPos.simbolo);
+        if (!dbPos) {
+          discrepancies.push({
+            type: 'MISSING_ON_DB',
+            symbol: exPos.simbolo,
+            exchangeQty: exPos.quantidade
+          });
+        }
+      }
+    });
+    
+    if (discrepancies.length > 0) {
+      console.log(`[SYNC_CHECK] ⚠️ ENCONTRADAS ${discrepancies.length} DISCREPÂNCIAS:`);
+      discrepancies.forEach(disc => {
+        if (disc.type === 'MISSING_ON_EXCHANGE') {
+          console.log(`  🚨 ${disc.symbol}: Existe no banco (ID: ${disc.dbId}, Qty: ${disc.dbQty}) mas NÃO na corretora`);
+        } else {
+          console.log(`  🚨 ${disc.symbol}: Existe na corretora (Qty: ${disc.exchangeQty}) mas NÃO no banco`);
+        }
+      });
+    } else {
+      console.log(`[SYNC_CHECK] ✅ Banco e corretora estão sincronizados`);
+    }
+    
+    console.log('===========================================\n');
   } catch (error) {
-    console.error(`[CONTA-1] ❌ Erro na visualização de posições:`, error.message);
-    console.log(`[CONTA-1] Fallback: ${exchangePositions?.length || 0} posições na corretora, ${dbPositions?.length || 0} no banco`);
+    console.error(`[SYNC_CHECK] ❌ Erro na verificação de sincronização:`, error.message);
   }
 }
 
 module.exports = {
   syncPositionsWithExchange,
+  runAdvancedPositionMonitoring,
   logOpenPositionsAndOrdersVisual,
   syncPositionsWithAutoClose,
   syncOrdersWithExchange
