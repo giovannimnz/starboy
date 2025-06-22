@@ -754,6 +754,15 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
       const side = signal.side.toUpperCase();
       
       console.log(`[SIGNAL] 🔍 Verificando sinal ${signal.id}: ${side} ${symbol} entrada=${entryPrice}, atual=${currentPrice}, sl=${slPrice}`);
+
+// ✅ VERIFICAR se a lógica de gatilho está correta:
+if (side === 'BUY' || side === 'COMPRA') {
+  entryTriggered = currentPrice >= entryPrice;
+  console.log(`[SIGNAL] 🎯 LONG ${symbol}: ${currentPrice} >= ${entryPrice} = ${entryTriggered}`);
+} else if (side === 'SELL' || side === 'VENDA') {
+  entryTriggered = currentPrice <= entryPrice;
+  console.log(`[SIGNAL] 🎯 SHORT ${symbol}: ${currentPrice} <= ${entryPrice} = ${entryTriggered}`);
+}
       
       // 4. VERIFICAR TIMEOUT
       let isTimedOut = false;
