@@ -106,6 +106,12 @@ async function cancelOrphanOrders(accountId) {
       console.error(`[CLEANUP] AccountId inválido: ${accountId}`);
       return 0;
     }
+    
+    // ✅ VERIFICAR SE SISTEMA ESTÁ EM SHUTDOWN
+    if (global.isShuttingDown || process.env.NODE_ENV === 'shutdown') {
+      console.log(`[CLEANUP] 🛑 Sistema em shutdown - cancelando verificação de órfãs para conta ${accountId}`);
+      return 0;
+    }
    
     const db = await getDatabaseInstance();
     

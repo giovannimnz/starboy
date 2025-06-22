@@ -368,6 +368,48 @@ async function syncOrdersWithExchange(accountId) {
   }
 }
 
+// LINHA 164 - Função pad com validação
+function pad(str, width, char = ' ') {
+  // ✅ VALIDAÇÃO: Garantir que width seja positivo
+  const validWidth = Math.max(0, width || 0);
+  const strLength = String(str).length;
+  
+  if (strLength >= validWidth) {
+    return String(str);
+  }
+  
+  const paddingNeeded = validWidth - strLength;
+  return String(str) + char.repeat(paddingNeeded);
+}
+
+// LINHA 174 - Usar a função pad corrigida
+function logOpenPositionsAndOrdersVisual(exchangePositions, dbPositions, exchangeOrders, dbOrders) {
+  try {
+    console.log(`[CONTA-1] ===  VISUALIZAÇÃO DE POSIÇÕES E ORDENS ===`);
+    
+    // ✅ VALIDAÇÃO: Garantir que arrays existam
+    const safeExchangePos = Array.isArray(exchangePositions) ? exchangePositions : [];
+    const safeDbPos = Array.isArray(dbPositions) ? dbPositions : [];
+    const safeExchangeOrders = Array.isArray(exchangeOrders) ? exchangeOrders : [];
+    const safeDbOrders = Array.isArray(dbOrders) ? dbOrders : [];
+    
+    // ✅ CALCULAÇÃO SEGURA DE LARGURA
+    const maxWidth = 15; // Largura fixa máxima
+    const minWidth = 10;  // Largura mínima
+    
+    console.log(`[CONTA-1] Banco:   |${pad('', maxWidth)}| ${safeDbPos.length} posições`);
+    console.log(`Corretora:|${pad('', maxWidth)}| ${safeExchangePos.length} posições`);
+    
+    // ✅ LOGS ADICIONAIS DE DEBUG (opcional)
+    console.log(`[CONTA-1] [SYNC] DEBUG - exchangePositions: ${safeExchangePos.length}, dbPositions: ${safeDbPos.length}`);
+    console.log(`[CONTA-1] [SYNC] DEBUG - exchangeOrders: ${safeExchangeOrders.length}, dbOrders: ${safeDbOrders.length}`);
+    
+  } catch (error) {
+    console.error(`[CONTA-1] ❌ Erro na visualização de posições:`, error.message);
+    console.log(`[CONTA-1] Fallback: ${exchangePositions?.length || 0} posições na corretora, ${dbPositions?.length || 0} no banco`);
+  }
+}
+
 module.exports = {
   syncPositionsWithExchange,
   logOpenPositionsAndOrdersVisual,

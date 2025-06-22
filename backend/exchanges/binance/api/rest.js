@@ -1626,34 +1626,27 @@ async function newStopOrder(accountId, symbol, quantity, side, stopPrice, price 
     // FORMATAR APENAS O STOP PRICE (preço de gatilho)
     const formattedStopPrice = roundedStopPrice.toFixed(precision.pricePrecision);
     
-    // ✅ CORREÇÃO CRÍTICA: PARÂMETROS OBRIGATÓRIOS CONFORME DOCUMENTAÇÃO BINANCE
+    // ✅ PARÂMETROS OBRIGATÓRIOS CONFORME DOCUMENTAÇÃO BINANCE
     const orderParams = {
       symbol: symbol,
       side: side,
-      type: orderType, // 'STOP_MARKET' ou 'TAKE_PROFIT_MARKET'
-      stopPrice: formattedStopPrice, // ✅ ÚNICO PREÇO NECESSÁRIO para estes tipos
+      type: orderType,
+      stopPrice: formattedStopPrice,
       newOrderRespType: "RESULT"
     };
     
-    // ✅ IMPORTANTE: NÃO ADICIONAR 'price' para STOP_MARKET/TAKE_PROFIT_MARKET
-    if (price !== null) {
-      console.warn(`[API] ⚠️ Parâmetro 'price' ignorado para ${orderType} - usa apenas 'stopPrice'`);
-    }
-    
-    // ✅ CORREÇÃO CRÍTICA: Para closePosition=true, NÃO enviar reduceOnly
+    // ✅ LÓGICA CORRIGIDA PARA QUANTITY vs CLOSEPOSITION
     if (closePosition) {
       console.log(`[API] ✅ Usando closePosition=true (fecha toda a posição)`);
-      orderParams.closePosition = 'true'; // ✅ CORREÇÃO: sempre string para API
-      // ✅ CORREÇÃO CRÍTICA: NÃO ENVIAR reduceOnly quando closePosition=true
-      // A Binance não aceita ambos os parâmetros simultaneamente
+      orderParams.closePosition = 'true';
+      // ✅ NÃO ENVIAR reduceOnly quando closePosition=true
     } else if (quantity && quantity > 0) {
       console.log(`[API] ✅ Usando quantidade específica: ${quantity}`);
       const formattedQuantity = formatQuantityCorrect(quantity, precision.quantityPrecision, symbol);
       orderParams.quantity = formattedQuantity;
       
-      // ✅ APENAS AQUI enviar reduceOnly se especificado
       if (reduceOnly) {
-        orderParams.reduceOnly = 'true'; // ✅ CORREÇÃO: string
+        orderParams.reduceOnly = 'true';
       }
     } else {
       throw new Error('Deve fornecer quantity OU closePosition=true');
@@ -1663,26 +1656,32 @@ async function newStopOrder(accountId, symbol, quantity, side, stopPrice, price 
       symbol: orderParams.symbol,
       side: orderParams.side,
       type: orderParams.type,
-      stopPrice: orderParams.stopPrice, // ✅ ÚNICO PREÇO USADO
+      stopPrice: orderParams.stopPrice,
       quantity: orderParams.quantity || 'N/A (closePosition)',
       closePosition: orderParams.closePosition || 'false',
-      reduceOnly: orderParams.reduceOnly || 'N/A (não enviado com closePosition)',
-      note: 'closePosition=true NÃO usa reduceOnly (conflito na API)'
+      reduceOnly: orderParams.reduceOnly || 'N/A'
     });
     
     // ENVIAR ORDEM
     const response = await makeAuthenticatedRequest(accountId, 'POST', '/v1/order', orderParams);
     
-    console.log(`[API] ✅ Ordem ${orderType} criada com sucesso:`, {
-      orderId: response.orderId,
-      status: response.status,
-      symbol: response.symbol,
-      side: response.side,
-      type: response.type,
-      stopPrice: response.stopPrice || formattedStopPrice
-    });
-    
-    return response;
+    // ✅ VALIDAÇÃO CORRIGIDA DA RESPOSTA
+    if (response && response.orderId) {
+      console.log(`[API] ✅ Ordem ${orderType} criada com sucesso:`, {
+        orderId: response.orderId,
+        status: response.status,
+        symbol: response.symbol,
+        side: response.side,
+        type: response.type,
+        stopPrice: response.stopPrice || formattedStopPrice
+      });
+      
+      // ✅ RETORNAR RESPOSTA COMPLETA (não rejeitar)
+      return response;
+    } else {
+      console.error(`[API] ❌ Resposta sem orderId:`, response);
+      throw new Error(`Resposta inválida da API: ${JSON.stringify(response)}`);
+    }
     
   } catch (error) {
     console.error(`[API] ❌ Erro ao criar ordem ${orderType || 'STOP'} para ${symbol} (conta ${accountId}):`);
@@ -1690,20 +1689,13 @@ async function newStopOrder(accountId, symbol, quantity, side, stopPrice, price 
     if (error.response?.data) {
       console.error(`[API] Erro da API:`, error.response.data);
       
-      // ✅ TRATAMENTO ESPECÍFICO PARA ERROS COMUNS
       const apiError = error.response.data;
       if (apiError.code === -2021) {
         console.error(`[API] ❌ Erro -2021: stopPrice inválido - ordem executaria imediatamente`);
-        console.error(`[API] Dica: Para ${orderType}, stopPrice deve estar fora do spread atual`);
       } else if (apiError.code === -1111) {
         console.error(`[API] ❌ Erro -1111: Precisão inválida no stopPrice`);
       } else if (apiError.code === -2010) {
         console.error(`[API] ❌ Erro -2010: Ordem seria rejeitada pela corretora`);
-      } else if (apiError.code === -1102) {
-        console.error(`[API] ❌ Erro -1102: Parâmetro obrigatório ausente ou inválido`);
-      } else if (apiError.msg && apiError.msg.includes('reduceonly')) {
-        console.error(`[API] ❌ Erro reduceOnly: ${apiError.msg}`);
-        console.error(`[API] Dica: Não use reduceOnly=true com closePosition=true`);
       }
     } else {
       console.error(`[API] Erro local:`, error.message);
