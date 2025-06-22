@@ -329,6 +329,145 @@ async function cancelAllActiveStopLosses(db, position, accountId) {
   }
 }
 
+/**
+ * ✅ FUNÇÃO PARA CANCELAR ORDENS DE STOP LOSS ESPECÍFICAS
+ */
+async function cancelStopLossOrders(db, positionId, accountId) {
+  try {
+    // ✅ BUSCAR ORDENS SL COM CONTA_ID CORRETO
+    const [stopLossOrders] = await db.query(`
+      SELECT id_externo, simbolo FROM ordens 
+      WHERE id_posicao = ? AND conta_id = ? AND tipo_ordem_bot = 'STOP_LOSS' 
+      AND status IN ('NEW', 'PARTIALLY_FILLED')
+    `, [positionId, accountId]); // ✅ USAR accountId, NÃO orderId
+
+    console.log(`[CANCEL_SL] 🔍 Encontradas ${stopLossOrders.length} ordens SL para cancelar`);
+
+    let canceledCount = 0;
+    for (const order of stopLossOrders) {
+      try {
+        // ✅ USAR accountId CORRETO, NÃO orderId
+        await api.cancelOrder(order.simbolo, order.id_externo, accountId);
+        
+        // ✅ ATUALIZAR STATUS NO BANCO
+        await db.query(`
+          UPDATE ordens 
+          SET status = 'CANCELED', last_update = NOW(),
+              observacao = 'Cancelada para trailing stop'
+          WHERE id_externo = ? AND conta_id = ?
+        `, [order.id_externo, accountId]);
+        
+        canceledCount++;
+        console.log(`[CANCEL_SL] ✅ SL ${order.id_externo} cancelado com sucesso`);
+        
+      } catch (cancelError) {
+        console.error(`[CANCEL_SL] ❌ Erro ao cancelar SL ${order.id_externo}:`, cancelError.message);
+      }
+    }
+
+    console.log(`[CANCEL_SL] 📊 Total cancelado: ${canceledCount} de ${stopLossOrders.length} ordens SL`);
+    return canceledCount;
+
+  } catch (error) {
+    console.error(`[CANCEL_SL] ❌ Erro ao cancelar ordens SL:`, error.message);
+    return 0;
+  }
+}
+
+/**
+ * ✅ FUNÇÃO PARA CRIAR STOP LOSS NO BREAKEVEN
+ */
+async function createBreakevenStopLoss(db, position, breakevenPrice, accountId) {
+  try {
+    const symbol = position.simbolo;
+    const quantity = Math.abs(parseFloat(position.quantidade));
+    const side = position.side === 'BUY' ? 'SELL' : 'BUY';
+
+    console.log(`[TRAILING] 🎯 Criando SL breakeven: ${breakevenPrice}`);
+
+    // ✅ USAR newStopOrder COM PARÂMETROS CORRETOS
+    const response = await api.newStopOrder(
+      accountId,           // ✅ accountId correto
+      symbol,             
+      null,               // quantity será null para usar closePosition
+      side,               
+      breakevenPrice,     
+      null,               // limitPrice
+      false,              // postOnly
+      true,               // closePosition = true
+      'STOP_MARKET'       
+    );
+
+    // ✅ VALIDAÇÃO CORRIGIDA DA RESPOSTA
+    const orderId = response?.orderId || response?.data?.orderId;
+    
+    if (orderId) {
+      console.log(`[TRAILING] ✅ SL breakeven criado: ${orderId} @ ${breakevenPrice}`);
+      
+      // ✅ INSERIR NO BANCO VIA WEBHOOK (aguardar confirmação)
+      console.log(`[TRAILING] 📡 Aguardando confirmação via webhook para inserir SL no banco...`);
+      
+      return {
+        success: true,
+        orderId: orderId,
+        price: breakevenPrice
+      };
+    } else {
+      console.error(`[TRAILING] ❌ Resposta da API sem orderId:`, response);
+      return { success: false, error: 'OrderId não encontrado na resposta' };
+    }
+
+  } catch (error) {
+    console.error(`[TRAILING] ❌ Erro ao criar SL breakeven:`, error.message);
+    return { success: false, error: error.message };
+  }
+}
+
+/**
+ * ✅ FUNÇÃO PARA MOVIMENTAR STOP LOSS PARA BREAKEVEN
+ */
+async function moveStopLossToBreakeven(db, position, accountId) {
+  try {
+    const positionId = position.id;
+    const breakevenPrice = parseFloat(position.preco_entrada);
+
+    console.log(`[TRAILING] 🎯 Movendo SL para breakeven para ${position.simbolo} (Posição ID: ${positionId})`);
+
+    // ✅ 1. CANCELAR SLS EXISTENTES COM accountId CORRETO
+    const canceledCount = await cancelStopLossOrders(db, positionId, accountId);
+    
+    if (canceledCount === 0) {
+      console.warn(`[TRAILING] ⚠️ Nenhuma ordem SL foi cancelada`);
+    }
+
+    // ✅ 2. AGUARDAR UM POUCO PARA CANCELAMENTO PROCESSAR
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    // ✅ 3. CRIAR NOVO SL BREAKEVEN
+    const result = await createBreakevenStopLoss(db, position, breakevenPrice, accountId);
+
+    if (result.success) {
+      // ✅ 4. ATUALIZAR NÍVEL DE TRAILING NO BANCO
+      await db.query(`
+        UPDATE posicoes 
+        SET trailing_stop_level = 'TP1_BREAKEVEN',
+            data_hora_ultima_atualizacao = NOW()
+        WHERE id = ?
+      `, [positionId]);
+
+      console.log(`[TRAILING] ✅ SL movido para breakeven com sucesso para posição ${positionId}`);
+      return true;
+    } else {
+      console.error(`[TRAILING] ❌ Falha ao criar SL breakeven:`, result.error);
+      return false;
+    }
+
+  } catch (error) {
+    console.error(`[TRAILING] ❌ Erro ao mover SL para breakeven:`, error.message);
+    return false;
+  }
+}
+
 module.exports = {
   checkOrderTriggers,
   cancelAllActiveStopLosses
