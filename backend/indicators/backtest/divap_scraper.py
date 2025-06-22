@@ -4,13 +4,14 @@ import re
 import sys
 import traceback
 import mysql.connector
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from telethon import TelegramClient, events
 from dotenv import load_dotenv
 import pathlib
 from pathlib import Path
 import logging
 import warnings
+from datetime import timezone
 
 # Importar configurações do divap.py
 sys.path.append(str(Path(__file__).parent.parent))
@@ -119,12 +120,13 @@ class DivapScraper:
             except ValueError:
                 print("❌ Digite um número válido!")
 
-        # 3. Configurar período de datas
+        # 3. Configurar período de datas - ✅ CORRIGIDO PARA INCLUIR TIMEZONE
         print("\n📅 PERÍODO DE SCRAPING:")
         while True:
             try:
                 data_inicio_str = input("Data de início (DD/MM/AAAA): ").strip()
-                self.config['data_inicio'] = datetime.strptime(data_inicio_str, "%d/%m/%Y")
+                # ✅ APLICAR TIMEZONE UTC
+                self.config['data_inicio'] = datetime.strptime(data_inicio_str, "%d/%m/%Y").replace(tzinfo=timezone.utc)
                 break
             except ValueError:
                 print("❌ Formato de data inválido! Use DD/MM/AAAA")
@@ -132,9 +134,10 @@ class DivapScraper:
         while True:
             try:
                 data_fim_str = input("Data de fim (DD/MM/AAAA): ").strip()
-                self.config['data_fim'] = datetime.strptime(data_fim_str, "%d/%m/%Y")
-                # Adicionar 23:59:59 à data fim para incluir o dia todo
-                self.config['data_fim'] = self.config['data_fim'].replace(hour=23, minute=59, second=59)
+                # ✅ APLICAR TIMEZONE UTC E AJUSTAR PARA 23:59:59
+                self.config['data_fim'] = datetime.strptime(data_fim_str, "%d/%m/%Y").replace(
+                    hour=23, minute=59, second=59, tzinfo=timezone.utc
+                )
                 break
             except ValueError:
                 print("❌ Formato de data inválido! Use DD/MM/AAAA")
@@ -159,7 +162,11 @@ class DivapScraper:
 
         # 5. Configurar salvamento no banco
         while True:
-            resp = input("\n💾 Salvar no banco de dados? (s/n): ").strip().lower()
+            resp = input("\n💾 Salvar no banco de dados? (s/n): ")
+
+            # Remover espaços em branco no início e no fim da resposta
+            resp = resp.strip()
+
             if resp in ['s', 'sim', 'y', 'yes']:
                 self.config['salvar_banco'] = True
                 print("✅ Salvamento no banco ativado")
