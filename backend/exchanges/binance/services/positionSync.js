@@ -360,6 +360,19 @@ async function syncOrdersWithExchange(accountId) {
             [order.status, order.orderId, accountId]
           );
         }
+
+        // Após inserir ou atualizar a ordem:
+        const [posRows] = await db.query(
+          `SELECT id FROM posicoes WHERE simbolo = ? AND status = 'OPEN' AND conta_id = ? LIMIT 1`,
+          [order.symbol, accountId]
+        );
+        if (posRows.length > 0) {
+          const posId = posRows[0].id;
+          await db.query(
+            `UPDATE ordens SET id_posicao = ? WHERE id_externo = ? AND conta_id = ? AND (id_posicao IS NULL OR id_posicao != ?)`,
+            [posId, order.orderId, accountId, posId]
+          );
+        }
       }
     }
     console.log(`[SYNC_ORDERS] Sincronização de ordens concluída para conta ${accountId}`);

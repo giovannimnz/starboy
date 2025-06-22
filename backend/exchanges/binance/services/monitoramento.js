@@ -323,12 +323,15 @@ try {
 console.log(`🧹 ETAPA 9: Executando limpeza avançada para conta ${accountId}...`);
 
 try {
+  // ✅ SINCRONIZAR POSIÇÕES E ORDENS PRIMEIRO
+  await syncPositionsWithExchange(accountId);
+  await syncOrdersWithExchange(accountId);
+
   // ✅ LIMPEZA SIMPLIFICADA DE ORDENS ÓRFÃS (Nova versão)
   console.log(`[MONITOR] 🔍 Verificando ordens órfãs para conta ${accountId}...`);
-  
   const { cancelOrphanOrders } = require('./cleanup');
   const orphanResult = await cancelOrphanOrders(accountId);
-  
+
   if (orphanResult > 0) {
     console.log(`[MONITOR] ✅ ${orphanResult} ordens órfãs processadas para conta ${accountId}`);
   } else {
@@ -496,19 +499,7 @@ console.log(`[MONITOR]   - WebSocket API: ✅`);
     } catch (error) {
       console.error(`[MONITOR] ⚠️ Erro ao executar logOpenPositionsAndOrdersVisual na inicialização:`, error.message);
     }
-
-  try {
-    const { cancelOrphanOrders } = require('./cleanup');
-    const processedCount = await cancelOrphanOrders(accountId);
     
-    if (processedCount > 0) {
-      console.log(`[MONITOR] 🔄 ${processedCount} ordens processadas/movidas automaticamente (conta ${accountId})`);
-    }
-    
-  } catch (error) {
-    console.error(`[MONITOR] ⚠️ Erro na verificação automática para conta ${accountId}:`, error.message);
-  }
-
     return accountJobs;
 
   } catch (error) {
