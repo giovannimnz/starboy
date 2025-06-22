@@ -537,14 +537,7 @@ async function ensurePriceWebsocketExists(symbol, accountId) {
  */
 async function handlePriceUpdate(symbol, tickerData, accountId) {
   try {
-    // ✅ DEBUG: Mostrar que dados foram recebidos
-    console.log(`[WEBSOCKET] 📥 Dados recebidos para ${symbol} (conta ${accountId}):`, {
-      bid: tickerData.b,
-      ask: tickerData.a,
-      price: tickerData.c,
-      eventType: tickerData.e
-    });
-    
+
     const accountState = getAccountConnectionState(accountId, true);
     let db = accountState.dbInstance;
     
