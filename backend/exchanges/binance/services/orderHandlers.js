@@ -3,32 +3,69 @@ const websockets = require('../api/websocket');
 const { sendTelegramMessage, formatOrderMessage, formatPositionClosedMessage } = require('./telegramBot');
 
 /**
- * Processa atualizações de ordens via WebSocket USER_DATA_STREAM
- * @param {Object} orderMsg - Mensagem de ordem do WebSocket
- * @param {number} accountId - ID da conta
- * @param {Object} db - Conexão com banco (opcional)
+ * ✅ FUNÇÃO UNIFICADA: Processa atualizações de ordens via WebSocket
+ * Suporta MÚLTIPLOS formatos de entrada
  */
-async function handleOrderUpdate(orderMsg, accountId, db = null) {
+async function handleOrderUpdate(messageOrAccountId, orderDataOrDb = null, db = null) {
   try {
-    // VALIDAÇÃO: Parâmetros obrigatórios
-    if (!orderMsg || !orderMsg.o || !orderMsg.o.i || !orderMsg.o.s || !accountId) {
-      console.error(`[ORDER] Parâmetros inválidos: orderMsg.o.i=${orderMsg?.o?.i}, orderMsg.o.s=${orderMsg?.o?.s}, accountId=${accountId}`);
+    let accountId, orderUpdateData, connection;
+    
+    // ✅ DETECTAR FORMATO DA CHAMADA
+    if (typeof messageOrAccountId === 'number') {
+      // FORMATO NOVO: handleOrderUpdate(accountId, orderUpdateData)
+      accountId = messageOrAccountId;
+      orderUpdateData = orderDataOrDb;
+      connection = db;
+    } else {
+      // FORMATO ANTIGO: handleOrderUpdate(orderMsg, accountId, db)
+      const orderMsg = messageOrAccountId;
+      accountId = orderDataOrDb;
+      connection = db;
+      
+      // ✅ VALIDAÇÃO DO FORMATO ANTIGO
+      if (!orderMsg || !orderMsg.o || !orderMsg.o.i || !orderMsg.o.s || !accountId) {
+        console.error(`[ORDER] Parâmetros inválidos (formato antigo): orderMsg.o.i=${orderMsg?.o?.i}, orderMsg.o.s=${orderMsg?.o?.s}, accountId=${accountId}`);
+        return;
+      }
+      
+      // Extrair dados da ordem do formato antigo
+      orderUpdateData = orderMsg.o;
+    }
+
+    // ✅ VALIDAÇÃO UNIFICADA
+    if (!accountId || typeof accountId !== 'number') {
+      console.error(`[ORDER] AccountId inválido: ${accountId} (tipo: ${typeof accountId})`);
       return;
     }
 
-    const order = orderMsg.o;
-    const orderId = String(order.i); // ID da ordem
-    const symbol = order.s;
-    const executionType = order.x; // NEW, CANCELED, TRADE, etc.
-    const orderStatus = order.X; // NEW, FILLED, PARTIALLY_FILLED, etc.
-    const commission = parseFloat(order.n || '0');
-    const commissionAsset = order.N || null;
-    const tradeId = order.t || null;
+    // ✅ PROCESSAR DADOS DA ORDEM
+    let orderData;
+    
+    if (orderUpdateData && orderUpdateData.i && orderUpdateData.s) {
+      // Formato direto: { i: orderId, s: symbol, X: status, ... }
+      orderData = orderUpdateData;
+    } else if (orderUpdateData && orderUpdateData.o) {
+      // Formato encapsulado: { e: 'ORDER_TRADE_UPDATE', o: { ... } }
+      orderData = orderUpdateData.o;
+    } else {
+      console.warn(`[ORDER] ⚠️ Formato de dados não reconhecido para conta ${accountId}:`, orderUpdateData);
+      return;
+    }
+    
+    const orderId = orderData.i?.toString();
+    const symbol = orderData.s;
+    const orderStatus = orderData.X;
+    const executionType = orderData.x;
+    
+    if (!orderId || !symbol || !orderStatus) {
+      console.warn(`[ORDER] ⚠️ Dados incompletos: orderId=${orderId}, symbol=${symbol}, status=${orderStatus}`);
+      console.warn(`[ORDER] ⚠️ Dados recebidos:`, JSON.stringify(orderData, null, 2));
+      return;
+    }
 
-    console.log(`[ORDER] Atualização recebida: ${orderId} (${symbol}) - ${executionType}/${orderStatus} - Executado: ${parseFloat(order.z || '0')}/${parseFloat(order.q || '0')}`);
+    console.log(`[ORDER] 📨 Processando atualização: ${orderId} (${symbol}) - ${executionType}/${orderStatus}`);
 
-    // OBTER CONEXÃO COM BANCO
-    let connection = db;
+    // ✅ OBTER CONEXÃO COM BANCO
     if (!connection) {
       connection = await getDatabaseInstance(accountId);
       if (!connection) {
@@ -37,50 +74,75 @@ async function handleOrderUpdate(orderMsg, accountId, db = null) {
       }
     }
 
-    // BUSCAR ORDEM NO BANCO
+    // ✅ 1. VERIFICAR SE ORDEM EXISTE NO BANCO
     const [existingOrders] = await connection.query(
       'SELECT * FROM ordens WHERE id_externo = ? AND simbolo = ? AND conta_id = ?',
       [orderId, symbol, accountId]
     );
 
-    let orderExists = existingOrders.length > 0;
-    let existingOrder = orderExists ? existingOrders[0] : null;
+    const orderExists = existingOrders.length > 0;
+    let shouldInsert = false;
 
-    // PROCESSAR DIFERENTES TIPOS DE EXECUÇÃO
-    switch (executionType) {
-      case 'NEW':
-        await handleNewOrder(connection, order, accountId, existingOrder);
-        break;
+    if (!orderExists) {
+      console.log(`[ORDER] 🆕 Ordem externa detectada: ${orderId} - inserindo no banco...`);
+      shouldInsert = true;
+    }
+
+    // ✅ 2. INSERIR ORDEM SE NÃO EXISTE (ORDEM EXTERNA)
+    if (shouldInsert) {
+      await insertExternalOrder(connection, orderData, accountId);
+    }
+
+    // ✅ 3. ATUALIZAR ORDEM EXISTENTE
+    await updateExistingOrder(connection, orderData, accountId, existingOrders[0]);
+
+    // ✅ 4. VERIFICAR SE DEVE MOVER PARA HISTÓRICO
+    const finalStatuses = ['FILLED', 'CANCELED', 'CANCELLED', 'EXPIRED', 'REJECTED'];
+    
+    if (finalStatuses.includes(orderStatus)) {
+      console.log(`[ORDER] 🎯 Status final detectado (${orderStatus}) - iniciando movimento automático...`);
+      
+      // Aguardar um pouco para garantir que a atualização foi processada
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      const moved = await autoMoveOrderOnCompletion(orderId, orderStatus, accountId);
+      
+      if (moved) {
+        console.log(`[ORDER] ✅ Ordem ${orderId} (${orderStatus}) movida automaticamente para histórico`);
         
-      case 'TRADE':
-        await handleTradeExecution(connection, order, accountId, existingOrder);
-        break;
-        
-      case 'CANCELED':
-        await handleOrderCancellation(connection, order, accountId, existingOrder);
-        break;
-        
-      case 'EXPIRED':
-        await handleOrderExpiry(connection, order, accountId, existingOrder);
-        break;
-        
-      case 'AMENDMENT':
-        await handleOrderAmendment(connection, order, accountId, existingOrder);
-        break;
-        
-      default:
-        console.log(`[ORDER] Tipo de execução não tratado: ${executionType} para ordem ${orderId}`);
-        // Ainda assim, atualizar status se ordem existe
-        if (orderExists) {
-          await connection.query(
-            'UPDATE ordens SET status = ?, last_update = NOW() WHERE id_externo = ? AND conta_id = ?',
-            [orderStatus, orderId, accountId]
-          );
+        // Verificar fechamento de posição para ordens FILLED
+        if (orderStatus === 'FILLED') {
+          try {
+            const closureResult = await checkPositionClosureAfterOrderExecution(orderId, accountId);
+            if (closureResult) {
+              console.log(`[ORDER] 🏁 Posição fechada automaticamente após execução da ordem ${orderId}`);
+            }
+          } catch (closureError) {
+            console.error(`[ORDER] ⚠️ Erro ao verificar fechamento de posição:`, closureError.message);
+          }
         }
+      } else {
+        console.warn(`[ORDER] ⚠️ Falha ao mover ordem ${orderId} automaticamente`);
+      }
+    }
+
+    // ✅ 5. LOGS DETALHADOS
+    if (orderStatus === 'FILLED') {
+      const executedQty = parseFloat(orderData.z || 0);
+      const avgPrice = parseFloat(orderData.ap || 0);
+      const totalValue = executedQty * avgPrice;
+      
+      console.log(`[ORDER] 💰 Ordem FILLED processada:`);
+      console.log(`[ORDER]   - ID: ${orderId}`);
+      console.log(`[ORDER]   - Símbolo: ${symbol}`);
+      console.log(`[ORDER]   - Quantidade: ${executedQty}`);
+      console.log(`[ORDER]   - Preço médio: ${avgPrice}`);
+      console.log(`[ORDER]   - Valor total: ${totalValue.toFixed(2)} USDT`);
     }
 
   } catch (error) {
-    console.error(`[ORDER] Erro ao processar atualização de ordem (OrderID: ${orderMsg?.o?.i}, Conta: ${accountId}): ${error.message}`);
+    console.error(`[ORDER] ❌ Erro ao processar atualização da ordem:`, error.message);
+    console.error(`[ORDER] Stack trace:`, error.stack);
   }
 }
 
@@ -648,16 +710,22 @@ async function handleOrderUpdate(accountId, orderUpdateData) {
 /**
  * ✅ NOVA FUNÇÃO: Inserir ordem externa no banco
  */
-async function insertExternalOrder(db, orderData, accountId) {
+async function insertExternalOrder(dbConnection, orderData, accountId) {
   try {
     console.log(`[ORDER] 📝 Inserindo ordem externa: ${orderData.i} (${orderData.s})`);
+    
+    // ✅ USAR CONEXÃO PASSADA OU OBTER NOVA
+    let connection = dbConnection;
+    if (!connection) {
+      connection = await getDatabaseInstance(accountId);
+    }
     
     // ✅ BUSCAR POSIÇÃO RELACIONADA
     let positionId = null;
     
     // Se é reduce-only ou close position, deve ter uma posição existente
     if (orderData.R === true || orderData.cp === true) {
-      const [existingPositions] = await db.query(
+      const [existingPositions] = await connection.query(
         'SELECT id FROM posicoes WHERE simbolo = ? AND status = ? AND conta_id = ?',
         [orderData.s, 'OPEN', accountId]
       );
@@ -715,7 +783,7 @@ async function insertExternalOrder(db, orderData, accountId) {
       orderInsertData.dados_originais_ws, orderInsertData.conta_id
     ];
 
-    const [result] = await db.query(insertQuery, insertValues);
+    const [result] = await connection.query(insertQuery, insertValues);
     const orderDbId = result.insertId;
     
     console.log(`[ORDER] ✅ Ordem externa ${orderData.i} inserida no banco com ID ${orderDbId}`);
@@ -749,14 +817,20 @@ async function insertExternalOrder(db, orderData, accountId) {
 }
 
 /**
- * ✅ NOVA FUNÇÃO: Atualizar ordem existente
+ * ✅ FUNÇÃO CORRIGIDA: Atualizar ordem existente
  */
-async function updateExistingOrder(db, orderData, accountId, existingOrder) {
+async function updateExistingOrder(dbConnection, orderData, accountId, existingOrder) {
   try {
     const orderId = orderData.i.toString();
     
+    // ✅ USAR CONEXÃO PASSADA OU OBTER NOVA
+    let connection = dbConnection;
+    if (!connection) {
+      connection = await getDatabaseInstance(accountId);
+    }
+    
     // ✅ ATUALIZAR DADOS DA ORDEM
-    await db.query(`
+    await connection.query(`
       UPDATE ordens 
       SET status = ?, 
           quantidade_executada = ?,
@@ -942,24 +1016,16 @@ function registerOrderHandlers(accountId) {
     // ✅ CRIAR HANDLER ROBUSTO QUE ACEITA MÚLTIPLOS FORMATOS
     const robustOrderHandler = async (messageOrOrder, db) => {
       try {
-        // ✅ DETECTAR FORMATO DA MENSAGEM
-        let orderData = null;
+        console.log(`[ORDER-HANDLERS] 📨 Mensagem recebida para conta ${accountId}:`, {
+          type: typeof messageOrOrder,
+          hasE: messageOrOrder?.e,
+          hasO: messageOrOrder?.o,
+          hasI: messageOrOrder?.i,
+          hasS: messageOrOrder?.s
+        });
         
-        if (messageOrOrder && messageOrOrder.e === 'ORDER_TRADE_UPDATE' && messageOrOrder.o) {
-          // Formato USER_DATA_STREAM: { e: 'ORDER_TRADE_UPDATE', o: { i, s, X, ... } }
-          orderData = messageOrOrder.o;
-          console.log(`[ORDER-HANDLERS] 📨 Processando ORDER_TRADE_UPDATE: ${orderData.i} (${orderData.s})`);
-        } else if (messageOrOrder && messageOrOrder.i && messageOrOrder.s) {
-          // Formato direto: { i: orderId, s: symbol, X: status, ... }
-          orderData = messageOrOrder;
-          console.log(`[ORDER-HANDLERS] 📨 Processando ordem direta: ${orderData.i} (${orderData.s})`);
-        } else {
-          console.warn(`[ORDER-HANDLERS] ⚠️ Formato não reconhecido para conta ${accountId}:`, messageOrOrder);
-          return;
-        }
-        
-        // ✅ CHAMAR FUNÇÃO DE PROCESSAMENTO
-        await handleOrderUpdate(accountId, orderData);
+        // ✅ CHAMAR FUNÇÃO UNIFICADA
+        await handleOrderUpdate(messageOrOrder, accountId, db);
         
       } catch (handlerError) {
         console.error(`[ORDER-HANDLERS] ❌ Erro no handler robusto para conta ${accountId}:`, handlerError.message);
@@ -1239,24 +1305,16 @@ function registerOrderHandlers(accountId) {
     // ✅ CRIAR HANDLER ROBUSTO QUE ACEITA MÚLTIPLOS FORMATOS
     const robustOrderHandler = async (messageOrOrder, db) => {
       try {
-        // ✅ DETECTAR FORMATO DA MENSAGEM
-        let orderData = null;
+        console.log(`[ORDER-HANDLERS] 📨 Mensagem recebida para conta ${accountId}:`, {
+          type: typeof messageOrOrder,
+          hasE: messageOrOrder?.e,
+          hasO: messageOrOrder?.o,
+          hasI: messageOrOrder?.i,
+          hasS: messageOrOrder?.s
+        });
         
-        if (messageOrOrder && messageOrOrder.e === 'ORDER_TRADE_UPDATE' && messageOrOrder.o) {
-          // Formato USER_DATA_STREAM: { e: 'ORDER_TRADE_UPDATE', o: { i, s, X, ... } }
-          orderData = messageOrOrder.o;
-          console.log(`[ORDER-HANDLERS] 📨 Processando ORDER_TRADE_UPDATE: ${orderData.i} (${orderData.s})`);
-        } else if (messageOrOrder && messageOrOrder.i && messageOrOrder.s) {
-          // Formato direto: { i: orderId, s: symbol, X: status, ... }
-          orderData = messageOrOrder;
-          console.log(`[ORDER-HANDLERS] 📨 Processando ordem direta: ${orderData.i} (${orderData.s})`);
-        } else {
-          console.warn(`[ORDER-HANDLERS] ⚠️ Formato não reconhecido para conta ${accountId}:`, messageOrOrder);
-          return;
-        }
-        
-        // ✅ CHAMAR FUNÇÃO DE PROCESSAMENTO
-        await handleOrderUpdate(accountId, orderData);
+        // ✅ CHAMAR FUNÇÃO UNIFICADA
+        await handleOrderUpdate(messageOrOrder, accountId, db);
         
       } catch (handlerError) {
         console.error(`[ORDER-HANDLERS] ❌ Erro no handler robusto para conta ${accountId}:`, handlerError.message);
