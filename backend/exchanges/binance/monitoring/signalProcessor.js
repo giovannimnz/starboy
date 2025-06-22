@@ -950,21 +950,95 @@ async function checkPositionExists(db, symbol, accountId) {
   }
 }
 
+/**
+ * ✅ NOVA FUNÇÃO: Processa sinais que já chegaram cancelados
+ */
+async function checkCanceledSignals(accountId) {
+  try {
+    const db = await getDatabaseInstance(accountId);
+    
+    // Buscar sinais que chegaram cancelados e ainda não enviaram mensagem
+    const [canceledSignals] = await db.query(`
+      SELECT * FROM webhook_signals 
+      WHERE conta_id = ? 
+      AND status = 'CANCELED'
+      AND sent_msg = 0
+      ORDER BY created_at ASC
+      LIMIT 10
+    `, [accountId]);
+    
+    if (canceledSignals.length === 0) return 0;
+    
+    console.log(`[SIGNAL] 📋 Processando ${canceledSignals.length} sinais cancelados para conta ${accountId}`);
+    
+    for (const signal of canceledSignals) {
+      try {
+        console.log(`[SIGNAL] 📢 Enviando mensagem de cancelamento para sinal ${signal.id}`);
+        
+        const side = signal.side === 'BUY' || signal.side === 'COMPRA' ? 'COMPRA' : 'VENDA';
+        const motivo = signal.error_message || 'Sinal cancelado pelo sistema';
+        const tps = [
+          signal.tp1_price, signal.tp2_price, signal.tp3_price,
+          signal.tp4_price, signal.tp5_price
+        ].filter(tp => tp !== undefined && tp !== null && tp !== '');
+
+        let tpsText = '';
+        tps.forEach((tp, idx) => {
+          tpsText += `\nALVO ${idx + 1}: ${tp}`;
+        });
+
+        const cancelMsg =
+          `⏰ <b>SINAL CANCELADO</b>\n\n` +
+          `#${signal.symbol}  ${side}\n` +
+          `${signal.timeframe || ''}\n${signal.message_source || 'Divap'}\n\n` +
+          `ALAVANCAGEM: ${signal.leverage || ''}x\n` +
+          `MARGEM: CRUZADA\n` +
+          `CAPITAL: ${signal.capital_pct ? parseFloat(signal.capital_pct).toFixed(2) + '%' : ''}\n\n` +
+          `ENTRADA: ${signal.entry_price}\n` +
+          `${tpsText}\n\n` +
+          `STOP LOSS: ${signal.sl_price}\n\n` +
+          `📝 <b>Motivo:</b>\n${motivo}\n\n` +
+          `🆔 Sinal: #${signal.id}\n` +
+          `⏰ ${new Date().toLocaleString('pt-BR')}`;
+
+        await sendTelegramMessage(accountId, cancelMsg, signal.chat_id);
+
+        // Marcar como enviado
+        await db.query(
+          'UPDATE webhook_signals SET sent_msg = 1, updated_at = NOW() WHERE id = ?',
+          [signal.id]
+        );
+
+        console.log(`[SIGNAL] ✅ Mensagem de cancelamento enviada para sinal ${signal.id}`);
+        
+      } catch (signalError) {
+        console.error(`[SIGNAL] ❌ Erro ao processar sinal cancelado ${signal.id}:`, signalError.message);
+      }
+    }
+    
+    return canceledSignals.length;
+    
+  } catch (error) {
+    console.error(`[SIGNAL] ❌ Erro ao verificar sinais cancelados:`, error.message);
+    return 0;
+  }
+}
+
 module.exports = {
   // Funções principais
-  processSignal,
   checkNewTrades,
+  processSignal,
   checkExpiredSignals,
+  checkCanceledSignals,
   
   // Funções de preço
   onPriceUpdate,
   checkSignalTriggers,
   updatePriceCache,
   getPriceFromCache,
-
   
   // Funções utilitárias
   timeframeToMs,
   normalizeSide,
-  cancelSignal
+  cancelSignal,
 };

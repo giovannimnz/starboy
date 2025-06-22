@@ -5,7 +5,7 @@ const { verifyAndFixEnvironmentConsistency, getFuturesAccountBalanceDetails } = 
 const websockets = require('../api/websocket');
 const api = require('../api/rest');
 const { initializeTelegramBot, stopAllTelegramBots } = require('../telegram/telegramBot');
-const { onPriceUpdate, cancelSignal, checkNewTrades, checkExpiredSignals } = require('./signalProcessor');
+const { onPriceUpdate, checkNewTrades, checkExpiredSignals, checkCanceledSignals } = require('./signalProcessor');
 const { syncPositionsWithExchange, syncOrdersWithExchange, logOpenPositionsAndOrdersVisual } = require('../services/positionSync');
 const orderHandlers = require('../handlers/orderHandlers');
 const accountHandlers = require('../handlers/accountHandlers');
@@ -264,10 +264,6 @@ try {
 console.log(`🔄 ETAPA 6.5: Registrando callbacks de WebSocket para conta ${accountId}...`);
 
 try {
-  // Importar funções necessárias
-  const { onPriceUpdate } = require('./signalProcessor');
-
-  // Garantir que onPriceUpdate está registrado
   const currentHandlers = websockets.getHandlers(accountId);
   const updatedHandlers = {
     ...currentHandlers,
@@ -498,7 +494,6 @@ async function startPriceMonitoringInline(accountId) {
     if (pendingSignals.length > 0) {
       console.log(`[MONITOR] 🔍 Verificando ${pendingSignals.length} sinais para possível expiração...`);
       
-      const { checkExpiredSignals } = require('./signalProcessor');
       const expiredCount = await checkExpiredSignals(accountId);
       
       if (expiredCount > 0) {
@@ -606,9 +601,6 @@ async function startPriceMonitoringInline(accountId) {
 accountJobs.checkExpiredSignals = schedule.scheduleJob('*/1 * * * *', async () => {
   if (isShuttingDown) return;
   try {
-    // ✅ VERIFICAR SE A FUNÇÃO EXISTE ANTES DE CHAMAR
-    const { checkExpiredSignals } = require('./signalProcessor');
-    
     if (typeof checkExpiredSignals === 'function') {
       const expiredCount = await checkExpiredSignals(accountId);
       if (expiredCount > 0) {
@@ -626,7 +618,6 @@ accountJobs.checkExpiredSignals = schedule.scheduleJob('*/1 * * * *', async () =
       console.error(`[MONITOR] 🔍 Verifique se checkExpiredSignals está exportado em signalProcessor.js`);
       
       try {
-        const signalProcessor = require('./signalProcessor');
         console.log(`[MONITOR] 🔍 Funções disponíveis em signalProcessor:`, Object.keys(signalProcessor));
       } catch (importError) {
         console.error(`[MONITOR] ❌ Erro ao importar signalProcessor:`, importError.message);
@@ -866,6 +857,27 @@ try {
       console.log(`[MONITOR] 🚨 PROCESSO PARA CONTA ${accountIdToShutdown} SAINDO AGORA!`);
       process.exit(0); 
     }, 1000);
+  }
+}
+
+async function runSignalMonitoring(accountId) {
+  try {
+    // Verificar novos sinais (PENDING)
+    const newSignals = await checkNewTrades(accountId);
+    
+    // ✅ NOVA LINHA: Verificar sinais cancelados
+    const canceledSignals = await checkCanceledSignals(accountId);
+    
+    // Verificar sinais expirados
+    const expiredSignals = await checkExpiredSignals(accountId);
+    
+    const totalProcessed = newSignals + canceledSignals + expiredSignals;
+    if (totalProcessed > 0) {
+      console.log(`[MONITORING] 📊 Processados: ${newSignals} novos, ${canceledSignals} cancelados, ${expiredSignals} expirados`);
+    }
+    
+  } catch (error) {
+    console.error(`[MONITORING] ❌ Erro no monitoramento de sinais:`, error.message);
   }
 }
 
