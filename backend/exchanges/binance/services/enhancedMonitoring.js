@@ -231,7 +231,7 @@ function monitorWebSocketHealth(accountId) {
  */
 async function runAdvancedPositionMonitoring(accountId) {
   try {
-    console.log(`[ADVANCED_MONITOR] 🔄 Executando monitoramento completo para conta ${accountId}...`);
+    //console.log(`[ADVANCED_MONITOR] 🔄 Executando monitoramento completo para conta ${accountId}...`);
     
     const db = await getDatabaseInstance();
     
@@ -243,7 +243,7 @@ async function runAdvancedPositionMonitoring(accountId) {
     
     const exchangePositions = await api.getAllOpenPositions(accountId);
     
-    console.log(`[ADVANCED_MONITOR] 📊 Banco: ${dbPositions.length} posições (OPEN+CLOSED) | Corretora: ${exchangePositions.length} posições`);
+    //console.log(`[ADVANCED_MONITOR] 📊 Banco: ${dbPositions.length} posições | Corretora: ${exchangePositions.length} posições`);
     
     const exchangePositionsMap = new Map();
     exchangePositions.forEach(pos => {
@@ -257,7 +257,7 @@ async function runAdvancedPositionMonitoring(accountId) {
     // ✅ 2. VERIFICAR CADA POSIÇÃO DO BANCO (OPEN E CLOSED)
     for (const position of dbPositions) {
       try {
-        console.log(`[ADVANCED_MONITOR] 🔍 Verificando posição ${position.simbolo} (ID: ${position.id}, Status: ${position.status})...`);
+        //console.log(`[ADVANCED_MONITOR] 🔍 Verificando posição ${position.simbolo} (ID: ${position.id}, Status: ${position.status})...`);
         checkedCount++;
         
         const exchangePos = exchangePositionsMap.get(position.simbolo);

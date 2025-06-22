@@ -410,7 +410,7 @@ try {
     });
 
     // ✅ NOVO: Job avançado de monitoramento de posições a cada 1 minuto
-    accountJobs.advancedPositionMonitoring = schedule.scheduleJob('*/1 * * * *', async () => {
+    accountJobs.runAdvancedPositionMonitoring = schedule.scheduleJob('*/1 * * * *', async () => {
       if (isShuttingDown) return;
       try {
         await runAdvancedPositionMonitoring(accountId);
@@ -419,25 +419,8 @@ try {
       }
     });
 
-    // ✅ MODIFICAR O JOB DE ÓRFÃS PARA SER MAIS SIMPLES
-accountJobs.checkOrphanOrders = schedule.scheduleJob('*/45 * * * * *', async () => { // ✅ A cada 45 segundos
-  if (isShuttingDown) return;
-  try {
-    const { cancelOrphanOrders } = require('./cleanup');
-    const processedCount = await cancelOrphanOrders(accountId);
-    
-    // ✅ Log apenas se houver atividade
-    if (processedCount > 0) {
-      console.log(`[MONITOR] 🔄 ${processedCount} ordens processadas/movidas automaticamente (conta ${accountId})`);
-    }
-    
-  } catch (error) {
-    console.error(`[MONITOR] ⚠️ Erro na verificação automática para conta ${accountId}:`, error.message);
-  }
-});
-
     // ✅ MANTER APENAS JOB DE LIMPEZA DE POSIÇÕES FECHADAS
-    accountJobs.cleanupClosedPositions = schedule.scheduleJob('*/3 * * * *', async () => {
+    accountJobs.cleanupClosedPositions = schedule.scheduleJob('*/1 * * * *', async () => {
       if (isShuttingDown) return;
       try {
         const db = await getDatabaseInstance();
@@ -479,8 +462,8 @@ accountJobs.checkOrphanOrders = schedule.scheduleJob('*/45 * * * * *', async () 
       }
     });
 
-    // ✅ NOVO: Job de log de status a cada 5 minutos
-    accountJobs.logStatus = schedule.scheduleJob('*/5 * * * *', async () => {
+    // ✅ NOVO: Job de log de status a cada 1 minuto
+    accountJobs.logStatus = schedule.scheduleJob('*/1 * * * *', async () => {
       if (isShuttingDown) return;
       try {
         await logOpenPositionsAndOrdersVisual(accountId);
@@ -513,6 +496,19 @@ console.log(`[MONITOR]   - WebSocket API: ✅`);
     } catch (error) {
       console.error(`[MONITOR] ⚠️ Erro ao executar logOpenPositionsAndOrdersVisual na inicialização:`, error.message);
     }
+
+  try {
+    const { cancelOrphanOrders } = require('./cleanup');
+    const processedCount = await cancelOrphanOrders(accountId);
+    
+    if (processedCount > 0) {
+      console.log(`[MONITOR] 🔄 ${processedCount} ordens processadas/movidas automaticamente (conta ${accountId})`);
+    }
+    
+  } catch (error) {
+    console.error(`[MONITOR] ⚠️ Erro na verificação automática para conta ${accountId}:`, error.message);
+  }
+
     return accountJobs;
 
   } catch (error) {
