@@ -210,7 +210,7 @@ async function syncPositionsWithAutoClose(accountId) {
       throw new Error(`AccountId inválido em syncPositionsWithAutoClose: ${accountId}`);
     }
 
-    console.log(`[SYNC_AUTO] 🔄 Iniciando sincronização avançada para conta ${accountId}...`);
+    //console.log(`[SYNC_AUTO] 🔄 Iniciando sincronização avançada para conta ${accountId}...`);
     
     const db = await getDatabaseInstance();
     const { movePositionToHistory } = require('./positionHistory');
