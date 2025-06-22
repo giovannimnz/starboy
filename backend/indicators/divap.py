@@ -1232,7 +1232,7 @@ async def main():
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ❌ Falha no teste de envio: {e}")
     
     print(f"\n{'='*80}")
-    print(f"🚀 BOT DIVAP ATIVO - AGUARDANDO MENSAGENS...")
+    print(f"🚀 BOT DIVAP ATIVO - AGUARDANDO MENSAGENS...\n")
     print(f"   📱 Telegram: Conectado")
     print(f"   🔍 DIVAP: {'Ativado' if ENABLE_DIVAP_VERIFICATION else 'Desativado'}")
     print(f"   📊 Brackets: Atualizados")
