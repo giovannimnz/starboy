@@ -1192,7 +1192,7 @@ async def main():
             origem = await client.get_entity(grupo_id)
             tipo = "Canal" if getattr(origem, "broadcast", False) else "Supergrupo" if getattr(origem, "megagroup", False) else "Grupo"
             nome = getattr(origem, 'title', 'Sem título')
-            print(f"                 [INFO] ✅ {tipo} de origem: {nome} (ID: {grupo_id})")
+            print(f"                 [INFO] ✅ {tipo} de Origem: {nome} (ID: {grupo_id})")
             grupos_acessiveis.append(grupo_id)
         except Exception as e:
             print(f"[ERRO] ❌ Não foi possível acessar o grupo/canal {grupo_id}: {e}")
@@ -1205,7 +1205,7 @@ async def main():
         destino = await client.get_entity(GRUPO_DESTINO_ID)
         tipo = "Canal" if getattr(destino, "broadcast", False) else "Supergrupo" if getattr(destino, "megagroup", False) else "Grupo"
         nome = getattr(destino, 'title', 'Sem título')
-        print(f"                 [INFO] ✅ {tipo} de destino: {nome} (ID: {GRUPO_DESTINO_ID})")
+        print(f"                 [INFO] ✅ {tipo} de Destino: {nome} (ID: {GRUPO_DESTINO_ID})")
     except Exception as e:
         print(f"[ERRO] ❌ Não foi possível acessar o grupo/canal de destino {GRUPO_DESTINO_ID}: {e}")
         return
