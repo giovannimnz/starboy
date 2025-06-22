@@ -1155,7 +1155,7 @@ async def main():
     print("="*80)
 
     # 1. Inicializa o agendador de atualização de brackets
-    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🔧 Inicializando scheduler de brackets...")
+    print(f"[{datetime.now().strftime('\n%d-%m-%Y | %H:%M:%S')}] 🔧 Inicializando scheduler de brackets...")
     initialize_bracket_scheduler()
 
     # 2. Inicializa o analisador de padrões DIVAP
