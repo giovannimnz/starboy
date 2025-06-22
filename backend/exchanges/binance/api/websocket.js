@@ -557,7 +557,7 @@ async function handlePriceUpdate(symbol, tickerData, accountId) {
     if (tickerData.e === 'ticker' || tickerData.e === '24hrTicker') {
       // Ticker de 24h - usar preço de fechamento atual
       currentPrice = parseFloat(tickerData.c);
-      console.log(`[WEBSOCKET] 💰 Usando preço de ticker 24h: ${currentPrice}`);
+      //console.log(`[WEBSOCKET] 💰 Usando preço de ticker 24h: ${currentPrice}`);
     } else {
       // BookTicker ou outros - usar média de bid/ask
       const bestBid = parseFloat(tickerData.b);
@@ -578,7 +578,7 @@ async function handlePriceUpdate(symbol, tickerData, accountId) {
       return;
     }
 
-    console.log(`[WEBSOCKET] ✅ Preço final calculado para ${symbol}: ${currentPrice}`);
+    //console.log(`[WEBSOCKET] ✅ Preço final calculado para ${symbol}: ${currentPrice}`);
 
     // ✅ CHAMAR CALLBACK onPriceUpdate
     if (accountState.monitoringCallbacks && accountState.monitoringCallbacks.onPriceUpdate) {
@@ -586,12 +586,12 @@ async function handlePriceUpdate(symbol, tickerData, accountId) {
       await accountState.monitoringCallbacks.onPriceUpdate(symbol, currentPrice, db, accountId);
       console.log(`[WEBSOCKET] ✅ onPriceUpdate executado para ${symbol}`);
     } else {
-      console.warn(`[WEBSOCKET] ⚠️ Callback onPriceUpdate não encontrado para conta ${accountId}`);
-      console.warn(`[WEBSOCKET] Estado dos callbacks:`, {
+      //console.warn(`[WEBSOCKET] ⚠️ Callback onPriceUpdate não encontrado para conta ${accountId}`);
+      /*console.warn(`[WEBSOCKET] Estado dos callbacks:`, {
         hasCallbacks: !!accountState.monitoringCallbacks,
         hasOnPriceUpdate: !!(accountState.monitoringCallbacks?.onPriceUpdate),
         callbackType: typeof accountState.monitoringCallbacks?.onPriceUpdate
-      });
+      });*/
     }
   } catch (error) {
     console.error(`[WEBSOCKETS] ❌ Erro ao processar atualização de preço para ${symbol}:`, error.message);
