@@ -332,53 +332,7 @@ try {
       if (!orderHandlersOK || !accountHandlersOK) {
         throw new Error('Nem todos os handlers foram registrados corretamente');
       }
-      
-      // ADICIONAR callback de preço (mantém como estava)
-if (!finalHandlers.onPriceUpdate) {
-  console.log(`[MONITOR] Adicionando callback de preço para conta ${accountId}...`);
-  websockets.setMonitoringCallbacks({
-    ...finalHandlers,
-    onPriceUpdate: async (symbol, price, db) => {
-      try {
-        // ✅ DEBUG MELHORADO: Mostrar que WebSocket está funcionando
-        console.log(`[MONITOR] 📊 Preço via WebSocket: ${symbol} = ${price} (conta ${accountId}) - ${new Date().toLocaleTimeString()}`);
-        
-        // ✅ CORREÇÃO: Garantir que db está disponível
-        let dbConnection = db;
-        if (!dbConnection) {
-          console.log(`[MONITOR] ⚠️ DB não fornecido, obtendo instância...`);
-          dbConnection = await getDatabaseInstance(accountId);
-        }
-        
-        // ✅ DEBUG: Confirmar que vai chamar as funções
-        console.log(`[MONITOR] 🔄 Chamando updatePositionPricesWithTrailing para ${symbol}...`);
-        const { updatePositionPricesWithTrailing } = require('./enhancedMonitoring');
-        await updatePositionPricesWithTrailing(dbConnection, symbol, price, accountId);
-        console.log(`[MONITOR] ✅ updatePositionPricesWithTrailing concluído para ${symbol}`);
-        
-        console.log(`[MONITOR] 🔄 Chamando onPriceUpdate do signalProcessor para ${symbol}...`);
-        const { onPriceUpdate } = require('./signalProcessor');
-        await onPriceUpdate(symbol, price, dbConnection, accountId);
-        console.log(`[MONITOR] ✅ onPriceUpdate do signalProcessor concluído para ${symbol}`);
-        
-      } catch (error) {
-        console.error(`[MONITOR] ❌ Erro em onPriceUpdate para ${symbol} conta ${accountId}:`, error.message);
-        console.error(`[MONITOR] Stack trace:`, error.stack);
-      }
-    }
-  }, accountId);
-  
-  console.log(`[MONITOR] ✅ Callback de preço adicionado para conta ${accountId}`);
-  
-  // ✅ VERIFICAR SE FOI REALMENTE ADICIONADO
-  const verificarCallbacks = websockets.getHandlers(accountId);
-  console.log(`[MONITOR] 🔍 Verificação de callbacks após adição:`, {
-    hasOnPriceUpdate: !!verificarCallbacks.onPriceUpdate,
-    callbackType: typeof verificarCallbacks.onPriceUpdate,
-    totalCallbacks: Object.keys(verificarCallbacks).length
-  });
-}
-  
+       
 } catch (handlerError) {
   console.error(`[MONITOR] ❌ Erro crítico ao configurar handlers para conta ${accountId}:`, handlerError.message);
   throw handlerError;
