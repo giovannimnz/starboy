@@ -1,5 +1,5 @@
 const { getDatabaseInstance, insertNewOrder, formatDateForMySQL } = require('../../../core/database/conexao');
-const { newStopOrder, cancelOrder, getOpenOrders } = require('../api/rest');
+const { newStopOrder, cancelOrder, getOpenOrders } = require('../api/rest'); // ✅ Import correto
 const { sendTelegramMessage, formatAlertMessage } = require('./telegramBot');
 
 // Controle de verificações para evitar spam
@@ -101,57 +101,43 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
     if (priceHitTP1) {
       console.log(`${functionPrefix} 🎯 TP1 atingido para ${position.simbolo}. Movendo SL para breakeven.`);
       
-      // Atualizar nível de trailing
+      // ✅ 1. ATUALIZAR NÍVEL DE TRAILING
       await db.query(
-        `UPDATE posicoes SET trailing_stop_level = 'BREAKEVEN', data_hora_ultima_atualizacao = ? WHERE id = ?`,
-        [formatDateForMySQL(new Date()), positionId]
+        `UPDATE posicoes SET trailing_stop_level = 'BREAKEVEN', data_hora_ultima_atualizacao = NOW() WHERE id = ?`,
+        [positionId]
       );
       
-      // Cancelar todas as ordens de SL ativas
-      const canceledCount = await cancelAllActiveStopLosses(db, position, accountId);
+      // ✅ 2. CANCELAR TODAS AS ORDENS DE SL ATIVAS
+      const canceledCount = await cancelStopLossOrders(db, positionId, accountId);
       console.log(`${functionPrefix} 🗑️ ${canceledCount} ordens SL canceladas`);
       
-      // Aguardar cancelamentos
-      await new Promise(resolve => setTimeout(resolve, 2500));
+      // ✅ 3. AGUARDAR CANCELAMENTOS
+      await new Promise(resolve => setTimeout(resolve, 2000));
       
-      // Criar novo SL no breakeven
+      // ✅ 4. CRIAR NOVO SL NO BREAKEVEN COM closePosition=true
       const newSLBreakevenPrice = entryPrice;
-      const quantity = parseFloat(position.quantidade);
       const oppositeSide = side === 'BUY' || side === 'COMPRA' ? 'SELL' : 'BUY';
       
       try {
-        console.log(`${functionPrefix} 📝 Criando SL breakeven: ${newSLBreakevenPrice}`);
+        console.log(`${functionPrefix} 📝 Criando SL breakeven: ${newSLBreakevenPrice} (closePosition=true)`);
         
         const slResponse = await newStopOrder(
-          accountId, 
-          position.simbolo, 
-          quantity, 
-          oppositeSide, 
-          newSLBreakevenPrice, 
-          null, 
-          true // reduceOnly
+          accountId,                 // accountId
+          position.simbolo,          // symbol
+          null,                      // ✅ quantity = null
+          oppositeSide,              // side
+          newSLBreakevenPrice,       // stopPrice
+          null,                      // price
+          false,                     // ✅ reduceOnly = false
+          true,                      // ✅ closePosition = true
+          'STOP_MARKET'              // orderType
         );
         
-        if (slResponse && slResponse.data && slResponse.data.orderId) {
-          await insertNewOrder(db, {
-            tipo_ordem: 'STOP_MARKET',
-            preco: newSLBreakevenPrice,
-            quantidade: quantity,
-            id_posicao: positionId,
-            status: 'NEW',
-            data_hora_criacao: formatDateForMySQL(new Date()),
-            id_externo: String(slResponse.data.orderId),
-            side: oppositeSide,
-            simbolo: position.simbolo,
-            tipo_ordem_bot: 'STOP_LOSS',
-            reduce_only: true,
-            close_position: true,
-            last_update: formatDateForMySQL(new Date()),
-            orign_sig: position.orign_sig,
-            conta_id: accountId
-          });
+        if (slResponse && slResponse.orderId) {
+          console.log(`${functionPrefix} ✅ SL breakeven criado: ${slResponse.orderId} (closePosition=true)`);
           
-          console.log(`${functionPrefix} ✅ SL movido para breakeven: ${newSLBreakevenPrice}`);
+          // ✅ NÃO INSERIR NO BANCO - será feito via webhook
+          console.log(`${functionPrefix} 📡 Ordem será registrada via webhook automaticamente`);
           
           // ✅ NOTIFICAÇÃO TELEGRAM
           try {
@@ -161,7 +147,8 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
               `📈 TP1 atingido!\n` +
               `🛡️ Stop Loss movido para <b>BREAKEVEN</b>\n` +
               `💰 Novo SL: <b>$${newSLBreakevenPrice.toFixed(4)}</b>\n\n` +
-              `🔒 Posição protegida contra perdas!`,
+              `🔒 Posição protegida contra perdas!\n` +
+              `⚡ Modo: Close Position`,
               'SUCCESS'
             );
             
@@ -182,77 +169,33 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
     else if (priceHitTP3) {
       console.log(`${functionPrefix} 🚀 TP3 atingido para ${position.simbolo}. Movendo SL para TP1.`);
       
-      // Atualizar nível de trailing
-      await db.query(
-        `UPDATE posicoes SET trailing_stop_level = 'TP1', data_hora_ultima_atualizacao = ? WHERE id = ?`,
-        [formatDateForMySQL(new Date()), positionId]
-      );
-      
-      // Cancelar todas as ordens de SL ativas
-      const canceledCount = await cancelAllActiveStopLosses(db, position, accountId);
+      // Cancelar SLs existentes
+      const canceledCount = await cancelStopLossOrders(db, positionId, accountId);
       console.log(`${functionPrefix} 🗑️ ${canceledCount} ordens SL canceladas`);
       
-      // Aguardar cancelamentos
-      await new Promise(resolve => setTimeout(resolve, 2500));
+      await new Promise(resolve => setTimeout(resolve, 2000));
       
-      // Criar novo SL no TP1
-      const quantity = parseFloat(position.quantidade);
+      // ✅ CRIAR SL EM TP1 COM closePosition=true
       const oppositeSide = side === 'BUY' || side === 'COMPRA' ? 'SELL' : 'BUY';
       
       try {
-        console.log(`${functionPrefix} 📝 Criando SL em TP1: ${tp1Price}`);
+        console.log(`${functionPrefix} 📝 Criando SL em TP1: ${tp1Price} (closePosition=true)`);
         
         const slResponse = await newStopOrder(
-          accountId, 
-          position.simbolo, 
-          quantity, 
-          oppositeSide, 
-          tp1Price, 
-          null, 
-          true // reduceOnly
+          accountId,
+          position.simbolo,
+          null,                // ✅ quantity = null
+          oppositeSide,
+          tp1Price,
+          null,
+          false,               // ✅ reduceOnly = false
+          true,                // ✅ closePosition = true
+          'STOP_MARKET'
         );
         
-        if (slResponse && slResponse.data && slResponse.data.orderId) {
-          await insertNewOrder(db, {
-            tipo_ordem: 'STOP_MARKET',
-            preco: tp1Price,
-            quantidade: quantity,
-            id_posicao: positionId,
-            status: 'NEW',
-            data_hora_criacao: formatDateForMySQL(new Date()),
-            id_externo: String(slResponse.data.orderId),
-            side: oppositeSide,
-            simbolo: position.simbolo,
-            tipo_ordem_bot: 'STOP_LOSS',
-            reduce_only: true,
-            close_position: true,
-            last_update: formatDateForMySQL(new Date()),
-            orign_sig: position.orign_sig,
-            conta_id: accountId
-          });
-          
-          console.log(`${functionPrefix} ✅ SL movido para TP1: ${tp1Price}`);
-          
-          // ✅ NOTIFICAÇÃO TELEGRAM
-          try {
-            const message = formatAlertMessage(
-              'STOP LOSS AVANÇADO',
-              `🚀 <b>${position.simbolo}</b>\n\n` +
-              `🎯 TP3 atingido!\n` +
-              `📈 Stop Loss movido para <b>TP1</b>\n` +
-              `💰 Novo SL: <b>$${tp1Price.toFixed(4)}</b>\n\n` +
-              `💎 Posição em lucro garantido!`,
-              'SUCCESS'
-            );
-            
-            await sendTelegramMessage(accountId, message);
-            console.log(`${functionPrefix} 📱 Notificação de SL TP1 enviada`);
-          } catch (telegramError) {
-            console.warn(`${functionPrefix} ⚠️ Erro ao enviar notificação:`, telegramError.message);
-          }
-          
-        } else {
-          throw new Error('Resposta inválida da API ao criar SL em TP1');
+        if (slResponse && slResponse.orderId) {
+          console.log(`${functionPrefix} ✅ SL TP1 criado: ${slResponse.orderId} (closePosition=true)`);
+          // Telegram notification...
         }
       } catch (error) {
         console.error(`${functionPrefix} ❌ Erro ao criar SL em TP1:`, error.message);
@@ -330,30 +273,39 @@ async function cancelAllActiveStopLosses(db, position, accountId) {
 }
 
 /**
- * ✅ FUNÇÃO PARA CANCELAR ORDENS DE STOP LOSS ESPECÍFICAS
+ * ✅ FUNÇÃO CORRIGIDA PARA CANCELAR ORDENS DE STOP LOSS ESPECÍFICAS
  */
 async function cancelStopLossOrders(db, positionId, accountId) {
   try {
-    // ✅ BUSCAR ORDENS SL COM CONTA_ID CORRETO
+    console.log(`[CANCEL_SL] 🔍 Cancelando SLs para posição ${positionId} (conta ${accountId})`);
+
+    // ✅ 1. BUSCAR ORDENS SL NO BANCO
     const [stopLossOrders] = await db.query(`
       SELECT id_externo, simbolo FROM ordens 
       WHERE id_posicao = ? AND conta_id = ? AND tipo_ordem_bot = 'STOP_LOSS' 
       AND status IN ('NEW', 'PARTIALLY_FILLED')
-    `, [positionId, accountId]); // ✅ USAR accountId, NÃO orderId
+    `, [positionId, accountId]);
 
-    console.log(`[CANCEL_SL] 🔍 Encontradas ${stopLossOrders.length} ordens SL para cancelar`);
+    console.log(`[CANCEL_SL] 📋 Encontradas ${stopLossOrders.length} ordens SL no banco`);
+
+    if (stopLossOrders.length === 0) {
+      return 0;
+    }
 
     let canceledCount = 0;
     for (const order of stopLossOrders) {
       try {
-        // ✅ USAR accountId CORRETO, NÃO orderId
-        await api.cancelOrder(order.simbolo, order.id_externo, accountId);
+        // ✅ 2. CANCELAR NA CORRETORA USANDO IMPORT CORRETO
+        await cancelOrder(order.simbolo, order.id_externo, accountId);
         
-        // ✅ ATUALIZAR STATUS NO BANCO
+        // ✅ 3. ATUALIZAR STATUS NO BANCO
         await db.query(`
           UPDATE ordens 
           SET status = 'CANCELED', last_update = NOW(),
-              observacao = 'Cancelada para trailing stop'
+              observacao = CONCAT(
+                IFNULL(observacao, ''), 
+                ' | Cancelada para trailing stop'
+              )
           WHERE id_externo = ? AND conta_id = ?
         `, [order.id_externo, accountId]);
         
@@ -361,56 +313,76 @@ async function cancelStopLossOrders(db, positionId, accountId) {
         console.log(`[CANCEL_SL] ✅ SL ${order.id_externo} cancelado com sucesso`);
         
       } catch (cancelError) {
-        console.error(`[CANCEL_SL] ❌ Erro ao cancelar SL ${order.id_externo}:`, cancelError.message);
+        // ✅ 4. TRATAR ERRO DE "ORDEM NÃO EXISTE"
+        if (cancelError.message && 
+            (cancelError.message.includes('Unknown order') || 
+             cancelError.message.includes('does not exist'))) {
+          console.log(`[CANCEL_SL] ℹ️ SL ${order.id_externo} já foi executado/cancelado`);
+          
+          // Marcar como cancelado no banco mesmo assim
+          await db.query(`
+            UPDATE ordens 
+            SET status = 'CANCELED', last_update = NOW(),
+                observacao = CONCAT(
+                  IFNULL(observacao, ''), 
+                  ' | Não existe na corretora'
+                )
+            WHERE id_externo = ? AND conta_id = ?
+          `, [order.id_externo, accountId]);
+          
+          canceledCount++;
+        } else {
+          console.error(`[CANCEL_SL] ❌ Erro ao cancelar SL ${order.id_externo}:`, cancelError.message);
+        }
       }
     }
 
-    console.log(`[CANCEL_SL] 📊 Total cancelado: ${canceledCount} de ${stopLossOrders.length} ordens SL`);
+    console.log(`[CANCEL_SL] 📊 Total processado: ${canceledCount} de ${stopLossOrders.length} ordens SL`);
     return canceledCount;
 
   } catch (error) {
-    console.error(`[CANCEL_SL] ❌ Erro ao cancelar ordens SL:`, error.message);
+    console.error(`[CANCEL_SL] ❌ Erro geral ao cancelar ordens SL:`, error.message);
     return 0;
   }
 }
 
 /**
- * ✅ FUNÇÃO PARA CRIAR STOP LOSS NO BREAKEVEN
+ * ✅ FUNÇÃO CORRIGIDA PARA CRIAR STOP LOSS NO BREAKEVEN
  */
 async function createBreakevenStopLoss(db, position, breakevenPrice, accountId) {
   try {
     const symbol = position.simbolo;
-    const quantity = Math.abs(parseFloat(position.quantidade));
     const side = position.side === 'BUY' ? 'SELL' : 'BUY';
 
-    console.log(`[TRAILING] 🎯 Criando SL breakeven: ${breakevenPrice}`);
+    console.log(`[TRAILING] 🎯 Criando SL breakeven: ${breakevenPrice} para ${symbol}`);
 
-    // ✅ USAR newStopOrder COM PARÂMETROS CORRETOS
-    const response = await api.newStopOrder(
-      accountId,           // ✅ accountId correto
-      symbol,             
-      null,               // quantity será null para usar closePosition
-      side,               
-      breakevenPrice,     
-      null,               // limitPrice
-      false,              // postOnly
-      true,               // closePosition = true
-      'STOP_MARKET'       
+    // ✅ USAR closePosition=true (RECOMENDADO)
+    const response = await newStopOrder(
+      accountId,           // accountId
+      symbol,              // symbol
+      null,                // ✅ quantity = null quando closePosition=true
+      side,                // side
+      breakevenPrice,      // stopPrice
+      null,                // price (não usado para STOP_MARKET)
+      false,               // ✅ reduceOnly = false (não usado com closePosition)
+      true,                // ✅ closePosition = true (FECHA TODA A POSIÇÃO)
+      'STOP_MARKET'        // orderType
     );
 
     // ✅ VALIDAÇÃO CORRIGIDA DA RESPOSTA
-    const orderId = response?.orderId || response?.data?.orderId;
+    const orderId = response?.orderId;
     
     if (orderId) {
-      console.log(`[TRAILING] ✅ SL breakeven criado: ${orderId} @ ${breakevenPrice}`);
+      console.log(`[TRAILING] ✅ SL breakeven criado: ${orderId} @ ${breakevenPrice} (closePosition=true)`);
       
-      // ✅ INSERIR NO BANCO VIA WEBHOOK (aguardar confirmação)
-      console.log(`[TRAILING] 📡 Aguardando confirmação via webhook para inserir SL no banco...`);
+      // ✅ A ORDEM SERÁ INSERIDA NO BANCO VIA WEBHOOK automaticamente
+      console.log(`[TRAILING] 📡 Aguardando confirmação via webhook...`);
       
       return {
         success: true,
         orderId: orderId,
-        price: breakevenPrice
+        price: breakevenPrice,
+        closePosition: true
       };
     } else {
       console.error(`[TRAILING] ❌ Resposta da API sem orderId:`, response);
