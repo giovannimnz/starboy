@@ -1006,10 +1006,10 @@ async function checkCanceledSignals(accountId) {
         });
 
         const cancelMsg =
-          `⏰ <b>SINAL CANCELADO</b>\n\n` +
-          `#${signal.symbol}  ${side}\n` +
-          `${signal.timeframe || ''}\n${signal.message_source || 'Divap'}\n\n` +
-          `ENTRADA: ${formatNumberClean(signal.entry_price)}\n\n` +
+          `🚫 <b>SINAL CANCELADO</b>\n\n` +
+          `📊 <b>${signal.symbol}<b> | ${side}\n` +
+          `📉 ${signal.timeframe} | ${signal.message_source}\n\n` +
+          `💰 ENTRADA: ${formatNumberClean(signal.entry_price)}\n\n` +
           `📝 <b>Motivo:</b>\n${motivo}\n\n` +
           `🆔 Sinal: #${signal.id}\n` +
           `⏰ ${new Date().toLocaleString('pt-BR')}`;
