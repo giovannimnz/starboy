@@ -391,7 +391,7 @@ def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent, si
     final_leverage = min(target_leverage, max_leverage)
     final_leverage = max(1, final_leverage)
 
-    print(f"  [INFO] Alavancagem final calculada para {cleaned_symbol}: {final_leverage}x (Ideal: {target_leverage}x, Máximo permitido: {max_leverage}x)")
+    print(f" [INFO] Alavancagem final calculada para {cleaned_symbol}: {final_leverage}x (Ideal: {target_leverage}x, Máximo permitido: {max_leverage}x)")
     
     return final_leverage, sl_distance_pct
 
@@ -765,7 +765,7 @@ def extract_trade_info(message_text):
             capital_pct = min(100.0, max(0.1, capital_pct))
             capital_pct = round(capital_pct, 2)
             
-            print(f"   ✅ Capital calculado: {capital_pct:.2f}% (risco máximo: {PREJUIZO_MAXIMO_PERCENTUAL_DO_CAPITAL_TOTAL}%)")
+            print(f"     ✅ Capital calculado: {capital_pct:.2f}% (risco máximo: {PREJUIZO_MAXIMO_PERCENTUAL_DO_CAPITAL_TOTAL}%)")
         else:
             capital_pct = original_capital_pct
             print(f"   ⚠️ Usando capital original: {capital_pct:.2f}%")
