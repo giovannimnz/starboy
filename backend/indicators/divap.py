@@ -765,7 +765,7 @@ def extract_trade_info(message_text):
             capital_pct = min(100.0, max(0.1, capital_pct))
             capital_pct = round(capital_pct, 2)
             
-            print(f" [INFO]  Capital calculado: {capital_pct:.2f}% (risco máximo: {PREJUIZO_MAXIMO_PERCENTUAL_DO_CAPITAL_TOTAL}%)")
+            print(f"[INFO]   Capital calculado: {capital_pct:.2f}% (risco máximo: {PREJUIZO_MAXIMO_PERCENTUAL_DO_CAPITAL_TOTAL}%)")
         else:
             capital_pct = original_capital_pct
             print(f"   ⚠️ Usando capital original: {capital_pct:.2f}%")
