@@ -514,7 +514,7 @@ async function ensurePriceWebsocketExists(symbol, accountId) {
       const tickerData = JSON.parse(data);
       
       // ✅ DEBUG: Mostrar dados recebidos
-      console.log(`[WEBSOCKET] 📨 Mensagem recebida para ${symbol}:`, {
+      //console.log(`[WEBSOCKET] 📨 Mensagem recebida para ${symbol}:`, {
         event: tickerData.e,
         symbol: tickerData.s,
         close: tickerData.c,
