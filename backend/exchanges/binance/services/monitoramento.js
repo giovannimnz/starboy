@@ -435,17 +435,37 @@ try {
     });
 
     // ✅ NOVO: Job de verificação de sinais expirados a cada 1 minuto (mais frequente)
-    accountJobs.checkExpiredSignals = schedule.scheduleJob('*/1 * * * *', async () => {
-      if (isShuttingDown) return;
-      try {
-        const expiredCount = await checkExpiredSignals(accountId);
-        if (expiredCount > 0) {
-          console.log(`[MONITOR] ⏰ ${expiredCount} sinais expirados cancelados para conta ${accountId}`);
-        }
-      } catch (error) {
-        console.error(`[MONITOR] ⚠️ Erro na verificação de sinais expirados para conta ${accountId}:`, error.message);
+accountJobs.checkExpiredSignals = schedule.scheduleJob('*/1 * * * *', async () => {
+  if (isShuttingDown) return;
+  try {
+    // ✅ VERIFICAR SE A FUNÇÃO EXISTE ANTES DE CHAMAR
+    const { checkExpiredSignals } = require('./signalProcessor');
+    
+    if (typeof checkExpiredSignals === 'function') {
+      const expiredCount = await checkExpiredSignals(accountId);
+      if (expiredCount > 0) {
+        console.log(`[MONITOR] ⏰ ${expiredCount} sinais expirados cancelados para conta ${accountId}`);
       }
-    });
+    } else {
+      console.error(`[MONITOR] ❌ checkExpiredSignals não é uma função válida`);
+    }
+    
+  } catch (error) {
+    console.error(`[MONITOR] ⚠️ Erro na verificação de sinais expirados para conta ${accountId}:`, error.message);
+    
+    // ✅ DEBUG: Mostrar detalhes do erro de import
+    if (error.message.includes('not defined')) {
+      console.error(`[MONITOR] 🔍 Verifique se checkExpiredSignals está exportado em signalProcessor.js`);
+      
+      try {
+        const signalProcessor = require('./signalProcessor');
+        console.log(`[MONITOR] 🔍 Funções disponíveis em signalProcessor:`, Object.keys(signalProcessor));
+      } catch (importError) {
+        console.error(`[MONITOR] ❌ Erro ao importar signalProcessor:`, importError.message);
+      }
+    }
+  }
+});
 
     // ✅ NOVO: Job avançado de monitoramento de posições a cada 1 minuto
     accountJobs.runAdvancedPositionMonitoring = schedule.scheduleJob('*/1 * * * *', async () => {
