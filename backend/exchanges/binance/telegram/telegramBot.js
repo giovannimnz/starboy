@@ -521,7 +521,8 @@ function formatAlertMessage(title, message, level = 'INFO') {
  * Formata mensagem de sinal registrado
  */
 function formatSignalRegisteredMessage(signal, grupoOrigemNome = 'Divap') {
-  const side = signal.side.toUpperCase() === 'BUY' || signal.side.toUpperCase() === 'COMPRA' ? '🟢 COMPRA' : '🔴 VENDA';
+  const side = (signal.side || '').toUpperCase();
+  const sideStr = side === 'BUY' || side === 'COMPRA' ? 'COMPRA' : 'VENDA';
   const leverage = signal.leverage || 1;
   const capital = signal.capital_pct ? `${parseFloat(signal.capital_pct).toFixed(2)}%` : 'N/A';
   const timeframe = signal.timeframe || '15m';
@@ -530,8 +531,8 @@ function formatSignalRegisteredMessage(signal, grupoOrigemNome = 'Divap') {
   // Alvos (TPs)
   const tps = [
     signal.tp1_price, signal.tp2_price, signal.tp3_price,
-    signal.tp4_price, signal.tp5_price || signal.tp_price
-  ].filter(tp => tp !== undefined && tp !== null);
+    signal.tp4_price, signal.tp5_price
+  ].filter(tp => tp !== undefined && tp !== null && tp !== '');
 
   let tpsText = '';
   tps.forEach((tp, idx) => {
@@ -539,15 +540,15 @@ function formatSignalRegisteredMessage(signal, grupoOrigemNome = 'Divap') {
   });
 
   return (
-    `#${signal.symbol}  ${side.replace('🟢 ', '').replace('🔴 ', '')}\n` +
+    `#${signal.symbol}  ${sideStr}\n` +
     `${timeframe}\n` +
     `${nomeGrupo}\n\n` +
-    `⚡ ALAVANCAGEM: ${leverage}x\n` +
-    `💼 MARGEM: CRUZADA\n` +
-    `💸 CAPITAL: ${capital}\n\n` +
-    `🎯 ENTRADA: ${signal.entry_price}\n` +
+    `ALAVANCAGEM: ${leverage}x\n` +
+    `MARGEM: CRUZADA\n` +
+    `CAPITAL: ${capital}\n\n` +
+    `ENTRADA: ${signal.entry_price}\n` +
     `${tpsText}\n\n` +
-    `🛡️ STOP LOSS: ${signal.sl_price}`
+    `STOP LOSS: ${signal.sl_price}`
   );
 }
 
