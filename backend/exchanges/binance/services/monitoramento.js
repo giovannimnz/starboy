@@ -334,28 +334,33 @@ try {
       }
       
       // ADICIONAR callback de preço (mantém como estava)
-      if (!finalHandlers.onPriceUpdate) {
-        console.log(`[MONITOR] Adicionando callback de preço para conta ${accountId}...`);
-        websockets.setMonitoringCallbacks({
-          ...finalHandlers,
-          onPriceUpdate: async (symbol, price, db) => {
-            try {
-              const { updatePositionPricesWithTrailing } = require('./enhancedMonitoring');
-              await updatePositionPricesWithTrailing(db, symbol, price, accountId);
-              
-              const { onPriceUpdate } = require('./signalProcessor');
-              await onPriceUpdate(symbol, price, db, accountId);
-            } catch (error) {
-              console.error(`[MONITOR] ⚠️ Erro em onPriceUpdate para ${symbol} conta ${accountId}:`, error.message);
-            }
-          }
-        }, accountId);
+  if (!finalHandlers.onPriceUpdate) {
+    console.log(`[MONITOR] Adicionando callback de preço para conta ${accountId}...`);
+    websockets.setMonitoringCallbacks({
+      ...finalHandlers,
+      onPriceUpdate: async (symbol, price, db) => {
+        try {
+          // ✅ DEBUG: Mostrar que WebSocket está funcionando
+          console.log(`[MONITOR] 📊 Preço via WebSocket: ${symbol} = ${price} (conta ${accountId})`);
+          
+          const { updatePositionPricesWithTrailing } = require('./enhancedMonitoring');
+          await updatePositionPricesWithTrailing(db, symbol, price, accountId);
+          
+          const { onPriceUpdate } = require('./signalProcessor');
+          await onPriceUpdate(symbol, price, db, accountId);
+        } catch (error) {
+          console.error(`[MONITOR] ⚠️ Erro em onPriceUpdate para ${symbol} conta ${accountId}:`, error.message);
+        }
       }
-      
-    } catch (handlerError) {
-      console.error(`[MONITOR] ❌ Erro crítico ao configurar handlers para conta ${accountId}:`, handlerError.message);
-      throw handlerError;
-    }
+    }, accountId);
+    
+    console.log(`[MONITOR] ✅ Callback de preço adicionado para conta ${accountId}`);
+  }
+  
+} catch (handlerError) {
+  console.error(`[MONITOR] ❌ Erro crítico ao configurar handlers para conta ${accountId}:`, handlerError.message);
+  throw handlerError;
+}
 
     // === ETAPA 8: Iniciar UserDataStream ===
     console.log(`🌐 ETAPA 8: Iniciando UserDataStream para conta ${accountId}...`);

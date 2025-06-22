@@ -308,10 +308,39 @@ async function processSignal(signal, db, accountId) {
       [timeoutAt, maxLifetimeMinutes, signalId]
     );
     
-    // 4. ✅ INICIAR WEBSOCKET DE PREÇO (PRINCIPAL MUDANÇA)
+    // 4. ✅ INICIAR WEBSOCKET DE PREÇO E VERIFICAR SE FUNCIONOU
     console.log(`[SIGNAL] 📡 Iniciando WebSocket de preço para ${signal.symbol}...`);
-    await websockets.ensurePriceWebsocketExists(signal.symbol, accountId);
-    console.log(`[SIGNAL] ✅ WebSocket de preço ativo para ${signal.symbol}`);
+    
+    try {
+      await websockets.ensurePriceWebsocketExists(signal.symbol, accountId);
+      console.log(`[SIGNAL] ✅ WebSocket de preço solicitado para ${signal.symbol}`);
+      
+      // ✅ VERIFICAR SE WEBSOCKET ESTÁ REALMENTE ATIVO
+      setTimeout(async () => {
+        try {
+          const priceWebsockets = websockets.getPriceWebsockets(accountId);
+          const wsExists = priceWebsockets && priceWebsockets.has(signal.symbol);
+          
+          if (wsExists) {
+            const ws = priceWebsockets.get(signal.symbol);
+            const isOpen = ws && ws.readyState === 1; // WebSocket.OPEN
+            console.log(`[SIGNAL] 🔍 Status WebSocket ${signal.symbol}: Existe=${wsExists}, Aberto=${isOpen}`);
+            
+            if (!isOpen) {
+              console.warn(`[SIGNAL] ⚠️ WebSocket para ${signal.symbol} não está aberto! ReadyState: ${ws?.readyState}`);
+            }
+          } else {
+            console.warn(`[SIGNAL] ⚠️ WebSocket para ${signal.symbol} não foi criado!`);
+          }
+        } catch (checkError) {
+          console.error(`[SIGNAL] ❌ Erro ao verificar WebSocket:`, checkError.message);
+        }
+      }, 2000); // Verificar após 2 segundos
+      
+    } catch (wsError) {
+      console.error(`[SIGNAL] ❌ Erro ao iniciar WebSocket para ${signal.symbol}:`, wsError.message);
+      // Continuar mesmo com erro de WebSocket
+    }
     
     // 5. ENVIAR NOTIFICAÇÃO TELEGRAM
     if (signal.chat_id) {
