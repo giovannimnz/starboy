@@ -542,80 +542,99 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId) {
   }
 }
 
-// ✅ MODIFICAR FUNÇÃO EXISTENTE handleOrderUpdate
+/**
+ * ✅ FUNÇÃO CORRIGIDA: Processa atualizações de ordens via WebSocket
+ */
 async function handleOrderUpdate(accountId, orderUpdateData) {
   try {
     const db = await getDatabaseInstance();
-    const orderId = orderUpdateData.i?.toString() || orderUpdateData.orderId?.toString();
-    const newStatus = orderUpdateData.X || orderUpdateData.status;
-    const symbol = orderUpdateData.s || orderUpdateData.symbol;
-
-    if (!orderId || !newStatus) {
-      console.warn(`[ORDER] ⚠️ Dados incompletos na atualização da ordem:`, orderUpdateData);
-      return;
-    }
-
-    console.log(`[ORDER] 📨 Atualização recebida: ${orderId} (${symbol}) - ${orderUpdateData.o || 'N/A'}/${newStatus} - Executado: ${orderUpdateData.z || 0}/${orderUpdateData.q || 0}`);
-
-    // ✅ 1. PRIMEIRO, ATUALIZAR A ORDEM NO BANCO
-    const [result] = await db.query(`
-      UPDATE ordens 
-      SET status = ?, 
-          last_update = NOW(),
-          quantidade_executada = COALESCE(?, quantidade_executada),
-          preco_executado = CASE 
-            WHEN ? > 0 THEN ? 
-            ELSE preco_executado 
-          END,
-          dados_originais_ws = ?
-      WHERE id_externo = ? AND conta_id = ?
-    `, [
-      newStatus,
-      orderUpdateData.z || null,
-      orderUpdateData.ap || 0,
-      orderUpdateData.ap || 0,
-      JSON.stringify(orderUpdateData),
-      orderId,
-      accountId
-    ]);
-
-    if (result.affectedRows === 0) {
-      console.warn(`[ORDER] ⚠️ Ordem ${orderId} não encontrada no banco para atualização`);
-      return;
-    }
-
-    // ✅ 2. VERIFICAR SE DEVE MOVER AUTOMATICAMENTE
-    const shouldMove = ['FILLED', 'CANCELED', 'CANCELLED', 'EXPIRED', 'REJECTED'].includes(newStatus);
     
-    if (shouldMove) {
-      console.log(`[ORDER] 🎯 Status final detectado (${newStatus}) - iniciando movimento automático...`);
+    // ✅ SUPORTAR TANTO FORMATO DIRETO QUANTO FORMATO ENCAPSULADO
+    let orderData;
+    if (orderUpdateData.o) {
+      // Formato do USER_DATA_STREAM: { e: 'ORDER_TRADE_UPDATE', o: { ... } }
+      orderData = orderUpdateData.o;
+    } else if (orderUpdateData.i && orderUpdateData.s) {
+      // Formato direto: { i: orderId, s: symbol, ... }
+      orderData = orderUpdateData;
+    } else {
+      console.warn(`[ORDER] ⚠️ Formato de dados não reconhecido:`, orderUpdateData);
+      return;
+    }
+    
+    const orderId = orderData.i?.toString();
+    const symbol = orderData.s;
+    const orderStatus = orderData.X;
+    const executionType = orderData.x;
+    
+    if (!orderId || !symbol || !orderStatus) {
+      console.warn(`[ORDER] ⚠️ Dados incompletos: orderId=${orderId}, symbol=${symbol}, status=${orderStatus}`);
+      return;
+    }
+
+    console.log(`[ORDER] 📨 Processando atualização: ${orderId} (${symbol}) - ${executionType}/${orderStatus}`);
+
+    // ✅ 1. VERIFICAR SE ORDEM EXISTE NO BANCO
+    const [existingOrders] = await db.query(
+      'SELECT * FROM ordens WHERE id_externo = ? AND simbolo = ? AND conta_id = ?',
+      [orderId, symbol, accountId]
+    );
+
+    const orderExists = existingOrders.length > 0;
+    let shouldInsert = false;
+
+    if (!orderExists) {
+      console.log(`[ORDER] 🆕 Ordem externa detectada: ${orderId} - inserindo no banco...`);
+      shouldInsert = true;
+    }
+
+    // ✅ 2. INSERIR ORDEM SE NÃO EXISTE (ORDEM EXTERNA)
+    if (shouldInsert) {
+      await insertExternalOrder(db, orderData, accountId);
+    }
+
+    // ✅ 3. ATUALIZAR ORDEM EXISTENTE
+    await updateExistingOrder(db, orderData, accountId, existingOrders[0]);
+
+    // ✅ 4. VERIFICAR SE DEVE MOVER PARA HISTÓRICO
+    const finalStatuses = ['FILLED', 'CANCELED', 'CANCELLED', 'EXPIRED', 'REJECTED'];
+    
+    if (finalStatuses.includes(orderStatus)) {
+      console.log(`[ORDER] 🎯 Status final detectado (${orderStatus}) - iniciando movimento automático...`);
       
-      const moved = await autoMoveOrderOnCompletion(orderId, newStatus, accountId);
+      // Aguardar um pouco para garantir que a atualização foi processada
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      const moved = await autoMoveOrderOnCompletion(orderId, orderStatus, accountId);
       
       if (moved) {
-        console.log(`[ORDER] ✅ Ordem ${orderId} movida automaticamente para histórico`);
+        console.log(`[ORDER] ✅ Ordem ${orderId} (${orderStatus}) movida automaticamente para histórico`);
         
-        // ✅ 3. VERIFICAR SE DEVE FECHAR POSIÇÃO (para ordens FILLED de fechamento)
-        if (newStatus === 'FILLED') {
-          const closureResult = await checkPositionClosureAfterOrderExecution(orderId, accountId);
-          if (closureResult) {
-            console.log(`[ORDER] 🏁 Posição fechada automaticamente após execução da ordem ${orderId}`);
+        // Verificar fechamento de posição para ordens FILLED
+        if (orderStatus === 'FILLED') {
+          try {
+            const closureResult = await checkPositionClosureAfterOrderExecution(orderId, accountId);
+            if (closureResult) {
+              console.log(`[ORDER] 🏁 Posição fechada automaticamente após execução da ordem ${orderId}`);
+            }
+          } catch (closureError) {
+            console.error(`[ORDER] ⚠️ Erro ao verificar fechamento de posição:`, closureError.message);
           }
         }
       } else {
         console.warn(`[ORDER] ⚠️ Falha ao mover ordem ${orderId} automaticamente`);
       }
-    } else {
-      console.log(`[ORDER] ℹ️ Status ${newStatus} - ordem mantida na tabela ativa`);
     }
 
-    // ✅ 4. LOGS DETALHADOS PARA DEBUGGING
-    if (newStatus === 'FILLED') {
-      const executedQty = parseFloat(orderUpdateData.z || 0);
-      const avgPrice = parseFloat(orderUpdateData.ap || 0);
+    // ✅ 5. LOGS DETALHADOS
+    if (orderStatus === 'FILLED') {
+      const executedQty = parseFloat(orderData.z || 0);
+      const avgPrice = parseFloat(orderData.ap || 0);
       const totalValue = executedQty * avgPrice;
       
-      console.log(`[ORDER] 💰 Detalhes da execução:`);
+      console.log(`[ORDER] 💰 Ordem FILLED processada:`);
+      console.log(`[ORDER]   - ID: ${orderId}`);
+      console.log(`[ORDER]   - Símbolo: ${symbol}`);
       console.log(`[ORDER]   - Quantidade: ${executedQty}`);
       console.log(`[ORDER]   - Preço médio: ${avgPrice}`);
       console.log(`[ORDER]   - Valor total: ${totalValue.toFixed(2)} USDT`);
@@ -627,173 +646,340 @@ async function handleOrderUpdate(accountId, orderUpdateData) {
 }
 
 /**
- * Processa atualizações de conta via WebSocket (ACCOUNT_UPDATE)
+ * ✅ NOVA FUNÇÃO: Inserir ordem externa no banco
  */
-async function handleAccountUpdate(message, accountId, db = null) {
+async function insertExternalOrder(db, orderData, accountId) {
   try {
-    // Validar parâmetros
-    if (!accountId || typeof accountId !== 'number') {
-      console.error(`[ACCOUNT] AccountId inválido: ${accountId} (tipo: ${typeof accountId})`);
-      return;
-    }
-
-    if (!message.a) {
-      console.warn(`[ACCOUNT] Mensagem ACCOUNT_UPDATE sem dados 'a' para conta ${accountId}`);
-      return;
-    }
-
-    // OBTER CONEXÃO COM BANCO
-    let connection = db;
-    if (!connection) {
-      connection = await getDatabaseInstance(accountId);
-      if (!connection) {
-        console.error(`[ACCOUNT] Não foi possível obter conexão com banco para conta ${accountId}`);
-        return;
-      }
-    }
-
-    const updateData = message.a;
-    const reason = updateData.m || 'UNKNOWN';
+    console.log(`[ORDER] 📝 Inserindo ordem externa: ${orderData.i} (${orderData.s})`);
     
-    console.log(`[ACCOUNT] Atualização de conta recebida para conta ${accountId} - Motivo: ${reason}`);
-
-    // PROCESSAR ATUALIZAÇÕES DE SALDO
-    if (updateData.B && Array.isArray(updateData.B)) {
-      await handleBalanceUpdates(connection, updateData.B, accountId, reason);
-    }
-
-    // PROCESSAR ATUALIZAÇÕES DE POSIÇÃO
-    if (updateData.P && Array.isArray(updateData.P)) {
-      await handlePositionUpdates(connection, updateData.P, accountId, reason);
-    }
-
-  } catch (error) {
-    console.error(`[ACCOUNT] Erro ao processar atualização da conta ${accountId}:`, error.message);
-  }
-}
-
-/**
- * Processa atualizações de saldo
- */
-async function handleBalanceUpdates(connection, balances, accountId, reason) {
-  try {
-    for (const balance of balances) {
-      const asset = balance.a;
-      const walletBalance = parseFloat(balance.wb || '0');
-      const crossWalletBalance = parseFloat(balance.cw || '0');
-      const balanceChange = parseFloat(balance.bc || '0');
+    // ✅ BUSCAR POSIÇÃO RELACIONADA
+    let positionId = null;
+    
+    // Se é reduce-only ou close position, deve ter uma posição existente
+    if (orderData.R === true || orderData.cp === true) {
+      const [existingPositions] = await db.query(
+        'SELECT id FROM posicoes WHERE simbolo = ? AND status = ? AND conta_id = ?',
+        [orderData.s, 'OPEN', accountId]
+      );
       
-      console.log(`[ACCOUNT] Saldo atualizado para ${asset}: Wallet=${walletBalance}, Cross=${crossWalletBalance}, Change=${balanceChange}`);
-      
-      // ATUALIZAR SALDO NA TABELA CONTAS SE FOR USDT
-      if (asset === 'USDT') {
-        try {
-          await connection.query(
-            `UPDATE contas SET 
-             saldo = ?,
-             ultima_atualizacao = NOW()
-             WHERE id = ?`,
-            [crossWalletBalance, accountId]
-          );
-          
-          console.log(`[ACCOUNT] Saldo USDT atualizado para conta ${accountId}: ${crossWalletBalance}`);
-        } catch (updateError) {
-          console.error(`[ACCOUNT] Erro ao atualizar saldo USDT:`, updateError.message);
-        }
+      if (existingPositions.length > 0) {
+        positionId = existingPositions[0].id;
+        console.log(`[ORDER] 🔗 Ordem externa vinculada à posição ${positionId}`);
       }
     }
+    
+    // ✅ DETECTAR TIPO DE ORDEM BOT
+    const orderBotType = determineOrderBotTypeFromExternal(orderData);
+    
+    // ✅ PREPARAR DADOS DA ORDEM
+    const orderInsertData = {
+      tipo_ordem: mapOrderType(orderData.o),
+      preco: parseFloat(orderData.p || '0'),
+      quantidade: parseFloat(orderData.q || '0'),
+      id_posicao: positionId,
+      status: orderData.X,
+      data_hora_criacao: formatDateForMySQL(new Date(orderData.T || Date.now())),
+      id_externo: orderData.i.toString(),
+      side: orderData.S,
+      simbolo: orderData.s,
+      tipo_ordem_bot: orderBotType,
+      target: null,
+      reduce_only: orderData.R === true ? 1 : 0,
+      close_position: orderData.cp === true ? 1 : 0,
+      last_update: formatDateForMySQL(new Date()),
+      orign_sig: 'EXTERNAL_ORDER', // Marcar como ordem externa
+      observacao: `Ordem externa detectada via WebSocket`,
+      preco_executado: parseFloat(orderData.ap || '0'),
+      quantidade_executada: parseFloat(orderData.z || '0'),
+      dados_originais_ws: JSON.stringify(orderData),
+      conta_id: accountId
+    };
+
+    // ✅ INSERIR NO BANCO
+    const insertQuery = `
+      INSERT INTO ordens (
+        tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao,
+        id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only,
+        close_position, last_update, orign_sig, observacao, preco_executado,
+        quantidade_executada, dados_originais_ws, conta_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `;
+    
+    const insertValues = [
+      orderInsertData.tipo_ordem, orderInsertData.preco, orderInsertData.quantidade,
+      orderInsertData.id_posicao, orderInsertData.status, orderInsertData.data_hora_criacao,
+      orderInsertData.id_externo, orderInsertData.side, orderInsertData.simbolo,
+      orderInsertData.tipo_ordem_bot, orderInsertData.target, orderInsertData.reduce_only,
+      orderInsertData.close_position, orderInsertData.last_update, orderInsertData.orign_sig,
+      orderInsertData.observacao, orderInsertData.preco_executado, orderInsertData.quantidade_executada,
+      orderInsertData.dados_originais_ws, orderInsertData.conta_id
+    ];
+
+    const [result] = await db.query(insertQuery, insertValues);
+    const orderDbId = result.insertId;
+    
+    console.log(`[ORDER] ✅ Ordem externa ${orderData.i} inserida no banco com ID ${orderDbId}`);
+    
+    // ✅ ENVIAR NOTIFICAÇÃO TELEGRAM PARA ORDENS IMPORTANTES
+    try {
+      if (shouldNotifyExternalOrder(orderBotType, orderData)) {
+        const message = formatOrderMessage(
+          orderData.s,
+          orderData.S,
+          orderBotType,
+          parseFloat(orderData.q || 0),
+          parseFloat(orderData.p || 0),
+          orderData.X,
+          'EXTERNA'
+        );
+        
+        await sendTelegramMessage(accountId, message);
+        console.log(`[ORDER] 📱 Notificação de ordem externa enviada`);
+      }
+    } catch (telegramError) {
+      console.warn(`[ORDER] ⚠️ Erro ao enviar notificação de ordem externa:`, telegramError.message);
+    }
+    
+    return orderDbId;
+    
   } catch (error) {
-    console.error(`[ACCOUNT] Erro ao processar atualizações de saldo:`, error.message);
+    console.error(`[ORDER] ❌ Erro ao inserir ordem externa ${orderData.i}:`, error.message);
+    throw error;
   }
 }
 
 /**
- * Processa atualizações de posições
+ * ✅ NOVA FUNÇÃO: Atualizar ordem existente
  */
-async function handlePositionUpdates(connection, positions, accountId, reason) {
+async function updateExistingOrder(db, orderData, accountId, existingOrder) {
   try {
-    for (const position of positions) {
-      const symbol = position.s;
-      const positionAmt = parseFloat(position.pa || '0');
-      const entryPrice = parseFloat(position.ep || '0');
-      const unrealizedPnl = parseFloat(position.up || '0');
-      const marginType = position.mt || 'cross';
-      const positionSide = position.ps || 'BOTH';
-      const isolatedWallet = parseFloat(position.iw || '0');
-      const breakEvenPrice = parseFloat(position.bep || '0');
-      const accumulatedRealized = parseFloat(position.cr || '0');
-      
-      console.log(`[ACCOUNT] Posição ${symbol} atualizada: ${positionAmt} @ ${entryPrice} (PnL: ${unrealizedPnl})`);
-      
-      // BUSCAR POSIÇÃO EXISTENTE NO BANCO
-      const [existingPositions] = await connection.query(
-        'SELECT * FROM posicoes WHERE simbolo = ? AND status = ? AND conta_id = ?',
-        [symbol, 'OPEN', accountId]
-      );
+    const orderId = orderData.i.toString();
+    
+    // ✅ ATUALIZAR DADOS DA ORDEM
+    await db.query(`
+      UPDATE ordens 
+      SET status = ?, 
+          quantidade_executada = ?,
+          preco_executado = ?,
+          dados_originais_ws = ?,
+          last_update = NOW()
+      WHERE id_externo = ? AND conta_id = ?
+    `, [
+      orderData.X, // status
+      parseFloat(orderData.z || 0), // quantidade executada
+      parseFloat(orderData.ap || 0), // preço executado
+      JSON.stringify(orderData), // dados originais do WebSocket
+      orderId,
+      accountId
+    ]);
+    
+    console.log(`[ORDER] ✅ Ordem ${orderId} atualizada: ${orderData.X}`);
+    
+  } catch (error) {
+    console.error(`[ORDER] ❌ Erro ao atualizar ordem ${orderData.i}:`, error.message);
+    throw error;
+  }
+}
 
-      if (Math.abs(positionAmt) <= 0.000001) {
-        // POSIÇÃO FECHADA
-        if (existingPositions.length > 0) {
-          for (const existingPos of existingPositions) {
-            await connection.query(
-              `UPDATE posicoes SET 
-               status = 'CLOSED',
-               quantidade = 0,
-               data_hora_fechamento = NOW(),
-               data_hora_ultima_atualizacao = NOW()
-               WHERE id = ?`,
-              [existingPos.id]
-            );
-            
-            console.log(`[ACCOUNT] Posição ${symbol} fechada via account update (ID: ${existingPos.id})`);
+/**
+ * ✅ NOVA FUNÇÃO: Determinar tipo de ordem bot para ordens externas
+ */
+function determineOrderBotTypeFromExternal(orderData) {
+  const orderType = orderData.o; // LIMIT, MARKET, STOP_MARKET, etc.
+  const reduceOnly = orderData.R === true;
+  const closePosition = orderData.cp === true;
+  const stopPrice = parseFloat(orderData.sp || '0');
+  
+  // ✅ DETECTAR BASEADO NAS CARACTERÍSTICAS
+  if (orderType === 'STOP_MARKET' && (closePosition || reduceOnly)) {
+    return 'STOP_LOSS';
+  }
+  
+  if (orderType === 'TAKE_PROFIT_MARKET' && (closePosition || reduceOnly)) {
+    return 'TAKE_PROFIT';
+  }
+  
+  if (orderType === 'LIMIT' && reduceOnly) {
+    return 'REDUCAO_PARCIAL';
+  }
+  
+  if (orderType === 'LIMIT' && !reduceOnly && !closePosition) {
+    return 'ENTRADA';
+  }
+  
+  if (orderType === 'MARKET' && !reduceOnly && !closePosition) {
+    return 'ENTRADA';
+  }
+  
+  if (orderType === 'MARKET' && (reduceOnly || closePosition)) {
+    return 'FECHAMENTO_MANUAL';
+  }
+  
+  return 'EXTERNA';
+}
+
+/**
+ * ✅ NOVA FUNÇÃO: Verificar se deve notificar ordem externa
+ */
+function shouldNotifyExternalOrder(orderBotType, orderData) {
+  const importantTypes = ['STOP_LOSS', 'TAKE_PROFIT', 'ENTRADA'];
+  const largeValue = parseFloat(orderData.q || 0) * parseFloat(orderData.p || 0) > 50; // > $50
+  
+  return importantTypes.includes(orderBotType) || largeValue;
+}
+
+// ✅ MODIFICAR FUNÇÃO EXISTENTE handleOrderUpdate
+async function handleOrderUpdate(accountId, orderUpdateData) {
+  try {
+    const db = await getDatabaseInstance();
+    
+    // ✅ SUPORTAR TANTO FORMATO DIRETO QUANTO FORMATO ENCAPSULADO
+    let orderData;
+    if (orderUpdateData.o) {
+      // Formato do USER_DATA_STREAM: { e: 'ORDER_TRADE_UPDATE', o: { ... } }
+      orderData = orderUpdateData.o;
+    } else if (orderUpdateData.i && orderUpdateData.s) {
+      // Formato direto: { i: orderId, s: symbol, ... }
+      orderData = orderUpdateData;
+    } else {
+      console.warn(`[ORDER] ⚠️ Formato de dados não reconhecido:`, orderUpdateData);
+      return;
+    }
+    
+    const orderId = orderData.i?.toString();
+    const symbol = orderData.s;
+    const orderStatus = orderData.X;
+    const executionType = orderData.x;
+    
+    if (!orderId || !symbol || !orderStatus) {
+      console.warn(`[ORDER] ⚠️ Dados incompletos: orderId=${orderId}, symbol=${symbol}, status=${orderStatus}`);
+      return;
+    }
+
+    console.log(`[ORDER] 📨 Processando atualização: ${orderId} (${symbol}) - ${executionType}/${orderStatus}`);
+
+    // ✅ 1. VERIFICAR SE ORDEM EXISTE NO BANCO
+    const [existingOrders] = await db.query(
+      'SELECT * FROM ordens WHERE id_externo = ? AND simbolo = ? AND conta_id = ?',
+      [orderId, symbol, accountId]
+    );
+
+    const orderExists = existingOrders.length > 0;
+    let shouldInsert = false;
+
+    if (!orderExists) {
+      console.log(`[ORDER] 🆕 Ordem externa detectada: ${orderId} - inserindo no banco...`);
+      shouldInsert = true;
+    }
+
+    // ✅ 2. INSERIR ORDEM SE NÃO EXISTE (ORDEM EXTERNA)
+    if (shouldInsert) {
+      await insertExternalOrder(db, orderData, accountId);
+    }
+
+    // ✅ 3. ATUALIZAR ORDEM EXISTENTE
+    await updateExistingOrder(db, orderData, accountId, existingOrders[0]);
+
+    // ✅ 4. VERIFICAR SE DEVE MOVER PARA HISTÓRICO
+    const finalStatuses = ['FILLED', 'CANCELED', 'CANCELLED', 'EXPIRED', 'REJECTED'];
+    
+    if (finalStatuses.includes(orderStatus)) {
+      console.log(`[ORDER] 🎯 Status final detectado (${orderStatus}) - iniciando movimento automático...`);
+      
+      // Aguardar um pouco para garantir que a atualização foi processada
+      await new Promise(resolve => setTimeout(resolve, 500));
+      
+      const moved = await autoMoveOrderOnCompletion(orderId, orderStatus, accountId);
+      
+      if (moved) {
+        console.log(`[ORDER] ✅ Ordem ${orderId} (${orderStatus}) movida automaticamente para histórico`);
+        
+        // Verificar fechamento de posição para ordens FILLED
+        if (orderStatus === 'FILLED') {
+          try {
+            const closureResult = await checkPositionClosureAfterOrderExecution(orderId, accountId);
+            if (closureResult) {
+              console.log(`[ORDER] 🏁 Posição fechada automaticamente após execução da ordem ${orderId}`);
+            }
+          } catch (closureError) {
+            console.error(`[ORDER] ⚠️ Erro ao verificar fechamento de posição:`, closureError.message);
           }
         }
       } else {
-        // POSIÇÃO ABERTA OU ATUALIZADA
-        const side = positionAmt > 0 ? 'BUY' : 'SELL';
-        const absPositionAmt = Math.abs(positionAmt);
-        
-        if (existingPositions.length > 0) {
-          // ATUALIZAR POSIÇÃO EXISTENTE
-          const existingPos = existingPositions[0];
-          
-          await connection.query(
-            `UPDATE posicoes SET 
-             quantidade = ?,
-             preco_entrada = ?,
-             preco_corrente = ?,
-             side = ?,
-             data_hora_ultima_atualizacao = NOW()
-             WHERE id = ?`,
-            [absPositionAmt, entryPrice, entryPrice, side, existingPos.id]
-          );
-          
-          console.log(`[ACCOUNT] Posição ${symbol} atualizada no banco: ${absPositionAmt} @ ${entryPrice}`);
-        } else {
-          // CRIAR NOVA POSIÇÃO (posição externa)
-          const positionData = {
-            simbolo: symbol,
-            quantidade: absPositionAmt,
-            preco_medio: entryPrice,
-            status: 'OPEN',
-            data_hora_abertura: formatDateForMySQL(new Date()),
-            side: side,
-            leverage: 1,
-            data_hora_ultima_atualizacao: formatDateForMySQL(new Date()),
-            preco_entrada: entryPrice,
-            preco_corrente: entryPrice,
-            orign_sig: 'EXTERNAL_POSITION',
-            quantidade_aberta: absPositionAmt,
-            conta_id: accountId
-          };
-          
-          const positionId = await insertPosition(connection, positionData);
-          console.log(`[ACCOUNT] Nova posição externa ${symbol} criada: ID ${positionId}`);
-        }
+        console.warn(`[ORDER] ⚠️ Falha ao mover ordem ${orderId} automaticamente`);
       }
     }
+
+    // ✅ 5. LOGS DETALHADOS
+    if (orderStatus === 'FILLED') {
+      const executedQty = parseFloat(orderData.z || 0);
+      const avgPrice = parseFloat(orderData.ap || 0);
+      const totalValue = executedQty * avgPrice;
+      
+      console.log(`[ORDER] 💰 Ordem FILLED processada:`);
+      console.log(`[ORDER]   - ID: ${orderId}`);
+      console.log(`[ORDER]   - Símbolo: ${symbol}`);
+      console.log(`[ORDER]   - Quantidade: ${executedQty}`);
+      console.log(`[ORDER]   - Preço médio: ${avgPrice}`);
+      console.log(`[ORDER]   - Valor total: ${totalValue.toFixed(2)} USDT`);
+    }
+
   } catch (error) {
-    console.error(`[ACCOUNT] Erro ao processar atualizações de posições:`, error.message);
+    console.error(`[ORDER] ❌ Erro ao processar atualização da ordem:`, error.message);
+  }
+}
+
+/**
+ * ✅ FUNÇÃO CORRIGIDA: Registrar handlers de ordem
+ */
+function registerOrderHandlers(accountId) {
+  try {
+    console.log(`[ORDER-HANDLERS] Registrando handlers de ordem para conta ${accountId}...`);
+    
+    // OBTER callbacks existentes
+    const existingCallbacks = websockets.getHandlers(accountId) || {};
+    
+    // ✅ CRIAR HANDLER ROBUSTO QUE ACEITA MÚLTIPLOS FORMATOS
+    const robustOrderHandler = async (messageOrOrder, db) => {
+      try {
+        // ✅ DETECTAR FORMATO DA MENSAGEM
+        let orderData = null;
+        
+        if (messageOrOrder && messageOrOrder.e === 'ORDER_TRADE_UPDATE' && messageOrOrder.o) {
+          // Formato USER_DATA_STREAM: { e: 'ORDER_TRADE_UPDATE', o: { i, s, X, ... } }
+          orderData = messageOrOrder.o;
+          console.log(`[ORDER-HANDLERS] 📨 Processando ORDER_TRADE_UPDATE: ${orderData.i} (${orderData.s})`);
+        } else if (messageOrOrder && messageOrOrder.i && messageOrOrder.s) {
+          // Formato direto: { i: orderId, s: symbol, X: status, ... }
+          orderData = messageOrOrder;
+          console.log(`[ORDER-HANDLERS] 📨 Processando ordem direta: ${orderData.i} (${orderData.s})`);
+        } else {
+          console.warn(`[ORDER-HANDLERS] ⚠️ Formato não reconhecido para conta ${accountId}:`, messageOrOrder);
+          return;
+        }
+        
+        // ✅ CHAMAR FUNÇÃO DE PROCESSAMENTO
+        await handleOrderUpdate(accountId, orderData);
+        
+      } catch (handlerError) {
+        console.error(`[ORDER-HANDLERS] ❌ Erro no handler robusto para conta ${accountId}:`, handlerError.message);
+      }
+    };
+    
+    // ✅ REGISTRAR HANDLER ROBUSTO
+    const orderCallbacks = {
+      ...existingCallbacks,
+      handleOrderUpdate: robustOrderHandler
+    };
+    
+    websockets.setMonitoringCallbacks(orderCallbacks, accountId);
+    
+    console.log(`[ORDER-HANDLERS] ✅ Handler robusto registrado para conta ${accountId}`);
+    return true;
+    
+  } catch (error) {
+    console.error(`[ORDER-HANDLERS] ❌ Erro ao registrar handlers para conta ${accountId}:`, error.message);
+    return false;
   }
 }
 
@@ -1047,21 +1233,49 @@ function registerOrderHandlers(accountId) {
   try {
     console.log(`[ORDER-HANDLERS] Registrando handlers de ordem para conta ${accountId}...`);
     
-    // MANTER callbacks existentes, adicionar apenas handleOrderUpdate
+    // OBTER callbacks existentes
     const existingCallbacks = websockets.getHandlers(accountId) || {};
     
+    // ✅ CRIAR HANDLER ROBUSTO QUE ACEITA MÚLTIPLOS FORMATOS
+    const robustOrderHandler = async (messageOrOrder, db) => {
+      try {
+        // ✅ DETECTAR FORMATO DA MENSAGEM
+        let orderData = null;
+        
+        if (messageOrOrder && messageOrOrder.e === 'ORDER_TRADE_UPDATE' && messageOrOrder.o) {
+          // Formato USER_DATA_STREAM: { e: 'ORDER_TRADE_UPDATE', o: { i, s, X, ... } }
+          orderData = messageOrOrder.o;
+          console.log(`[ORDER-HANDLERS] 📨 Processando ORDER_TRADE_UPDATE: ${orderData.i} (${orderData.s})`);
+        } else if (messageOrOrder && messageOrOrder.i && messageOrOrder.s) {
+          // Formato direto: { i: orderId, s: symbol, X: status, ... }
+          orderData = messageOrOrder;
+          console.log(`[ORDER-HANDLERS] 📨 Processando ordem direta: ${orderData.i} (${orderData.s})`);
+        } else {
+          console.warn(`[ORDER-HANDLERS] ⚠️ Formato não reconhecido para conta ${accountId}:`, messageOrOrder);
+          return;
+        }
+        
+        // ✅ CHAMAR FUNÇÃO DE PROCESSAMENTO
+        await handleOrderUpdate(accountId, orderData);
+        
+      } catch (handlerError) {
+        console.error(`[ORDER-HANDLERS] ❌ Erro no handler robusto para conta ${accountId}:`, handlerError.message);
+      }
+    };
+    
+    // ✅ REGISTRAR HANDLER ROBUSTO
     const orderCallbacks = {
       ...existingCallbacks,
-      handleOrderUpdate: (orderMsg, db) => handleOrderUpdate(orderMsg, accountId, db)
+      handleOrderUpdate: robustOrderHandler
     };
     
     websockets.setMonitoringCallbacks(orderCallbacks, accountId);
     
-    console.log(`[ORDER-HANDLERS] ✅ Handlers de ordem registrados para conta ${accountId}`);
+    console.log(`[ORDER-HANDLERS] ✅ Handler robusto registrado para conta ${accountId}`);
     return true;
     
   } catch (error) {
-    console.error(`[ORDER-HANDLERS] Erro ao registrar handlers de ordem para conta ${accountId}:`, error.message);
+    console.error(`[ORDER-HANDLERS] ❌ Erro ao registrar handlers para conta ${accountId}:`, error.message);
     return false;
   }
 }

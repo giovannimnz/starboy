@@ -271,9 +271,48 @@ try {
       }
       console.log(`[MONITOR] ✅ Account handlers inicializados para conta ${accountId}`);
       
+      // ✅ IMPORTANTE: VERIFICAR E CORRIGIR HANDLERS FINAIS
+      const currentHandlers = websockets.getHandlers(accountId);
+      console.log(`[MONITOR] 🔍 Verificando handlers registrados para conta ${accountId}:`);
+      console.log(`  - handleOrderUpdate: ${typeof currentHandlers.handleOrderUpdate}`);
+      console.log(`  - handleAccountUpdate: ${typeof currentHandlers.handleAccountUpdate}`);
+      
+      // ✅ GARANTIR QUE AMBOS OS HANDLERS ESTÃO FUNCIONANDO
+      if (typeof currentHandlers.handleOrderUpdate !== 'function') {
+        console.warn(`[MONITOR] ⚠️ handleOrderUpdate não está registrado corretamente, registrando manualmente...`);
+        
+        websockets.setMonitoringCallbacks({
+          ...currentHandlers,
+          handleOrderUpdate: async (orderMsg, db) => {
+            try {
+              // ✅ CHAMAR A FUNÇÃO CORRIGIDA
+              await orderHandlers.handleOrderUpdate(accountId, orderMsg, db);
+            } catch (error) {
+              console.error(`[MONITOR] ❌ Erro em handleOrderUpdate manual:`, error.message);
+            }
+          }
+        }, accountId);
+      }
+      
+      if (typeof currentHandlers.handleAccountUpdate !== 'function') {
+        console.warn(`[MONITOR] ⚠️ handleAccountUpdate não está registrado corretamente, registrando manualmente...`);
+        
+        websockets.setMonitoringCallbacks({
+          ...currentHandlers,
+          handleAccountUpdate: async (accountMsg, db) => {
+            try {
+              await accountHandlers.handleAccountUpdate(accountMsg, accountId, db);
+            } catch (error) {
+              console.error(`[MONITOR] ❌ Erro em handleAccountUpdate manual:`, error.message);
+            }
+          }
+        }, accountId);
+      }
+      
       // VERIFICAR STATUS FINAL DOS HANDLERS
-      const orderHandlersOK = orderHandlers.areHandlersRegistered(accountId);
-      const accountHandlersOK = accountHandlers.areAccountHandlersRegistered(accountId);
+      const finalHandlers = websockets.getHandlers(accountId);
+      const orderHandlersOK = typeof finalHandlers.handleOrderUpdate === 'function';
+      const accountHandlersOK = typeof finalHandlers.handleAccountUpdate === 'function';
       
       console.log(`[MONITOR] Status final dos handlers para conta ${accountId}:`);
       console.log(`  - Order handlers: ${orderHandlersOK ? '✅' : '❌'}`);
@@ -283,18 +322,16 @@ try {
         throw new Error('Nem todos os handlers foram registrados corretamente');
       }
       
-      // ADICIONAR callback de preço (mantém como estava mas CORRIGIDO)
-      const currentHandlers = websockets.getHandlers(accountId);
-      if (!currentHandlers.onPriceUpdate) {
+      // ADICIONAR callback de preço (mantém como estava)
+      if (!finalHandlers.onPriceUpdate) {
         console.log(`[MONITOR] Adicionando callback de preço para conta ${accountId}...`);
         websockets.setMonitoringCallbacks({
-          ...currentHandlers,
+          ...finalHandlers,
           onPriceUpdate: async (symbol, price, db) => {
             try {
-              // ✅ USAR FUNÇÃO MELHORADA DO enhancedMonitoring
+              const { updatePositionPricesWithTrailing } = require('./enhancedMonitoring');
               await updatePositionPricesWithTrailing(db, symbol, price, accountId);
               
-              // ✅ ADICIONAR TAMBÉM A FUNÇÃO ORIGINAL DO priceMonitoring
               const { onPriceUpdate } = require('./priceMonitoring');
               await onPriceUpdate(symbol, price, db, accountId);
             } catch (error) {
