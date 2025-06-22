@@ -88,7 +88,7 @@ def run_scheduler():
     """
     Executa o scheduler em uma thread separada para tarefas agendadas.
     """
-    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [SCHEDULER] Iniciando agendador de brackets e exchange info...")
+    #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [SCHEDULER] Iniciando agendador de brackets e exchange info...")
     
     # Agendamento para chamar as funções importadas
     schedule.every().day.at("00:00").do(lambda: (update_leverage_brackets(), update_exchange_info_database(CURRENT_EXCHANGE)))
@@ -143,7 +143,7 @@ def initialize_bracket_scheduler():
         # Inicia o scheduler em uma thread para não bloquear o programa principal
         scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
         scheduler_thread.start()
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] ✅ Agendador iniciado com sucesso.")
+        #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] ✅ Agendador iniciado com sucesso.")
 
     except Exception as e:
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] ❌ Erro crítico ao inicializar o agendador: {e}")
@@ -1160,13 +1160,13 @@ async def main():
 
     # 2. Inicializa o analisador de padrões DIVAP
     if ENABLE_DIVAP_VERIFICATION:
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🔍 Inicializando analisador DIVAP...")
+        #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🔍 Inicializando analisador DIVAP...")
         initialize_divap_analyzer()
     else:
         print(f"[{datetime.now().strftime('%d-%m-%S')}] ⚠️ Verificação DIVAP DESATIVADA")
 
     # 3. Conecta o cliente Telegram
-    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 📱 Conectando cliente Telegram...")
+    #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 📱 Conectando cliente Telegram...")
     await client.start()
     print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Cliente Telegram conectado com sucesso")
 
@@ -1210,21 +1210,21 @@ async def main():
         return
 
     # ===== REGISTRAR HANDLER DE MENSAGENS COM DEBUG =====
-    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 📨 Registrando handler de mensagens...")
+    #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 📨 Registrando handler de mensagens...")
     
     # Registrar handler para TODOS os grupos acessíveis
     @client.on(events.NewMessage(chats=grupos_acessiveis))
     async def message_handler_wrapper(event):
         await debug_message_handler(event)
     
-    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Handler registrado para {len(grupos_acessiveis)} grupo(s)")
-    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🎯 Grupos monitorados: {grupos_acessiveis}")
-    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 📤 Grupo destino: {GRUPO_DESTINO_ID}")
+    #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Handler registrado para {len(grupos_acessiveis)} grupo(s)")
+    #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🎯 Grupos monitorados: {grupos_acessiveis}")
+    #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 📤 Grupo destino: {GRUPO_DESTINO_ID}")
     print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🔄 Verificação DIVAP: {'ATIVADA' if ENABLE_DIVAP_VERIFICATION else 'DESATIVADA'}")
     
     # Testar envio de mensagem (opcional - remover em produção)
     try:
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🧪 Testando envio para grupo destino...")
+        #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🧪 Testando envio para grupo destino...")
         test_msg = await client.send_message(GRUPO_DESTINO_ID, "🤖 Bot DIVAP iniciado e monitorando mensagens...")
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Teste de envio bem-sucedido (Msg ID: {test_msg.id})")
     except Exception as e:
