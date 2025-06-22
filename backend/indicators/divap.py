@@ -1115,7 +1115,7 @@ async def handle_new_message(event):
                             message_source=message_source                         
                         )
                         
-                        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Processo completo - sinal enviado e salvo!")
+                        print(f"\n[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Processo completo - sinal enviado e salvo!")
                     else:
                         print(f"   ❌ Falha ao salvar sinal no banco")
 
@@ -1149,7 +1149,7 @@ async def handle_new_message(event):
                         message_source=message_source
                     )
                     
-                    print(f"                 📝 Sinal cancelado salvo no banco")
+                    print(f"\n                 📝 Sinal cancelado salvo no banco")
 
             else: 
                 print(f"   ❌ Não foi possível extrair trade info da mensagem")
