@@ -1,6 +1,13 @@
 import asyncio
+import sys
 from datetime import datetime, timezone, timedelta
 from telethon import TelegramClient
+from pathlib import Path
+
+# ✅ CORRIGIR: Adicionar o diretório pai ao path para encontrar divap.py
+sys.path.append(str(Path(__file__).parent.parent))
+
+# ✅ AGORA IMPORTAR do divap.py
 from divap import pers_api_id, pers_api_hash
 
 async def test_group_access():
@@ -36,6 +43,12 @@ async def test_group_access():
                 print(f"   📅 Mensagem mais recente: {messages[0].date}")
                 print(f"   📅 Mensagem mais antiga (das 10): {messages[-1].date}")
                 
+                # ✅ ADICIONAR: Mostrar preview das mensagens
+                print(f"\n📝 Preview das mensagens:")
+                for i, msg in enumerate(messages[:3]):  # Mostrar apenas as 3 mais recentes
+                    preview = msg.text[:100] + "..." if len(msg.text) > 100 else msg.text
+                    print(f"   {i+1}. {msg.date}: {preview}")
+                
         except Exception as e:
             print(f"❌ Erro ao acessar mensagens: {e}")
             return
@@ -57,8 +70,41 @@ async def test_group_access():
             
             print(f"✅ Encontradas {len(messages_date)} mensagens em 20/06/2025")
             
+            # ✅ ADICIONAR: Se encontrou mensagens, mostrar algumas
+            if messages_date:
+                print(f"\n📝 Mensagens de 20/06/2025:")
+                for i, msg in enumerate(messages_date[:3]):  # Mostrar apenas as 3 primeiras
+                    preview = msg.text[:100] + "..." if len(msg.text) > 100 else msg.text
+                    print(f"   {i+1}. {msg.date}: {preview}")
+            
         except Exception as e:
             print(f"❌ Erro ao acessar mensagens por data: {e}")
+        
+        # ✅ TESTE 4: Teste com período mais amplo
+        print("\n🔍 Testando período mais amplo (últimos 7 dias)...")
+        try:
+            data_limite = datetime.now(timezone.utc) - timedelta(days=7)
+            messages_week = []
+            
+            async for message in client.iter_messages(grupo_id, limit=100):
+                if message.date >= data_limite and message.text:
+                    messages_week.append(message)
+            
+            print(f"✅ Encontradas {len(messages_week)} mensagens nos últimos 7 dias")
+            
+            # Agrupar por dia
+            if messages_week:
+                days_count = {}
+                for msg in messages_week:
+                    day_key = msg.date.date()
+                    days_count[day_key] = days_count.get(day_key, 0) + 1
+                
+                print(f"\n📊 Distribuição por dia:")
+                for day, count in sorted(days_count.items(), reverse=True):
+                    print(f"   {day}: {count} mensagens")
+            
+        except Exception as e:
+            print(f"❌ Erro ao acessar mensagens da semana: {e}")
     
     finally:
         await client.disconnect()
