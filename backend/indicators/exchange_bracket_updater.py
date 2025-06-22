@@ -231,7 +231,7 @@ def test_database_connection():
             count = cursor.fetchone()[0]
             cursor.close()
             conn.close()
-            print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] ✅ Conexão com banco OK ({count} registros em 'alavancagem')")
+            print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] ✅ Conexão com banco OK ({count} registros em 'exchange_leverage_brackets')")
             return True
         else:
             print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [TEST] ❌ Falha na conexão com banco")
