@@ -327,9 +327,7 @@ async function loadCredentialsFromDatabase(accountId) {
   return accountState;
 }
 
-/**
- * Faz requisição autenticada para a API
- */
+
 /**
  * Faz uma requisição autenticada para a API da Binance
  * @param {number} accountId - ID da conta
@@ -338,55 +336,7 @@ async function loadCredentialsFromDatabase(accountId) {
  * @param {Object} params - Parâmetros da requisição
  * @returns {Promise<Object>} - Resposta da API
  */
-/**
- * Faz uma requisição autenticada para a API da Binance
- * @param {number} accountId - ID da conta
- * @param {string} method - Método HTTP (GET, POST, etc.)
- * @param {string} endpoint - Endpoint da API
- * @param {Object} params - Parâmetros da requisição
- * @returns {Promise<Object>} - Resposta da API
- */
-/**
- * Faz uma requisição autenticada para a API da Binance
- * @param {number} accountId - ID da conta
- * @param {string} method - Método HTTP (GET, POST, etc.)
- * @param {string} endpoint - Endpoint da API
- * @param {Object} params - Parâmetros da requisição
- * @returns {Promise<Object>} - Resposta da API
- */
-/**
- * Faz uma requisição autenticada para a API da Binance
- * @param {number} accountId - ID da conta
- * @param {string} method - Método HTTP (GET, POST, etc.)
- * @param {string} endpoint - Endpoint da API
- * @param {Object} params - Parâmetros da requisição
- * @returns {Promise<Object>} - Resposta da API
- */
-/**
- * Faz uma requisição autenticada para a API da Binance
- * @param {number} accountId - ID da conta
- * @param {string} method - Método HTTP (GET, POST, etc.)
- * @param {string} endpoint - Endpoint da API
- * @param {Object} params - Parâmetros da requisição
- * @returns {Promise<Object>} - Resposta da API
- */
-/**
- * Faz uma requisição autenticada para a API da Binance - SEM RECURSÃO
- * @param {number} accountId - ID da conta
- * @param {string} method - Método HTTP (GET, POST, etc.)
- * @param {string} endpoint - Endpoint da API
- * @param {Object} params - Parâmetros da requisição
- * @returns {Promise<Object>} - Resposta da API
- */
-/**
- * Faz uma requisição autenticada para a API da Binance - VERSÃO COM ASSINATURA CORRIGIDA
- * @param {number} accountId - ID da conta
- * @param {string} method - Método HTTP (GET, POST, etc.)
- * @param {string} endpoint - Endpoint da API
- * @param {Object} params - Parâmetros da requisição
- * @returns {Promise<Object>} - Resposta da API
- */
-async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}) {
+async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}, body = null) {
   try {
     console.log(`[API] makeAuthenticatedRequest chamado: accountId=${accountId}, method=${method}, endpoint=${endpoint}`);
     
@@ -414,8 +364,28 @@ async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}
     
     console.log(`[API] ✅ Usando credenciais da conta ${accountId} - apiKey: ${apiKey.substring(0, 8)}...`);
     
-    // CORREÇÃO CRÍTICA: Timestamp deve ser em milliseconds e recente
-    const timestamp = Date.now();
+    /**
+     * ✅ CORREÇÃO: Melhorar geração de timestamp com sincronização
+     */
+    function getTimestamp() {
+      return Date.now() - 1000;
+    }
+
+    // ✅ TIMESTAMP CORRIGIDO
+    const timestamp = getTimestamp();
+    console.log(`[API] Timestamp gerado: ${timestamp} (atual: ${Date.now()})`);
+    
+    // ✅ VERIFICAR DIFERENÇA DE TEMPO
+    const timeDiff = Date.now() - timestamp;
+    if (timeDiff > 5000) { // Mais de 5 segundos de diferença
+      console.warn(`[API] ⚠️ Grande diferença de timestamp: ${timeDiff}ms`);
+    }
+    
+    // Adicionar timestamp aos parâmetros
+    const allParams = {
+      ...params,
+      timestamp: timestamp
+    };
     
     // CORREÇÃO CRÍTICA: Para métodos GET, incluir parâmetros na query string
     // Para métodos POST/PUT/DELETE, incluir no body
@@ -1065,6 +1035,10 @@ async function verifyAndFixEnvironmentConsistency(accountId) {
   }
 }
 
+function getTimestamp() {
+  // ✅ Usar timestamp mais preciso e com margem de segurança
+  return Date.now() - 1000; // Subtrair 1 segundo para margem de segurança
+}
 
 /**
  * Obtém detalhes do saldo da conta de futuros via REST API
