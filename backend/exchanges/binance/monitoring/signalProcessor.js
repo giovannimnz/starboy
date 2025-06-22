@@ -991,7 +991,7 @@ async function checkCanceledSignals(accountId) {
       try {
         console.log(`[SIGNAL] 📢 Enviando mensagem de cancelamento para sinal ${signal.id}`);
         
-        const side = signal.side === 'BUY' || signal.side === 'COMPRA' ? 'COMPRA' : 'VENDA';
+        const side = signal.side === 'BUY' || signal.side === '🟢 COMPRA' ? 'COMPRA' : '🔴 VENDA';
         const motivo = signal.error_message || 'Sinal cancelado pelo sistema';
         
         // ✅ FORMATAR TPS SEM ZEROS À DIREITA
