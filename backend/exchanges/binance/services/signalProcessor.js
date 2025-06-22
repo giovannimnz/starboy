@@ -500,36 +500,30 @@ async function checkNewTrades(accountId) {
  */
 async function validateSignalBeforeProcessing(signal, accountId, db) {
   try {
-    // ✅ 1. Verificar se já expirou
+    // ✅ 1. Verificar se já expirou (sem REST)
     if (isSignalExpired(signal)) {
       return { isValid: false, reason: 'Sinal expirado antes do processamento' };
     }
     
-    // ✅ 2. Verificar se já existe posição
-    const openPositions = await api.getAllOpenPositions(accountId);
-    const existingPosition = openPositions.find(pos => pos.simbolo === signal.symbol);
-    
-    if (existingPosition) {
+    // ✅ 2. Verificar se já existe posição (banco de dados local)
+    const positionExists = await checkPositionExists(db, signal.symbol, accountId);
+    if (positionExists) {
       return { isValid: false, reason: `Posição já existe para ${signal.symbol}` };
     }
     
-    // ✅ 3. Verificar saldo disponível (estimativa rápida)
-    const availableBalance = await api.getAvailableBalance(accountId);
-    const estimatedCost = calculateEstimatedPositionCost(signal);
-    
-    if (availableBalance < estimatedCost) {
-      return { isValid: false, reason: `Saldo insuficiente: ${availableBalance} < ${estimatedCost}` };
+    // ✅ 3. Verificar Stop Loss usando cache de preços (WebSocket)
+    const cachedPrice = getPriceFromCache(signal.symbol, accountId);
+    if (cachedPrice && isStopLossAlreadyHit(signal, cachedPrice.price)) {
+      return { isValid: false, reason: `Stop loss já atingido: preço=${cachedPrice.price}, sl=${signal.sl_price}` };
     }
     
-    // ✅ 4. Verificar se stop loss já foi atingido
-    const currentPrice = await api.getPrice(signal.symbol, accountId);
+    // ✅ 4. Verificar máximo de posições (banco local)
+    const [positionCount] = await db.query(
+      'SELECT COUNT(*) as count FROM posicoes WHERE conta_id = ? AND status = "OPEN"',
+      [accountId]
+    );
     
-    if (isStopLossAlreadyHit(signal, currentPrice)) {
-      return { isValid: false, reason: `Stop loss já atingido: preço=${currentPrice}, sl=${signal.sl_price}` };
-    }
-    
-    // ✅ 5. Verificar máximo de posições
-    if (openPositions.length >= 5) { // ou valor configurável
+    if (positionCount[0].count >= 5) {
       return { isValid: false, reason: 'Limite máximo de posições atingido' };
     }
     
