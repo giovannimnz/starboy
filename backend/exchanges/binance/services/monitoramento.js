@@ -334,28 +334,35 @@ try {
       }
       
       // ADICIONAR callback de preço (mantém como estava)
-  if (!finalHandlers.onPriceUpdate) {
-    console.log(`[MONITOR] Adicionando callback de preço para conta ${accountId}...`);
-    websockets.setMonitoringCallbacks({
-      ...finalHandlers,
-      onPriceUpdate: async (symbol, price, db) => {
-        try {
-          // ✅ DEBUG: Mostrar que WebSocket está funcionando
-          console.log(`[MONITOR] 📊 Preço via WebSocket: ${symbol} = ${price} (conta ${accountId})`);
-          
-          const { updatePositionPricesWithTrailing } = require('./enhancedMonitoring');
-          await updatePositionPricesWithTrailing(db, symbol, price, accountId);
-          
-          const { onPriceUpdate } = require('./signalProcessor');
-          await onPriceUpdate(symbol, price, db, accountId);
-        } catch (error) {
-          console.error(`[MONITOR] ⚠️ Erro em onPriceUpdate para ${symbol} conta ${accountId}:`, error.message);
+if (!finalHandlers.onPriceUpdate) {
+  console.log(`[MONITOR] Adicionando callback de preço para conta ${accountId}...`);
+  websockets.setMonitoringCallbacks({
+    ...finalHandlers,
+    onPriceUpdate: async (symbol, price, db) => {
+      try {
+        // ✅ DEBUG: Mostrar que WebSocket está funcionando
+        console.log(`[MONITOR] 📊 Preço via WebSocket: ${symbol} = ${price} (conta ${accountId})`);
+        
+        // ✅ CORREÇÃO: Garantir que db está disponível
+        let dbConnection = db;
+        if (!dbConnection) {
+          console.log(`[MONITOR] ⚠️ DB não fornecido, obtendo instância...`);
+          dbConnection = await getDatabaseInstance(accountId);
         }
+        
+        const { updatePositionPricesWithTrailing } = require('./enhancedMonitoring');
+        await updatePositionPricesWithTrailing(dbConnection, symbol, price, accountId);
+        
+        const { onPriceUpdate } = require('./signalProcessor');
+        await onPriceUpdate(symbol, price, dbConnection, accountId);
+      } catch (error) {
+        console.error(`[MONITOR] ⚠️ Erro em onPriceUpdate para ${symbol} conta ${accountId}:`, error.message);
       }
-    }, accountId);
-    
-    console.log(`[MONITOR] ✅ Callback de preço adicionado para conta ${accountId}`);
-  }
+    }
+  }, accountId);
+  
+  console.log(`[MONITOR] ✅ Callback de preço adicionado para conta ${accountId}`);
+}
   
 } catch (handlerError) {
   console.error(`[MONITOR] ❌ Erro crítico ao configurar handlers para conta ${accountId}:`, handlerError.message);

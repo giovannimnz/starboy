@@ -706,7 +706,7 @@ function calculateEstimatedPositionCost(signal) {
 }
 
 /**
- * ✅ VERSÃO CORRIGIDA: onPriceUpdate com log controlado (1x por minuto)
+ * ✅ VERSÃO CORRIGIDA: onPriceUpdate com gatilho corrigido
  */
 async function onPriceUpdate(symbol, currentPrice, db, accountId) {
   try {
@@ -722,7 +722,7 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
     const { updatePositionPricesWithTrailing } = require('./enhancedMonitoring');
     await updatePositionPricesWithTrailing(db, symbol, currentPrice, accountId);
     
-    // 3. VERIFICAR SINAIS AGUARDANDO ACIONAMENTO
+    // ✅ 3. VERIFICAR SINAIS AGUARDANDO ACIONAMENTO - CORREÇÃO CRÍTICA
     const [pendingSignals] = await db.query(`
       SELECT id, symbol, side, entry_price, sl_price, timeframe, 
              created_at, timeout_at, max_lifetime_minutes, chat_id
@@ -733,8 +733,9 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
       ORDER BY created_at ASC
     `, [symbol, accountId]);
     
-    if (pendingSignals.length === 0) {
-      return; // Sem sinais pendentes
+    // ✅ DEBUG: Mostrar quantos sinais foram encontrados
+    if (pendingSignals.length > 0) {
+      console.log(`[SIGNAL] 🔍 Encontrados ${pendingSignals.length} sinais aguardando para ${symbol}`);
     }
     
     const now = new Date();
@@ -743,6 +744,9 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
       const entryPrice = parseFloat(signal.entry_price || 0);
       const slPrice = parseFloat(signal.sl_price || 0);
       const side = signal.side.toUpperCase();
+      
+      // ✅ DEBUG: Log para cada sinal verificado
+      console.log(`[SIGNAL] 🔍 Verificando sinal ${signal.id}: ${side} ${symbol} entrada=${entryPrice}, atual=${currentPrice}, sl=${slPrice}`);
       
       // 4. VERIFICAR TIMEOUT PRIMEIRO
       let isTimedOut = false;
@@ -754,9 +758,11 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
         
         if (ageMs > maxLifetime) {
           isTimedOut = true;
+          console.log(`[SIGNAL] ⏰ Sinal ${signal.id} expirou por timeout: ${ageMs}ms > ${maxLifetime}ms`);
         }
       } else if (signal.timeout_at && now >= new Date(signal.timeout_at)) {
         isTimedOut = true;
+        console.log(`[SIGNAL] ⏰ Sinal ${signal.id} expirou por timeout_at`);
       }
       
       // 5. VERIFICAR SE STOP LOSS FOI ATINGIDO
@@ -767,33 +773,40 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
         } else if (side === 'SELL' || side === 'VENDA') {
           stopLossHit = currentPrice >= slPrice;
         }
+        
+        if (stopLossHit) {
+          console.log(`[SIGNAL] 🛑 Stop loss atingido para sinal ${signal.id}: ${currentPrice} vs ${slPrice}`);
+        }
       }
       
-      // 6. VERIFICAR GATILHO DE ENTRADA (LÓGICA CORRETA)
+      // ✅ 6. VERIFICAR GATILHO DE ENTRADA - LÓGICA CORRIGIDA E COM DEBUG
       let entryTriggered = false;
       if (entryPrice > 0) {
         if (side === 'BUY' || side === 'COMPRA') {
-          // ✅ Para LONG, só entra quando preço ULTRAPASSA (>) a entrada
+          // ✅ CORREÇÃO: Para LONG, só entra quando preço ULTRAPASSA (>) a entrada
           entryTriggered = currentPrice > entryPrice;
+          console.log(`[SIGNAL] 🔍 LONG ${symbol}: ${currentPrice} > ${entryPrice} = ${entryTriggered}`);
         } else if (side === 'SELL' || side === 'VENDA') {
-          // ✅ Para SHORT, só entra quando preço FICA ABAIXO (<) da entrada
+          // ✅ CORREÇÃO: Para SHORT, só entra quando preço FICA ABAIXO (<) da entrada
           entryTriggered = currentPrice < entryPrice;
+          console.log(`[SIGNAL] 🔍 SHORT ${symbol}: ${currentPrice} < ${entryPrice} = ${entryTriggered}`);
         }
       }
       
       // 7. TOMAR AÇÕES BASEADAS NAS VERIFICAÇÕES
       if (isTimedOut) {
-        console.log(`[SIGNAL] ⏰ Sinal ${signal.id} expirou (timeout)`);
+        console.log(`[SIGNAL] ⏰ Cancelando sinal ${signal.id} por timeout`);
         await cancelSignal(db, signal.id, 'TIMEOUT_ENTRY', 
           `Sinal expirou (timeframe: ${signal.timeframe})`, accountId);
         
       } else if (stopLossHit) {
-        console.log(`[SIGNAL] 🛑 Stop loss atingido antes da entrada para sinal ${signal.id}`);
+        console.log(`[SIGNAL] 🛑 Cancelando sinal ${signal.id} por stop loss atingido`);
         await cancelSignal(db, signal.id, 'SL_BEFORE_ENTRY', 
           `Stop loss (${slPrice}) atingido antes da entrada (preço atual: ${currentPrice})`, accountId);
         
       } else if (entryTriggered) {
-        console.log(`[SIGNAL] 🚀 Gatilho de entrada ativado para sinal ${signal.id}! Preço atual: ${currentPrice}, Entrada: ${entryPrice}`);
+        console.log(`[SIGNAL] 🚀 GATILHO ATIVADO! Executando entrada para sinal ${signal.id}!`);
+        console.log(`[SIGNAL] 📊 Detalhes: ${side} ${symbol} - Preço atual: ${currentPrice}, Entrada: ${entryPrice}`);
         
         try {
           // Atualizar status para PROCESSANDO
@@ -801,6 +814,8 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
             'UPDATE webhook_signals SET status = ?, updated_at = NOW() WHERE id = ?',
             ['PROCESSANDO', signal.id]
           );
+          
+          console.log(`[SIGNAL] 🔄 Status atualizado para PROCESSANDO, chamando executeLimitMakerEntry...`);
           
           // ✅ ENVIAR PARA limitMakerEntry
           const entryResult = await executeLimitMakerEntry(signal, currentPrice, accountId);
@@ -823,11 +838,13 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
                                `🆔 Sinal: #${signal.id}`;
                 
                 await sendTelegramMessage(accountId, message);
+                console.log(`[SIGNAL] 📱 Notificação enviada para sinal ${signal.id}`);
               } catch (telegramError) {
                 console.warn(`[SIGNAL] ⚠️ Erro ao enviar notificação de execução:`, telegramError.message);
               }
             }
           } else {
+            console.error(`[SIGNAL] ❌ Falha na execução da entrada:`, entryResult);
             throw new Error(entryResult?.error || 'Falha na execução da entrada');
           }
           
