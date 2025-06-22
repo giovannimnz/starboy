@@ -387,20 +387,34 @@ function listActiveBots() {
 function formatEntryMessage(signal, filledQuantity, averagePrice, totalValue) {
   const side = signal.side.toUpperCase() === 'BUY' || signal.side.toUpperCase() === 'COMPRA' ? '🟢 COMPRA' : '🔴 VENDA';
   const leverage = signal.leverage || 1;
-  
-  return `🎯 <b>ENTRADA EXECUTADA</b>\n\n` +
-         `📊 <b>${signal.symbol}</b>\n` +
-         `${side} | ${leverage}x\n\n` +
-         `💰 <b>Execução:</b>\n` +
-         `├ Quantidade: ${filledQuantity.toFixed(6)}\n` +
-         `├ Preço médio: $${averagePrice.toFixed(4)}\n` +
-         `└ Valor total: $${totalValue.toFixed(2)}\n\n` +
-         `🎯 <b>Alvos:</b>\n` +
-         `├ 🟢 TP1: $${signal.tp1_price || 'N/A'}\n` +
-         `├ 🟢 TP2: $${signal.tp2_price || 'N/A'}\n` +
-         `├ 🟢 TP3: $${signal.tp3_price || 'N/A'}\n` +
-         `└ 🔴 SL: $${signal.sl_price || 'N/A'}\n\n` +
-         `⏰ ${new Date().toLocaleString('pt-BR')}`;
+
+  // Alvos (TPs)
+  const tps = [
+    signal.tp1_price, signal.tp2_price, signal.tp3_price,
+    signal.tp4_price, signal.tp5_price || signal.tp_price
+  ].filter(tp => tp !== undefined && tp !== null);
+
+  let tpsText = '';
+  tps.forEach((tp, idx) => {
+    const tpEmoji = idx < tps.length - 1 ? '🟢' : '🔵';
+    tpsText += `├ ${tpEmoji} TP${idx + 1}: $${tp}\n`;
+  });
+
+  // SL
+  tpsText += `└ 🔴 SL: $${signal.sl_price || 'N/A'}\n`;
+
+  return (
+    `🎯 <b>ENTRADA EXECUTADA</b>\n\n` +
+    `📊 <b>${signal.symbol}</b>\n` +
+    `${side} | ${leverage}x\n\n` +
+    `💰 <b>Execução:</b>\n` +
+    `├ Quantidade: ${filledQuantity.toFixed(6)}\n` +
+    `├ Preço médio: $${averagePrice.toFixed(4)}\n` +
+    `└ Valor total: $${totalValue.toFixed(2)}\n\n` +
+    `🎯 <b>Alvos:</b>\n` +
+    `${tpsText}\n` +
+    `⏰ ${new Date().toLocaleString('pt-BR')}`
+  );
 }
 
 /**
@@ -503,6 +517,40 @@ function formatAlertMessage(title, message, level = 'INFO') {
   return `${icons[level] || 'ℹ️'} <b>${title}</b>\n\n${message}\n\n⏰ ${new Date().toLocaleString('pt-BR')}`;
 }
 
+/**
+ * Formata mensagem de sinal registrado
+ */
+function formatSignalRegisteredMessage(signal, grupoOrigemNome = 'Divap') {
+  const side = signal.side.toUpperCase() === 'BUY' || signal.side.toUpperCase() === 'COMPRA' ? '🟢 COMPRA' : '🔴 VENDA';
+  const leverage = signal.leverage || 1;
+  const capital = signal.capital_pct ? `${parseFloat(signal.capital_pct).toFixed(2)}%` : 'N/A';
+  const timeframe = signal.timeframe || '15m';
+  const nomeGrupo = grupoOrigemNome || 'Divap';
+
+  // Alvos (TPs)
+  const tps = [
+    signal.tp1_price, signal.tp2_price, signal.tp3_price,
+    signal.tp4_price, signal.tp5_price || signal.tp_price
+  ].filter(tp => tp !== undefined && tp !== null);
+
+  let tpsText = '';
+  tps.forEach((tp, idx) => {
+    tpsText += `\nALVO ${idx + 1}: ${tp}`;
+  });
+
+  return (
+    `#${signal.symbol}  ${side.replace('🟢 ', '').replace('🔴 ', '')}\n` +
+    `${timeframe}\n` +
+    `${nomeGrupo}\n\n` +
+    `⚡ ALAVANCAGEM: ${leverage}x\n` +
+    `💼 MARGEM: CRUZADA\n` +
+    `💸 CAPITAL: ${capital}\n\n` +
+    `🎯 ENTRADA: ${signal.entry_price}\n` +
+    `${tpsText}\n\n` +
+    `🛡️ STOP LOSS: ${signal.sl_price}`
+  );
+}
+
 // ✅ ATUALIZAR module.exports PARA INCLUIR AS NOVAS FUNÇÕES:
 module.exports = {
   initializeTelegramBot,
@@ -517,5 +565,6 @@ module.exports = {
   formatOrderMessage,
   formatBalanceMessage,
   formatPositionClosedMessage,
-  formatAlertMessage
+  formatAlertMessage,
+  formatSignalRegisteredMessage
 };

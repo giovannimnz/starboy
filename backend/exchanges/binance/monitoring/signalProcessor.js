@@ -2,7 +2,7 @@ const api = require('../api/rest');
 const websockets = require('../api/websocket');
 const { getDatabaseInstance } = require('../../../core/database/conexao');
 const { executeLimitMakerEntry } = require('../strategies/limitMakerEntry');
-const { sendTelegramMessage } = require('../telegram/telegramBot');
+const { sendTelegramMessage, formatSignalRegisteredMessage } = require('../telegram/telegramBot');
 
 // Set para rastrear sinais em processamento
 const processingSignals = new Set();
@@ -345,20 +345,9 @@ async function processSignal(signal, db, accountId) {
     // 5. ENVIAR NOTIFICAÇÃO TELEGRAM
     if (signal.chat_id) {
       try {
-        const triggerCondition = (signal.side.toUpperCase() === 'BUY' || signal.side.toUpperCase() === 'COMPRA')
-          ? `Acima de ${signal.entry_price}`
-          : `Abaixo de ${signal.entry_price}`;
-        
-        const message = `🔄 Sinal Registrado para ${signal.symbol}\n\n` +
-                       `🆔 Sinal Ref: WEBHOOK_${signalId}\n` +
-                       `Direção: ${signal.side.charAt(0).toUpperCase() + signal.side.slice(1).toLowerCase()}\n` +
-                       `Alavancagem: ${signal.leverage}x\n\n` +
-                       `Entrada: ${triggerCondition}\n` +
-                       `TP: ${signal.tp_price}\n` +
-                       `SL: ${signal.sl_price}\n\n` +
-                       `📡 Monitoramento via WebSocket ativo\n` +
-                       `⏳ Aguardando gatilho de preço...`;
-        
+        // Use o nome do grupo se disponível, senão "Divap"
+        const grupoOrigemNome = signal.grupo_origem_nome || 'Divap';
+        const message = formatSignalRegisteredMessage(signal, grupoOrigemNome);
         await sendTelegramMessage(accountId, message);
         console.log(`[SIGNAL] 📱 Notificação enviada para sinal ${signalId}`);
       } catch (telegramError) {
