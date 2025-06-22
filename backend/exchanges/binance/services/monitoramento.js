@@ -227,6 +227,19 @@ try {
     
     console.log('📋 Estado da conta verificado');
 
+    console.log(`🕐 ETAPA 4.5: Verificando sincronização de tempo para conta ${accountId}...`);
+try {
+  const { checkServerTime } = require('../api/rest');
+  const timeSync = await checkServerTime(accountId);
+  
+  if (!timeSync) {
+    console.warn(`[MONITOR] ⚠️ Problema de sincronização de tempo detectado`);
+    console.warn(`[MONITOR] ⚠️ Isso pode causar erros de 'recvWindow' nas requisições`);
+  }
+} catch (timeError) {
+  console.warn(`[MONITOR] ⚠️ Erro ao verificar sincronização de tempo:`, timeError.message);
+}
+
 // === ETAPA 5: Inicializar WebSocket (SEM WebSocket API) ===
 console.log(`🌐 ETAPA 5: Inicializando WebSockets para conta ${accountId}...`);
 

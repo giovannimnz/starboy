@@ -593,6 +593,42 @@ async function getListenKey(accountId) {
   }
 }
 
+async function checkServerTime(accountId) {
+  try {
+    console.log(`[API] 🕐 Verificando sincronização de tempo para conta ${accountId}...`);
+    
+    const startTime = Date.now();
+    
+    // Fazer requisição simples para obter tempo do servidor
+    const response = await fetch('https://fapi.binance.com/fapi/v1/time');
+    const data = await response.json();
+    
+    const endTime = Date.now();
+    const roundTripTime = endTime - startTime;
+    const serverTime = parseInt(data.serverTime);
+    const localTime = Date.now();
+    const timeDiff = Math.abs(localTime - serverTime);
+    
+    console.log(`[API] 🕐 Sincronização de tempo:`);
+    console.log(`[API]   - Tempo local: ${localTime}`);
+    console.log(`[API]   - Tempo servidor: ${serverTime}`);
+    console.log(`[API]   - Diferença: ${timeDiff}ms`);
+    console.log(`[API]   - RTT: ${roundTripTime}ms`);
+    
+    if (timeDiff > 1000) {
+      console.warn(`[API] ⚠️ Grande diferença de tempo: ${timeDiff}ms (>1s)`);
+      return false;
+    }
+    
+    console.log(`[API] ✅ Sincronização de tempo OK`);
+    return true;
+    
+  } catch (error) {
+    console.error(`[API] ❌ Erro ao verificar tempo do servidor:`, error.message);
+    return false;
+  }
+}
+
 
 /**
  * Obtém precisão de um símbolo
