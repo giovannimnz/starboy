@@ -973,18 +973,18 @@ async def debug_message_handler(event):
         if isinstance(chat_id, int) and chat_id > 0:
             chat_id = -chat_id
         
-        print(f"\n{'='*80}")
-        print(f"🔍 [DEBUG_HANDLER] MENSAGEM RECEBIDA:")
-        print(f"   📍 Chat ID: {chat_id}")
-        print(f"   🆔 Message ID: {message_id}")
-        print(f"   ✅ Está nos grupos origem? {chat_id in GRUPOS_ORIGEM_IDS}")
-        print(f"   📋 Grupos origem configurados: {GRUPOS_ORIGEM_IDS}")
-        print(f"   📝 Tamanho da mensagem: {len(str(text)) if text != 'N/A' else 0} caracteres")
-        print(f"   📄 Texto da mensagem:")
-        print(f"   {'-'*50}")
-        print(f"   {text}")
-        print(f"   {'-'*50}")
-        print(f"{'='*80}\n")
+        #print(f"\n{'='*80}")
+        #print(f"🔍 [DEBUG_HANDLER] MENSAGEM RECEBIDA:")
+        #print(f"   📍 Chat ID: {chat_id}")
+        #print(f"   🆔 Message ID: {message_id}")
+        #print(f"   ✅ Está nos grupos origem? {chat_id in GRUPOS_ORIGEM_IDS}")
+        #print(f"   📋 Grupos origem configurados: {GRUPOS_ORIGEM_IDS}")
+        #print(f"   📝 Tamanho da mensagem: {len(str(text)) if text != 'N/A' else 0} caracteres")
+        #print(f"   📄 Texto da mensagem:")
+        #print(f"   {'-'*50}")
+        #print(f"   {text}")
+        #print(f"   {'-'*50}")
+        #print(f"{'='*80}\n")
         
         # Chamar o handler original
         await handle_new_message(event)
@@ -1006,6 +1006,7 @@ async def handle_new_message(event):
 
     message_source = GRUPO_FONTE_MAPEAMENTO.get(incoming_chat_id)
     
+    print(f"{'='*80}\n")
     print(f"\n🔄 [HANDLE_MESSAGE] Processando mensagem:")
     print(f"   Chat ID: {incoming_chat_id}")
     print(f"   Message ID: {incoming_message_id}")
