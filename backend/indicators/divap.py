@@ -459,7 +459,7 @@ def save_to_database(trade_data):
         signal_id = cursor.lastrowid
         conn.commit()
 
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Operação salva (ID: {signal_id}, Conta: {CONTA_ID}) [{trade_data['symbol']}]")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Operação salva [ID: {signal_id}, Conta: {CONTA_ID}] [{trade_data['symbol']}]")
         return signal_id
 
     except mysql.connector.Error as db_err:
