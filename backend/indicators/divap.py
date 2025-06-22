@@ -335,7 +335,7 @@ def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent, si
     else:
         sl_distance_pct = abs((stop_loss - entry_price) / entry_price)
 
-    print(f"[DEBUG] {symbol}: Distância até SL: {sl_distance_pct:.6f} ({sl_distance_pct*100:.2f}%)")
+    #print(f"\n[DEBUG] {symbol}: Distância até SL: {sl_distance_pct:.6f} ({sl_distance_pct*100:.2f}%)")
 
     target_leverage = int(1 / sl_distance_pct)
 
@@ -374,11 +374,12 @@ def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent, si
             if position_value >= notional_floor and (notional_cap == float('inf') or position_value < notional_cap):
                 max_leverage = max(max_leverage, bracket_leverage)
                 bracket_leverage_limits.append(bracket_leverage)
-                print(f"[DEBUG] Bracket elegível: Alavancagem {bracket_leverage}x, Valor posição: {position_value:.2f}, Limites: {notional_floor:.2f} - {notional_cap:.2f}")
+                print(f"[DEBUG] Bracket elegível: Alavancagem {bracket_leverage}x, Valor posição: {position_value:.2f}, Limite: {notional_cap:.2f}")
         
         if bracket_leverage_limits:
             max_leverage = max(bracket_leverage_limits)
-            print(f"[DEBUG] Alavancagem máxima permitida pelos brackets: {max_leverage}x")
+            print(f"[DEBUG] Alavancagem máxima: {max_leverage}x")
+            print(f"\n[DEBUG] {symbol}: Distância até SL: {sl_distance_pct:.6f} ({sl_distance_pct*100:.2f}%)")
         else:
             print(f"[AVISO] Nenhum bracket elegível encontrado para o valor da ordem. Usando alavancagem conservadora.")
             max_leverage = min(20, target_leverage)
@@ -390,7 +391,7 @@ def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent, si
     final_leverage = min(target_leverage, max_leverage)
     final_leverage = max(1, final_leverage)
 
-    print(f"[INFO] Alavancagem final calculada para {cleaned_symbol}: {final_leverage}x (Ideal: {target_leverage}x, Máximo permitido: {max_leverage}x)")
+    print(f"  [INFO] Alavancagem final calculada para {cleaned_symbol}: {final_leverage}x (Ideal: {target_leverage}x, Máximo permitido: {max_leverage}x)")
     
     return final_leverage, sl_distance_pct
 
@@ -772,11 +773,11 @@ def extract_trade_info(message_text):
         # TP principal (primeiro alvo)
         tp = all_tps[0] if all_tps else entry
         
-        print(f"\n🎯 [EXTRACT_SUCCESS] Sinal DIVAP extraído com sucesso:")
+        print(f"\n🎯 [EXTRACT_SUCCESS] Sinal extraído com sucesso:\n")
         print(f"       Símbolo: {symbol} | Timeframe: {timeframe}")
         print(f"       Lado: {side} | Entrada: {entry} | Stop: {stop_loss}")
-        print(f"       TP Principal: {tp} | Todos os TPs: {all_tps}")
-        print(f"       Alavancagem: {leverage}x | Capital: {capital_pct}%")
+        print(f"       TPs: {all_tps}")
+        print(f"       Alavancagem: {leverage}x | Capital: {capital_pct}%\n")
         
         return {
             "symbol": symbol,
@@ -1022,17 +1023,17 @@ async def handle_new_message(event):
             trade_info = extract_trade_info(incoming_text)
 
             if trade_info:
-                print(f"   🎯 Trade info extraído com sucesso!")
+                #print(f"   🎯 Trade info extraído com sucesso!")
                 
                 if ENABLE_DIVAP_VERIFICATION:
-                    print(f"   🔍 Verificando padrão DIVAP...")
+                    print(f"\n   🔍 Verificando padrão DIVAP...")
                     is_valid_divap, error_message = await verify_divap_pattern(trade_info)
                 else:
                     is_valid_divap, error_message = True, None
-                    print(f"   ⚠️ Verificação DIVAP desativada - sinal aceito")                
+                    print(f"\n   ⚠️ Verificação DIVAP desativada - sinal aceito")                
 
                 if is_valid_divap:
-                    print(f"   ✅ DIVAP confirmado - processando sinal...")
+                    print(f"\n   ✅ DIVAP confirmado - processando sinal...\n")
                     
                     # Processar sinal válido
                     selected_tp = None
@@ -1107,7 +1108,7 @@ async def handle_new_message(event):
                         print(f"   ❌ Falha ao salvar sinal no banco")
 
                 else:
-                    print(f"   ❌ DIVAP não confirmado: {error_message}")
+                    print(f"\n   ❌ DIVAP não confirmado: {error_message}\n")
                     
                     # DIVAP NÃO confirmado - Salvar no banco com status CANCELED
                     trade_info['id_mensagem_origem_sinal'] = incoming_message_id
@@ -1136,7 +1137,7 @@ async def handle_new_message(event):
                         message_source=message_source
                     )
                     
-                    print(f"   📝 Sinal cancelado salvo no banco")
+                    print(f"                 📝 Sinal cancelado salvo no banco")
 
             else: 
                 print(f"   ❌ Não foi possível extrair trade info da mensagem")
