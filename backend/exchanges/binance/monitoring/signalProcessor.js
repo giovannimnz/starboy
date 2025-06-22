@@ -964,7 +964,6 @@ async function checkCanceledSignals(accountId) {
       AND status = 'CANCELED'
       AND sent_msg = 0
       ORDER BY created_at ASC
-      LIMIT 10
     `, [accountId]);
     
     if (canceledSignals.length === 0) return 0;
