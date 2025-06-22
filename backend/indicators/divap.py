@@ -214,7 +214,7 @@ def get_leverage_brackets_from_database(symbol=None):
         sql = """
               SELECT symbol, bracket, initial_leverage, notional_cap,
                      notional_floor, maint_margin_ratio, cum
-              FROM alavancagem
+              FROM exchange_leverage_brackets
               WHERE corretora = 'binance'
               """
 

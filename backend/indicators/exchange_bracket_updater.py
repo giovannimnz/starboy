@@ -112,7 +112,7 @@ def update_leverage_brackets_database():
         
         cursor = conn.cursor(dictionary=True)
         
-        cursor.execute("SELECT symbol, bracket, initial_leverage, notional_cap, notional_floor, maint_margin_ratio, cum FROM alavancagem WHERE corretora = 'binance' ORDER BY symbol, bracket")
+        cursor.execute("SELECT symbol, bracket, initial_leverage, notional_cap, notional_floor, maint_margin_ratio, cum FROM exchange_leverage_brackets WHERE corretora = 'binance' ORDER BY symbol, bracket")
         current_data = cursor.fetchall()
         
         current_brackets = {}
@@ -150,7 +150,7 @@ def update_leverage_brackets_database():
             # DELETAR
             for bracket_id in current_symbol_brackets:
                 if bracket_id not in binance_brackets:
-                    cursor.execute("DELETE FROM alavancagem WHERE symbol = %s AND corretora = %s AND bracket = %s", (symbol, 'binance', bracket_id))
+                    cursor.execute("DELETE FROM exchange_leverage_brackets WHERE symbol = %s AND corretora = %s AND bracket = %s", (symbol, 'binance', bracket_id))
                     deletes += 1
             
             processed_symbols += 1
@@ -159,7 +159,7 @@ def update_leverage_brackets_database():
         obsolete_symbols = set(current_brackets.keys()) - binance_symbols
         symbols_deleted = 0
         for obsolete_symbol in obsolete_symbols:
-            cursor.execute("DELETE FROM alavancagem WHERE symbol = %s AND corretora = %s", (obsolete_symbol, 'binance'))
+            cursor.execute("DELETE FROM exchange_leverage_brackets WHERE symbol = %s AND corretora = %s", (obsolete_symbol, 'binance'))
             deletes += cursor.rowcount
             symbols_deleted += 1
         
@@ -227,7 +227,7 @@ def test_database_connection():
         conn = get_database_connection()
         if conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(1) FROM alavancagem")
+            cursor.execute("SELECT COUNT(1) FROM exchange_leverage_brackets")
             count = cursor.fetchone()[0]
             cursor.close()
             conn.close()
