@@ -24,6 +24,7 @@ import warnings
 
 # --- NOVO: Importa as funções de atualização do arquivo externo ---
 from exchange_bracket_updater import update_leverage_brackets, test_binance_credentials, test_database_connection
+from exchange_info_updater import update_exchange_info_database, CURRENT_EXCHANGE
 
 # --- Configuração de Logging e Avisos ---
 logging.basicConfig(level=logging.ERROR)
@@ -87,13 +88,13 @@ def run_scheduler():
     """
     Executa o scheduler em uma thread separada para tarefas agendadas.
     """
-    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [SCHEDULER] Iniciando agendador de brackets...")
+    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [SCHEDULER] Iniciando agendador de brackets e exchange info...")
     
-    # Agendamento para chamar a função importada `update_leverage_brackets`
-    schedule.every().day.at("00:00").do(update_leverage_brackets)
-    schedule.every().day.at("06:00").do(update_leverage_brackets)
-    schedule.every().day.at("12:00").do(update_leverage_brackets)
-    schedule.every().day.at("18:00").do(update_leverage_brackets)
+    # Agendamento para chamar as funções importadas
+    schedule.every().day.at("00:00").do(lambda: (update_leverage_brackets(), update_exchange_info_database(CURRENT_EXCHANGE)))
+    schedule.every().day.at("06:00").do(lambda: (update_leverage_brackets(), update_exchange_info_database(CURRENT_EXCHANGE)))
+    schedule.every().day.at("12:00").do(lambda: (update_leverage_brackets(), update_exchange_info_database(CURRENT_EXCHANGE)))
+    schedule.every().day.at("18:00").do(lambda: (update_leverage_brackets(), update_exchange_info_database(CURRENT_EXCHANGE)))
     
     while not shutdown_event.is_set():
         try:
@@ -107,7 +108,7 @@ def run_scheduler():
 
 def initialize_bracket_scheduler():
     """
-    Testa conexões, executa uma atualização inicial de brackets e inicia o scheduler.
+    Testa conexões, executa uma atualização inicial de brackets e exchange info, e inicia o scheduler.
     """
     try:
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] Executando testes de conexão...")
@@ -124,10 +125,14 @@ def initialize_bracket_scheduler():
         # Chama a função de atualização importada
         update_leverage_brackets()
         
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] Executando atualização inicial de exchange info...")
+        # Chama a função de atualização de exchange info
+        update_exchange_info_database(CURRENT_EXCHANGE)
+        
         # Inicia o scheduler em uma thread para não bloquear o programa principal
         scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
         scheduler_thread.start()
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] ✅ Agendador de brackets iniciado com sucesso.")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] ✅ Agendador iniciado com sucesso.")
         
     except Exception as e:
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] ❌ Erro crítico ao inicializar o agendador: {e}")

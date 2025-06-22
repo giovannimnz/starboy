@@ -4,7 +4,7 @@ const rest = require('../api/rest');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 const {  getRecentOrders, editOrder, roundPriceToTickSize, newMarketOrder, newLimitMakerOrder, newReduceOnlyOrder, cancelOrder, newStopOrder, getOpenOrders, getOrderStatus, getAllOpenPositions, getFuturesAccountBalanceDetails, getPrecision, getTickSize, getPrecisionCached, validateQuantity, adjustQuantityToRequirements,} = require('../api/rest');
-const { sendTelegramMessage, formatEntryMessage, formatErrorMessage, formatAlertMessage } = require('./telegramBot');
+const { sendTelegramMessage, formatEntryMessage, formatErrorMessage, formatAlertMessage } = require('../telegram/telegramBot');
 
 // ✅ CORREÇÃO: Declarar sentOrders no escopo correto e com Map melhorado
 async function executeLimitMakerEntry(signal, currentPrice, accountId) {

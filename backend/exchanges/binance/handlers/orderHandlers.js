@@ -1,6 +1,6 @@
 const { getDatabaseInstance, insertPosition, insertNewOrder, formatDateForMySQL } = require('../../../core/database/conexao');
 const websockets = require('../api/websocket');
-const { sendTelegramMessage, formatOrderMessage, formatPositionClosedMessage } = require('./telegramBot');
+const { sendTelegramMessage, formatOrderMessage, formatPositionClosedMessage } = require('../telegram/telegramBot');
 
 /**
  * ✅ FUNÇÃO UNIFICADA: Processa atualizações de ordens via WebSocket
@@ -1071,7 +1071,7 @@ async function checkPositionClosureAfterOrderExecution(orderId, accountId) {
         console.log(`[ORDER_CLOSURE] ✅ Posição ${order.position_symbol} confirmada como fechada na corretora`);
         
         // Mover posição para histórico (com cancelamento automático de ordens)
-        const { movePositionToHistoryPhysically } = require('./enhancedMonitoring');
+        const { movePositionToHistoryPhysically } = require('../monitoring/enhancedMonitoring');
         const moved = await movePositionToHistoryPhysically(
           db,
           order.position_id,

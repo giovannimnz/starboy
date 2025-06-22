@@ -2,7 +2,7 @@ const { getDatabaseInstance } = require('../../../core/database/conexao');
 const api = require('../api/rest');
 const websockets = require('../api/websocket');
 const { checkOrderTriggers } = require('./trailingStopLoss');
-const { cleanupOrphanSignals, forceCloseGhostPositions } = require('./cleanup');
+const { cleanupOrphanSignals, forceCloseGhostPositions } = require('../services/cleanup');
 const signalProcessor = require('./signalProcessor');
 
 /**
@@ -537,7 +537,7 @@ async function movePositionToHistoryPhysically(db, positionId, status, reason, a
       
       // ✅ 5. NOTIFICAÇÃO TELEGRAM
       try {
-        const { sendTelegramMessage, formatPositionClosedMessage } = require('./telegramBot');
+        const { sendTelegramMessage, formatPositionClosedMessage } = require('../telegram/telegramBot');
         const currentPrice = await api.getPrice(symbol, accountId);
         const entryPrice = parseFloat(position.preco_entrada);
         const quantity = parseFloat(position.quantidade);

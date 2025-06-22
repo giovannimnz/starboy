@@ -6,12 +6,12 @@ const websockets = require('../api/websocket');
 const api = require('../api/rest');
 const { initializeTelegramBot, stopAllTelegramBots } = require('./telegramBot');
 const { onPriceUpdate, cancelSignal, checkNewTrades, checkExpiredSignals } = require('./signalProcessor');
-const { syncPositionsWithExchange, syncOrdersWithExchange, logOpenPositionsAndOrdersVisual } = require('./positionSync');
-const orderHandlers = require('./orderHandlers');
-const accountHandlers = require('./accountHandlers');
+const { syncPositionsWithExchange, syncOrdersWithExchange, logOpenPositionsAndOrdersVisual } = require('../services/positionSync');
+const orderHandlers = require('../handlers/orderHandlers');
+const accountHandlers = require('../handlers/accountHandlers');
 const { runPeriodicCleanup, monitorWebSocketHealth, updatePositionPricesWithTrailing, runAdvancedPositionMonitoring } = require('./enhancedMonitoring');
-const { cleanupOrphanSignals, forceCloseGhostPositions, cancelOrphanOrders } = require('./cleanup');
-const { syncAndCloseGhostPositions } = require('./positionHistory');
+const { cleanupOrphanSignals, forceCloseGhostPositions, cancelOrphanOrders } = require('../services/cleanup');
+const { syncAndCloseGhostPositions } = require('../services/positionHistory');
 const { checkOrderTriggers } = require('./trailingStopLoss');
 
 // === DEBUGGING ROBUSTO ===
@@ -390,7 +390,7 @@ try {
 
   // ✅ LIMPEZA SIMPLIFICADA DE ORDENS ÓRFÃS (Nova versão)
   console.log(`[MONITOR] 🔍 Verificando ordens órfãs para conta ${accountId}...`);
-  const { cancelOrphanOrders } = require('./cleanup');
+  const { cancelOrphanOrders } = require('../services/cleanup');
   const orphanResult = await cancelOrphanOrders(accountId);
 
   if (orphanResult > 0) {
@@ -400,7 +400,7 @@ try {
   }
   
   // ✅ MOVER ORDENS CANCELED PARA HISTÓRICO
-  const { moveOrdersToHistory } = require('./cleanup');
+  const { moveOrdersToHistory } = require('../services/cleanup');
   const movedOrders = await moveOrdersToHistory(accountId);
   if (movedOrders > 0) {
     console.log(`[MONITOR] 📚 ${movedOrders} ordens movidas para histórico para conta ${accountId}`);

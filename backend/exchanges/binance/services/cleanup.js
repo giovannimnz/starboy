@@ -153,7 +153,7 @@ async function cancelOrphanOrders(accountId) {
             `, [exchangeStatus, order.id_externo, accountId]);
             
             // Mover automaticamente
-            const { autoMoveOrderOnCompletion } = require('./orderHandlers');
+            const { autoMoveOrderOnCompletion } = require('../handlers/orderHandlers');
             const moved = await autoMoveOrderOnCompletion(order.id_externo, exchangeStatus, accountId);
             
             if (moved) {
@@ -191,7 +191,7 @@ async function cancelOrphanOrders(accountId) {
           `, [order.id_externo, accountId]);
           
           // ✅ MOVER ÓRFÃ PARA HISTÓRICO IMEDIATAMENTE
-          const { autoMoveOrderOnCompletion } = require('./orderHandlers');
+          const { autoMoveOrderOnCompletion } = require('../handlers/orderHandlers');
           const moved = await autoMoveOrderOnCompletion(order.id_externo, 'CANCELED', accountId);
           
           if (moved) {

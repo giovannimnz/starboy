@@ -392,7 +392,7 @@ async function syncOrdersWithExchange(accountId) {
             console.log(`[SYNC_ORDERS] 🎯 Status finalizado na corretora: ${order.orderId} (${order.status}) - movendo para histórico...`);
             
             try {
-              const { autoMoveOrderOnCompletion } = require('./orderHandlers');
+              const { autoMoveOrderOnCompletion } = require('../handlers/orderHandlers');
               const moved = await autoMoveOrderOnCompletion(order.orderId, order.status, accountId);
               
               if (moved) {
@@ -449,7 +449,7 @@ async function syncOrdersWithExchange(accountId) {
         if (finalizedStatuses.includes(dbOrder.status)) {
           console.log(`[SYNC_ORDERS] 🎯 Ordem ${dbOrder.id_externo} com status finalizado no banco (${dbOrder.status}) - movendo...`);
           
-          const { autoMoveOrderOnCompletion } = require('./orderHandlers');
+          const { autoMoveOrderOnCompletion } = require('../handlers/orderHandlers');
           const moved = await autoMoveOrderOnCompletion(dbOrder.id_externo, dbOrder.status, accountId);
           
           if (moved) {
@@ -493,7 +493,7 @@ async function syncOrdersWithExchange(accountId) {
             `, [dbOrder.id_externo, accountId]);
             
             // Mover para histórico
-            const { autoMoveOrderOnCompletion } = require('./orderHandlers');
+            const { autoMoveOrderOnCompletion } = require('../handlers/orderHandlers');
             const moved = await autoMoveOrderOnCompletion(dbOrder.id_externo, 'CANCELED', accountId);
             
             if (moved) {
@@ -519,7 +519,7 @@ async function syncOrdersWithExchange(accountId) {
             `, [exchangeStatus, dbOrder.id_externo, accountId]);
             
             // Mover para histórico
-            const { autoMoveOrderOnCompletion } = require('./orderHandlers');
+            const { autoMoveOrderOnCompletion } = require('../handlers/orderHandlers');
             const moved = await autoMoveOrderOnCompletion(dbOrder.id_externo, exchangeStatus, accountId);
             
             if (moved) {

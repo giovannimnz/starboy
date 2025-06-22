@@ -1,6 +1,6 @@
 const { getDatabaseInstance, formatDateForMySQL } = require('../../../core/database/conexao');
 const { cancelOrder, getOpenOrders } = require('../api/rest');
-const { sendTelegramMessage, formatPositionClosedMessage, formatAlertMessage } = require('./telegramBot');
+const { sendTelegramMessage, formatPositionClosedMessage, formatAlertMessage } = require('../telegram/telegramBot');
 
 /**
  * ✅ FUNÇÃO MELHORADA: Mover posição fisicamente para histórico
@@ -187,7 +187,7 @@ async function movePositionToHistory(db, positionId, status, reason, accountId) 
     
     // ✅ 6. NOTIFICAÇÃO TELEGRAM
     try {
-      const { sendTelegramMessage, formatPositionClosedMessage } = require('./telegramBot');
+      const { sendTelegramMessage, formatPositionClosedMessage } = require('../telegram/telegramBot');
       const currentPrice = await api.getPrice(symbol, accountId);
       const entryPrice = parseFloat(position.preco_entrada);
       const quantity = parseFloat(position.quantidade);
