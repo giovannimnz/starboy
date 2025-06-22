@@ -168,17 +168,17 @@ def update_leverage_brackets_database():
         cursor.close()
         conn.close()
         
-        print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ✅ Atualização concluída:")
-        print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS]   - Inserções: {inserts}")
-        print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS]   - Atualizações: {updates}")
-        print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS]   - Remoções: {deletes}")
-        print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS]   - Símbolos removidos: {symbols_deleted}")
-        
         total_changes = inserts + updates + deletes
-        if total_changes == 0:
-            print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] 🎯 Nenhuma mudança detectada.")
-        else:
+        
+        # ✅ SÓ MOSTRAR LOG SE HOUVER MUDANÇAS
+        if total_changes > 0:
+            print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ✅ Atualização concluída:")
+            print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS]   - Inserções: {inserts}")
+            print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS]   - Atualizações: {updates}")
+            print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS]   - Remoções: {deletes}")
+            print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS]   - Símbolos removidos: {symbols_deleted}")
             print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] 🎯 Total de mudanças aplicadas: {total_changes}")
+            print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ✅ Processo de atualização de brackets bem-sucedido.")
         
         return True
         

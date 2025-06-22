@@ -127,14 +127,15 @@ def initialize_bracket_scheduler():
             print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] ❌ Testes falharam. O agendador não será iniciado.")
             return
 
-        #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] Executando atualização inicial de brackets...")
-        update_leverage_brackets()
+        # Capturar se houve mudanças nos brackets
+        brackets_had_changes = update_leverage_brackets()
 
         print("\n" + "═"*80)
         print("🟩 ATUALIZAÇÃO DE EXCHANGE INFO 🟩")
         print("═"*80)
-        #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] Executando atualização inicial de exchange info...")
-        update_exchange_info_database(CURRENT_EXCHANGE)
+        
+        # Capturar se houve mudanças no exchange info
+        exchange_had_changes = update_exchange_info_database(CURRENT_EXCHANGE)
 
         print("\n" + "="*80)
         print("🟦🟦🟦   INICIALIZAÇÃO DO MONITORAMENTO   🟦🟦🟦")
@@ -143,7 +144,6 @@ def initialize_bracket_scheduler():
         # Inicia o scheduler em uma thread para não bloquear o programa principal
         scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
         scheduler_thread.start()
-        #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] ✅ Agendador iniciado com sucesso.")
 
     except Exception as e:
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [INIT] ❌ Erro crítico ao inicializar o agendador: {e}")
@@ -512,9 +512,9 @@ def extract_trade_info(message_text):
     Extrai informações de trade da mensagem com suporte a múltiplos formatos
     """
     try:
-        print(f"\n🔍 [EXTRACT_DEBUG] Analisando mensagem:")
-        print(f"   Comprimento: {len(message_text)} caracteres")
-        print(f"   Primeiros 200 chars: {repr(message_text[:200])}")
+        #print(f"\n🔍 [EXTRACT_DEBUG] Analisando mensagem:")
+        #print(f"   Comprimento: {len(message_text)} caracteres")
+        #print(f"   Primeiros 200 chars: {repr(message_text[:200])}")
         
         if not message_text or len(message_text.strip()) < 10:
             print(f"   ❌ Mensagem muito curta ou vazia")
@@ -622,7 +622,7 @@ def extract_trade_info(message_text):
                     side = "COMPRA"
                     break
         
-        print(f"   Lado detectado: {side}")
+        #print(f"   Lado detectado: {side}")
         
         # ===== EXTRAÇÃO DE PREÇOS =====
         
@@ -744,6 +744,7 @@ def extract_trade_info(message_text):
                 break
         
         print(f"   ✅ Capital percentual extraído: {original_capital_pct}%")
+        print(f"   Lado detectado: {side}")
         
         # ===== CÁLCULOS FINAIS =====
         
@@ -997,7 +998,7 @@ async def handle_new_message(event):
     print(f"   Chat ID: {incoming_chat_id}")
     print(f"   Message ID: {incoming_message_id}")
     print(f"   Message Source: {message_source}")
-    print(f"   Está em grupos origem? {incoming_chat_id in GRUPOS_ORIGEM_IDS}")
+    print(f"   Está em grupos origem(T/F): {incoming_chat_id in GRUPOS_ORIGEM_IDS}")
     
     try:
         incoming_text = event.message.text
@@ -1010,13 +1011,13 @@ async def handle_new_message(event):
         is_incoming_reply = event.message.reply_to_msg_id is not None
         incoming_reply_to_id = event.message.reply_to_msg_id if is_incoming_reply else None
 
-        print(f"   📝 Texto preview: {incoming_text[:100]}...")
-        print(f"   📅 Data/hora: {incoming_created_at}")
-        print(f"   💬 É resposta? {is_incoming_reply}")
+        #print(f"   📝 Texto preview: {incoming_text[:100]}...")
+        #print(f"   📅 Data/hora: {incoming_created_at}")
+        #print(f"   💬 É resposta? {is_incoming_reply}")
 
         # Processar apenas se for de um grupo de origem
         if incoming_chat_id in GRUPOS_ORIGEM_IDS:
-            print(f"   ✅ Mensagem de grupo origem - processando...")
+            #print(f"   ✅ Mensagem de grupo origem - processando...")
             
             trade_info = extract_trade_info(incoming_text)
 

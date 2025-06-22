@@ -66,7 +66,6 @@ def update_exchange_info_database(exchange_name):
     """Atualiza as informações de símbolos e filtros no banco de dados para uma exchange específica."""
     try:
         # FASE 1: OBTER DADOS DA BINANCE
-        #print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [EXCHANGE-INFO] Buscando dados da Binance...")
         info_data = make_binance_request('/v1/exchangeInfo')
         
         if not info_data or 'symbols' not in info_data:
@@ -83,7 +82,6 @@ def update_exchange_info_database(exchange_name):
         cursor = conn.cursor(dictionary=True)
         
         # FASE 3: OBTER DADOS DO BANCO (TODOS OS CAMPOS RELEVANTES)
-        #print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [EXCHANGE-INFO] Buscando dados do banco para a exchange '{exchange_name}'...")
         cursor.execute("""
         SELECT id, symbol, status, pair, contract_type, base_asset, quote_asset, margin_asset,
                price_precision, quantity_precision, base_asset_precision, quote_precision,
@@ -240,18 +238,17 @@ def update_exchange_info_database(exchange_name):
         cursor.close()
         conn.close()
 
-        print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [EXCHANGE-INFO] ✅ Atualização para '{exchange_name}' concluída:")
-        print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [EXCHANGE-INFO]   - Símbolos inseridos: {inserts}")
-        print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [EXCHANGE-INFO]   - Símbolos atualizados: {updates}")
-        print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [EXCHANGE-INFO]   - Símbolos removidos: {deletes}")
-        print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [EXCHANGE-INFO]   - Filtros inseridos: {filter_inserts}")
-        print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [EXCHANGE-INFO]   - Filtros atualizados: {filter_updates}")
-        print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [EXCHANGE-INFO]   - Filtros removidos: {filter_deletes}")
-        
         total_changes = inserts + updates + deletes + filter_inserts + filter_updates + filter_deletes
-        if total_changes == 0:
-            print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [EXCHANGE-INFO] 🎯 Nenhuma mudança detectada.")
-        else:
+        
+        # ✅ SÓ MOSTRAR LOG SE HOUVER MUDANÇAS
+        if total_changes > 0:
+            print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [EXCHANGE-INFO] ✅ Atualização para '{exchange_name}' concluída:")
+            print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [EXCHANGE-INFO]   - Símbolos inseridos: {inserts}")
+            print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [EXCHANGE-INFO]   - Símbolos atualizados: {updates}")
+            print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [EXCHANGE-INFO]   - Símbolos removidos: {deletes}")
+            print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [EXCHANGE-INFO]   - Filtros inseridos: {filter_inserts}")
+            print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [EXCHANGE-INFO]   - Filtros atualizados: {filter_updates}")
+            print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [EXCHANGE-INFO]   - Filtros removidos: {filter_deletes}")
             print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [EXCHANGE-INFO] 🎯 Total de mudanças aplicadas: {total_changes}")
         
         return True
