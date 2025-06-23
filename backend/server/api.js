@@ -470,7 +470,7 @@ async function startServer() {
     console.log('🔧 Registrando plugins...');
     await registerPlugins();
     
-    const port = process.env.API_PORT || 8000;
+    const port = process.env.API_PORT || 8001;
     const host = process.env.API_HOST || '0.0.0.0';
     
     console.log(`🚀 Iniciando servidor na porta ${port}...`);
