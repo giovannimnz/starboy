@@ -56,7 +56,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     setIsLoading(true)
     try {
       // Faz a chamada para a sua API backend
-      const response = await axios.post("http://localhost:8001/api/login", {
+      const response = await axios.post("http://localhost:8001/api/users/login", {
         email,
         senha: password, // Note que o backend espera 'senha'
       });

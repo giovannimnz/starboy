@@ -10,9 +10,19 @@ import { Label } from "@/components/ui/label"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
-import { Upload, ChevronDown, Eye, EyeOff, Copy, Check, Edit, CheckCircle } from "lucide-react"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Upload, ChevronDown, Eye, EyeOff, Copy, Check, Plus, CheckCircle, Edit, Trash2 } from "lucide-react"
 import { useAuth } from "@/contexts/auth-context"
 import { useLanguage } from "@/contexts/language-context"
+
+interface ExchangeAccount {
+  id: string
+  exchange: string
+  nickname: string
+  apiKey: string
+  secretKey: string
+  createdAt: Date
+}
 
 interface ProfileModalProps {
   isOpen: boolean
@@ -35,28 +45,35 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
   const [showConfirmPassword, setShowConfirmPassword] = useState(false)
 
   // Exchange states
-  const [binanceOpen, setBinanceOpen] = useState(false)
-  const [mexcOpen, setMexcOpen] = useState(false)
+  const [exchangesOpen, setExchangesOpen] = useState(false)
   const [copiedIP, setCopiedIP] = useState(false)
+  const [configuredAccounts, setConfiguredAccounts] = useState<ExchangeAccount[]>([])
 
-  // Binance config
-  const [binanceConfigured, setBinanceConfigured] = useState(false)
-  const [binanceNickname, setBinanceNickname] = useState("")
-  const [binanceApiKey, setBinanceApiKey] = useState("")
-  const [binanceSecretKey, setBinanceSecretKey] = useState("")
+  // Add exchange modal
+  const [showAddExchangeModal, setShowAddExchangeModal] = useState(false)
+  const [selectedExchange, setSelectedExchange] = useState("")
+  const [newAccountNickname, setNewAccountNickname] = useState("")
+  const [newAccountApiKey, setNewAccountApiKey] = useState("")
+  const [newAccountSecretKey, setNewAccountSecretKey] = useState("")
 
-  // Binance edit modal
-  const [showBinanceEditModal, setShowBinanceEditModal] = useState(false)
-  const [editBinanceNickname, setEditBinanceNickname] = useState("")
-  const [editBinanceApiKey, setEditBinanceApiKey] = useState("")
-  const [editBinanceSecretKey, setEditBinanceSecretKey] = useState("")
+  // Success modal
+  const [showSuccessModal, setShowSuccessModal] = useState(false)
+  const [successMessage, setSuccessMessage] = useState("")
 
-  // MEXC config
-  const [mexcNickname, setMexcNickname] = useState("")
-  const [mexcApiKey, setMexcApiKey] = useState("")
-  const [mexcSecretKey, setMexcSecretKey] = useState("")
+  // Edit modal
+  const [showEditModal, setShowEditModal] = useState(false)
+  const [editingAccount, setEditingAccount] = useState<ExchangeAccount | null>(null)
+  const [editNickname, setEditNickname] = useState("")
+  const [editApiKey, setEditApiKey] = useState("")
+  const [editSecretKey, setEditSecretKey] = useState("")
 
   const serverIP = "137.131.190.161"
+
+  // Available exchanges
+  const availableExchanges = [
+    { value: "binance", label: "Binance", icon: "B", color: "bg-yellow-500" },
+    // { value: "mexc", label: "MEXC", icon: "M", color: "bg-blue-500", disabled: true },
+  ]
 
   const handleSaveProfile = () => {
     // Validate passwords if changing
@@ -74,57 +91,78 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
     alert("Perfil salvo com sucesso!")
   }
 
-  const handleSaveBinance = () => {
-    if (!binanceNickname || !binanceApiKey || !binanceSecretKey) {
+  const handleAddExchange = () => {
+    setSelectedExchange("")
+    setNewAccountNickname("")
+    setNewAccountApiKey("")
+    setNewAccountSecretKey("")
+    setShowAddExchangeModal(true)
+  }
+
+  const handleSaveNewAccount = () => {
+    if (!selectedExchange || !newAccountNickname || !newAccountApiKey || !newAccountSecretKey) {
       alert("Preencha todos os campos obrigatórios")
       return
     }
 
-    console.log("Saving Binance config:", { binanceNickname, binanceApiKey, binanceSecretKey })
+    const newAccount: ExchangeAccount = {
+      id: Date.now().toString(),
+      exchange: selectedExchange,
+      nickname: newAccountNickname,
+      apiKey: newAccountApiKey,
+      secretKey: newAccountSecretKey,
+      createdAt: new Date(),
+    }
 
-    // Mark as configured and close collapsible
-    setBinanceConfigured(true)
-    setBinanceOpen(false)
+    setConfiguredAccounts([...configuredAccounts, newAccount])
+    setShowAddExchangeModal(false)
 
-    alert("Configurações da Binance salvas com sucesso!")
+    // Show success modal
+    const exchangeLabel = availableExchanges.find((ex) => ex.value === selectedExchange)?.label || selectedExchange
+    setSuccessMessage(`Conta ${exchangeLabel} "${newAccountNickname}" configurada com sucesso!`)
+    setShowSuccessModal(true)
+
+    console.log("New account added:", newAccount)
   }
 
-  const handleEditBinance = () => {
-    // Populate edit form with current data
-    setEditBinanceNickname(binanceNickname)
-    setEditBinanceApiKey(binanceApiKey)
-    setEditBinanceSecretKey("") // Don't show current secret key
-    setShowBinanceEditModal(true)
+  const handleEditAccount = (account: ExchangeAccount) => {
+    setEditingAccount(account)
+    setEditNickname(account.nickname)
+    setEditApiKey(account.apiKey)
+    setEditSecretKey("")
+    setShowEditModal(true)
   }
 
-  const handleSaveBinanceEdit = () => {
-    if (!editBinanceNickname || !editBinanceApiKey) {
+  const handleSaveEditAccount = () => {
+    if (!editingAccount || !editNickname || !editApiKey) {
       alert("Preencha todos os campos obrigatórios")
       return
     }
 
-    // Update the main state
-    setBinanceNickname(editBinanceNickname)
-    setBinanceApiKey(editBinanceApiKey)
+    const updatedAccounts = configuredAccounts.map((account) =>
+      account.id === editingAccount.id
+        ? {
+            ...account,
+            nickname: editNickname,
+            apiKey: editApiKey,
+            secretKey: editSecretKey || account.secretKey,
+          }
+        : account,
+    )
 
-    // Only update secret key if provided
-    if (editBinanceSecretKey) {
-      setBinanceSecretKey(editBinanceSecretKey)
-    }
+    setConfiguredAccounts(updatedAccounts)
+    setShowEditModal(false)
 
-    console.log("Updating Binance config:", {
-      nickname: editBinanceNickname,
-      apiKey: editBinanceApiKey,
-      secretKey: editBinanceSecretKey || "unchanged",
-    })
-
-    setShowBinanceEditModal(false)
-    alert("Configurações da Binance atualizadas com sucesso!")
+    const exchangeLabel =
+      availableExchanges.find((ex) => ex.value === editingAccount.exchange)?.label || editingAccount.exchange
+    setSuccessMessage(`Conta ${exchangeLabel} "${editNickname}" atualizada com sucesso!`)
+    setShowSuccessModal(true)
   }
 
-  const handleSaveMexc = () => {
-    console.log("Saving MEXC config:", { mexcNickname, mexcApiKey, mexcSecretKey })
-    alert("Configurações da MEXC salvas!")
+  const handleDeleteAccount = (accountId: string) => {
+    if (confirm("Tem certeza que deseja remover esta conta?")) {
+      setConfiguredAccounts(configuredAccounts.filter((account) => account.id !== accountId))
+    }
   }
 
   const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -140,6 +178,15 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
     navigator.clipboard.writeText(text)
     setCopiedIP(true)
     setTimeout(() => setCopiedIP(false), 2000)
+  }
+
+  const getExchangeInfo = (exchangeValue: string) => {
+    return availableExchanges.find((ex) => ex.value === exchangeValue)
+  }
+
+  const getConfiguredExchanges = () => {
+    const exchanges = [...new Set(configuredAccounts.map((account) => account.exchange))]
+    return exchanges.map((exchange) => getExchangeInfo(exchange)).filter(Boolean)
   }
 
   return (
@@ -331,235 +378,250 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
                 </CardContent>
               </Card>
 
-              {/* Binance Configuration */}
-              {!binanceConfigured ? (
-                <Collapsible open={binanceOpen} onOpenChange={setBinanceOpen}>
-                  <Card className="bg-gray-800 border-gray-700">
-                    <CollapsibleTrigger asChild>
-                      <CardHeader className="cursor-pointer hover:bg-gray-750 transition-colors">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center space-x-3">
-                            <div className="w-8 h-8 bg-yellow-500 rounded flex items-center justify-center">
-                              <span className="text-black font-bold text-sm">B</span>
-                            </div>
-                            <div>
-                              <CardTitle className="text-white">Binance</CardTitle>
-                              <CardDescription>Configure sua conta Binance</CardDescription>
-                            </div>
-                          </div>
-                          <ChevronDown
-                            className={`h-5 w-5 text-gray-400 transition-transform ${binanceOpen ? "rotate-180" : ""}`}
-                          />
-                        </div>
-                      </CardHeader>
-                    </CollapsibleTrigger>
-                    <CollapsibleContent>
-                      <CardContent className="space-y-4">
-                        <div className="space-y-2">
-                          <Label htmlFor="binance-nickname" className="text-white">
-                            Apelido
-                          </Label>
-                          <Input
-                            id="binance-nickname"
-                            value={binanceNickname}
-                            onChange={(e) => setBinanceNickname(e.target.value)}
-                            className="bg-gray-700 border-gray-600 text-white focus:border-orange-500"
-                            placeholder="Ex: Conta Principal"
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label htmlFor="binance-api-key" className="text-white">
-                            API Key
-                          </Label>
-                          <Input
-                            id="binance-api-key"
-                            value={binanceApiKey}
-                            onChange={(e) => setBinanceApiKey(e.target.value)}
-                            className="bg-gray-700 border-gray-600 text-white focus:border-orange-500"
-                            placeholder="Sua API Key da Binance"
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label htmlFor="binance-secret-key" className="text-white">
-                            Secret Key
-                          </Label>
-                          <Input
-                            id="binance-secret-key"
-                            type="password"
-                            value={binanceSecretKey}
-                            onChange={(e) => setBinanceSecretKey(e.target.value)}
-                            className="bg-gray-700 border-gray-600 text-white focus:border-orange-500"
-                            placeholder="Sua Secret Key da Binance"
-                          />
-                        </div>
-                        <Button onClick={handleSaveBinance} className="bg-orange-500 hover:bg-orange-600 text-white">
-                          Salvar Configurações Binance
-                        </Button>
-                      </CardContent>
-                    </CollapsibleContent>
-                  </Card>
-                </Collapsible>
-              ) : (
+              {/* Exchanges Configuration */}
+              <Collapsible open={exchangesOpen} onOpenChange={setExchangesOpen}>
                 <Card className="bg-gray-800 border-gray-700">
-                  <CardHeader>
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center space-x-3">
-                        <div className="w-8 h-8 bg-yellow-500 rounded flex items-center justify-center">
-                          <span className="text-black font-bold text-sm">B</span>
-                        </div>
+                  <CollapsibleTrigger asChild>
+                    <CardHeader className="cursor-pointer hover:bg-gray-750 transition-colors">
+                      <div className="flex items-center justify-between">
                         <div className="flex items-center space-x-3">
+                          <div className="w-8 h-8 bg-orange-500 rounded flex items-center justify-center">
+                            <span className="text-white font-bold text-sm">C</span>
+                          </div>
                           <div>
-                            <CardTitle className="text-white">Binance</CardTitle>
-                            <CardDescription>{binanceNickname}</CardDescription>
+                            <CardTitle className="text-white">Configurações de Corretoras</CardTitle>
+                            <CardDescription>
+                              {configuredAccounts.length === 0
+                                ? "Configure suas contas de corretoras"
+                                : `${configuredAccounts.length} conta(s) configurada(s)`}
+                            </CardDescription>
                           </div>
-                          <div className="flex items-center space-x-2">
-                            <CheckCircle className="h-5 w-5 text-green-500" />
-                            <span className="text-green-500 text-sm font-medium">Conta Vinculada</span>
-                          </div>
+                          {configuredAccounts.length > 0 && (
+                            <div className="flex items-center space-x-2">
+                              <CheckCircle className="h-5 w-5 text-green-500" />
+                              <div className="flex space-x-1">
+                                {getConfiguredExchanges().map((exchange, index) => (
+                                  <div
+                                    key={index}
+                                    className={`w-6 h-6 ${exchange?.color} rounded flex items-center justify-center`}
+                                  >
+                                    <span className="text-white font-bold text-xs">{exchange?.icon}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
                         </div>
+                        <ChevronDown
+                          className={`h-5 w-5 text-gray-400 transition-transform ${exchangesOpen ? "rotate-180" : ""}`}
+                        />
                       </div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={handleEditBinance}
-                        className="border-gray-600 text-gray-300 hover:bg-gray-700"
-                      >
-                        <Edit className="h-4 w-4 mr-2" />
-                        Editar
-                      </Button>
-                    </div>
-                  </CardHeader>
-                </Card>
-              )}
+                    </CardHeader>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <CardContent className="space-y-4">
+                      {/* Configured Accounts */}
+                      {configuredAccounts.length > 0 && (
+                        <div className="space-y-3">
+                          <h4 className="text-white font-medium">Contas Configuradas</h4>
+                          {configuredAccounts.map((account) => {
+                            const exchangeInfo = getExchangeInfo(account.exchange)
+                            return (
+                              <div
+                                key={account.id}
+                                className="flex items-center justify-between p-3 bg-gray-700 rounded-lg border border-gray-600"
+                              >
+                                <div className="flex items-center space-x-3">
+                                  <div
+                                    className={`w-8 h-8 ${exchangeInfo?.color} rounded flex items-center justify-center`}
+                                  >
+                                    <span className="text-white font-bold text-sm">{exchangeInfo?.icon}</span>
+                                  </div>
+                                  <div>
+                                    <div className="text-white font-medium">{account.nickname}</div>
+                                    <div className="text-gray-400 text-sm">{exchangeInfo?.label}</div>
+                                  </div>
+                                  <CheckCircle className="h-4 w-4 text-green-500" />
+                                </div>
+                                <div className="flex items-center space-x-2">
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => handleEditAccount(account)}
+                                    className="border-gray-600 text-gray-300 hover:bg-gray-600"
+                                  >
+                                    <Edit className="h-3 w-3" />
+                                  </Button>
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => handleDeleteAccount(account.id)}
+                                    className="border-red-600 text-red-400 hover:bg-red-600/10"
+                                  >
+                                    <Trash2 className="h-3 w-3" />
+                                  </Button>
+                                </div>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      )}
 
-              {/* MEXC Configuration - Coming Soon */}
-              <div className="relative">
-                <Collapsible open={mexcOpen} onOpenChange={setMexcOpen} disabled>
-                  <Card className="bg-gray-800 border-gray-700 opacity-50 blur-sm pointer-events-none">
-                    <CollapsibleTrigger asChild>
-                      <CardHeader className="cursor-not-allowed">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center space-x-3">
-                            <div className="w-8 h-8 bg-blue-500 rounded flex items-center justify-center">
-                              <span className="text-white font-bold text-sm">M</span>
-                            </div>
-                            <div>
-                              <CardTitle className="text-white">MEXC</CardTitle>
-                              <CardDescription>Configure sua conta MEXC</CardDescription>
-                            </div>
-                          </div>
-                          <ChevronDown
-                            className={`h-5 w-5 text-gray-400 transition-transform ${mexcOpen ? "rotate-180" : ""}`}
-                          />
-                        </div>
-                      </CardHeader>
-                    </CollapsibleTrigger>
-                    <CollapsibleContent>
-                      <CardContent className="space-y-4">
-                        <div className="space-y-2">
-                          <Label htmlFor="mexc-nickname" className="text-white">
-                            Apelido
-                          </Label>
-                          <Input
-                            id="mexc-nickname"
-                            value={mexcNickname}
-                            onChange={(e) => setMexcNickname(e.target.value)}
-                            className="bg-gray-700 border-gray-600 text-white focus:border-orange-500"
-                            placeholder="Ex: Conta Secundária"
-                            disabled
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label htmlFor="mexc-api-key" className="text-white">
-                            API Key
-                          </Label>
-                          <Input
-                            id="mexc-api-key"
-                            value={mexcApiKey}
-                            onChange={(e) => setMexcApiKey(e.target.value)}
-                            className="bg-gray-700 border-gray-600 text-white focus:border-orange-500"
-                            placeholder="Sua API Key da MEXC"
-                            disabled
-                          />
-                        </div>
-                        <div className="space-y-2">
-                          <Label htmlFor="mexc-secret-key" className="text-white">
-                            Secret Key
-                          </Label>
-                          <Input
-                            id="mexc-secret-key"
-                            type="password"
-                            value={mexcSecretKey}
-                            onChange={(e) => setMexcSecretKey(e.target.value)}
-                            className="bg-gray-700 border-gray-600 text-white focus:border-orange-500"
-                            placeholder="Sua Secret Key da MEXC"
-                            disabled
-                          />
-                        </div>
-                        <Button disabled className="bg-orange-500 hover:bg-orange-600 text-white opacity-50">
-                          Salvar Configurações MEXC
+                      {/* Add New Exchange Button */}
+                      <div className="border-t border-gray-700 pt-4">
+                        <Button
+                          onClick={handleAddExchange}
+                          className="w-full bg-orange-500 hover:bg-orange-600 text-white"
+                        >
+                          <Plus className="h-4 w-4 mr-2" />
+                          Adicionar Nova Corretora
                         </Button>
-                      </CardContent>
-                    </CollapsibleContent>
-                  </Card>
-                </Collapsible>
-
-                {/* Coming Soon Overlay */}
-                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                  <div className="bg-gray-900/90 backdrop-blur-sm px-6 py-3 rounded-lg border border-gray-600">
-                    <span className="text-white font-semibold text-lg">Em breve...</span>
-                  </div>
-                </div>
-              </div>
+                      </div>
+                    </CardContent>
+                  </CollapsibleContent>
+                </Card>
+              </Collapsible>
             </div>
           </div>
         </DialogContent>
       </Dialog>
 
-      {/* Binance Edit Modal */}
-      <Dialog open={showBinanceEditModal} onOpenChange={setShowBinanceEditModal}>
+      {/* Add Exchange Modal */}
+      <Dialog open={showAddExchangeModal} onOpenChange={setShowAddExchangeModal}>
         <DialogContent className="max-w-md bg-gray-900 border-gray-700">
           <DialogHeader>
-            <DialogTitle className="text-white">Editar Configurações Binance</DialogTitle>
-            <DialogDescription className="text-gray-400">Atualize suas configurações da API Binance</DialogDescription>
+            <DialogTitle className="text-white">Adicionar Nova Corretora</DialogTitle>
+            <DialogDescription className="text-gray-400">Configure uma nova conta de corretora</DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="edit-binance-nickname" className="text-white">
+              <Label htmlFor="exchange-select" className="text-white">
+                Corretora
+              </Label>
+              <Select value={selectedExchange} onValueChange={setSelectedExchange}>
+                <SelectTrigger className="bg-gray-700 border-gray-600 text-white focus:border-orange-500">
+                  <SelectValue placeholder="Selecione a corretora" />
+                </SelectTrigger>
+                <SelectContent className="bg-gray-800 border-gray-600">
+                  {availableExchanges.map((exchange) => (
+                    <SelectItem
+                      key={exchange.value}
+                      value={exchange.value}
+                      disabled={exchange.disabled}
+                      className="text-white hover:bg-gray-700 focus:bg-gray-700"
+                    >
+                      <div className="flex items-center space-x-2">
+                        <div className={`w-6 h-6 ${exchange.color} rounded flex items-center justify-center`}>
+                          <span className="text-white font-bold text-xs">{exchange.icon}</span>
+                        </div>
+                        <span>{exchange.label}</span>
+                        {exchange.disabled && <span className="text-gray-500 text-xs">(Em breve)</span>}
+                      </div>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="new-nickname" className="text-white">
                 Apelido
               </Label>
               <Input
-                id="edit-binance-nickname"
-                value={editBinanceNickname}
-                onChange={(e) => setEditBinanceNickname(e.target.value)}
+                id="new-nickname"
+                value={newAccountNickname}
+                onChange={(e) => setNewAccountNickname(e.target.value)}
                 className="bg-gray-700 border-gray-600 text-white focus:border-orange-500"
                 placeholder="Ex: Conta Principal"
               />
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="edit-binance-api-key" className="text-white">
+              <Label htmlFor="new-api-key" className="text-white">
                 API Key
               </Label>
               <Input
-                id="edit-binance-api-key"
-                value={editBinanceApiKey}
-                onChange={(e) => setEditBinanceApiKey(e.target.value)}
+                id="new-api-key"
+                value={newAccountApiKey}
+                onChange={(e) => setNewAccountApiKey(e.target.value)}
                 className="bg-gray-700 border-gray-600 text-white focus:border-orange-500"
-                placeholder="Sua API Key da Binance"
+                placeholder="Sua API Key"
               />
             </div>
 
             <div className="space-y-2">
-              <Label htmlFor="edit-binance-secret-key" className="text-white">
+              <Label htmlFor="new-secret-key" className="text-white">
+                Secret Key
+              </Label>
+              <Input
+                id="new-secret-key"
+                type="password"
+                value={newAccountSecretKey}
+                onChange={(e) => setNewAccountSecretKey(e.target.value)}
+                className="bg-gray-700 border-gray-600 text-white focus:border-orange-500"
+                placeholder="Sua Secret Key"
+              />
+            </div>
+          </div>
+
+          <div className="flex justify-end space-x-3 mt-6">
+            <Button
+              variant="outline"
+              onClick={() => setShowAddExchangeModal(false)}
+              className="border-gray-600 text-gray-300 hover:bg-gray-700"
+            >
+              Cancelar
+            </Button>
+            <Button onClick={handleSaveNewAccount} className="bg-orange-500 hover:bg-orange-600 text-white">
+              Salvar Configurações
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Account Modal */}
+      <Dialog open={showEditModal} onOpenChange={setShowEditModal}>
+        <DialogContent className="max-w-md bg-gray-900 border-gray-700">
+          <DialogHeader>
+            <DialogTitle className="text-white">Editar Conta</DialogTitle>
+            <DialogDescription className="text-gray-400">Atualize as configurações da sua conta</DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="edit-nickname" className="text-white">
+                Apelido
+              </Label>
+              <Input
+                id="edit-nickname"
+                value={editNickname}
+                onChange={(e) => setEditNickname(e.target.value)}
+                className="bg-gray-700 border-gray-600 text-white focus:border-orange-500"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="edit-api-key" className="text-white">
+                API Key
+              </Label>
+              <Input
+                id="edit-api-key"
+                value={editApiKey}
+                onChange={(e) => setEditApiKey(e.target.value)}
+                className="bg-gray-700 border-gray-600 text-white focus:border-orange-500"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="edit-secret-key" className="text-white">
                 Nova Secret Key (opcional)
               </Label>
               <Input
-                id="edit-binance-secret-key"
+                id="edit-secret-key"
                 type="password"
-                value={editBinanceSecretKey}
-                onChange={(e) => setEditBinanceSecretKey(e.target.value)}
+                value={editSecretKey}
+                onChange={(e) => setEditSecretKey(e.target.value)}
                 className="bg-gray-700 border-gray-600 text-white focus:border-orange-500"
                 placeholder="Deixe em branco para manter a atual"
               />
@@ -572,13 +634,36 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
           <div className="flex justify-end space-x-3 mt-6">
             <Button
               variant="outline"
-              onClick={() => setShowBinanceEditModal(false)}
+              onClick={() => setShowEditModal(false)}
               className="border-gray-600 text-gray-300 hover:bg-gray-700"
             >
               Cancelar
             </Button>
-            <Button onClick={handleSaveBinanceEdit} className="bg-orange-500 hover:bg-orange-600 text-white">
+            <Button onClick={handleSaveEditAccount} className="bg-orange-500 hover:bg-orange-600 text-white">
               Salvar Alterações
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Success Modal */}
+      <Dialog open={showSuccessModal} onOpenChange={setShowSuccessModal}>
+        <DialogContent className="bg-gray-900 border-gray-700 text-white max-w-md">
+          <DialogHeader className="text-center">
+            <div className="flex justify-center mb-4">
+              <div className="w-16 h-16 bg-green-500/20 rounded-full flex items-center justify-center">
+                <CheckCircle className="w-10 h-10 text-green-500" />
+              </div>
+            </div>
+            <DialogTitle className="text-2xl font-bold text-white">Cadastro Efetuado</DialogTitle>
+            <DialogDescription className="text-gray-400 mt-2">{successMessage}</DialogDescription>
+          </DialogHeader>
+          <div className="flex justify-center mt-6">
+            <Button
+              onClick={() => setShowSuccessModal(false)}
+              className="bg-orange-500 hover:bg-orange-600 text-white px-8"
+            >
+              Continuar
             </Button>
           </div>
         </DialogContent>
