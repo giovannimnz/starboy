@@ -122,7 +122,6 @@ async function dashboardRoutes(fastify, options) {
     }
   });
 
-  // GET /dashboard/accounts?user_id=1[&id=123]
   fastify.get('/dashboard/user/accounts', {
     schema: {
       description: 'Lista todas as contas do usuário logado ou uma conta específica pelo id.',
