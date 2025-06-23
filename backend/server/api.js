@@ -100,7 +100,7 @@ async function registerPlugins() {
     });
     console.log('✅ Rate limiting registrado');
 
-  await fastify.register(require('@fastify/swagger'), {
+      await fastify.register(require('@fastify/swagger'), {
     openapi: {
       info: {
         title: 'Starboy API',
