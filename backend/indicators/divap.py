@@ -17,16 +17,12 @@ import hashlib
 import json
 from urllib.parse import urlencode
 import warnings
-
-# ===== IMPORTS QUE ESTAVAM FALTANDO =====
 from telethon import TelegramClient, events
 from dotenv import load_dotenv
 import pathlib
-from pathlib import Path  # <-- ESTE ERA O QUE ESTAVA FALTANDO
+from pathlib import Path
 from senhas import pers_api_hash, pers_api_id, API_KEY, API_SECRET, API_URL
-import schedule  # <-- ESTE TAMBÉM ESTAVA FALTANDO
-
-# --- NOVO: Importa as funções de atualização do arquivo externo ---
+import schedule
 from exchange_bracket_updater import update_leverage_brackets, test_binance_credentials, test_database_connection
 from exchange_info_updater import update_exchange_info_database, CURRENT_EXCHANGE
 
