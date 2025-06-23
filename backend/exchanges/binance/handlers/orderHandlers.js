@@ -506,103 +506,80 @@ async function handlePositionFromOrder(connection, order, accountId) {
  */
 async function autoMoveOrderOnCompletion(orderId, newStatus, accountId) {
   if (!['FILLED', 'CANCELED', 'CANCELLED', 'EXPIRED', 'REJECTED'].includes(newStatus)) {
-    return false; // ✅ Só move ordens "finalizadas"
+    return false;
   }
 
+  let connection;
   try {
     const db = await getDatabaseInstance();
     console.log(`[ORDER_AUTO_MOVE] 🔄 Movendo ordem ${orderId} (${newStatus}) para histórico...`);
 
-    const connection = await db.getConnection();
+    connection = await db.getConnection();
     await connection.beginTransaction();
 
-    try {
-      // ✅ 1. BUSCAR ORDEM ATUAL
-      const [orderToMove] = await connection.query(`
-        SELECT * FROM ordens 
-        WHERE id_externo = ? AND conta_id = ?
-      `, [orderId, accountId]);
+    // 1. Buscar a ordem completa da tabela ativa
+    const [orderResult] = await connection.query(
+      'SELECT * FROM ordens WHERE id_externo = ? AND conta_id = ?',
+      [orderId, accountId]
+    );
 
-      if (orderToMove.length === 0) {
-        await connection.rollback();
-        connection.release();
-        return false;
-      }
-
-      const order = orderToMove[0];
-
-      // ✅ 2. VERIFICAR COLUNAS DA TABELA DESTINO
-      const [destColumns] = await connection.query(`SHOW COLUMNS FROM ordens_fechadas`);
-      const destColumnNames = destColumns.map(col => col.Field);
-
-      // ✅ 3. PREPARAR DADOS COM STATUS ATUALIZADO
-      const insertData = {
-        tipo_ordem: order.tipo_ordem,
-        preco: order.preco,
-        quantidade: order.quantidade,
-        id_posicao: order.id_posicao,
-        status: newStatus, // ✅ USAR STATUS ATUALIZADO
-        data_hora_criacao: order.data_hora_criacao,
-        id_externo: order.id_externo,
-        side: order.side,
-        simbolo: order.simbolo,
-        tipo_ordem_bot: order.tipo_ordem_bot,
-        target: order.target,
-        reduce_only: order.reduce_only,
-        close_position: order.close_position,
-        last_update: new Date(),
-        conta_id: order.conta_id,
-        preco_executado: order.preco_executado || 0,
-        quantidade_executada: order.quantidade_executada || 0,
-        observacao: order.observacao ? 
-          `${order.observacao} | Auto-movida: ${newStatus}` : 
-          `Auto-movida para histórico: ${newStatus}`
-      };
-
-      // ✅ 4. ADICIONAR CAMPOS OPCIONAIS
-      if (destColumnNames.includes('orign_sig') && order.orign_sig) {
-        insertData.orign_sig = order.orign_sig;
-      }
-      if (destColumnNames.includes('dados_originais_ws') && order.dados_originais_ws) {
-        insertData.dados_originais_ws = order.dados_originais_ws;
-      }
-
-      // ✅ 5. CONSTRUIR QUERY DINÂMICA
-      const columns = Object.keys(insertData).filter(key => 
-        destColumnNames.includes(key) && insertData[key] !== undefined
-      );
-      const values = columns.map(col => insertData[col]);
-      const placeholders = columns.map(() => '?').join(', ');
-
-      // ✅ 6. INSERIR EM ORDENS_FECHADAS
-      await connection.query(
-        `INSERT INTO ordens_fechadas (${columns.join(', ')}) VALUES (${placeholders})`,
-        values
-      );
-
-      // ✅ 7. REMOVER DA TABELA ATIVA
-      await connection.query(
-        'DELETE FROM ordens WHERE id_externo = ? AND conta_id = ?',
-        [orderId, accountId]
-      );
-
-      await connection.commit();
-      connection.release();
-
-      console.log(`[ORDER_AUTO_MOVE] ✅ Ordem ${orderId} (${newStatus}) movida automaticamente para ordens_fechadas`);
-      return true;
-
-    } catch (moveError) {
+    if (orderResult.length === 0) {
+      console.warn(`[ORDER_AUTO_MOVE] ⚠️ Ordem ${orderId} não encontrada no banco para mover.`);
       await connection.rollback();
-      connection.release();
-      throw moveError;
+      return false;
+    }
+    
+    const orderToMove = orderResult[0];
+
+    // 2. Preparar dados para inserção na tabela de histórico
+    const closedOrderData = {
+      ...orderToMove, // Copia todos os campos da ordem original
+      id_original: orderToMove.id,
+      id_original_ordens: orderToMove.id,
+      status: newStatus,
+      last_update: new Date(),
+      observacao: `${orderToMove.observacao || ''} | Movida para histórico: ${newStatus}`.trim(),
+    };
+    delete closedOrderData.id;
+
+    // 3. Obter colunas da tabela de destino
+    const [destColumnsResult] = await connection.query('SHOW COLUMNS FROM ordens_fechadas');
+    const destColumns = destColumnsResult.map(col => col.Field);
+
+    // 4. Filtrar dados para inserir apenas colunas existentes
+    const finalDataToInsert = {};
+    for (const key in closedOrderData) {
+      if (destColumns.includes(key)) {
+        finalDataToInsert[key] = closedOrderData[key];
+      }
     }
 
+    // 5. Inserir na tabela de histórico
+    const columns = Object.keys(finalDataToInsert);
+    const placeholders = columns.map(() => '?').join(', ');
+    const values = Object.values(finalDataToInsert);
+
+    await connection.query(
+      `INSERT INTO ordens_fechadas (${columns.join(', ')}) VALUES (${placeholders})`,
+      values
+    );
+
+    // 6. Remover da tabela ativa
+    await connection.query('DELETE FROM ordens WHERE id = ?', [orderToMove.id]);
+
+    await connection.commit();
+    console.log(`[ORDER_AUTO_MOVE] ✅ Ordem ${orderId} movida para ordens_fechadas.`);
+    return true;
+
   } catch (error) {
+    if (connection) await connection.rollback();
     console.error(`[ORDER_AUTO_MOVE] ❌ Erro ao mover ordem ${orderId}:`, error.message);
     return false;
+  } finally {
+    if (connection) connection.release();
   }
 }
+
 
 /**
  * ✅ FUNÇÃO CORRIGIDA: Processa atualizações de ordens via WebSocket
