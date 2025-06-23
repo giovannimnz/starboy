@@ -560,6 +560,600 @@ async function authenticationRoutes() {
     });
 }
 
+// 👤 ROTAS DE PERFIL DE USUÁRIO
+
+// Obter dados do perfil do usuário
+fastify.get('/api/profile/:userId', {
+  schema: {
+    params: {
+      type: 'object',
+      required: ['userId'],
+      properties: {
+        userId: { type: 'string', pattern: '^[0-9]+$' }
+      }
+    }
+  }
+}, async (request, reply) => {
+  try {
+    const userId = parseInt(request.params.userId);
+    const db = await getDatabaseInstance();
+    
+    const [users] = await db.query(`
+      SELECT id, nome, username, email, criado_em, atualizado_em, ativo, avatar, telefone
+      FROM users 
+      WHERE id = ? AND ativo = 1
+    `, [userId]);
+    
+    if (users.length === 0) {
+      return reply.status(404).send({
+        success: false,
+        error: 'Usuário não encontrado'
+      });
+    }
+    
+    const user = users[0];
+    
+    reply.send({
+      success: true,
+      data: {
+        id: user.id,
+        nome: user.nome,
+        username: user.username,
+        email: user.email,
+        criado_em: user.criado_em,
+        atualizado_em: user.atualizado_em,
+        avatar: user.avatar,
+        telefone: user.telefone
+      }
+    });
+    
+  } catch (error) {
+    fastify.log.error('Erro ao buscar perfil:', error);
+    reply.status(500).send({
+      success: false,
+      error: 'Erro interno do servidor',
+      message: error.message
+    });
+  }
+});
+
+// Atualizar dados do perfil do usuário
+fastify.put('/api/profile/:userId', {
+  schema: {
+    params: {
+      type: 'object',
+      required: ['userId'],
+      properties: {
+        userId: { type: 'string', pattern: '^[0-9]+$' }
+      }
+    },
+    body: {
+      type: 'object',
+      properties: {
+        nome: { type: 'string', maxLength: 100 },
+        username: { type: 'string', maxLength: 50 },
+        email: { type: 'string', maxLength: 100, format: 'email' },
+        telefone: { type: 'string', maxLength: 20 },
+        avatar: { type: 'string', maxLength: 255 }
+      }
+    }
+  }
+}, async (request, reply) => {
+  try {
+    const userId = parseInt(request.params.userId);
+    const { nome, username, email, telefone, avatar } = request.body;
+    const db = await getDatabaseInstance();
+    
+    // Verificar se usuário existe
+    const [existingUser] = await db.query('SELECT id FROM users WHERE id = ? AND ativo = 1', [userId]);
+    if (existingUser.length === 0) {
+      return reply.status(404).send({
+        success: false,
+        error: 'Usuário não encontrado'
+      });
+    }
+    
+    // Verificar se email/username já existem para outro usuário
+    if (email || username) {
+      const [duplicates] = await db.query(`
+        SELECT id, email, username FROM users 
+        WHERE (email = ? OR username = ?) AND id != ? AND ativo = 1
+      `, [email || '', username || '', userId]);
+      
+      if (duplicates.length > 0) {
+        const duplicate = duplicates[0];
+        const field = duplicate.email === email ? 'email' : 'username';
+        return reply.status(400).send({
+          success: false,
+          error: `Este ${field} já está em uso por outro usuário`
+        });
+      }
+    }
+    
+    // Preparar campos para atualização
+    const updateFields = [];
+    const updateValues = [];
+    
+    if (nome) {
+      updateFields.push('nome = ?');
+      updateValues.push(nome);
+    }
+    if (username) {
+      updateFields.push('username = ?');
+      updateValues.push(username);
+    }
+    if (email) {
+      updateFields.push('email = ?');
+      updateValues.push(email);
+    }
+    if (telefone !== undefined) {
+      updateFields.push('telefone = ?');
+      updateValues.push(telefone);
+    }
+    if (avatar !== undefined) {
+      updateFields.push('avatar = ?');
+      updateValues.push(avatar);
+    }
+    
+    if (updateFields.length === 0) {
+      return reply.status(400).send({
+        success: false,
+        error: 'Nenhum campo válido para atualização'
+      });
+    }
+    
+    updateValues.push(userId);
+    
+    await db.query(`
+      UPDATE users 
+      SET ${updateFields.join(', ')}, atualizado_em = NOW()
+      WHERE id = ?
+    `, updateValues);
+    
+    // Buscar dados atualizados
+    const [updatedUser] = await db.query(`
+      SELECT id, nome, username, email, criado_em, atualizado_em, avatar, telefone
+      FROM users 
+      WHERE id = ?
+    `, [userId]);
+    
+    reply.send({
+      success: true,
+      message: 'Perfil atualizado com sucesso',
+      data: updatedUser[0]
+    });
+    
+  } catch (error) {
+    fastify.log.error('Erro ao atualizar perfil:', error);
+    reply.status(500).send({
+      success: false,
+      error: 'Erro interno do servidor',
+      message: error.message
+    });
+  }
+});
+
+// 🏢 ROTAS DE CORRETORAS DO USUÁRIO
+
+// Listar contas de corretora do usuário
+fastify.get('/api/user/:userId/accounts', {
+  schema: {
+    params: {
+      type: 'object',
+      required: ['userId'],
+      properties: {
+        userId: { type: 'string', pattern: '^[0-9]+$' }
+      }
+    }
+  }
+}, async (request, reply) => {
+  try {
+    const userId = parseInt(request.params.userId);
+    const db = await getDatabaseInstance();
+    
+    const [accounts] = await db.query(`
+      SELECT 
+        c.id,
+        c.nome,
+        c.descricao,
+        c.id_corretora,
+        c.ativa,
+        c.max_posicoes,
+        c.saldo,
+        c.saldo_base_calculo,
+        c.data_criacao,
+        c.ultima_atualizacao,
+        c.celular,
+        cor.corretora as nome_corretora,
+        cor.ambiente
+      FROM contas c
+      LEFT JOIN corretoras cor ON c.id_corretora = cor.id
+      WHERE c.user_id = ? OR c.user_id IS NULL
+      ORDER BY c.id DESC
+    `, [userId]);
+    
+    // Formatar dados removendo informações sensíveis
+    const accountsFormatted = accounts.map(account => ({
+      id: account.id,
+      nome: account.nome,
+      descricao: account.descricao,
+      id_corretora: account.id_corretora,
+      nome_corretora: account.nome_corretora,
+      ambiente: account.ambiente,
+      ativa: account.ativa,
+      max_posicoes: account.max_posicoes,
+      saldo: parseFloat(account.saldo || 0),
+      saldo_base_calculo: parseFloat(account.saldo_base_calculo || 0),
+      data_criacao: account.data_criacao,
+      ultima_atualizacao: account.ultima_atualizacao,
+      celular: account.celular,
+      has_api_key: !!(account.api_key),
+      has_api_secret: !!(account.api_secret)
+    }));
+    
+    reply.send({
+      success: true,
+      data: accountsFormatted,
+      total: accountsFormatted.length
+    });
+    
+  } catch (error) {
+    fastify.log.error('Erro ao buscar contas do usuário:', error);
+    reply.status(500).send({
+      success: false,
+      error: 'Erro interno do servidor',
+      message: error.message
+    });
+  }
+});
+
+// Criar nova conta de corretora
+fastify.post('/api/user/:userId/accounts', {
+  schema: {
+    params: {
+      type: 'object',
+      required: ['userId'],
+      properties: {
+        userId: { type: 'string', pattern: '^[0-9]+$' }
+      }
+    },
+    body: {
+      type: 'object',
+      required: ['nome', 'id_corretora', 'api_key', 'api_secret'],
+      properties: {
+        nome: { type: 'string', maxLength: 100 },
+        descricao: { type: 'string', maxLength: 500 },
+        id_corretora: { type: 'integer' },
+        api_key: { type: 'string', maxLength: 255 },
+        api_secret: { type: 'string', maxLength: 255 },
+        ws_api_key: { type: 'string', maxLength: 255 },
+        ws_api_secret: { type: 'string', maxLength: 255 },
+        telegram_chat_id: { type: 'string', maxLength: 50 },
+        celular: { type: 'string', maxLength: 20 },
+        max_posicoes: { type: 'integer', minimum: 1, maximum: 100 }
+      }
+    }
+  }
+}, async (request, reply) => {
+  try {
+    const userId = parseInt(request.params.userId);
+    const {
+      nome,
+      descricao,
+      id_corretora,
+      api_key,
+      api_secret,
+      ws_api_key,
+      ws_api_secret,
+      telegram_chat_id,
+      celular,
+      max_posicoes = 10
+    } = request.body;
+    
+    const db = await getDatabaseInstance();
+    
+    // Verificar se corretora existe
+    const [corretora] = await db.query('SELECT id, corretora, ambiente FROM corretoras WHERE id = ? AND ativa = 1', [id_corretora]);
+    if (corretora.length === 0) {
+      return reply.status(400).send({
+        success: false,
+        error: 'Corretora não encontrada ou inativa'
+      });
+    }
+    
+    // Verificar se já existe conta com mesmo nome para este usuário
+    const [existingAccount] = await db.query(
+      'SELECT id FROM contas WHERE nome = ? AND (user_id = ? OR user_id IS NULL)',
+      [nome, userId]
+    );
+    
+    if (existingAccount.length > 0) {
+      return reply.status(400).send({
+        success: false,
+        error: 'Já existe uma conta com este nome'
+      });
+    }
+    
+    // Inserir nova conta
+    const [result] = await db.query(`
+      INSERT INTO contas (
+        nome, descricao, id_corretora, api_key, api_secret, 
+        ws_api_key, ws_api_secret, telegram_chat_id, celular,
+        max_posicoes, user_id, ativa, data_criacao
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, NOW())
+    `, [
+      nome, descricao, id_corretora, api_key, api_secret,
+      ws_api_key, ws_api_secret, telegram_chat_id, celular,
+      max_posicoes, userId
+    ]);
+    
+    const accountId = result.insertId;
+    
+    // Buscar dados da conta criada
+    const [newAccount] = await db.query(`
+      SELECT 
+        c.id, c.nome, c.descricao, c.id_corretora, c.ativa,
+        c.max_posicoes, c.data_criacao,
+        cor.corretora as nome_corretora, cor.ambiente
+      FROM contas c
+      LEFT JOIN corretoras cor ON c.id_corretora = cor.id
+      WHERE c.id = ?
+    `, [accountId]);
+    
+    reply.send({
+      success: true,
+      message: 'Conta de corretora criada com sucesso',
+      data: {
+        id: newAccount[0].id,
+        nome: newAccount[0].nome,
+        descricao: newAccount[0].descricao,
+        id_corretora: newAccount[0].id_corretora,
+        nome_corretora: newAccount[0].nome_corretora,
+        ambiente: newAccount[0].ambiente,
+        ativa: newAccount[0].ativa,
+        max_posicoes: newAccount[0].max_posicoes,
+        data_criacao: newAccount[0].data_criacao
+      }
+    });
+    
+  } catch (error) {
+    fastify.log.error('Erro ao criar conta de corretora:', error);
+    reply.status(500).send({
+      success: false,
+      error: 'Erro interno do servidor',
+      message: error.message
+    });
+  }
+});
+
+// Atualizar conta de corretora
+fastify.put('/api/user/:userId/accounts/:accountId', {
+  schema: {
+    params: {
+      type: 'object',
+      required: ['userId', 'accountId'],
+      properties: {
+        userId: { type: 'string', pattern: '^[0-9]+$' },
+        accountId: { type: 'string', pattern: '^[0-9]+$' }
+      }
+    },
+    body: {
+      type: 'object',
+      properties: {
+        nome: { type: 'string', maxLength: 100 },
+        descricao: { type: 'string', maxLength: 500 },
+        id_corretora: { type: 'integer' },
+        api_key: { type: 'string', maxLength: 255 },
+        api_secret: { type: 'string', maxLength: 255 },
+        ws_api_key: { type: 'string', maxLength: 255 },
+        ws_api_secret: { type: 'string', maxLength: 255 },
+        telegram_chat_id: { type: 'string', maxLength: 50 },
+        celular: { type: 'string', maxLength: 20 },
+        max_posicoes: { type: 'integer', minimum: 1, maximum: 100 },
+        ativa: { type: 'boolean' }
+      }
+    }
+  }
+}, async (request, reply) => {
+  try {
+    const userId = parseInt(request.params.userId);
+    const accountId = parseInt(request.params.accountId);
+    const db = await getDatabaseInstance();
+    
+    // Verificar se conta existe e pertence ao usuário
+    const [existingAccount] = await db.query(
+      'SELECT id FROM contas WHERE id = ? AND (user_id = ? OR user_id IS NULL)',
+      [accountId, userId]
+    );
+    
+    if (existingAccount.length === 0) {
+      return reply.status(404).send({
+        success: false,
+        error: 'Conta não encontrada'
+      });
+    }
+    
+    // Preparar campos para atualização
+    const updateFields = [];
+    const updateValues = [];
+    const allowedFields = [
+      'nome', 'descricao', 'id_corretora', 'api_key', 'api_secret',
+      'ws_api_key', 'ws_api_secret', 'telegram_chat_id', 'celular',
+      'max_posicoes', 'ativa'
+    ];
+    
+    allowedFields.forEach(field => {
+      if (request.body[field] !== undefined) {
+        updateFields.push(`${field} = ?`);
+        updateValues.push(request.body[field]);
+      }
+    });
+    
+    if (updateFields.length === 0) {
+      return reply.status(400).send({
+        success: false,
+        error: 'Nenhum campo válido para atualização'
+      });
+    }
+    
+    // Verificar se nova corretora existe (se foi alterada)
+    if (request.body.id_corretora) {
+      const [corretora] = await db.query(
+        'SELECT id FROM corretoras WHERE id = ? AND ativa = 1',
+        [request.body.id_corretora]
+      );
+      if (corretora.length === 0) {
+        return reply.status(400).send({
+          success: false,
+          error: 'Corretora não encontrada ou inativa'
+        });
+      }
+    }
+    
+    updateValues.push(accountId);
+    
+    await db.query(`
+      UPDATE contas 
+      SET ${updateFields.join(', ')}, ultima_atualizacao = NOW()
+      WHERE id = ?
+    `, updateValues);
+    
+    // Buscar dados atualizados
+    const [updatedAccount] = await db.query(`
+      SELECT 
+        c.id, c.nome, c.descricao, c.id_corretora, c.ativa,
+        c.max_posicoes, c.ultima_atualizacao,
+        cor.corretora as nome_corretora, cor.ambiente
+      FROM contas c
+      LEFT JOIN corretoras cor ON c.id_corretora = cor.id
+      WHERE c.id = ?
+    `, [accountId]);
+    
+    reply.send({
+      success: true,
+      message: 'Conta atualizada com sucesso',
+      data: updatedAccount[0]
+    });
+    
+  } catch (error) {
+    fastify.log.error('Erro ao atualizar conta de corretora:', error);
+    reply.status(500).send({
+      success: false,
+      error: 'Erro interno do servidor',
+      message: error.message
+    });
+  }
+});
+
+// Deletar conta de corretora
+fastify.delete('/api/user/:userId/accounts/:accountId', {
+  schema: {
+    params: {
+      type: 'object',
+      required: ['userId', 'accountId'],
+      properties: {
+        userId: { type: 'string', pattern: '^[0-9]+$' },
+        accountId: { type: 'string', pattern: '^[0-9]+$' }
+      }
+    }
+  }
+}, async (request, reply) => {
+  try {
+    const userId = parseInt(request.params.userId);
+    const accountId = parseInt(request.params.accountId);
+    const db = await getDatabaseInstance();
+    
+    // Verificar se conta existe e pertence ao usuário
+    const [existingAccount] = await db.query(
+      'SELECT id, nome FROM contas WHERE id = ? AND (user_id = ? OR user_id IS NULL)',
+      [accountId, userId]
+    );
+    
+    if (existingAccount.length === 0) {
+      return reply.status(404).send({
+        success: false,
+        error: 'Conta não encontrada'
+      });
+    }
+    
+    // Verificar se existem posições abertas
+    const [openPositions] = await db.query(
+      'SELECT COUNT(*) as count FROM posicoes WHERE conta_id = ? AND status = "OPEN"',
+      [accountId]
+    );
+    
+    if (openPositions[0].count > 0) {
+      return reply.status(400).send({
+        success: false,
+        error: 'Não é possível deletar conta com posições abertas',
+        details: `Existem ${openPositions[0].count} posições abertas`
+      });
+    }
+    
+    // Verificar se existem ordens ativas
+    const [activeOrders] = await db.query(
+      `SELECT COUNT(*) as count FROM ordens 
+       WHERE conta_id = ? AND status IN ('NEW', 'PARTIALLY_FILLED')`,
+      [accountId]
+    );
+    
+    if (activeOrders[0].count > 0) {
+      return reply.status(400).send({
+        success: false,
+        error: 'Não é possível deletar conta com ordens ativas',
+        details: `Existem ${activeOrders[0].count} ordens ativas`
+      });
+    }
+    
+    // Marcar como inativa ao invés de deletar (soft delete)
+    await db.query(
+      'UPDATE contas SET ativa = 0, ultima_atualizacao = NOW() WHERE id = ?',
+      [accountId]
+    );
+    
+    reply.send({
+      success: true,
+      message: `Conta "${existingAccount[0].nome}" foi desativada com sucesso`
+    });
+    
+  } catch (error) {
+    fastify.log.error('Erro ao deletar conta de corretora:', error);
+    reply.status(500).send({
+      success: false,
+      error: 'Erro interno do servidor',
+      message: error.message
+    });
+  }
+});
+
+// Listar corretoras disponíveis
+fastify.get('/api/brokers', async (request, reply) => {
+  try {
+    const db = await getDatabaseInstance();
+    
+    const [brokers] = await db.query(`
+      SELECT id, corretora, ambiente, data_criacao, ultima_atualizacao
+      FROM corretoras 
+      WHERE ativa = 1
+      ORDER BY corretora, ambiente
+    `);
+    
+    reply.send({
+      success: true,
+      data: brokers,
+      total: brokers.length
+    });
+    
+  } catch (error) {
+    fastify.log.error('Erro ao buscar corretoras:', error);
+    reply.status(500).send({
+      success: false,
+      error: 'Erro interno do servidor',
+      message: error.message
+    });
+  }
+});
+
 // ✅ INICIALIZAÇÃO DO SERVIDOR COM MELHOR TRATAMENTO DE ERRO
 async function startServer() {
   try {

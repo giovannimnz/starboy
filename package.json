@@ -15,6 +15,8 @@
     "api:dev": "nodemon backend/server/api.js",
     "frontend": "cd frontend && npm run dev",
     "dev": "concurrently \"npm run api:dev\" \"npm run frontend\"",
+    "dev:api": "nodemon backend/server/api.js",
+    "dev:full": "nodemon backend/server/api.js --watch backend --watch config",
     "start": "npm run api"
   },
   "keywords": [],
