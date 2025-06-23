@@ -12,7 +12,7 @@ from pathlib import Path
 import logging
 import warnings
 
-# Importar configurações do divap.py
+# Importar configurações do reverse.py
 sys.path.append(str(Path(__file__).parent.parent))
 from divap import (
     extract_trade_info, format_trade_message, save_to_database, 
@@ -31,8 +31,8 @@ load_dotenv(dotenv_path=env_path)
 
 # --- Configurações Globais ---
 GRUPOS_ORIGEM_DISPONIVEIS = {
-    -1002444455075: "IA de Divap",
-    -1002059628218: "Manual Divap"
+    -1002444455075: "IA Reverse",
+    -1002059628218: "Manual Reverse"
 }
 
 GRUPOS_DESTINO_DISPONIVEIS = {
@@ -49,7 +49,7 @@ TELEGRAM_RATE_LIMITS = {
 }
 
 # Cliente Telegram
-client = TelegramClient('divap_scraper', pers_api_id, pers_api_hash)
+client = TelegramClient('reverse_scraper', pers_api_id, pers_api_hash)
 
 class DivapScraper:
     def __init__(self):
@@ -89,7 +89,7 @@ class DivapScraper:
     def configurar_parametros(self):
         """Configura os parâmetros do scraping interativamente"""
         print("\n" + "="*70)
-        print("🔧 CONFIGURAÇÃO DO SCRAPER DIVAP")
+        print("🔧 CONFIGURAÇÃO DO SCRAPER Reverse")
         print("="*70)
 
         # 1. Selecionar grupo de origem
@@ -154,16 +154,16 @@ class DivapScraper:
             print("⚠️ Data de início é posterior à data de fim. Invertendo...")
             self.config['data_inicio'], self.config['data_fim'] = self.config['data_fim'], self.config['data_inicio']
 
-        # 4. Configurar verificação DIVAP
+        # 4. Configurar verificação Reverse
         while True:
-            resp = input("\n🔍 Fazer verificação DIVAP? (s/n): ").strip().lower()
+            resp = input("\n🔍 Fazer verificação Reverse? (s/n): ").strip().lower()
             if resp in ['s', 'sim', 'y', 'yes']:
                 self.config['verificar_divap'] = True
-                print("✅ Verificação DIVAP ativada")
+                print("✅ Verificação Reverse ativada")
                 break
             elif resp in ['n', 'nao', 'não', 'no']:
                 self.config['verificar_divap'] = False
-                print("✅ Verificação DIVAP desativada")
+                print("✅ Verificação Reverse desativada")
                 break
             else:
                 print("❌ Responda com 's' para sim ou 'n' para não")
@@ -187,7 +187,7 @@ class DivapScraper:
         print(f"   🔍 Grupo origem: {nome_origem}")
         print(f"   📤 Grupo destino: {nome_destino}")
         print(f"   📅 Período: {self.config['data_inicio'].strftime('%d/%m/%Y')} até {self.config['data_fim'].strftime('%d/%m/%Y')}")
-        print(f"   🔬 Verificação DIVAP: {'Sim' if self.config['verificar_divap'] else 'Não'}")
+        print(f"   🔬 Verificação Reverse: {'Sim' if self.config['verificar_divap'] else 'Não'}")
         print(f"   💾 Salvar no banco: {'Sim' if self.config['salvar_banco'] else 'Não'}")
 
         while True:
@@ -334,7 +334,7 @@ class DivapScraper:
         print(f"\n⚠️ ATENÇÃO: As mensagens acima serão enviadas para o grupo destino!")
         print(f"   🎯 Destino: {GRUPOS_DESTINO_DISPONIVEIS[self.config['grupo_destino']]}")
         print(f"   💾 Salvar no banco: {'Sim' if self.config['salvar_banco'] else 'Não'}")
-        print(f"   🔍 Verificar DIVAP: {'Sim' if self.config['verificar_divap'] else 'Não'}")
+        print(f"   🔍 Verificar Reverse: {'Sim' if self.config['verificar_divap'] else 'Não'}")
         
         while True:
             confirmacao = input(f"\n✅ Confirmar o encaminhamento de {total_mensagens} mensagens? (s/n): ").strip().lower()
@@ -393,7 +393,7 @@ class DivapScraper:
             await self.aplicar_rate_limiting()
             
             # Determinar source baseado no grupo origem
-            message_source = GRUPOS_ORIGEM_DISPONIVEIS.get(self.config['grupo_origem'], 'divap')
+            message_source = GRUPOS_ORIGEM_DISPONIVEIS.get(self.config['grupo_origem'])
             
             # Verificação DIVAP se habilitada
             is_valid_divap = True
@@ -406,9 +406,9 @@ class DivapScraper:
                         self.estatisticas['divap_confirmados'] += 1
                     else:
                         self.estatisticas['divap_rejeitados'] += 1
-                        print(f"   ❌ DIVAP rejeitado: {error_message}")
+                        print(f"   ❌ Reverse rejeitado: {error_message}")
                 except Exception as e:
-                    print(f"   ⚠️ Erro na verificação DIVAP: {e}")
+                    print(f"   ⚠️ Erro na verificação Reverse: {e}")
                     is_valid_divap = True
 
             # Preparar dados para envio/salvamento
@@ -493,9 +493,9 @@ class DivapScraper:
             
             # Inicializar DIVAP analyzer se necessário
             if self.config['verificar_divap']:
-                print("🔍 Inicializando analisador DIVAP...")
+                print("🔍 Inicializando analisador Reverse...")
                 if not initialize_divap_analyzer():
-                    print("⚠️ Falha ao inicializar DIVAP analyzer. Continuando sem verificação...")
+                    print("⚠️ Falha ao inicializar Reverse analyzer. Continuando sem verificação...")
                     self.config['verificar_divap'] = False
 
             # Buscar mensagens históricas
@@ -543,8 +543,8 @@ class DivapScraper:
         print(f"   ✅ Mensagens com sinais válidos: {self.estatisticas['mensagens_validas']}")
         
         if self.config['verificar_divap']:
-            print(f"   🔍 DIVAP confirmados: {self.estatisticas['divap_confirmados']}")
-            print(f"   ❌ DIVAP rejeitados: {self.estatisticas['divap_rejeitados']}")
+            print(f"   🔍 Reverse confirmados: {self.estatisticas['divap_confirmados']}")
+            print(f"   ❌ Reverse rejeitados: {self.estatisticas['divap_rejeitados']}")
         
         print(f"   📤 Mensagens enviadas: {self.estatisticas['enviadas']}")
         
@@ -570,10 +570,10 @@ class DivapScraper:
 async def main():
     """Função principal"""
     print("="*70)
-    print("🔍 DIVAP SCRAPER - EXTRATOR DE MENSAGENS HISTÓRICAS")
+    print("🔍 REVERSE SCRAPER - EXTRATOR DE MENSAGENS HISTÓRICAS")
     print("="*70)
     print("Este utilitário permite extrair e reprocessar mensagens históricas")
-    print("dos grupos DIVAP em um período específico.")
+    print("dos grupos Reverse em um período específico.")
     print("\n⚠️ IMPORTANTE: Respeita os limites da API do Telegram")
     print(f"   • Máximo {TELEGRAM_RATE_LIMITS['messages_per_minute']} mensagens por minuto")
     print(f"   • Delay de {TELEGRAM_RATE_LIMITS['delay_between_messages']} segundos entre mensagens")

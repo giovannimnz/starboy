@@ -36,7 +36,7 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 warnings.filterwarnings("ignore", message=".*telethon.*")
 
 # --- Constantes e Configurações Globais ---
-ENABLE_DIVAP_VERIFICATION = True
+ENABLE_REVERSE_VERIFICATION = True
 PREJUIZO_MAXIMO_PERCENTUAL_DO_CAPITAL_TOTAL = 4.90
 TAXA_ENTRADA = 0.02
 TAXA_SAIDA = 0.05
@@ -45,8 +45,8 @@ GRUPOS_ORIGEM_IDS = [-1002444455075, -1002059628218]
 GRUPO_DESTINO_ID = -1002016807368
 CONTA_ID = 1
 GRUPO_FONTE_MAPEAMENTO = {
-    -1002444455075: "Inverse",
-    -1002059628218: "Manual-Inverse"
+    -1002444455075: "Reverse",
+    -1002059628218: "Manual-Reverse"
 
 }
 
@@ -1040,7 +1040,7 @@ async def handle_new_message(event):
             if trade_info:
                 #print(f"   🎯 Trade info extraído com sucesso!")
                 
-                if ENABLE_DIVAP_VERIFICATION:
+                if ENABLE_REVERSE_VERIFICATION:
                     print(f"{'='*80}\n")
                     print(f"🔍 Verificando padrão DIVAP...")
                     is_valid_divap, error_message = await verify_divap_pattern(trade_info)
@@ -1263,7 +1263,7 @@ async def verificar_integridade_telegram():
             return False
         
         # Testar verificação DIVAP se habilitada
-        if ENABLE_DIVAP_VERIFICATION:
+        if ENABLE_REVERSE_VERIFICATION:
             print(f"\n🔍 Testando verificação DIVAP...")
             
             try:
@@ -1316,7 +1316,7 @@ async def verificar_integridade_telegram():
         print(f"   ✅ Leitura de mensagens: OK")
         print(f"   ✅ Extração de trade info: OK")
         print(f"   ✅ Formatação de mensagens: OK")
-        print(f"   ✅ Verificação DIVAP: {'OK' if ENABLE_DIVAP_VERIFICATION else 'DESABILITADA'}")
+        print(f"   ✅ Verificação DIVAP: {'OK' if ENABLE_REVERSE_VERIFICATION else 'DESABILITADA'}")
         print(f"   ✅ Capacidade de envio: OK")
         print(f"\n🚀 Sistema pronto para monitoramento em tempo real!")
         print(f"{'='*80}\n")
@@ -1376,7 +1376,7 @@ async def main():
     initialize_bracket_scheduler()
 
     # 2. Inicializa o analisador de padrões DIVAP
-    if ENABLE_DIVAP_VERIFICATION:
+    if ENABLE_REVERSE_VERIFICATION:
         #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🔍 Inicializando analisador DIVAP...")
         initialize_divap_analyzer()
     else:
@@ -1429,12 +1429,12 @@ async def main():
     #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Handler registrado para {len(grupos_acessiveis)} grupo(s)")
     #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🎯 Grupos monitorados: {grupos_acessiveis}")
     #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 📤 Grupo destino: {GRUPO_DESTINO_ID}")
-    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🔄 Verificação DIVAP: {'ATIVADA' if ENABLE_DIVAP_VERIFICATION else 'DESATIVADA'}")
+    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🔄 Verificação Reverse: {'ATIVADA' if ENABLE_REVERSE_VERIFICATION else 'DESATIVADA'}")
     
     # Testar envio de mensagem de início
     try:
         #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🧪 Enviando mensagem de início...")
-        test_msg = await client.send_message(GRUPO_DESTINO_ID, "🤖 Bot DIVAP iniciado com verificação de integridade aprovada!")
+        test_msg = await client.send_message(GRUPO_DESTINO_ID, "🤖 Bot Reverse iniciado com verificação de integridade aprovada!")
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Mensagem de início enviada (ID: {test_msg.id})")
     except Exception as e:
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ❌ Falha no envio da mensagem de início: {e}")
@@ -1443,7 +1443,7 @@ async def main():
     print(f"🚀 BOT DIVAP ATIVO - AGUARDANDO MENSAGENS...\n")
     print(f"   📱 Telegram: Conectado")
     print(f"   🛡️ Integridade: Verificada")
-    print(f"   🔍 DIVAP: {'Ativado' if ENABLE_DIVAP_VERIFICATION else 'Desativado'}")
+    print(f"   🔍 DIVAP: {'Ativado' if ENABLE_REVERSE_VERIFICATION else 'Desativado'}")
     print(f"   📊 Brackets: Atualizados")
     print(f"   👀 Monitorando: {len(grupos_acessiveis)} grupo(s)")
     print(f"   📤 Destino: {GRUPO_DESTINO_ID}")
