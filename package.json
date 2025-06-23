@@ -24,6 +24,8 @@
     "@fastify/cors": "^11.0.1",
     "@fastify/helmet": "^13.0.1",
     "@fastify/rate-limit": "^10.3.0",
+    "@fastify/swagger": "^9.5.1",
+    "@fastify/swagger-ui": "^5.2.3",
     "@noble/ed25519": "^2.3.0",
     "axios": "^1.9.0",
     "binance": "^2.10.3",
@@ -42,8 +44,6 @@
     "ws": "^8.5.0"
   },
   "devDependencies": {
-    "@fastify/swagger": "^9.5.1",
-    "@fastify/swagger-ui": "^5.2.3",
     "concurrently": "^8.2.2",
     "nodemon": "^3.0.1"
   }

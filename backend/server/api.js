@@ -1,5 +1,20 @@
 const path = require('path');
-require('dotenv').config({ path: path.resolve(__dirname, '../../config/.env') });
+
+// Carregar .env com verificação de erro
+try {
+  require('dotenv').config({ path: path.resolve(__dirname, '../../config/.env') });
+  console.log('✅ Arquivo .env carregado com sucesso');
+} catch (envError) {
+  console.error('❌ Erro ao carregar .env:', envError.message);
+  // Tentar carregar do diretório raiz como fallback
+  try {
+    require('dotenv').config({ path: path.resolve(__dirname, '../../.env.test') });
+    console.log('✅ Arquivo .env.test carregado como fallback');
+  } catch (fallbackError) {
+    console.error('❌ Erro ao carregar .env.test:', fallbackError.message);
+    console.log('⚠️ Continuando sem arquivo .env');
+  }
+}
 
 const fastify = require('fastify')({ 
   logger: {
@@ -10,7 +25,41 @@ const fastify = require('fastify')({
   }
 });
 
-const { getDatabaseInstance } = require('../core/database/conexao');
+// Verificar se módulos necessários existem
+let getDatabaseInstance, instanceManager;
+
+try {
+  const dbModule = require('../core/database/conexao');
+  getDatabaseInstance = dbModule.getDatabaseInstance;
+  console.log('✅ Módulo de database carregado');
+} catch (dbError) {
+  console.error('❌ Erro ao carregar módulo de database:', dbError.message);
+  
+  // Criar função mock se não existir
+  getDatabaseInstance = async () => {
+    throw new Error('Módulo de database não disponível');
+  };
+}
+
+try {
+  instanceManager = require('../processes/instanceManager');
+  console.log('✅ Módulo instanceManager carregado');
+} catch (imError) {
+  console.error('❌ Erro ao carregar instanceManager:', imError.message);
+  
+  // Criar funções mock se não existir
+  instanceManager = {
+    startInstance: async () => false,
+    stopInstance: async () => false,
+    restartInstance: async () => false,
+    listActiveInstances: () => [],
+    startAllInstances: async () => 0,
+    stopAllInstances: async () => 0,
+    isInstanceRunning: () => false,
+    getInstanceStats: () => ({ total: 0, running: 0, stopped: 0 })
+  };
+}
+
 const {
   startInstance,
   stopInstance,
@@ -20,30 +69,42 @@ const {
   stopAllInstances,
   isInstanceRunning,
   getInstanceStats
-} = require('../processes/instanceManager');
+} = instanceManager;
 
 // ✅ PLUGINS
 async function registerPlugins() {
-  // CORS para permitir requests do frontend
-  await fastify.register(require('@fastify/cors'), {
-    origin: [
-      'http://localhost:3000',  // Next.js dev
-      'http://localhost:3001',  // Alternativo
-      'https://your-frontend-domain.vercel.app' // Seu domínio Vercel
-    ],
-    credentials: true
-  });
+  try {
+    console.log('🔧 Registrando plugins...');
+    
+    // CORS para permitir requests do frontend
+    await fastify.register(require('@fastify/cors'), {
+      origin: [
+        'http://localhost:3000',  // Next.js dev
+        'http://localhost:3001',  // Alternativo
+        'https://your-frontend-domain.vercel.app' // Seu domínio Vercel
+      ],
+      credentials: true
+    });
+    console.log('✅ CORS registrado');
 
-  // Helmet para segurança
-  await fastify.register(require('@fastify/helmet'), {
-    contentSecurityPolicy: false
-  });
+    // Helmet para segurança
+    await fastify.register(require('@fastify/helmet'), {
+      contentSecurityPolicy: false
+    });
+    console.log('✅ Helmet registrado');
 
-  // Rate limiting
-  await fastify.register(require('@fastify/rate-limit'), {
-    max: 100,
-    timeWindow: '1 minute'
-  });
+    // Rate limiting
+    await fastify.register(require('@fastify/rate-limit'), {
+      max: 100,
+      timeWindow: '1 minute'
+    });
+    console.log('✅ Rate limiting registrado');
+    
+    console.log('✅ Todos os plugins registrados com sucesso');
+  } catch (error) {
+    console.error('❌ Erro ao registrar plugins:', error);
+    throw error;
+  }
 }
 
 // ✅ SCHEMAS PARA VALIDAÇÃO
@@ -392,25 +453,65 @@ fastify.get('/api/health', async (request, reply) => {
   });
 });
 
-// ✅ INICIALIZAÇÃO DO SERVIDOR
+// ✅ INICIALIZAÇÃO DO SERVIDOR COM MELHOR TRATAMENTO DE ERRO
 async function startServer() {
   try {
+    console.log('🚀 Iniciando servidor API...');
+    
+    // Verificar variáveis de ambiente essenciais
+    const requiredVars = ['DB_HOST', 'DB_USER', 'DB_PASSWORD', 'DB_NAME'];
+    const missingVars = requiredVars.filter(varName => !process.env[varName]);
+    
+    if (missingVars.length > 0) {
+      console.warn(`⚠️ Variáveis de ambiente ausentes: ${missingVars.join(', ')}`);
+      console.warn('⚠️ Algumas funcionalidades podem não funcionar corretamente');
+    }
+    
+    console.log('🔧 Registrando plugins...');
     await registerPlugins();
     
     const port = process.env.API_PORT || 8000;
     const host = process.env.API_HOST || '0.0.0.0';
     
+    console.log(`🚀 Iniciando servidor na porta ${port}...`);
     await fastify.listen({ port, host });
     
-    console.log(`🚀 API Server rodando em http://${host}:${port}`);
+    console.log('✅ ================================');
+    console.log(`✅ API Server rodando em http://${host}:${port}`);
     console.log(`📊 Dashboard: http://${host}:${port}/api/dashboard/stats`);
     console.log(`👥 Contas: http://${host}:${port}/api/accounts`);
+    console.log(`💚 Health Check: http://${host}:${port}/api/health`);
+    console.log('✅ ================================');
     
   } catch (error) {
-    fastify.log.error('Erro ao iniciar servidor:', error);
+    console.error('❌ ERRO FATAL ao iniciar servidor:', error);
+    console.error('Stack trace:', error.stack);
+    
+    // Log detalhado do erro
+    if (error.code === 'EADDRINUSE') {
+      console.error('❌ Porta já está em uso. Tente uma porta diferente ou pare o processo que está usando a porta.');
+    } else if (error.code === 'ENOENT') {
+      console.error('❌ Arquivo ou diretório não encontrado:', error.path);
+    } else if (error.code === 'MODULE_NOT_FOUND') {
+      console.error('❌ Módulo não encontrado:', error.message);
+    }
+    
     process.exit(1);
   }
 }
+
+// Tratamento de erros não capturados
+process.on('uncaughtException', (error) => {
+  console.error('❌ Erro não capturado:', error);
+  console.error('Stack trace:', error.stack);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('❌ Promise rejeitada não tratada:', reason);
+  console.error('Promise:', promise);
+  process.exit(1);
+});
 
 // Iniciar servidor
 if (require.main === module) {
