@@ -1,4 +1,7 @@
 const path = require('path');
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcrypt');
+const dbModule = require('../core/database/conexao');
 
 // Carregar .env com verificação de erro
 try {
@@ -29,7 +32,6 @@ const fastify = require('fastify')({
 let getDatabaseInstance, instanceManager;
 
 try {
-  const dbModule = require('../core/database/conexao');
   getDatabaseInstance = dbModule.getDatabaseInstance;
   console.log('✅ Módulo de database carregado');
 } catch (dbError) {
@@ -475,6 +477,79 @@ fastify.get('/api/health', async (request, reply) => {
   });
 });
 
+// ROTAS DE AUTENTICAÇÃO
+async function authenticationRoutes() {
+    fastify.post('/api/register', {
+        schema: {
+            description: 'Registra um novo usuário no sistema.',
+            tags: ['Autenticação'],
+            summary: 'Registro de novo usuário',
+            body: {
+                type: 'object',
+                required: ['nome', 'email', 'senha'],
+                properties: {
+                    nome: { type: 'string' },
+                    email: { type: 'string', format: 'email' },
+                    senha: { type: 'string', minLength: 6 }
+                }
+            }
+        }
+    }, async (request, reply) => {
+        const { nome, email, senha } = request.body;
+        const db = await getDatabaseInstance();
+        try {
+            const [existing] = await db.query('SELECT id FROM users WHERE email = ?', [email]);
+            if (existing.length > 0) {
+                return reply.status(409).send({ error: 'E-mail já cadastrado.' });
+            }
+            const saltRounds = 10;
+            const hashDaSenha = await bcrypt.hash(senha, saltRounds);
+            await db.query('INSERT INTO users (nome, email, senha) VALUES (?, ?, ?)', [nome, email, hashDaSenha]);
+            reply.status(201).send({ message: 'Usuário registrado com sucesso!' });
+        } catch (error) {
+            fastify.log.error('Erro no registro:', error);
+            reply.status(500).send({ error: 'Erro interno do servidor' });
+        }
+    });
+
+    fastify.post('/api/login', {
+        schema: {
+            description: 'Autentica um usuário e retorna um token JWT.',
+            tags: ['Autenticação'],
+            summary: 'Login de usuário',
+            body: {
+                type: 'object',
+                required: ['email', 'senha'],
+                properties: {
+                    email: { type: 'string', format: 'email' },
+                    senha: { type: 'string' }
+                }
+            }
+        }
+    }, async (request, reply) => {
+        const { email, senha } = request.body;
+        const db = await getDatabaseInstance();
+        try {
+            const [users] = await db.query('SELECT * FROM users WHERE email = ?', [email]);
+            if (users.length === 0) {
+                return reply.status(401).send({ error: 'Credenciais inválidas' });
+            }
+            const user = users[0];
+            const senhaValida = await bcrypt.compare(senha, user.senha);
+            if (!senhaValida) {
+                return reply.status(401).send({ error: 'Credenciais inválidas' });
+            }
+            const tokenPayload = { id: user.id, email: user.email, nome: user.nome };
+            const secretKey = process.env.JWT_SECRET || 'suaChaveSecretaPadraoSuperSegura';
+            const token = jwt.sign(tokenPayload, secretKey, { expiresIn: '8h' });
+            reply.send({ token, user: tokenPayload });
+        } catch (error) {
+            fastify.log.error('Erro no login:', error);
+            reply.status(500).send({ error: 'Erro interno do servidor' });
+        }
+    });
+}
+
 // ✅ INICIALIZAÇÃO DO SERVIDOR COM MELHOR TRATAMENTO DE ERRO
 async function startServer() {
   try {
@@ -491,6 +566,7 @@ async function startServer() {
     
     console.log('🔧 Registrando plugins...');
     await registerPlugins();
+    await authenticationRoutes(); // Registra as rotas de autenticação
     
     const port = process.env.API_PORT || 8001;
     const host = process.env.API_HOST || '0.0.0.0';
