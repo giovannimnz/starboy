@@ -4,65 +4,72 @@
 
 @layer base {
   :root {
-    --background: 0 0% 0%;
-    --foreground: 0 0% 100%;
+    --background: 0 0% 3.9%;
+    --foreground: 0 0% 98%;
 
     --card: 0 0% 7%;
-    --card-foreground: 0 0% 100%;
+    --card-foreground: 0 0% 98%;
 
     --popover: 0 0% 7%;
-    --popover-foreground: 0 0% 100%;
+    --popover-foreground: 0 0% 98%;
 
     --primary: 24 100% 50%;
-    --primary-foreground: 0 0% 100%;
+    --primary-foreground: 0 0% 98%;
 
     --secondary: 0 0% 15%;
-    --secondary-foreground: 0 0% 100%;
+    --secondary-foreground: 0 0% 98%;
 
     --muted: 0 0% 15%;
     --muted-foreground: 0 0% 70%;
 
-    --accent: 0 0% 25%;
-    --accent-foreground: 0 0% 100%;
+    --accent: 0 0% 20%;
+    --accent-foreground: 0 0% 98%;
 
     --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 0 0% 100%;
+    --destructive-foreground: 0 0% 98%;
 
     --border: 0 0% 20%;
     --input: 0 0% 15%;
-    --ring: 0 0% 40%;
+    --ring: 24 100% 50%;
 
-    --radius: 0.5rem;
+    --radius: 0.75rem;
+
+    /* Custom shadows for dark theme */
+    --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.3);
+    --shadow: 0 1px 3px 0 rgb(0 0 0 / 0.4), 0 1px 2px -1px rgb(0 0 0 / 0.4);
+    --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.4), 0 2px 4px -2px rgb(0 0 0 / 0.4);
+    --shadow-lg: 0 10px 15px -3px rgb(0 0 0 / 0.4), 0 4px 6px -4px rgb(0 0 0 / 0.4);
+    --shadow-xl: 0 20px 25px -5px rgb(0 0 0 / 0.4), 0 8px 10px -6px rgb(0 0 0 / 0.4);
   }
 
   .light {
     --background: 0 0% 100%;
-    --foreground: 0 0% 0%;
+    --foreground: 222.2 84% 4.9%;
 
     --card: 0 0% 100%;
-    --card-foreground: 0 0% 0%;
+    --card-foreground: 222.2 84% 4.9%;
 
     --popover: 0 0% 100%;
-    --popover-foreground: 0 0% 0%;
+    --popover-foreground: 222.2 84% 4.9%;
 
     --primary: 24 100% 50%;
-    --primary-foreground: 0 0% 100%;
+    --primary-foreground: 0 0% 98%;
 
-    --secondary: 0 0% 96%;
-    --secondary-foreground: 0 0% 9%;
+    --secondary: 210 40% 96%;
+    --secondary-foreground: 222.2 84% 4.9%;
 
-    --muted: 0 0% 96%;
-    --muted-foreground: 0 0% 45%;
+    --muted: 210 40% 96%;
+    --muted-foreground: 215.4 16.3% 46.9%;
 
-    --accent: 0 0% 96%;
-    --accent-foreground: 0 0% 9%;
+    --accent: 210 40% 96%;
+    --accent-foreground: 222.2 84% 4.9%;
 
     --destructive: 0 84.2% 60.2%;
     --destructive-foreground: 0 0% 98%;
 
-    --border: 0 0% 89%;
-    --input: 0 0% 89%;
-    --ring: 0 0% 40%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 24 100% 50%;
   }
 }
 
@@ -71,6 +78,74 @@
     @apply border-border;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply bg-background text-foreground font-sans antialiased;
+  }
+
+  /* Custom scrollbar for dark theme */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-gray-800;
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-gray-600 hover:bg-gray-500;
+    border-radius: 4px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-gray-500;
+  }
+
+  /* Light theme scrollbar */
+  .light ::-webkit-scrollbar-track {
+    @apply bg-gray-100;
+  }
+
+  .light ::-webkit-scrollbar-thumb {
+    @apply bg-gray-300 hover:bg-gray-400;
+  }
+}
+
+/* Custom utility classes */
+@layer utilities {
+  .shadow-soft {
+    box-shadow: var(--shadow);
+  }
+
+  .shadow-soft-md {
+    box-shadow: var(--shadow-md);
+  }
+
+  .shadow-soft-lg {
+    box-shadow: var(--shadow-lg);
+  }
+
+  .shadow-soft-xl {
+    box-shadow: var(--shadow-xl);
+  }
+
+  .text-gradient {
+    background: linear-gradient(135deg, hsl(var(--primary)), hsl(var(--primary)) 60%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .border-gradient {
+    border: 1px solid;
+    border-image: linear-gradient(135deg, hsl(var(--primary)), transparent) 1;
+  }
+
+  .bg-dark-gradient {
+    background: linear-gradient(135deg, #0a0a0a 0%, #1a1a1a 50%, #0f0f0f 100%);
+  }
+
+  .bg-card-dark {
+    background: linear-gradient(135deg, #1a1a1a 0%, #1f1f1f 100%);
   }
 }

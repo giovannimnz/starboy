@@ -13,6 +13,7 @@ interface ProtectedRouteProps {
 export default function ProtectedRoute({ children }: ProtectedRouteProps) {
   const { user, login, isLoading } = useAuth()
   const [loginError, setLoginError] = useState("")
+  const [isLoadingLocal, setIsLoadingLocal] = useState(false)
 
   const handleLogin = async (email: string, password: string) => {
     setLoginError("")
@@ -25,7 +26,7 @@ export default function ProtectedRoute({ children }: ProtectedRouteProps) {
   if (!user) {
     return (
       <div>
-        <LoginForm onLogin={handleLogin} isLoading={isLoading} />
+        <LoginForm onLogin={handleLogin} isLoading={isLoading || isLoadingLocal} setIsLoading={setIsLoadingLocal} />
         {loginError && (
           <div className="fixed bottom-4 right-4 bg-gray-800 border border-gray-600 text-white p-4 rounded-lg shadow-lg max-w-sm">
             <div className="flex items-start space-x-2">
