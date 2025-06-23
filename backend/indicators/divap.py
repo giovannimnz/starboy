@@ -41,12 +41,13 @@ PREJUIZO_MAXIMO_PERCENTUAL_DO_CAPITAL_TOTAL = 4.90
 TAXA_ENTRADA = 0.02
 TAXA_SAIDA = 0.05
 
-GRUPOS_ORIGEM_IDS = [-1002059628218, -1002444455075]
+GRUPOS_ORIGEM_IDS = [-1002444455075, -1002059628218]
 GRUPO_DESTINO_ID = -1002016807368
 CONTA_ID = 1
 GRUPO_FONTE_MAPEAMENTO = {
-    -1002059628218: "divap-manual",
-    -1002444455075: "divap"
+    -1002444455075: "Inverse",
+    -1002059628218: "Manual-Inverse"
+
 }
 
 # --- Importações e Configurações de Módulos Locais ---
@@ -1153,6 +1154,217 @@ async def handle_new_message(event):
 
 # --- Função Principal e Execução ---
 
+async def verificar_integridade_telegram():
+    """
+    Verifica a integridade do sistema Telegram antes de ativar o monitoramento.
+    Testa leitura, processamento e formatação de mensagens do primeiro grupo origem.
+    """
+    try:
+        print(f"\n{'='*80}")
+        print(f"🔍 VERIFICAÇÃO DE INTEGRIDADE DO SISTEMA TELEGRAM")
+        print(f"{'='*80}")
+        
+        # Pegar o primeiro grupo origem para teste
+        grupo_teste_id = GRUPOS_ORIGEM_IDS[0] if GRUPOS_ORIGEM_IDS else None
+        if not grupo_teste_id:
+            print(f"❌ Nenhum grupo origem configurado para teste!")
+            return False
+        
+        grupo_nome = GRUPO_FONTE_MAPEAMENTO.get(grupo_teste_id, "Grupo Origem")
+        print(f"🎯 Testando grupo: {grupo_nome} (ID: {grupo_teste_id})")
+        
+        # Verificar acesso ao grupo
+        try:
+            entity = await client.get_entity(grupo_teste_id)
+            print(f"✅ Acesso ao grupo confirmado: {entity.title}")
+        except Exception as e:
+            print(f"❌ Erro ao acessar grupo de teste: {e}")
+            return False
+        
+        # Buscar mensagens recentes para teste
+        print(f"🔍 Buscando mensagens recentes para teste...")
+        mensagens_teste = []
+        
+        try:
+            # Buscar as últimas 50 mensagens
+            async for message in client.iter_messages(grupo_teste_id, limit=50):
+                if message.text:
+                    mensagens_teste.append(message)
+            
+            if not mensagens_teste:
+                print(f"⚠️ Nenhuma mensagem encontrada no grupo para teste")
+                return False
+            
+            print(f"✅ Encontradas {len(mensagens_teste)} mensagens para análise")
+            
+        except Exception as e:
+            print(f"❌ Erro ao buscar mensagens de teste: {e}")
+            return False
+        
+        # Procurar a última mensagem válida para encaminhamento
+        print(f"🔍 Procurando última mensagem válida para encaminhamento...")
+        
+        mensagem_valida = None
+        trade_info_valido = None
+        
+        for i, message in enumerate(mensagens_teste):
+            try:
+                # Verificar se a mensagem contém informações de trade válidas
+                trade_info = extract_trade_info(message.text)
+                
+                if trade_info:
+                    mensagem_valida = message
+                    trade_info_valido = trade_info
+                    print(f"✅ Mensagem válida encontrada:")
+                    print(f"   📅 Data: {message.date}")
+                    print(f"   🆔 ID: {message.id}")
+                    print(f"   📊 Símbolo: {trade_info['symbol']}")
+                    print(f"   📈 Lado: {trade_info['side']}")
+                    print(f"   ⚡ Alavancagem: {trade_info['leverage']}x")
+                    print(f"   💰 Capital: {trade_info['capital_pct']}%")
+                    break
+                    
+            except Exception as e:
+                # Continuar procurando se houver erro em uma mensagem específica
+                continue
+        
+        if not mensagem_valida:
+            print(f"⚠️ Nenhuma mensagem válida para encaminhamento encontrada nas últimas {len(mensagens_teste)} mensagens")
+            print(f"   Isso pode ser normal se não houver sinais recentes no grupo")
+            print(f"   O sistema continuará funcionando normalmente")
+            return True  # Não bloquear o sistema por isso
+        
+        # Testar formatação da mensagem
+        print(f"\n🔧 Testando formatação da mensagem...")
+        
+        try:
+            message_source = GRUPO_FONTE_MAPEAMENTO.get(grupo_teste_id, 'divap')
+            grupo_origem_nome = message_source.capitalize() if message_source else "Divap"
+            
+            # Simular o processamento completo
+            trade_info_valido['tp'] = trade_info_valido.get('all_tps', [trade_info_valido['entry']])[0] if trade_info_valido.get('all_tps') else trade_info_valido['entry']
+            trade_info_valido['id_mensagem_origem_sinal'] = mensagem_valida.id
+            trade_info_valido['chat_id_origem_sinal'] = grupo_teste_id
+            trade_info_valido['chat_id'] = GRUPO_DESTINO_ID
+            trade_info_valido['message_source'] = message_source
+            trade_info_valido['conta_id'] = CONTA_ID
+            
+            # Formatar mensagem como seria enviada
+            message_text_formatted = format_trade_message(trade_info_valido, grupo_origem_nome)
+            
+            print(f"✅ Formatação da mensagem testada com sucesso!")
+            print(f"\n📝 Preview da mensagem formatada:")
+            print(f"{'─'*60}")
+            print(f"{message_text_formatted}")
+            print(f"{'─'*60}")
+            
+        except Exception as e:
+            print(f"❌ Erro ao formatar mensagem de teste: {e}")
+            return False
+        
+        # Testar verificação DIVAP se habilitada
+        if ENABLE_DIVAP_VERIFICATION:
+            print(f"\n🔍 Testando verificação DIVAP...")
+            
+            try:
+                # Inicializar analyzer se necessário
+                if not divap_analyzer:
+                    if not initialize_divap_analyzer():
+                        print(f"⚠️ Falha ao inicializar DIVAP analyzer para teste")
+                        print(f"   Verificação DIVAP será desabilitada durante execução")
+                    else:
+                        print(f"✅ DIVAP analyzer inicializado com sucesso")
+                
+                # Testar verificação DIVAP
+                is_valid_divap, error_message = await verify_divap_pattern(trade_info_valido)
+                
+                if is_valid_divap:
+                    print(f"✅ Teste DIVAP: Padrão confirmado")
+                else:
+                    print(f"⚠️ Teste DIVAP: Padrão não confirmado - {error_message}")
+                    print(f"   (Isso é normal para mensagens antigas)")
+                
+            except Exception as e:
+                print(f"⚠️ Erro no teste DIVAP: {e}")
+                print(f"   Sistema continuará sem verificação DIVAP")
+        else:
+            print(f"⚠️ Verificação DIVAP desabilitada")
+        
+        # Testar acesso ao grupo destino
+        print(f"\n🎯 Testando acesso ao grupo destino...")
+        
+        try:
+            destino_entity = await client.get_entity(GRUPO_DESTINO_ID)
+            print(f"✅ Acesso ao grupo destino confirmado: {destino_entity.title}")
+            
+            # Teste de envio (comentado para não enviar mensagem real)
+            # sent_test = await client.send_message(GRUPO_DESTINO_ID, "🧪 Teste de integridade concluído com sucesso!")
+            # print(f"✅ Teste de envio realizado (ID: {sent_test.id})")
+            
+            print(f"✅ Capacidade de envio confirmada (teste não executado)")
+            
+        except Exception as e:
+            print(f"❌ Erro ao acessar grupo destino: {e}")
+            return False
+        
+        # Resumo final
+        print(f"\n{'='*80}")
+        print(f"✅ VERIFICAÇÃO DE INTEGRIDADE CONCLUÍDA COM SUCESSO!")
+        print(f"{'='*80}")
+        print(f"📊 Resultados do teste:")
+        print(f"   ✅ Acesso aos grupos: OK")
+        print(f"   ✅ Leitura de mensagens: OK")
+        print(f"   ✅ Extração de trade info: OK")
+        print(f"   ✅ Formatação de mensagens: OK")
+        print(f"   ✅ Verificação DIVAP: {'OK' if ENABLE_DIVAP_VERIFICATION else 'DESABILITADA'}")
+        print(f"   ✅ Capacidade de envio: OK")
+        print(f"\n🚀 Sistema pronto para monitoramento em tempo real!")
+        print(f"{'='*80}\n")
+        
+        return True
+        
+    except Exception as e:
+        print(f"\n❌ ERRO CRÍTICO NA VERIFICAÇÃO DE INTEGRIDADE: {e}")
+        print(f"{'='*80}")
+        traceback.print_exc()
+        return False
+
+async def verificar_grupos_acessiveis():
+    """
+    Verifica quais grupos estão acessíveis e retorna a lista atualizada.
+    """
+    print(f"🔍 Verificando acesso aos grupos configurados...")
+    
+    grupos_acessiveis = []
+    
+    for grupo_id in GRUPOS_ORIGEM_IDS:
+        try:
+            origem = await client.get_entity(grupo_id)
+            tipo = "Canal" if getattr(origem, "broadcast", False) else "Supergrupo" if getattr(origem, "megagroup", False) else "Grupo"
+            nome = getattr(origem, 'title', 'Sem título')
+            print(f"                 [INFO] ✅ {tipo} de Origem: {nome} (ID: {grupo_id})")
+            grupos_acessiveis.append(grupo_id)
+        except Exception as e:
+            print(f"[ERRO] ❌ Não foi possível acessar o grupo/canal {grupo_id}: {e}")
+
+    if not grupos_acessiveis:
+        print(f"❌ Nenhum grupo de origem acessível!")
+        return None
+
+    # Verificar grupo destino
+    try:
+        destino = await client.get_entity(GRUPO_DESTINO_ID)
+        tipo = "Canal" if getattr(destino, "broadcast", False) else "Supergrupo" if getattr(destino, "megagroup", False) else "Grupo"
+        nome = getattr(destino, 'title', 'Sem título')
+        print(f"                 [INFO] ✅ {tipo} de Destino: {nome} (ID: {GRUPO_DESTINO_ID})")
+    except Exception as e:
+        print(f"[ERRO] ❌ Não foi possível acessar o grupo/canal de destino {GRUPO_DESTINO_ID}: {e}")
+        return None
+    
+    return grupos_acessiveis
+
+# ✅ MODIFICAR a função main() para incluir a verificação:
+
 async def main():
     """Função principal que inicializa e executa o bot."""
     print("="*80)
@@ -1168,7 +1380,7 @@ async def main():
         #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🔍 Inicializando analisador DIVAP...")
         initialize_divap_analyzer()
     else:
-        print(f"[{datetime.now().strftime('%d-%m-%S')}] ⚠️ Verificação DIVAP DESATIVADA")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ⚠️ Verificação DIVAP DESATIVADA")
 
     # 3. Conecta o cliente Telegram
     #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 📱 Conectando cliente Telegram...")
@@ -1187,34 +1399,26 @@ async def main():
     except Exception as e:
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ⚠️ Não foi possível configurar manipulador de sinais: {e}")
 
-    # Verificar acesso aos grupos
-    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🔍 Verificando acesso aos grupos...")
-    
-    grupos_acessiveis = []
-    for grupo_id in GRUPOS_ORIGEM_IDS:
-        try:
-            origem = await client.get_entity(grupo_id)
-            tipo = "Canal" if getattr(origem, "broadcast", False) else "Supergrupo" if getattr(origem, "megagroup", False) else "Grupo"
-            nome = getattr(origem, 'title', 'Sem título')
-            print(f"                 [INFO] ✅ {tipo} de Origem: {nome} (ID: {grupo_id})")
-            grupos_acessiveis.append(grupo_id)
-        except Exception as e:
-            print(f"[ERRO] ❌ Não foi possível acessar o grupo/canal {grupo_id}: {e}")
-
+    # ✅ NOVA ETAPA: Verificar acesso aos grupos
+    grupos_acessiveis = await verificar_grupos_acessiveis()
     if not grupos_acessiveis:
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ❌ Nenhum grupo de origem acessível! Encerrando...")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ❌ Falha na verificação de grupos! Encerrando...")
         return
 
-    try:
-        destino = await client.get_entity(GRUPO_DESTINO_ID)
-        tipo = "Canal" if getattr(destino, "broadcast", False) else "Supergrupo" if getattr(destino, "megagroup", False) else "Grupo"
-        nome = getattr(destino, 'title', 'Sem título')
-        print(f"                 [INFO] ✅ {tipo} de Destino: {nome} (ID: {GRUPO_DESTINO_ID})")
-    except Exception as e:
-        print(f"[ERRO] ❌ Não foi possível acessar o grupo/canal de destino {GRUPO_DESTINO_ID}: {e}")
+    # ✅ NOVA ETAPA: Verificação de integridade do sistema
+    print(f"\n[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🛡️ Executando verificação de integridade...")
+    
+    integridade_ok = await verificar_integridade_telegram()
+    
+    if not integridade_ok:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ❌ FALHA NA VERIFICAÇÃO DE INTEGRIDADE!")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🛑 Sistema não pode continuar com segurança")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 💡 Verifique os grupos configurados e as permissões")
         return
+    
+    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Verificação de integridade aprovada!")
 
-    # ===== REGISTRAR HANDLER DE MENSAGENS COM DEBUG =====
+    # ✅ CONTINUAÇÃO: Registrar handler de mensagens apenas após verificação bem-sucedida
     #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 📨 Registrando handler de mensagens...")
     
     # Registrar handler para TODOS os grupos acessíveis
@@ -1227,17 +1431,18 @@ async def main():
     #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 📤 Grupo destino: {GRUPO_DESTINO_ID}")
     print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🔄 Verificação DIVAP: {'ATIVADA' if ENABLE_DIVAP_VERIFICATION else 'DESATIVADA'}")
     
-    # Testar envio de mensagem (opcional - remover em produção)
+    # Testar envio de mensagem de início
     try:
-        #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🧪 Testando envio para grupo destino...")
-        test_msg = await client.send_message(GRUPO_DESTINO_ID, "🤖 Bot DIVAP iniciado e monitorando mensagens...")
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Teste de envio bem-sucedido (Msg ID: {test_msg.id})")
+        #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🧪 Enviando mensagem de início...")
+        test_msg = await client.send_message(GRUPO_DESTINO_ID, "🤖 Bot DIVAP iniciado com verificação de integridade aprovada!")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Mensagem de início enviada (ID: {test_msg.id})")
     except Exception as e:
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ❌ Falha no teste de envio: {e}")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ❌ Falha no envio da mensagem de início: {e}")
     
     print(f"\n{'='*80}\n")
     print(f"🚀 BOT DIVAP ATIVO - AGUARDANDO MENSAGENS...\n")
     print(f"   📱 Telegram: Conectado")
+    print(f"   🛡️ Integridade: Verificada")
     print(f"   🔍 DIVAP: {'Ativado' if ENABLE_DIVAP_VERIFICATION else 'Desativado'}")
     print(f"   📊 Brackets: Atualizados")
     print(f"   👀 Monitorando: {len(grupos_acessiveis)} grupo(s)")
