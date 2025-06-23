@@ -99,6 +99,28 @@ async function registerPlugins() {
       timeWindow: '1 minute'
     });
     console.log('✅ Rate limiting registrado');
+
+  await fastify.register(require('@fastify/swagger'), {
+    openapi: {
+      info: {
+        title: 'Starboy API',
+        description: 'Documentação da API para o sistema de trading Starboy.',
+        version: '1.0.0'
+      },
+      servers: [{
+        url: 'http://localhost:8001',
+        description: 'Servidor de Desenvolvimento'
+      }],
+    },
+  });
+
+  await fastify.register(require('@fastify/swagger-ui'), {
+    routePrefix: '/docs', // Este é o caminho onde a documentação ficará disponível
+    uiConfig: {
+      docExpansion: 'list', // 'list' ou 'full'
+      deepLinking: true
+    },
+  });
     
     console.log('✅ Todos os plugins registrados com sucesso');
   } catch (error) {
