@@ -940,6 +940,35 @@ function reset(accountId) {
   }
 }
 
+function monitorWebSocketHealth(accountId) {
+  try {
+    if (!accountId || typeof accountId !== 'number') {
+      console.error(`[HEALTH] AccountId inválido: ${accountId}`);
+      return;
+    }
+    
+    console.log(`[HEALTH] Verificando saúde dos WebSockets para conta ${accountId}...`);
+    
+    const isApiConnected = websockets.isWebSocketApiConnected(accountId);
+    const isApiAuthenticated = websockets.isWebSocketApiAuthenticated(accountId);
+    
+    console.log(`[HEALTH] Conta ${accountId}:`);
+    console.log(`  - WebSocket API conectado: ${isApiConnected ? '✅' : '❌'}`);
+    console.log(`  - WebSocket API autenticado: ${isApiAuthenticated ? '✅' : '❌'}`);
+    
+    // Reconectar se necessário
+    if (!isApiConnected || !isApiAuthenticated) {
+      console.log(`[HEALTH] ⚠️ Problemas detectados na conta ${accountId}, tentando reconectar...`);
+      websockets.startWebSocketApi(accountId).catch(error => {
+        console.error(`[HEALTH] Erro ao reconectar conta ${accountId}:`, error.message);
+      });
+    }
+    
+  } catch (error) {
+    console.error(`[HEALTH] Erro ao monitorar WebSockets para conta ${accountId}:`, error.message);
+  }
+}
+
 /**
  * Limpeza completa da conta
  */
@@ -960,7 +989,7 @@ module.exports = {
   handlePriceUpdate,
   setupBookDepthWebsocket,
   stopPriceMonitoring,
-  getPriceWebsockets,  // ✅ ESTA LINHA ESTAVA FALTANDO
+  getPriceWebsockets,
   
   // Funções de WebSocket API
   startWebSocketApi,
@@ -979,6 +1008,7 @@ module.exports = {
   getCredentials,
   
   // Funções utilitárias
+  monitorWebSocketHealth,
   getAllAccountConnections,
   handleWebSocketApiMessage,
   createEd25519Signature,
