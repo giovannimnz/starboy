@@ -480,37 +480,47 @@ fastify.get('/api/health', async (request, reply) => {
 // ROTAS DE AUTENTICAÇÃO
 async function authenticationRoutes() {
     fastify.post('/api/register', {
-        schema: {
-            description: 'Registra um novo usuário no sistema.',
-            tags: ['Autenticação'],
-            summary: 'Registro de novo usuário',
-            body: {
-                type: 'object',
-                required: ['nome', 'email', 'senha'],
-                properties: {
-                    nome: { type: 'string' },
-                    email: { type: 'string', format: 'email' },
-                    senha: { type: 'string', minLength: 6 }
-                }
+    schema: {
+        description: 'Registra um novo usuário no sistema.',
+        tags: ['Autenticação'],
+        summary: 'Registro de novo usuário',
+        body: {
+            type: 'object',
+            required: ['nome', 'username', 'email', 'senha'],
+            properties: {
+                nome: { type: 'string' },
+                username: { type: 'string', minLength: 3, maxLength: 20 },
+                email: { type: 'string', format: 'email' },
+                senha: { type: 'string', minLength: 6 }
             }
         }
-    }, async (request, reply) => {
-        const { nome, email, senha } = request.body;
-        const db = await getDatabaseInstance();
-        try {
-            const [existing] = await db.query('SELECT id FROM users WHERE email = ?', [email]);
-            if (existing.length > 0) {
-                return reply.status(409).send({ error: 'E-mail já cadastrado.' });
-            }
-            const saltRounds = 10;
-            const hashDaSenha = await bcrypt.hash(senha, saltRounds);
-            await db.query('INSERT INTO users (nome, email, senha) VALUES (?, ?, ?)', [nome, email, hashDaSenha]);
-            reply.status(201).send({ message: 'Usuário registrado com sucesso!' });
-        } catch (error) {
-            fastify.log.error('Erro no registro:', error);
-            reply.status(500).send({ error: 'Erro interno do servidor' });
+    }
+}, async (request, reply) => {
+    const { nome, username, email, senha } = request.body;
+    const db = await getDatabaseInstance();
+    try {
+        // Verifica se já existe username OU email
+        const [existing] = await db.query('SELECT id FROM users WHERE email = ? OR username = ?', [email, username]);
+        if (existing.length > 0) {
+            return reply.status(409).send({ error: 'E-mail ou username já cadastrado.' });
         }
-    });
+        const saltRounds = 10;
+        const hashDaSenha = await bcrypt.hash(senha, saltRounds);
+        await db.query(
+            'INSERT INTO users (nome, username, email, senha, ativa) VALUES (?, ?, ?, ?, 1)',
+            [nome, username, email, hashDaSenha]
+        );
+        reply.status(201).send({
+            message: 'Usuário registrado com sucesso!',
+            nome,
+            username,
+            email
+        });
+    } catch (error) {
+        fastify.log.error('Erro no registro:', error);
+        reply.status(500).send({ error: 'Erro interno do servidor' });
+    }
+});
 
     fastify.post('/api/login', {
         schema: {
