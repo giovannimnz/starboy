@@ -7,7 +7,7 @@ const {  getRecentOrders, editOrder, roundPriceToTickSize, newMarketOrder, newLi
 const { sendTelegramMessage, formatEntryMessage, formatErrorMessage, formatAlertMessage } = require('../telegram/telegramBot');
 
 // ✅ CORREÇÃO: Declarar sentOrders no escopo correto e com Map melhorado
-async function executeLimitMakerEntry(signal, currentPrice, accountId) {
+async function executeReverse(signal, currentPrice, accountId) {
   console.log(`[LIMIT_ENTRY] 🚀 Executando entrada para sinal ${signal.id}: ${signal.symbol} ${signal.side} a ${signal.entry_price} (conta ${accountId})`);
 
   // ✅ VARIÁVEIS DE CONTROLE PARA EVITAR DUPLICAÇÃO
@@ -115,7 +115,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
   let pricePrecision;
   let numericAccountId;
 
-  try { // This is the main try block for the executeLimitMakerEntry function
+  try {
     // ✅ REGISTRAR HANDLER PARA WEBSOCKET COM BACKUP DO ORIGINAL
     const existingHandlers = websockets.getHandlers(accountId) || {};
     
@@ -160,7 +160,7 @@ async function executeLimitMakerEntry(signal, currentPrice, accountId) {
 
     // VALIDAÇÃO INICIAL (mantida)
     if (!accountId || typeof accountId !== 'number') {
-      throw new Error(`AccountId inválido em executeLimitMakerEntry: ${accountId} (tipo: ${typeof accountId})`);
+      throw new Error(`AccountId inválido em executeReverse: ${accountId} (tipo: ${typeof accountId})`);
     }
 
     if (!signal || !signal.id || !signal.symbol) {
@@ -1388,5 +1388,5 @@ function calculateAveragePrice(fills) {
 const WAIT_FOR_WEBHOOK_MS = 3000; // 3 segundos para webhook processar
 
 module.exports = {
-    executeLimitMakerEntry
+    executeReverse
 };

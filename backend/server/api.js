@@ -12,7 +12,6 @@ const fastify = require('fastify')({
 
 // PLUGINS
 async function registerPlugins() {
-  // CORS para permitir requests do frontend - CONFIGURAÇÃO CORRIGIDA
   await fastify.register(require('@fastify/cors'), {
     origin: ['http://localhost:3000', 'http://127.0.0.1:3000'],
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
@@ -66,6 +65,9 @@ async function registerRoutes() {
   
   // Registra o plugin de dashboard e adiciona um prefixo /api
   await fastify.register(require('./routes/dashboard'), { prefix: '/api' });
+
+  // Registra o plugin de contas e adiciona um prefixo /api
+  await fastify.register(require('./routes/accounts'), { prefix: '/api' });
 
   // Rota de Health Check
   fastify.get('/api/health', {

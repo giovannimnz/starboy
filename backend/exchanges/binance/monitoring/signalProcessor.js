@@ -1,7 +1,7 @@
 const api = require('../api/rest');
 const websockets = require('../api/websocket');
 const { getDatabaseInstance } = require('../../../core/database/conexao');
-const { executeLimitMakerEntry } = require('../strategies/limitMakerEntry');
+const { executeReverse } = require('../strategies/reverse');
 const { sendTelegramMessage, formatSignalRegisteredMessage } = require('../telegram/telegramBot');
 
 // Set para rastrear sinais em processamento
@@ -631,7 +631,7 @@ async function processSignalImmediate(signal, db, accountId) {
   
   try {
     const currentPrice = await api.getPrice(signal.symbol, accountId);
-    const entryResult = await executeLimitMakerEntry(signal, currentPrice, accountId);
+    const entryResult = await executeReverse(signal, currentPrice, accountId);
     
     if (entryResult && entryResult.success) {
       await db.query(
@@ -872,10 +872,10 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
             ['PROCESSANDO', signal.id]
           );
           
-          console.log(`[SIGNAL] 🔄 Status atualizado para PROCESSANDO, chamando executeLimitMakerEntry...`);
+          console.log(`[SIGNAL] 🔄 Status atualizado para PROCESSANDO, chamando executeReverse...`);
           
           // ✅ CHAMAR limitMakerEntry
-          const entryResult = await executeLimitMakerEntry(signal, currentPrice, accountId);
+          const entryResult = await executeReverse(signal, currentPrice, accountId);
           
           if (entryResult && entryResult.success) {
             console.log(`[SIGNAL] ✅ Entrada executada com sucesso para sinal ${signal.id}`);

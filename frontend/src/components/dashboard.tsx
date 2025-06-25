@@ -22,13 +22,40 @@ export default function Dashboard() {
   const [priceHistory, setPriceHistory] = useState([])
   const [isRunning, setIsRunning] = useState(false)
   const [trades, setTrades] = useState<any[]>([])
-  const [balance, setBalance] = useState({
-    usd: 10000,
-    btc: 0.5,
-  })
   const [selectedAccount, setSelectedAccount] = useState("binance.futures")
 
-  const portfolioValue = balance.usd + balance.btc * currentPrice
+  // Balances separados para cada conta
+  const [balances, setBalances] = useState({
+    "binance.spot": {
+      usd: 8500,
+      btc: 0.3,
+    },
+    "binance.futures": {
+      usd: 10000,
+      btc: 0.5,
+    },
+  })
+
+  // Função para obter o saldo da conta selecionada
+  const getCurrentBalance = () => {
+    return balances[selectedAccount as keyof typeof balances] || balances["binance.futures"]
+  }
+
+  // Função para atualizar o saldo da conta selecionada
+  const setCurrentBalance = (newBalance: { usd: number; btc: number }) => {
+    setBalances((prev) => ({
+      ...prev,
+      [selectedAccount]: newBalance,
+    }))
+  }
+
+  // Função para lidar com mudança de conta
+  const handleAccountChange = (account: string) => {
+    setSelectedAccount(account)
+  }
+
+  const currentBalance = getCurrentBalance()
+  const portfolioValue = currentBalance.usd + currentBalance.btc * currentPrice
 
   return (
     <div className="min-h-screen bg-dark-gradient">
@@ -42,7 +69,7 @@ export default function Dashboard() {
             </div>
             <div className="flex items-center space-x-4">
               <ThemeToggle />
-              <UserMenu balance={balance} currentPrice={currentPrice} onAccountChange={setSelectedAccount} />
+              <UserMenu balance={currentBalance} currentPrice={currentPrice} onAccountChange={handleAccountChange} />
             </div>
           </div>
 
@@ -58,15 +85,23 @@ export default function Dashboard() {
                 <div className="text-3xl font-bold text-foreground">
                   ${portfolioValue.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                 </div>
+                <div className="text-xs text-muted-foreground mt-1">
+                  {selectedAccount === "binance.spot" ? "Binance Spot" : "Binance Futures"}
+                </div>
               </CardContent>
             </Card>
 
             <Card className="bg-card-dark shadow-soft-md border-border hover:shadow-soft-lg transition-shadow duration-200">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+                  Negociações em aberto
+                </CardTitle>
+              </CardHeader>
               <CardContent className="p-4">
                 <div className="grid grid-cols-2 gap-3">
                   <div className="bg-gray-800/50 rounded-lg p-3 border border-gray-700">
                     <div className="text-center">
-                      <div className="text-2xl font-bold text-foreground">{balance.btc > 0 ? 1 : 0}</div>
+                      <div className="text-2xl font-bold text-foreground">{currentBalance.btc > 0 ? 1 : 0}</div>
                       <div className="text-xs text-muted-foreground mt-1">Posições</div>
                     </div>
                   </div>
@@ -144,8 +179,8 @@ export default function Dashboard() {
                 <div>
                   <TradingInterface
                     currentPrice={currentPrice}
-                    balance={balance}
-                    setBalance={setBalance}
+                    balance={currentBalance}
+                    setBalance={setCurrentBalance}
                     setTrades={setTrades}
                   />
                 </div>
@@ -153,7 +188,7 @@ export default function Dashboard() {
             </TabsContent>
 
             <TabsContent value="positions">
-              <OpenPositions currentPrice={currentPrice} balance={balance} />
+              <OpenPositions currentPrice={currentPrice} balance={currentBalance} />
             </TabsContent>
 
             <TabsContent value="history">

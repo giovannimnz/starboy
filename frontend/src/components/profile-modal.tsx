@@ -11,18 +11,30 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Upload, ChevronDown, Eye, EyeOff, Copy, Check, Plus, CheckCircle, Edit, Trash2, Loader2 } from "lucide-react"
+import { Upload, ChevronDown, Eye, EyeOff, Copy, Check, Plus, CheckCircle, Edit, Trash2, Loader2, TestTube2 } from "lucide-react"
 import { useAuth } from "@/contexts/auth-context"
 import { useLanguage } from "@/contexts/language-context"
 import { api } from "@/lib/api"
 
-interface ExchangeAccount {
-  id: string
-  exchange: string
-  nickname: string
-  apiKey: string
-  secretKey: string
-  createdAt: Date
+interface BrokerAccount {
+  id: number
+  nome: string
+  descricao?: string
+  id_corretora: number
+  nome_corretora: string
+  ambiente: string
+  ativa: boolean
+  saldo?: number
+  saldo_base_calculo?: number
+  data_criacao: string
+  ultima_atualizacao?: string
+}
+
+interface Broker {
+  id: number
+  corretora: string
+  ambiente: string
+  ativa: boolean
 }
 
 interface ProfileModalProps {
@@ -38,6 +50,11 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
   const [isLoadingProfile, setIsLoadingProfile] = useState(false)
   const [isUpdatingPassword, setIsUpdatingPassword] = useState(false)
   const [isUpdatingProfile, setIsUpdatingProfile] = useState(false)
+  const [isLoadingAccounts, setIsLoadingAccounts] = useState(false)
+  const [isCreatingAccount, setIsCreatingAccount] = useState(false)
+  const [isUpdatingAccount, setIsUpdatingAccount] = useState(false)
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false)
+  const [isTestingConnection, setIsTestingConnection] = useState(false)
 
   // Profile form states
   const [name, setName] = useState("")
@@ -54,12 +71,12 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
   // Exchange states
   const [exchangesOpen, setExchangesOpen] = useState(false)
   const [copiedIP, setCopiedIP] = useState(false)
-  const [configuredAccounts, setConfiguredAccounts] = useState<ExchangeAccount[]>([])
+  const [brokerAccounts, setBrokerAccounts] = useState<BrokerAccount[]>([])
+  const [availableBrokers, setAvailableBrokers] = useState<Broker[]>([])
 
-  // Add exchange modal
+  // Add exchange modal - CAMPOS SIMPLIFICADOS
   const [showAddExchangeModal, setShowAddExchangeModal] = useState(false)
-  const [selectedExchange, setSelectedExchange] = useState("")
-  const [newAccountNickname, setNewAccountNickname] = useState("")
+  const [newAccountName, setNewAccountName] = useState("")
   const [newAccountApiKey, setNewAccountApiKey] = useState("")
   const [newAccountSecretKey, setNewAccountSecretKey] = useState("")
 
@@ -69,24 +86,21 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
 
   // Edit modal
   const [showEditModal, setShowEditModal] = useState(false)
-  const [editingAccount, setEditingAccount] = useState<ExchangeAccount | null>(null)
-  const [editNickname, setEditNickname] = useState("")
+  const [editingAccount, setEditingAccount] = useState<BrokerAccount | null>(null)
+  const [editName, setEditName] = useState("")
+  const [editDescription, setEditDescription] = useState("")
   const [editApiKey, setEditApiKey] = useState("")
   const [editSecretKey, setEditSecretKey] = useState("")
 
   const serverIP = "137.131.190.161"
 
-  // Available exchanges
-  const availableExchanges = [
-    { value: "binance", label: "Binance", icon: "B", color: "bg-yellow-500" },
-    // { value: "mexc", label: "MEXC", icon: "M", color: "bg-blue-500", disabled: true },
-  ]
-
   // Load user profile data when modal opens
   useEffect(() => {
     if (isOpen && user?.id) {
-      console.log('Carregando perfil para usuário ID:', user.id)
+      console.log('Carregando dados para usuário ID:', user.id)
       loadUserProfile()
+      loadBrokerAccounts()
+      loadAvailableBrokers()
     }
   }, [isOpen, user?.id])
 
@@ -101,7 +115,6 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
     try {
       console.log('Fazendo requisição para carregar perfil do usuário:', user.id)
       
-      // Chama a API que faz GET /users?id={userId}
       const response = await api.getUserProfile(user.id)
       
       console.log('Resposta da API:', response)
@@ -113,7 +126,7 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
         setName(userData.nome || "")
         setLastName(userData.sobrenome || "")
         setEmail(userData.email || "")
-        setUsername(userData.username || "trading_admin") // username pode vir como null do banco
+        setUsername(userData.username || "trading_admin")
       } else {
         console.error('Resposta inválida da API:', response)
         throw new Error('Dados do usuário não encontrados')
@@ -123,6 +136,39 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
       alert(`Erro ao carregar dados do perfil: ${error.message}`)
     } finally {
       setIsLoadingProfile(false)
+    }
+  }
+
+  const loadBrokerAccounts = async () => {
+    if (!user?.id) return
+
+    setIsLoadingAccounts(true)
+    try {
+      const response = await api.getUserBrokerAccounts(user.id)
+      
+      if (response.success) {
+        setBrokerAccounts(response.data || [])
+      } else {
+        console.error('Erro ao carregar contas:', response)
+      }
+    } catch (error) {
+      console.error("Erro ao carregar contas de corretora:", error)
+    } finally {
+      setIsLoadingAccounts(false)
+    }
+  }
+
+  const loadAvailableBrokers = async () => {
+    try {
+      const response = await api.getAvailableBrokers()
+      
+      if (response.success) {
+        setAvailableBrokers(response.data || [])
+      } else {
+        console.error('Erro ao carregar corretoras:', response)
+      }
+    } catch (error) {
+      console.error("Erro ao carregar corretoras disponíveis:", error)
     }
   }
 
@@ -159,7 +205,6 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
         email: email.trim()
       }
       
-      // Adicionar sobrenome se preenchido
       if (lastName.trim()) {
         userData.sobrenome = lastName.trim()
       }
@@ -197,19 +242,16 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
       return
     }
 
-    // Validate required fields
     if (!currentPassword || !newPassword || !confirmPassword) {
       alert("Preencha todos os campos de senha")
       return
     }
 
-    // Validate password confirmation
     if (newPassword !== confirmPassword) {
       alert("As senhas não coincidem")
       return
     }
 
-    // Validate minimum password length
     if (newPassword.length < 6) {
       alert("A nova senha deve ter pelo menos 6 caracteres")
       return
@@ -219,7 +261,6 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
     try {
       console.log('Alterando senha para usuário ID:', user.id)
       
-      // Chama a API que faz PUT /users/{id}/password
       const response = await api.updateUserPassword(user.id, currentPassword, newPassword)
       
       console.log('Resposta da alteração de senha:', response)
@@ -228,7 +269,6 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
         setSuccessMessage("Senha alterada com sucesso!")
         setShowSuccessModal(true)
         
-        // Clear password fields
         setCurrentPassword("")
         setNewPassword("")
         setConfirmPassword("")
@@ -238,7 +278,6 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
     } catch (error) {
       console.error("Erro ao alterar senha:", error)
       
-      // Tratamento específico de erros baseado na mensagem
       const errorMessage = error.message || error.toString()
       
       if (errorMessage.includes("Senha atual incorreta")) {
@@ -256,76 +295,151 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
   }
 
   const handleAddExchange = () => {
-    setSelectedExchange("")
-    setNewAccountNickname("")
+    // Limpar apenas os campos visíveis
+    setNewAccountName("")
     setNewAccountApiKey("")
     setNewAccountSecretKey("")
     setShowAddExchangeModal(true)
   }
 
-  const handleSaveNewAccount = () => {
-    if (!selectedExchange || !newAccountNickname || !newAccountApiKey || !newAccountSecretKey) {
+  const handleSaveNewAccount = async () => {
+    if (!user?.id) {
+      alert("Usuário não identificado")
+      return
+    }
+
+    // Validar apenas os campos obrigatórios visíveis
+    if (!newAccountName || !newAccountApiKey || !newAccountSecretKey) {
       alert("Preencha todos os campos obrigatórios")
       return
     }
 
-    const newAccount: ExchangeAccount = {
-      id: Date.now().toString(),
-      exchange: selectedExchange,
-      nickname: newAccountNickname,
-      apiKey: newAccountApiKey,
-      secretKey: newAccountSecretKey,
-      createdAt: new Date(),
+    setIsCreatingAccount(true)
+    try {
+      const accountData = {
+        user_id: user.id,
+        nome: newAccountName.trim(),
+        descricao: null, // Campo oculto - valor padrão
+        id_corretora: 1, // Fixo para Binance por enquanto (primeira corretora do banco)
+        api_key: newAccountApiKey.trim(),
+        api_secret: newAccountSecretKey.trim(),
+        ws_api_key: null, // Campo oculto - valor padrão
+        ws_api_secret: null // Campo oculto - valor padrão
+      }
+
+      const response = await api.createBrokerAccount(accountData)
+
+      if (response.success) {
+        setShowAddExchangeModal(false)
+        
+        setSuccessMessage(`Conta "${newAccountName}" configurada com sucesso!`)
+        setShowSuccessModal(true)
+        
+        // Recarregar lista de contas
+        await loadBrokerAccounts()
+      } else {
+        alert(response.message || "Erro ao criar conta")
+      }
+    } catch (error) {
+      console.error("Erro ao criar conta:", error)
+      alert(`Erro ao criar conta: ${error.message}`)
+    } finally {
+      setIsCreatingAccount(false)
     }
-
-    setConfiguredAccounts([...configuredAccounts, newAccount])
-    setShowAddExchangeModal(false)
-
-    // Show success modal
-    const exchangeLabel = availableExchanges.find((ex) => ex.value === selectedExchange)?.label || selectedExchange
-    setSuccessMessage(`Conta ${exchangeLabel} "${newAccountNickname}" configurada com sucesso!`)
-    setShowSuccessModal(true)
-
-    console.log("New account added:", newAccount)
   }
 
-  const handleEditAccount = (account: ExchangeAccount) => {
+  const handleEditAccount = (account: BrokerAccount) => {
     setEditingAccount(account)
-    setEditNickname(account.nickname)
-    setEditApiKey(account.apiKey)
+    setEditName(account.nome)
+    setEditDescription(account.descricao || "")
+    setEditApiKey("")
     setEditSecretKey("")
     setShowEditModal(true)
   }
 
-  const handleSaveEditAccount = () => {
-    if (!editingAccount || !editNickname || !editApiKey) {
-      alert("Preencha todos os campos obrigatórios")
+  const handleSaveEditAccount = async () => {
+    if (!editingAccount || !editName) {
+      alert("Nome da conta é obrigatório")
       return
     }
 
-    const updatedAccounts = configuredAccounts.map((account) =>
-      account.id === editingAccount.id
-        ? {
-            ...account,
-            nickname: editNickname,
-            apiKey: editApiKey,
-            secretKey: editSecretKey || account.secretKey,
-          }
-        : account,
-    )
+    setIsUpdatingAccount(true)
+    try {
+      const updateData = {
+        nome: editName.trim(),
+        descricao: editDescription.trim() || null
+      }
 
-    setConfiguredAccounts(updatedAccounts)
-    setShowEditModal(false)
+      if (editApiKey.trim()) {
+        updateData.api_key = editApiKey.trim()
+      }
 
-    const exchangeLabel =
-      availableExchanges.find((ex) => ex.value === editingAccount.exchange)?.label || editingAccount.exchange
-    setSuccessMessage(`Conta ${exchangeLabel} "${editNickname}" atualizada com sucesso!`)
-    setShowSuccessModal(true)
+      if (editSecretKey.trim()) {
+        updateData.api_secret = editSecretKey.trim()
+      }
+
+      const response = await api.updateBrokerAccount(editingAccount.id, updateData)
+
+      if (response.success) {
+        setShowEditModal(false)
+        setSuccessMessage(`Conta "${editName}" atualizada com sucesso!`)
+        setShowSuccessModal(true)
+        
+        // Recarregar lista de contas
+        await loadBrokerAccounts()
+      } else {
+        alert(response.message || "Erro ao atualizar conta")
+      }
+    } catch (error) {
+      console.error("Erro ao atualizar conta:", error)
+      alert(`Erro ao atualizar conta: ${error.message}`)
+    } finally {
+      setIsUpdatingAccount(false)
+    }
   }
 
-  const handleDeleteAccount = (accountId: string) => {
-    if (confirm("Tem certeza que deseja remover esta conta?")) {
-      setConfiguredAccounts(configuredAccounts.filter((account) => account.id !== accountId))
+  const handleDeleteAccount = async (account: BrokerAccount) => {
+    if (!confirm(`Tem certeza que deseja remover a conta "${account.nome}"?`)) {
+      return
+    }
+
+    setIsDeletingAccount(true)
+    try {
+      const response = await api.deleteBrokerAccount(account.id)
+
+      if (response.success) {
+        setSuccessMessage(`Conta "${account.nome}" removida com sucesso!`)
+        setShowSuccessModal(true)
+        
+        // Recarregar lista de contas
+        await loadBrokerAccounts()
+      } else {
+        alert(response.message || "Erro ao remover conta")
+      }
+    } catch (error) {
+      console.error("Erro ao remover conta:", error)
+      alert(`Erro ao remover conta: ${error.message}`)
+    } finally {
+      setIsDeletingAccount(false)
+    }
+  }
+
+  const handleTestConnection = async (account: BrokerAccount) => {
+    setIsTestingConnection(true)
+    try {
+      const response = await api.testBrokerConnection(account.id)
+
+      if (response.success) {
+        setSuccessMessage(`Conexão com "${account.nome}" testada com sucesso!`)
+        setShowSuccessModal(true)
+      } else {
+        alert(`Erro ao testar conexão: ${response.error || 'Erro desconhecido'}`)
+      }
+    } catch (error) {
+      console.error("Erro ao testar conexão:", error)
+      alert(`Erro ao testar conexão: ${error.message}`)
+    } finally {
+      setIsTestingConnection(false)
     }
   }
 
@@ -333,7 +447,6 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
     const file = event.target.files?.[0]
     if (file) {
       console.log("Uploading file:", file.name)
-      // Here you would handle the file upload
       alert("Foto de perfil atualizada!")
     }
   }
@@ -344,13 +457,13 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
     setTimeout(() => setCopiedIP(false), 2000)
   }
 
-  const getExchangeInfo = (exchangeValue: string) => {
-    return availableExchanges.find((ex) => ex.value === exchangeValue)
-  }
-
-  const getConfiguredExchanges = () => {
-    const exchanges = [...new Set(configuredAccounts.map((account) => account.exchange))]
-    return exchanges.map((exchange) => getExchangeInfo(exchange)).filter(Boolean)
+  const getBrokerIcon = (brokerName: string) => {
+    const icons = {
+      'binance': { icon: 'B', color: 'bg-yellow-500' },
+      'mexc': { icon: 'M', color: 'bg-blue-500' },
+      'okx': { icon: 'O', color: 'bg-green-500' }
+    }
+    return icons[brokerName.toLowerCase()] || { icon: 'C', color: 'bg-gray-500' }
   }
 
   return (
@@ -612,7 +725,7 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
                   </CardContent>
                 </Card>
 
-                {/* Exchanges Configuration */}
+                {/* Broker Accounts Configuration */}
                 <Collapsible open={exchangesOpen} onOpenChange={setExchangesOpen}>
                   <Card className="bg-gray-800 border-gray-700">
                     <CollapsibleTrigger asChild>
@@ -623,25 +736,30 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
                               <span className="text-white font-bold text-sm">C</span>
                             </div>
                             <div>
-                              <CardTitle className="text-white">Configurações de Corretoras</CardTitle>
+                              <CardTitle className="text-white">Contas de Corretoras</CardTitle>
                               <CardDescription>
-                                {configuredAccounts.length === 0
-                                  ? "Configure suas contas de corretoras"
-                                  : `${configuredAccounts.length} conta(s) configurada(s)`}
+                                {isLoadingAccounts 
+                                  ? "Carregando contas..."
+                                  : brokerAccounts.length === 0
+                                  ? "Nenhuma conta configurada"
+                                  : `${brokerAccounts.length} conta(s) configurada(s)`}
                               </CardDescription>
                             </div>
-                            {configuredAccounts.length > 0 && (
+                            {brokerAccounts.length > 0 && (
                               <div className="flex items-center space-x-2">
                                 <CheckCircle className="h-5 w-5 text-green-500" />
                                 <div className="flex space-x-1">
-                                  {getConfiguredExchanges().map((exchange, index) => (
-                                    <div
-                                      key={index}
-                                      className={`w-6 h-6 ${exchange?.color} rounded flex items-center justify-center`}
-                                    >
-                                      <span className="text-white font-bold text-xs">{exchange?.icon}</span>
-                                    </div>
-                                  ))}
+                                  {Array.from(new Set(brokerAccounts.map(acc => acc.nome_corretora))).map((brokerName, index) => {
+                                    const brokerInfo = getBrokerIcon(brokerName)
+                                    return (
+                                      <div
+                                        key={index}
+                                        className={`w-6 h-6 ${brokerInfo.color} rounded flex items-center justify-center`}
+                                      >
+                                        <span className="text-white font-bold text-xs">{brokerInfo.icon}</span>
+                                      </div>
+                                    )
+                                  })}
                                 </div>
                               </div>
                             )}
@@ -654,12 +772,20 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
                     </CollapsibleTrigger>
                     <CollapsibleContent>
                       <CardContent className="space-y-4">
+                        {/* Loading state */}
+                        {isLoadingAccounts && (
+                          <div className="flex items-center justify-center py-4">
+                            <Loader2 className="h-5 w-5 animate-spin text-orange-500" />
+                            <span className="ml-2 text-white">Carregando contas...</span>
+                          </div>
+                        )}
+
                         {/* Configured Accounts */}
-                        {configuredAccounts.length > 0 && (
+                        {!isLoadingAccounts && brokerAccounts.length > 0 && (
                           <div className="space-y-3">
                             <h4 className="text-white font-medium">Contas Configuradas</h4>
-                            {configuredAccounts.map((account) => {
-                              const exchangeInfo = getExchangeInfo(account.exchange)
+                            {brokerAccounts.map((account) => {
+                              const brokerInfo = getBrokerIcon(account.nome_corretora)
                               return (
                                 <div
                                   key={account.id}
@@ -667,13 +793,20 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
                                 >
                                   <div className="flex items-center space-x-3">
                                     <div
-                                      className={`w-8 h-8 ${exchangeInfo?.color} rounded flex items-center justify-center`}
+                                      className={`w-8 h-8 ${brokerInfo.color} rounded flex items-center justify-center`}
                                     >
-                                      <span className="text-white font-bold text-sm">{exchangeInfo?.icon}</span>
+                                      <span className="text-white font-bold text-sm">{brokerInfo.icon}</span>
                                     </div>
                                     <div>
-                                      <div className="text-white font-medium">{account.nickname}</div>
-                                      <div className="text-gray-400 text-sm">{exchangeInfo?.label}</div>
+                                      <div className="text-white font-medium">{account.nome}</div>
+                                      <div className="text-gray-400 text-sm">
+                                        {account.nome_corretora} ({account.ambiente.toUpperCase()})
+                                      </div>
+                                      {account.saldo !== undefined && (
+                                        <div className="text-orange-400 text-sm">
+                                          Saldo: ${account.saldo?.toLocaleString()}
+                                        </div>
+                                      )}
                                     </div>
                                     <CheckCircle className="h-4 w-4 text-green-500" />
                                   </div>
@@ -681,18 +814,37 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
                                     <Button
                                       size="sm"
                                       variant="outline"
+                                      onClick={() => handleTestConnection(account)}
+                                      className="border-green-600 text-green-400 hover:bg-green-600/10"
+                                      disabled={isTestingConnection}
+                                    >
+                                      {isTestingConnection ? (
+                                        <Loader2 className="h-3 w-3 animate-spin" />
+                                      ) : (
+                                        <TestTube2 className="h-3 w-3" />
+                                      )}
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
                                       onClick={() => handleEditAccount(account)}
                                       className="border-gray-600 text-gray-300 hover:bg-gray-600"
+                                      disabled={isUpdatingAccount}
                                     >
                                       <Edit className="h-3 w-3" />
                                     </Button>
                                     <Button
                                       size="sm"
                                       variant="outline"
-                                      onClick={() => handleDeleteAccount(account.id)}
+                                      onClick={() => handleDeleteAccount(account)}
                                       className="border-red-600 text-red-400 hover:bg-red-600/10"
+                                      disabled={isDeletingAccount}
                                     >
-                                      <Trash2 className="h-3 w-3" />
+                                      {isDeletingAccount ? (
+                                        <Loader2 className="h-3 w-3 animate-spin" />
+                                      ) : (
+                                        <Trash2 className="h-3 w-3" />
+                                      )}
                                     </Button>
                                   </div>
                                 </div>
@@ -701,7 +853,7 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
                           </div>
                         )}
 
-                        {/* Add New Exchange Button */}
+                        {/* Add New Account Button */}
                         <div className="border-t border-gray-700 pt-4">
                           <Button
                             onClick={handleAddExchange}
@@ -721,73 +873,51 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
         </DialogContent>
       </Dialog>
 
-      {/* Add Exchange Modal */}
+      {/* MODAL SIMPLIFICADO - Adicionar Nova Corretora */}
       <Dialog open={showAddExchangeModal} onOpenChange={setShowAddExchangeModal}>
         <DialogContent className="max-w-md bg-gray-900 border-gray-700">
           <DialogHeader>
             <DialogTitle className="text-white">Adicionar Nova Corretora</DialogTitle>
-            <DialogDescription className="text-gray-400">Configure uma nova conta de corretora</DialogDescription>
+            <DialogDescription className="text-gray-400">
+              Configure sua conta da Binance
+            </DialogDescription>
           </DialogHeader>
 
           <div className="space-y-4">
+            {/* Campo: Nome da Conta */}
             <div className="space-y-2">
-              <Label htmlFor="exchange-select" className="text-white">
-                Corretora
-              </Label>
-              <Select value={selectedExchange} onValueChange={setSelectedExchange}>
-                <SelectTrigger className="bg-gray-700 border-gray-600 text-white focus:border-orange-500">
-                  <SelectValue placeholder="Selecione a corretora" />
-                </SelectTrigger>
-                <SelectContent className="bg-gray-800 border-gray-600">
-                  {availableExchanges.map((exchange) => (
-                    <SelectItem
-                      key={exchange.value}
-                      value={exchange.value}
-                      disabled={exchange.disabled}
-                      className="text-white hover:bg-gray-700 focus:bg-gray-700"
-                    >
-                      <div className="flex items-center space-x-2">
-                        <div className={`w-6 h-6 ${exchange.color} rounded flex items-center justify-center`}>
-                          <span className="text-white font-bold text-xs">{exchange.icon}</span>
-                        </div>
-                        <span>{exchange.label}</span>
-                        {exchange.disabled && <span className="text-gray-500 text-xs">(Em breve)</span>}
-                      </div>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="new-nickname" className="text-white">
-                Apelido
+              <Label htmlFor="new-account-name" className="text-white">
+                Nome da Conta *
               </Label>
               <Input
-                id="new-nickname"
-                value={newAccountNickname}
-                onChange={(e) => setNewAccountNickname(e.target.value)}
+                id="new-account-name"
+                value={newAccountName}
+                onChange={(e) => setNewAccountName(e.target.value)}
                 className="bg-gray-700 border-gray-600 text-white focus:border-orange-500"
                 placeholder="Ex: Conta Principal"
+                disabled={isCreatingAccount}
               />
             </div>
 
+            {/* Campo: API Key */}
             <div className="space-y-2">
               <Label htmlFor="new-api-key" className="text-white">
-                API Key
+                API Key *
               </Label>
               <Input
                 id="new-api-key"
                 value={newAccountApiKey}
                 onChange={(e) => setNewAccountApiKey(e.target.value)}
                 className="bg-gray-700 border-gray-600 text-white focus:border-orange-500"
-                placeholder="Sua API Key"
+                placeholder="Sua API Key da Binance"
+                disabled={isCreatingAccount}
               />
             </div>
 
+            {/* Campo: Secret Key */}
             <div className="space-y-2">
               <Label htmlFor="new-secret-key" className="text-white">
-                Secret Key
+                Secret Key *
               </Label>
               <Input
                 id="new-secret-key"
@@ -795,8 +925,16 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
                 value={newAccountSecretKey}
                 onChange={(e) => setNewAccountSecretKey(e.target.value)}
                 className="bg-gray-700 border-gray-600 text-white focus:border-orange-500"
-                placeholder="Sua Secret Key"
+                placeholder="Sua Secret Key da Binance"
+                disabled={isCreatingAccount}
               />
+            </div>
+
+            {/* Informação sobre Whitelist */}
+            <div className="bg-orange-500/10 border border-orange-500/20 rounded-lg p-3">
+              <p className="text-orange-400 text-sm">
+                <strong>Importante:</strong> Adicione o IP {serverIP} na whitelist da sua API key na Binance.
+              </p>
             </div>
           </div>
 
@@ -805,11 +943,23 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
               variant="outline"
               onClick={() => setShowAddExchangeModal(false)}
               className="border-gray-600 text-gray-300 hover:bg-gray-700"
+              disabled={isCreatingAccount}
             >
               Cancelar
             </Button>
-            <Button onClick={handleSaveNewAccount} className="bg-orange-500 hover:bg-orange-600 text-white">
-              Salvar Configurações
+            <Button 
+              onClick={handleSaveNewAccount} 
+              className="bg-orange-500 hover:bg-orange-600 text-white"
+              disabled={isCreatingAccount || !newAccountName || !newAccountApiKey || !newAccountSecretKey}
+            >
+              {isCreatingAccount ? (
+                <>
+                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                  Criando...
+                </>
+              ) : (
+                "Salvar Configurações"
+              )}
             </Button>
           </div>
         </DialogContent>
@@ -825,26 +975,39 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
 
           <div className="space-y-4">
             <div className="space-y-2">
-              <Label htmlFor="edit-nickname" className="text-white">
-                Apelido
+              <Label htmlFor="edit-name" className="text-white">
+                Nome da Conta
               </Label>
               <Input
-                id="edit-nickname"
-                value={editNickname}
-                onChange={(e) => setEditNickname(e.target.value)}
+                id="edit-name"
+                value={editName}
+                onChange={(e) => setEditName(e.target.value)}
+                className="bg-gray-700 border-gray-600 text-white focus:border-orange-500"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="edit-description" className="text-white">
+                Descrição (opcional)
+              </Label>
+              <Input
+                id="edit-description"
+                value={editDescription}
+                onChange={(e) => setEditDescription(e.target.value)}
                 className="bg-gray-700 border-gray-600 text-white focus:border-orange-500"
               />
             </div>
 
             <div className="space-y-2">
               <Label htmlFor="edit-api-key" className="text-white">
-                API Key
+                Nova API Key (opcional)
               </Label>
               <Input
                 id="edit-api-key"
                 value={editApiKey}
                 onChange={(e) => setEditApiKey(e.target.value)}
                 className="bg-gray-700 border-gray-600 text-white focus:border-orange-500"
+                placeholder="Deixe em branco para manter a atual"
               />
             </div>
 
@@ -861,7 +1024,7 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
                 placeholder="Deixe em branco para manter a atual"
               />
               <p className="text-xs text-gray-500">
-                Por segurança, a Secret Key atual não é exibida. Preencha apenas se desejar alterá-la.
+                Por segurança, as chaves atuais não são exibidas. Preencha apenas se desejar alterá-las.
               </p>
             </div>
           </div>
