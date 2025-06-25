@@ -17,13 +17,14 @@ async function authRoutes(fastify, options) {
         required: ['nome', 'email', 'senha'],
         properties: {
           nome: { type: 'string' },
+          sobrenome: { type: 'string' }, // Adicionado campo sobrenome
           email: { type: 'string', format: 'email' },
           senha: { type: 'string', minLength: 6 }
         }
       }
     }
   }, async (request, reply) => {
-    const { nome, email, senha } = request.body;
+    const { nome, sobrenome, email, senha } = request.body;
     const db = await getDatabaseInstance();
     try {
       const [existing] = await db.query('SELECT id FROM users WHERE email = ?', [email]);
@@ -32,7 +33,16 @@ async function authRoutes(fastify, options) {
       }
       const saltRounds = 10;
       const hashDaSenha = await bcrypt.hash(senha, saltRounds);
-      await db.query('INSERT INTO users (nome, email, senha) VALUES (?, ?, ?)', [nome, email, hashDaSenha]);
+      
+      // Atualizada query para incluir sobrenome
+      const query = sobrenome 
+        ? 'INSERT INTO users (nome, sobrenome, email, senha) VALUES (?, ?, ?, ?)'
+        : 'INSERT INTO users (nome, email, senha) VALUES (?, ?, ?)';
+      const params = sobrenome 
+        ? [nome, sobrenome, email, hashDaSenha]
+        : [nome, email, hashDaSenha];
+      
+      await db.query(query, params);
       reply.status(201).send({ message: 'Usuário registrado com sucesso!' });
     } catch (error) {
       fastify.log.error('Erro no registro:', error);
@@ -68,7 +78,7 @@ async function authRoutes(fastify, options) {
       if (!senhaValida) {
         return reply.status(401).send({ error: 'Credenciais inválidas' });
       }
-      const tokenPayload = { id: user.id, email: user.email, nome: user.nome };
+      const tokenPayload = { id: user.id, email: user.email, nome: user.nome, sobrenome: user.sobrenome };
       const secretKey = process.env.JWT_SECRET || 'suaChaveSecretaPadraoSuperSegura';
       const token = jwt.sign(tokenPayload, secretKey, { expiresIn: '8h' });
       reply.send({ token, user: tokenPayload });
@@ -96,16 +106,20 @@ async function authRoutes(fastify, options) {
     const { id, ativa } = request.query;
     const db = await getDatabaseInstance();
     try {
-      let query = 'SELECT id, nome, email, ativo, criado_em, atualizado_em FROM users WHERE 1=1';
+      // Incluído campo sobrenome na consulta
+      let query = 'SELECT id, nome, sobrenome, username, email, ativa, criado_em, atualizado_em FROM users WHERE 1=1';
       const params = [];
+      
       if (id) {
         query += ' AND id = ?';
         params.push(id);
       }
+      
       if (typeof ativa !== 'undefined') {
-        query += ' AND ativo = ?';
+        query += ' AND ativa = ?';
         params.push(ativa ? 1 : 0);
       }
+      
       const [users] = await db.query(query, params);
       reply.send({ success: true, data: users, total: users.length });
     } catch (error) {
@@ -132,8 +146,8 @@ async function authRoutes(fastify, options) {
     const { id } = request.params;
     const db = await getDatabaseInstance();
     try {
-      // Soft delete: marca como inativo
-      const [result] = await db.query('UPDATE users SET ativo = 0 WHERE id = ?', [id]);
+      // Soft delete: marca como inativo usando campo 'ativa'
+      const [result] = await db.query('UPDATE users SET ativa = 0 WHERE id = ?', [id]);
       if (result.affectedRows === 0) {
         return reply.status(404).send({ error: 'Usuário não encontrado' });
       }
@@ -171,22 +185,103 @@ async function authRoutes(fastify, options) {
     const { senhaAtual, novaSenha } = request.body;
     const db = await getDatabaseInstance();
     try {
-      // Buscar usuário
-      const [users] = await db.query('SELECT senha FROM users WHERE id = ? AND ativo = 1', [id]);
+      // Buscar usuário usando campo 'ativa'
+      const [users] = await db.query('SELECT senha FROM users WHERE id = ? AND ativa = 1', [id]);
       if (users.length === 0) {
         return reply.status(404).send({ error: 'Usuário não encontrado' });
       }
+      
       const senhaHash = users[0].senha;
       const senhaValida = await bcrypt.compare(senhaAtual, senhaHash);
       if (!senhaValida) {
         return reply.status(401).send({ error: 'Senha atual incorreta' });
       }
+      
       // Atualizar senha
       const novaSenhaHash = await bcrypt.hash(novaSenha, 10);
-      await db.query('UPDATE users SET senha = ? WHERE id = ?', [novaSenhaHash, id]);
+      await db.query('UPDATE users SET senha = ?, atualizado_em = NOW() WHERE id = ?', [novaSenhaHash, id]);
+      
       reply.send({ success: true, message: 'Senha alterada com sucesso.' });
     } catch (error) {
       fastify.log.error('Erro ao alterar senha:', error);
+      reply.status(500).send({ error: 'Erro interno do servidor' });
+    }
+  });
+
+  // PUT /users/:id - Atualizar dados do usuário
+  fastify.put('/users/:id', {
+    schema: {
+      description: 'Atualiza os dados do usuário.',
+      tags: ['Usuários'],
+      summary: 'Atualizar dados do usuário',
+      params: {
+        type: 'object',
+        properties: {
+          id: { type: 'integer' }
+        },
+        required: ['id']
+      },
+      body: {
+        type: 'object',
+        properties: {
+          nome: { type: 'string' },
+          sobrenome: { type: 'string' }, // Adicionado campo sobrenome
+          email: { type: 'string', format: 'email' }
+        }
+      }
+    }
+  }, async (request, reply) => {
+    const { id } = request.params;
+    const { nome, sobrenome, email } = request.body;
+    const db = await getDatabaseInstance();
+    
+    try {
+      // Verificar se o usuário existe e está ativo
+      const [existingUser] = await db.query('SELECT id FROM users WHERE id = ? AND ativa = 1', [id]);
+      if (existingUser.length === 0) {
+        return reply.status(404).send({ error: 'Usuário não encontrado' });
+      }
+
+      // Verificar se o email já está em uso por outro usuário
+      if (email) {
+        const [emailCheck] = await db.query('SELECT id FROM users WHERE email = ? AND id != ?', [email, id]);
+        if (emailCheck.length > 0) {
+          return reply.status(409).send({ error: 'Este email já está sendo usado por outro usuário' });
+        }
+      }
+
+      // Construir query de atualização dinamicamente
+      const updateFields = [];
+      const updateValues = [];
+
+      if (nome) {
+        updateFields.push('nome = ?');
+        updateValues.push(nome);
+      }
+
+      if (sobrenome) {
+        updateFields.push('sobrenome = ?');
+        updateValues.push(sobrenome);
+      }
+
+      if (email) {
+        updateFields.push('email = ?');
+        updateValues.push(email);
+      }
+
+      if (updateFields.length === 0) {
+        return reply.status(400).send({ error: 'Nenhum campo para atualizar foi fornecido' });
+      }
+
+      updateFields.push('atualizado_em = NOW()');
+      updateValues.push(id);
+
+      const query = `UPDATE users SET ${updateFields.join(', ')} WHERE id = ?`;
+      await db.query(query, updateValues);
+
+      reply.send({ success: true, message: 'Dados do usuário atualizados com sucesso.' });
+    } catch (error) {
+      fastify.log.error('Erro ao atualizar usuário:', error);
       reply.status(500).send({ error: 'Erro interno do servidor' });
     }
   });

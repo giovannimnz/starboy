@@ -12,9 +12,11 @@ const fastify = require('fastify')({
 
 // PLUGINS
 async function registerPlugins() {
-  // CORS para permitir requests do frontend
+  // CORS para permitir requests do frontend - CONFIGURAÇÃO CORRIGIDA
   await fastify.register(require('@fastify/cors'), {
-    origin: true,
+    origin: ['http://localhost:3000', 'http://127.0.0.1:3000'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
     credentials: true
   });
 

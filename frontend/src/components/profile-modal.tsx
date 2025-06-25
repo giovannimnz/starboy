@@ -2,7 +2,7 @@
 
 import type React from "react"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -11,9 +11,10 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Upload, ChevronDown, Eye, EyeOff, Copy, Check, Plus, CheckCircle, Edit, Trash2 } from "lucide-react"
+import { Upload, ChevronDown, Eye, EyeOff, Copy, Check, Plus, CheckCircle, Edit, Trash2, Loader2 } from "lucide-react"
 import { useAuth } from "@/contexts/auth-context"
 import { useLanguage } from "@/contexts/language-context"
+import { api } from "@/lib/api"
 
 interface ExchangeAccount {
   id: string
@@ -33,10 +34,16 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
   const { user } = useAuth()
   const { t } = useLanguage()
 
+  // Loading states
+  const [isLoadingProfile, setIsLoadingProfile] = useState(false)
+  const [isUpdatingPassword, setIsUpdatingPassword] = useState(false)
+  const [isUpdatingProfile, setIsUpdatingProfile] = useState(false)
+
   // Profile form states
-  const [name, setName] = useState(user?.name || "")
-  const [username, setUsername] = useState("trading_admin")
-  const [email, setEmail] = useState(user?.email || "")
+  const [name, setName] = useState("")
+  const [lastName, setLastName] = useState("")
+  const [username, setUsername] = useState("")
+  const [email, setEmail] = useState("")
   const [currentPassword, setCurrentPassword] = useState("")
   const [newPassword, setNewPassword] = useState("")
   const [confirmPassword, setConfirmPassword] = useState("")
@@ -75,20 +82,177 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
     // { value: "mexc", label: "MEXC", icon: "M", color: "bg-blue-500", disabled: true },
   ]
 
-  const handleSaveProfile = () => {
-    // Validate passwords if changing
-    if (newPassword && newPassword !== confirmPassword) {
+  // Load user profile data when modal opens
+  useEffect(() => {
+    if (isOpen && user?.id) {
+      console.log('Carregando perfil para usuário ID:', user.id)
+      loadUserProfile()
+    }
+  }, [isOpen, user?.id])
+
+  const loadUserProfile = async () => {
+    if (!user?.id) {
+      console.error('ID do usuário não encontrado')
+      alert('ID do usuário não identificado')
+      return
+    }
+
+    setIsLoadingProfile(true)
+    try {
+      console.log('Fazendo requisição para carregar perfil do usuário:', user.id)
+      
+      // Chama a API que faz GET /users?id={userId}
+      const response = await api.getUserProfile(user.id)
+      
+      console.log('Resposta da API:', response)
+      
+      if (response.success && response.data && response.data.length > 0) {
+        const userData = response.data[0]
+        console.log('Dados do usuário carregados:', userData)
+        
+        setName(userData.nome || "")
+        setLastName(userData.sobrenome || "")
+        setEmail(userData.email || "")
+        setUsername(userData.username || "trading_admin") // username pode vir como null do banco
+      } else {
+        console.error('Resposta inválida da API:', response)
+        throw new Error('Dados do usuário não encontrados')
+      }
+    } catch (error) {
+      console.error("Erro ao carregar perfil:", error)
+      alert(`Erro ao carregar dados do perfil: ${error.message}`)
+    } finally {
+      setIsLoadingProfile(false)
+    }
+  }
+
+  const handleSaveProfile = async () => {
+    if (!user?.id) {
+      alert("Usuário não identificado")
+      return
+    }
+
+    // Validações básicas
+    if (!name.trim()) {
+      alert("Nome é obrigatório")
+      return
+    }
+
+    if (!email.trim()) {
+      alert("Email é obrigatório")
+      return
+    }
+
+    // Validação de email
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+    if (!emailRegex.test(email)) {
+      alert("Digite um email válido")
+      return
+    }
+
+    setIsUpdatingProfile(true)
+    try {
+      console.log('Atualizando perfil para usuário ID:', user.id)
+      
+      const userData = {
+        nome: name.trim(),
+        email: email.trim()
+      }
+      
+      // Adicionar sobrenome se preenchido
+      if (lastName.trim()) {
+        userData.sobrenome = lastName.trim()
+      }
+      
+      const response = await api.updateUserProfile(user.id, userData)
+      
+      console.log('Resposta da atualização de perfil:', response)
+      
+      if (response.success) {
+        setSuccessMessage("Perfil atualizado com sucesso!")
+        setShowSuccessModal(true)
+      } else {
+        alert(response.message || "Erro ao atualizar perfil")
+      }
+    } catch (error) {
+      console.error("Erro ao salvar perfil:", error)
+      
+      const errorMessage = error.message || error.toString()
+      
+      if (errorMessage.includes("Este email já está sendo usado")) {
+        alert("Este email já está sendo usado por outro usuário")
+      } else if (errorMessage.includes("Usuário não encontrado")) {
+        alert("Usuário não encontrado")
+      } else {
+        alert(`Erro ao salvar perfil: ${errorMessage}`)
+      }
+    } finally {
+      setIsUpdatingProfile(false)
+    }
+  }
+
+  const handleSavePassword = async () => {
+    if (!user?.id) {
+      alert("Usuário não identificado")
+      return
+    }
+
+    // Validate required fields
+    if (!currentPassword || !newPassword || !confirmPassword) {
+      alert("Preencha todos os campos de senha")
+      return
+    }
+
+    // Validate password confirmation
+    if (newPassword !== confirmPassword) {
       alert("As senhas não coincidem")
       return
     }
 
-    console.log("Saving profile:", { name, username, email })
-    if (newPassword) {
-      console.log("Changing password")
+    // Validate minimum password length
+    if (newPassword.length < 6) {
+      alert("A nova senha deve ter pelo menos 6 caracteres")
+      return
     }
 
-    // Here you would make API calls to save the data
-    alert("Perfil salvo com sucesso!")
+    setIsUpdatingPassword(true)
+    try {
+      console.log('Alterando senha para usuário ID:', user.id)
+      
+      // Chama a API que faz PUT /users/{id}/password
+      const response = await api.updateUserPassword(user.id, currentPassword, newPassword)
+      
+      console.log('Resposta da alteração de senha:', response)
+      
+      if (response.success) {
+        setSuccessMessage("Senha alterada com sucesso!")
+        setShowSuccessModal(true)
+        
+        // Clear password fields
+        setCurrentPassword("")
+        setNewPassword("")
+        setConfirmPassword("")
+      } else {
+        alert(response.message || "Erro ao alterar senha")
+      }
+    } catch (error) {
+      console.error("Erro ao alterar senha:", error)
+      
+      // Tratamento específico de erros baseado na mensagem
+      const errorMessage = error.message || error.toString()
+      
+      if (errorMessage.includes("Senha atual incorreta")) {
+        alert("Senha atual incorreta")
+      } else if (errorMessage.includes("Usuário não encontrado")) {
+        alert("Usuário não encontrado")
+      } else if (errorMessage.includes("senha deve ter pelo menos 6 caracteres")) {
+        alert("A nova senha deve ter pelo menos 6 caracteres")
+      } else {
+        alert(`Erro ao alterar senha: ${errorMessage}`)
+      }
+    } finally {
+      setIsUpdatingPassword(false)
+    }
   }
 
   const handleAddExchange = () => {
@@ -200,85 +364,137 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
             </DialogDescription>
           </DialogHeader>
 
-          <div className="space-y-6">
-            {/* Profile Section */}
-            <Card className="bg-gray-800 border-gray-700">
-              <CardHeader>
-                <CardTitle className="text-white">Informações Pessoais</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                {/* Profile Picture */}
-                <div className="flex items-center space-x-4">
-                  <Avatar className="h-20 w-20">
-                    <AvatarImage src="/placeholder.svg?height=80&width=80" alt={name} />
-                    <AvatarFallback className="bg-orange-500 text-white text-xl">
-                      {name?.charAt(0) || "U"}
-                    </AvatarFallback>
-                  </Avatar>
-                  <div>
-                    <Label htmlFor="profile-picture" className="cursor-pointer">
-                      <Button variant="outline" className="border-gray-600 text-gray-300 hover:bg-gray-700">
-                        <Upload className="h-4 w-4 mr-2" />
-                        Alterar Foto
-                      </Button>
-                    </Label>
-                    <input
-                      id="profile-picture"
-                      type="file"
-                      accept="image/*"
-                      className="hidden"
-                      onChange={handleFileUpload}
-                    />
-                    <p className="text-xs text-gray-500 mt-1">JPG, PNG ou GIF (máx. 2MB)</p>
+          {isLoadingProfile ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="h-6 w-6 animate-spin text-orange-500" />
+              <span className="ml-2 text-white">Carregando dados do perfil...</span>
+            </div>
+          ) : (
+            <div className="space-y-6">
+              {/* Profile Section */}
+              <Card className="bg-gray-800 border-gray-700">
+                <CardHeader>
+                  <CardTitle className="text-white">Informações Pessoais</CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {/* Profile Picture */}
+                  <div className="flex items-center space-x-4">
+                    <Avatar className="h-20 w-20">
+                      <AvatarImage src="/placeholder.svg?height=80&width=80" alt={name} />
+                      <AvatarFallback className="bg-orange-500 text-white text-xl">
+                        {name?.charAt(0) || ""}
+                        {lastName?.charAt(0) || "U"}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div>
+                      <Label htmlFor="profile-picture" className="cursor-pointer">
+                        <Button variant="outline" className="border-gray-600 text-gray-300 hover:bg-gray-700">
+                          <Upload className="h-4 w-4 mr-2" />
+                          Alterar Foto
+                        </Button>
+                      </Label>
+                      <input
+                        id="profile-picture"
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={handleFileUpload}
+                      />
+                      <p className="text-xs text-gray-500 mt-1">JPG, PNG ou GIF (máx. 2MB)</p>
+                    </div>
                   </div>
-                </div>
 
-                {/* Form Fields */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Form Fields */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="name" className="text-white">
+                        Nome *
+                      </Label>
+                      <Input
+                        id="name"
+                        value={name}
+                        onChange={(e) => setName(e.target.value)}
+                        className="bg-gray-700 border-gray-600 text-white focus:border-orange-500"
+                        disabled={isLoadingProfile || isUpdatingProfile}
+                        placeholder="Digite seu nome"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="lastName" className="text-white">
+                        Sobrenome
+                      </Label>
+                      <Input
+                        id="lastName"
+                        value={lastName}
+                        onChange={(e) => setLastName(e.target.value)}
+                        className="bg-gray-700 border-gray-600 text-white focus:border-orange-500"
+                        disabled={isLoadingProfile || isUpdatingProfile}
+                        placeholder="Digite seu sobrenome"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 gap-4">
+                    <div className="space-y-2">
+                      <Label htmlFor="username" className="text-white">
+                        Usuário
+                      </Label>
+                      <Input
+                        id="username"
+                        value={username}
+                        onChange={(e) => setUsername(e.target.value)}
+                        className="bg-gray-700 border-gray-600 text-white focus:border-orange-500"
+                        disabled={true}
+                        title="Campo somente leitura"
+                      />
+                    </div>
+                  </div>
+
                   <div className="space-y-2">
-                    <Label htmlFor="name" className="text-white">
-                      Nome
+                    <Label htmlFor="email" className="text-white">
+                      Email *
                     </Label>
                     <Input
-                      id="name"
-                      value={name}
-                      onChange={(e) => setName(e.target.value)}
+                      id="email"
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
                       className="bg-gray-700 border-gray-600 text-white focus:border-orange-500"
+                      disabled={isLoadingProfile || isUpdatingProfile}
+                      placeholder="Digite seu email"
                     />
                   </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="username" className="text-white">
-                      Usuário
-                    </Label>
-                    <Input
-                      id="username"
-                      value={username}
-                      onChange={(e) => setUsername(e.target.value)}
-                      className="bg-gray-700 border-gray-600 text-white focus:border-orange-500"
-                    />
-                  </div>
-                </div>
 
-                <div className="space-y-2">
-                  <Label htmlFor="email" className="text-white">
-                    Email
-                  </Label>
-                  <Input
-                    id="email"
-                    type="email"
-                    value={email}
-                    onChange={(e) => setEmail(e.target.value)}
-                    className="bg-gray-700 border-gray-600 text-white focus:border-orange-500"
-                  />
-                </div>
+                  <Button 
+                    onClick={handleSaveProfile} 
+                    className="bg-orange-500 hover:bg-orange-600 text-white"
+                    disabled={isLoadingProfile || isUpdatingProfile || !name.trim() || !email.trim()}
+                  >
+                    {isUpdatingProfile ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Salvando...
+                      </>
+                    ) : (
+                      "Salvar Perfil"
+                    )}
+                  </Button>
+                </CardContent>
+              </Card>
 
-                {/* Password Change Section */}
-                <div className="border-t border-gray-700 pt-4">
-                  <h4 className="text-white font-medium mb-3">Alterar Senha</h4>
+              {/* Password Change Section */}
+              <Card className="bg-gray-800 border-gray-700">
+                <CardHeader>
+                  <CardTitle className="text-white">Alterar Senha</CardTitle>
+                  <CardDescription className="text-gray-400">
+                    Altere sua senha de acesso ao sistema
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
                   <div className="space-y-3">
                     <div className="space-y-2">
                       <Label htmlFor="current-password" className="text-white">
-                        Senha Atual
+                        Senha Atual *
                       </Label>
                       <div className="relative">
                         <Input
@@ -287,11 +503,13 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
                           value={currentPassword}
                           onChange={(e) => setCurrentPassword(e.target.value)}
                           className="bg-gray-700 border-gray-600 text-white focus:border-orange-500 pr-10"
+                          disabled={isUpdatingPassword}
                         />
                         <button
                           type="button"
                           onClick={() => setShowCurrentPassword(!showCurrentPassword)}
                           className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-200"
+                          disabled={isUpdatingPassword}
                         >
                           {showCurrentPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                         </button>
@@ -301,7 +519,7 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div className="space-y-2">
                         <Label htmlFor="new-password" className="text-white">
-                          Nova Senha
+                          Nova Senha *
                         </Label>
                         <div className="relative">
                           <Input
@@ -310,19 +528,23 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
                             value={newPassword}
                             onChange={(e) => setNewPassword(e.target.value)}
                             className="bg-gray-700 border-gray-600 text-white focus:border-orange-500 pr-10"
+                            disabled={isUpdatingPassword}
+                            minLength={6}
                           />
                           <button
                             type="button"
                             onClick={() => setShowNewPassword(!showNewPassword)}
                             className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-200"
+                            disabled={isUpdatingPassword}
                           >
                             {showNewPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                           </button>
                         </div>
+                        <p className="text-xs text-gray-500">Mínimo de 6 caracteres</p>
                       </div>
                       <div className="space-y-2">
                         <Label htmlFor="confirm-password" className="text-white">
-                          Confirmar Nova Senha
+                          Confirmar Nova Senha *
                         </Label>
                         <div className="relative">
                           <Input
@@ -331,11 +553,13 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
                             value={confirmPassword}
                             onChange={(e) => setConfirmPassword(e.target.value)}
                             className="bg-gray-700 border-gray-600 text-white focus:border-orange-500 pr-10"
+                            disabled={isUpdatingPassword}
                           />
                           <button
                             type="button"
                             onClick={() => setShowConfirmPassword(!showConfirmPassword)}
                             className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-200"
+                            disabled={isUpdatingPassword}
                           >
                             {showConfirmPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                           </button>
@@ -343,146 +567,157 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
                       </div>
                     </div>
                   </div>
-                </div>
 
-                <Button onClick={handleSaveProfile} className="bg-orange-500 hover:bg-orange-600 text-white">
-                  Salvar Perfil
-                </Button>
-              </CardContent>
-            </Card>
-
-            {/* Exchange Configurations */}
-            <div className="space-y-4">
-              <h3 className="text-white text-lg font-semibold">Configurações de Corretoras</h3>
-
-              {/* IP Information */}
-              <Card className="bg-gray-800 border-gray-700">
-                <CardContent className="p-4">
-                  <div className="flex items-center justify-between">
-                    <div>
-                      <p className="text-white font-medium">IP do Servidor</p>
-                      <p className="text-gray-400 text-sm">Use este IP na whitelist das suas corretoras</p>
-                    </div>
-                    <div className="flex items-center space-x-2">
-                      <code className="bg-gray-700 text-orange-400 px-3 py-1 rounded font-mono">{serverIP}</code>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => copyToClipboard(serverIP)}
-                        className="border-gray-600 text-gray-300 hover:bg-gray-700"
-                      >
-                        {copiedIP ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-                      </Button>
-                    </div>
-                  </div>
+                  <Button 
+                    onClick={handleSavePassword} 
+                    className="bg-orange-500 hover:bg-orange-600 text-white"
+                    disabled={isUpdatingPassword || !currentPassword || !newPassword || !confirmPassword}
+                  >
+                    {isUpdatingPassword ? (
+                      <>
+                        <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                        Alterando Senha...
+                      </>
+                    ) : (
+                      "Alterar Senha"
+                    )}
+                  </Button>
                 </CardContent>
               </Card>
 
-              {/* Exchanges Configuration */}
-              <Collapsible open={exchangesOpen} onOpenChange={setExchangesOpen}>
-                <Card className="bg-gray-800 border-gray-700">
-                  <CollapsibleTrigger asChild>
-                    <CardHeader className="cursor-pointer hover:bg-gray-750 transition-colors">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center space-x-3">
-                          <div className="w-8 h-8 bg-orange-500 rounded flex items-center justify-center">
-                            <span className="text-white font-bold text-sm">C</span>
-                          </div>
-                          <div>
-                            <CardTitle className="text-white">Configurações de Corretoras</CardTitle>
-                            <CardDescription>
-                              {configuredAccounts.length === 0
-                                ? "Configure suas contas de corretoras"
-                                : `${configuredAccounts.length} conta(s) configurada(s)`}
-                            </CardDescription>
-                          </div>
-                          {configuredAccounts.length > 0 && (
-                            <div className="flex items-center space-x-2">
-                              <CheckCircle className="h-5 w-5 text-green-500" />
-                              <div className="flex space-x-1">
-                                {getConfiguredExchanges().map((exchange, index) => (
-                                  <div
-                                    key={index}
-                                    className={`w-6 h-6 ${exchange?.color} rounded flex items-center justify-center`}
-                                  >
-                                    <span className="text-white font-bold text-xs">{exchange?.icon}</span>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                        <ChevronDown
-                          className={`h-5 w-5 text-gray-400 transition-transform ${exchangesOpen ? "rotate-180" : ""}`}
-                        />
-                      </div>
-                    </CardHeader>
-                  </CollapsibleTrigger>
-                  <CollapsibleContent>
-                    <CardContent className="space-y-4">
-                      {/* Configured Accounts */}
-                      {configuredAccounts.length > 0 && (
-                        <div className="space-y-3">
-                          <h4 className="text-white font-medium">Contas Configuradas</h4>
-                          {configuredAccounts.map((account) => {
-                            const exchangeInfo = getExchangeInfo(account.exchange)
-                            return (
-                              <div
-                                key={account.id}
-                                className="flex items-center justify-between p-3 bg-gray-700 rounded-lg border border-gray-600"
-                              >
-                                <div className="flex items-center space-x-3">
-                                  <div
-                                    className={`w-8 h-8 ${exchangeInfo?.color} rounded flex items-center justify-center`}
-                                  >
-                                    <span className="text-white font-bold text-sm">{exchangeInfo?.icon}</span>
-                                  </div>
-                                  <div>
-                                    <div className="text-white font-medium">{account.nickname}</div>
-                                    <div className="text-gray-400 text-sm">{exchangeInfo?.label}</div>
-                                  </div>
-                                  <CheckCircle className="h-4 w-4 text-green-500" />
-                                </div>
-                                <div className="flex items-center space-x-2">
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => handleEditAccount(account)}
-                                    className="border-gray-600 text-gray-300 hover:bg-gray-600"
-                                  >
-                                    <Edit className="h-3 w-3" />
-                                  </Button>
-                                  <Button
-                                    size="sm"
-                                    variant="outline"
-                                    onClick={() => handleDeleteAccount(account.id)}
-                                    className="border-red-600 text-red-400 hover:bg-red-600/10"
-                                  >
-                                    <Trash2 className="h-3 w-3" />
-                                  </Button>
-                                </div>
-                              </div>
-                            )
-                          })}
-                        </div>
-                      )}
+              {/* Exchange Configurations */}
+              <div className="space-y-4">
+                <h3 className="text-white text-lg font-semibold">Configurações de Corretoras</h3>
 
-                      {/* Add New Exchange Button */}
-                      <div className="border-t border-gray-700 pt-4">
+                {/* IP Information */}
+                <Card className="bg-gray-800 border-gray-700">
+                  <CardContent className="p-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-white font-medium">IP do Servidor</p>
+                        <p className="text-gray-400 text-sm">Use este IP na whitelist das suas corretoras</p>
+                      </div>
+                      <div className="flex items-center space-x-2">
+                        <code className="bg-gray-700 text-orange-400 px-3 py-1 rounded font-mono">{serverIP}</code>
                         <Button
-                          onClick={handleAddExchange}
-                          className="w-full bg-orange-500 hover:bg-orange-600 text-white"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => copyToClipboard(serverIP)}
+                          className="border-gray-600 text-gray-300 hover:bg-gray-700"
                         >
-                          <Plus className="h-4 w-4 mr-2" />
-                          Adicionar Nova Corretora
+                          {copiedIP ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
                         </Button>
                       </div>
-                    </CardContent>
-                  </CollapsibleContent>
+                    </div>
+                  </CardContent>
                 </Card>
-              </Collapsible>
+
+                {/* Exchanges Configuration */}
+                <Collapsible open={exchangesOpen} onOpenChange={setExchangesOpen}>
+                  <Card className="bg-gray-800 border-gray-700">
+                    <CollapsibleTrigger asChild>
+                      <CardHeader className="cursor-pointer hover:bg-gray-750 transition-colors">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center space-x-3">
+                            <div className="w-8 h-8 bg-orange-500 rounded flex items-center justify-center">
+                              <span className="text-white font-bold text-sm">C</span>
+                            </div>
+                            <div>
+                              <CardTitle className="text-white">Configurações de Corretoras</CardTitle>
+                              <CardDescription>
+                                {configuredAccounts.length === 0
+                                  ? "Configure suas contas de corretoras"
+                                  : `${configuredAccounts.length} conta(s) configurada(s)`}
+                              </CardDescription>
+                            </div>
+                            {configuredAccounts.length > 0 && (
+                              <div className="flex items-center space-x-2">
+                                <CheckCircle className="h-5 w-5 text-green-500" />
+                                <div className="flex space-x-1">
+                                  {getConfiguredExchanges().map((exchange, index) => (
+                                    <div
+                                      key={index}
+                                      className={`w-6 h-6 ${exchange?.color} rounded flex items-center justify-center`}
+                                    >
+                                      <span className="text-white font-bold text-xs">{exchange?.icon}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                          <ChevronDown
+                            className={`h-5 w-5 text-gray-400 transition-transform ${exchangesOpen ? "rotate-180" : ""}`}
+                          />
+                        </div>
+                      </CardHeader>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent>
+                      <CardContent className="space-y-4">
+                        {/* Configured Accounts */}
+                        {configuredAccounts.length > 0 && (
+                          <div className="space-y-3">
+                            <h4 className="text-white font-medium">Contas Configuradas</h4>
+                            {configuredAccounts.map((account) => {
+                              const exchangeInfo = getExchangeInfo(account.exchange)
+                              return (
+                                <div
+                                  key={account.id}
+                                  className="flex items-center justify-between p-3 bg-gray-700 rounded-lg border border-gray-600"
+                                >
+                                  <div className="flex items-center space-x-3">
+                                    <div
+                                      className={`w-8 h-8 ${exchangeInfo?.color} rounded flex items-center justify-center`}
+                                    >
+                                      <span className="text-white font-bold text-sm">{exchangeInfo?.icon}</span>
+                                    </div>
+                                    <div>
+                                      <div className="text-white font-medium">{account.nickname}</div>
+                                      <div className="text-gray-400 text-sm">{exchangeInfo?.label}</div>
+                                    </div>
+                                    <CheckCircle className="h-4 w-4 text-green-500" />
+                                  </div>
+                                  <div className="flex items-center space-x-2">
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => handleEditAccount(account)}
+                                      className="border-gray-600 text-gray-300 hover:bg-gray-600"
+                                    >
+                                      <Edit className="h-3 w-3" />
+                                    </Button>
+                                    <Button
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => handleDeleteAccount(account.id)}
+                                      className="border-red-600 text-red-400 hover:bg-red-600/10"
+                                    >
+                                      <Trash2 className="h-3 w-3" />
+                                    </Button>
+                                  </div>
+                                </div>
+                              )
+                            })}
+                          </div>
+                        )}
+
+                        {/* Add New Exchange Button */}
+                        <div className="border-t border-gray-700 pt-4">
+                          <Button
+                            onClick={handleAddExchange}
+                            className="w-full bg-orange-500 hover:bg-orange-600 text-white"
+                          >
+                            <Plus className="h-4 w-4 mr-2" />
+                            Adicionar Nova Corretora
+                          </Button>
+                        </div>
+                      </CardContent>
+                    </CollapsibleContent>
+                  </Card>
+                </Collapsible>
+              </div>
             </div>
-          </div>
+          )}
         </DialogContent>
       </Dialog>
 
@@ -655,7 +890,7 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
                 <CheckCircle className="w-10 h-10 text-green-500" />
               </div>
             </div>
-            <DialogTitle className="text-2xl font-bold text-white">Cadastro Efetuado</DialogTitle>
+            <DialogTitle className="text-2xl font-bold text-white">Operação Realizada</DialogTitle>
             <DialogDescription className="text-gray-400 mt-2">{successMessage}</DialogDescription>
           </DialogHeader>
           <div className="flex justify-center mt-6">
