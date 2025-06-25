@@ -27,7 +27,7 @@ interface TradingInterfaceProps {
 }
 
 export default function TradingInterface({ currentPrice, balance, setBalance, setTrades }: TradingInterfaceProps) {
-  const [orderType, setOrderType] = useState("market")
+  const [orderType, setOrderType] = useState("limit")
   const [direction, setDirection] = useState<"buy" | "sell">("buy")
   const [limitPrice, setLimitPrice] = useState("")
   const [size, setSize] = useState("")
@@ -109,6 +109,8 @@ export default function TradingInterface({ currentPrice, balance, setBalance, se
         return "Limite"
       case "market":
         return "Mercado"
+      case "market_maker":
+        return "Market Maker"
       case "stop_loss":
         return "Stop Loss Market"
       case "take_profit":
@@ -158,6 +160,7 @@ export default function TradingInterface({ currentPrice, balance, setBalance, se
               <SelectContent>
                 <SelectItem value="market">Mercado</SelectItem>
                 <SelectItem value="limit">Limite</SelectItem>
+                <SelectItem value="market_maker">Market Maker</SelectItem>
                 <SelectItem value="stop_loss">Stop Loss Market</SelectItem>
                 <SelectItem value="take_profit">Take Profit Market</SelectItem>
               </SelectContent>
@@ -206,7 +209,7 @@ export default function TradingInterface({ currentPrice, balance, setBalance, se
               />
               <div className="absolute right-2 top-1/2 transform -translate-y-1/2">
                 <Select value={sizeType} onValueChange={(value) => setSizeType(value as "USDT" | "BTC")}>
-                  <SelectTrigger className="w-16 h-8 border-0 bg-transparent text-sm">
+                  <SelectTrigger className="w-20 h-8 border-0 bg-transparent text-sm">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -218,15 +221,15 @@ export default function TradingInterface({ currentPrice, balance, setBalance, se
             </div>
           </div>
 
-          {/* Limit Only Checkbox */}
+          {/* Reduce Only Checkbox */}
           <div className="flex items-center space-x-2">
             <Checkbox
-              id="limit-only"
+              id="reduce-only"
               checked={limitOnly}
               onCheckedChange={(checked) => setLimitOnly(checked as boolean)}
             />
-            <Label htmlFor="limit-only" className="text-sm">
-              Limit Only
+            <Label htmlFor="reduce-only" className="text-sm">
+              Reduce only
             </Label>
           </div>
 

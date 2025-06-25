@@ -51,6 +51,8 @@ async function registerPlugins() {
       deepLinking: true
     },
   });
+
+  fastify.log.info('Plugins registrados com sucesso.');
 }
 
 // ROTAS
@@ -58,16 +60,10 @@ async function registerRoutes() {
   fastify.log.info('Registrando rotas...');
   
   // Registra o plugin de usuario e adiciona um prefixo /api
-  fastify.register(require('./routes/users'), { prefix: '/api' });
+  await fastify.register(require('./routes/users'), { prefix: '/api' });
   
-  // Registra o plugin de contas e adiciona um prefixo /api
-  //fastify.register(require('./routes/accounts'), { prefix: '/api' });
-
   // Registra o plugin de dashboard e adiciona um prefixo /api
-  fastify.register(require('./routes/dashboard'), { prefix: '/api' });
-
-  // Você pode adicionar outros plugins de rota aqui
-  // Ex: fastify.register(require('./routes/dashboard'), { prefix: '/api' });
+  await fastify.register(require('./routes/dashboard'), { prefix: '/api' });
 
   // Rota de Health Check
   fastify.get('/api/health', {
@@ -86,7 +82,6 @@ async function registerRoutes() {
 
   fastify.log.info('Rotas registradas com sucesso.');
 }
-
 
 // INICIALIZAÇÃO DO SERVIDOR
 async function startServer() {

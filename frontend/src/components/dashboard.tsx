@@ -1,14 +1,14 @@
 "use client"
 
 import { useState } from "react"
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import TradingInterface from "@/components/trading-interface"
 import BotSettings from "@/components/bot-settings"
 import TradeHistory from "@/components/trade-history"
 import OpenPositions from "@/components/open-positions"
 import UserMenu from "@/components/user-menu"
-import { ArrowUpRight, ArrowDownRight, BarChart3, Settings, History, TrendingUp } from "lucide-react"
+import { BarChart3, Settings, History, TrendingUp } from "lucide-react"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { useLanguage } from "@/contexts/language-context"
 import TradingViewChart from "@/components/tradingview-chart"
@@ -28,201 +28,143 @@ export default function Dashboard() {
   })
   const [selectedAccount, setSelectedAccount] = useState("binance.futures")
 
-  // Simulate price updates
-  // useEffect(() => {
-  //   if (!isRunning) return
-
-  //   const interval = setInterval(() => {
-  //     const { newPrice, newChange, direction } = generateNewPrice(currentPrice)
-  //     setCurrentPrice(newPrice)
-  //     setPriceChange(newChange)
-  //     setPriceDirection(direction)
-
-  //     setPriceHistory((prev) => {
-  //       const newHistory = [
-  //         ...prev,
-  //         {
-  //           time: new Date().toISOString(),
-  //           price: newPrice,
-  //         },
-  //       ]
-  //       // Keep only the last 50 data points
-  //       if (newHistory.length > 50) {
-  //         return newHistory.slice(newHistory.length - 50)
-  //       }
-  //       return newHistory
-  //     })
-
-  //     // Auto trading logic (very simple example)
-  //     if (isRunning) {
-  //       const shouldBuy = direction === "up" && newChange > 0.5
-  //       const shouldSell = direction === "down" && newChange > 0.5
-
-  //       if (shouldBuy && balance.usd > 1000) {
-  //         const amount = 0.01
-  //         const cost = amount * newPrice
-  //         if (cost <= balance.usd) {
-  //           setBalance((prev) => ({
-  //             usd: prev.usd - cost,
-  //             btc: prev.btc + amount,
-  //           }))
-  //           setTrades((prev) => [
-  //             ...prev,
-  //             {
-  //               id: Date.now(),
-  //               type: "buy",
-  //               amount,
-  //               price: newPrice,
-  //               total: cost,
-  //               time: new Date().toISOString(),
-  //             },
-  //           ])
-  //         }
-  //       } else if (shouldSell && balance.btc > 0.01) {
-  //         const amount = 0.01
-  //         const value = amount * newPrice
-  //         setBalance((prev) => ({
-  //           usd: prev.usd + value,
-  //           btc: prev.btc - amount,
-  //         }))
-  //         setTrades((prev) => [
-  //           ...prev,
-  //           {
-  //             id: Date.now(),
-  //             type: "sell",
-  //             amount,
-  //             price: newPrice,
-  //             total: value,
-  //             time: new Date().toISOString(),
-  //           },
-  //         ])
-  //       }
-  //     }
-  //   }, 3000)
-
-  //   return () => clearInterval(interval)
-  // }, [currentPrice, isRunning, balance.btc, balance.usd])
-
   const portfolioValue = balance.usd + balance.btc * currentPrice
 
   return (
-    <div className="container mx-auto p-4">
-      <div className="flex flex-col space-y-4">
-        <div className="flex justify-between items-center">
-          <h1 className="text-3xl font-bold text-white">{t("atius.capital")}</h1>
-          <div className="flex items-center space-x-4">
-            <ThemeToggle />
-            <UserMenu balance={balance} currentPrice={currentPrice} />
-          </div>
-        </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-white">{t("current.btc.price")}</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center">
-                <span className="text-2xl font-bold text-white">${currentPrice.toLocaleString()}</span>
-                <span
-                  className={`ml-2 flex items-center ${priceDirection === "up" ? "text-green-500" : "text-red-500"}`}
-                >
-                  {priceDirection === "up" ? (
-                    <ArrowUpRight className="h-4 w-4 mr-1" />
-                  ) : (
-                    <ArrowDownRight className="h-4 w-4 mr-1" />
-                  )}
-                  {priceChange.toFixed(2)}%
-                </span>
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-white">{t("portfolio.value")}</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-white">
-                ${portfolioValue.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-              </div>
-              <div className="text-sm text-muted-foreground mt-1">
-                USD: ${balance.usd.toLocaleString(undefined, { maximumFractionDigits: 2 })} | BTC:{" "}
-                {balance.btc.toFixed(8)}
-              </div>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-sm font-medium text-white">{t("bot.status")}</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="flex items-center">
-                <div className={`h-3 w-3 rounded-full mr-2 ${isRunning ? "bg-green-500" : "bg-red-500"}`}></div>
-                <span className="font-medium text-white">{isRunning ? t("running") : t("stopped")}</span>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="grid grid-cols-4 w-full max-w-2xl">
-            <TabsTrigger value="dashboard" className="flex items-center">
-              <BarChart3 className="h-4 w-4 mr-2" />
-              {t("dashboard")}
-            </TabsTrigger>
-            <TabsTrigger value="positions" className="flex items-center">
-              <TrendingUp className="h-4 w-4 mr-2" />
-              {t("positions")}
-            </TabsTrigger>
-            <TabsTrigger value="history" className="flex items-center">
-              <History className="h-4 w-4 mr-2" />
-              {t("history")}
-            </TabsTrigger>
-            <TabsTrigger value="settings" className="flex items-center">
-              <Settings className="h-4 w-4 mr-2" />
-              {t("settings")}
-            </TabsTrigger>
-          </TabsList>
-
-          <TabsContent value="dashboard" className="space-y-4">
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-              <div className="lg:col-span-2">
-                <Card className="h-full">
-                  <CardHeader>
-                    <CardTitle className="text-white">{t("price")} Chart</CardTitle>
-                    <CardDescription>BTC/USD price movement</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    <TradingViewChart selectedAccount={selectedAccount} />
-                  </CardContent>
-                </Card>
-              </div>
-
-              <div>
-                <TradingInterface
-                  currentPrice={currentPrice}
-                  balance={balance}
-                  setBalance={setBalance}
-                  setTrades={setTrades}
-                />
-              </div>
+    <div className="min-h-screen bg-dark-gradient">
+      <div className="container mx-auto p-4">
+        <div className="flex flex-col space-y-6">
+          {/* Header */}
+          <div className="flex justify-between items-center">
+            <div>
+              <h1 className="text-4xl font-bold text-gradient mb-2">{t("atius.capital")}</h1>
+              <p className="text-muted-foreground font-medium">{t("professional.trading.platform")}</p>
             </div>
-          </TabsContent>
+            <div className="flex items-center space-x-4">
+              <ThemeToggle />
+              <UserMenu balance={balance} currentPrice={currentPrice} onAccountChange={setSelectedAccount} />
+            </div>
+          </div>
 
-          <TabsContent value="positions">
-            <OpenPositions currentPrice={currentPrice} balance={balance} />
-          </TabsContent>
+          {/* Stats Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <Card className="bg-card-dark shadow-soft-md border-border hover:shadow-soft-lg transition-shadow duration-200">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+                  Saldo da conta
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="text-3xl font-bold text-foreground">
+                  ${portfolioValue.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                </div>
+              </CardContent>
+            </Card>
 
-          <TabsContent value="history">
-            <TradeHistory trades={trades} />
-          </TabsContent>
+            <Card className="bg-card-dark shadow-soft-md border-border hover:shadow-soft-lg transition-shadow duration-200">
+              <CardContent className="p-4">
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="bg-gray-800/50 rounded-lg p-3 border border-gray-700">
+                    <div className="text-center">
+                      <div className="text-2xl font-bold text-foreground">{balance.btc > 0 ? 1 : 0}</div>
+                      <div className="text-xs text-muted-foreground mt-1">Posições</div>
+                    </div>
+                  </div>
+                  <div className="bg-gray-800/50 rounded-lg p-3 border border-gray-700">
+                    <div className="text-center">
+                      <div className="text-2xl font-bold text-foreground">0</div>
+                      <div className="text-xs text-muted-foreground mt-1">Ordens</div>
+                    </div>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
 
-          <TabsContent value="settings">
-            <BotSettings isRunning={isRunning} setIsRunning={setIsRunning} />
-          </TabsContent>
-        </Tabs>
+            <Card className="bg-card-dark shadow-soft-md border-border hover:shadow-soft-lg transition-shadow duration-200">
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
+                  {t("bot.status")}
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center">
+                  <div
+                    className={`h-3 w-3 rounded-full mr-3 ${
+                      isRunning
+                        ? "bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.5)]"
+                        : "bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.5)]"
+                    }`}
+                  ></div>
+                  <span className="font-semibold text-foreground text-lg">
+                    {isRunning ? t("running") : t("stopped")}
+                  </span>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Main Content */}
+          <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
+            <TabsList className="grid grid-cols-4 w-full max-w-2xl bg-gray-800/50 p-1 shadow-soft border border-gray-700">
+              <TabsTrigger
+                value="dashboard"
+                className="flex items-center data-[state=active]:bg-gray-700 data-[state=active]:shadow-soft data-[state=active]:text-primary"
+              >
+                <BarChart3 className="h-4 w-4 mr-2" />
+                {t("dashboard")}
+              </TabsTrigger>
+              <TabsTrigger
+                value="positions"
+                className="flex items-center data-[state=active]:bg-gray-700 data-[state=active]:shadow-soft data-[state=active]:text-primary"
+              >
+                <TrendingUp className="h-4 w-4 mr-2" />
+                {t("positions")}
+              </TabsTrigger>
+              <TabsTrigger
+                value="history"
+                className="flex items-center data-[state=active]:bg-gray-700 data-[state=active]:shadow-soft data-[state=active]:text-primary"
+              >
+                <History className="h-4 w-4 mr-2" />
+                {t("history")}
+              </TabsTrigger>
+              <TabsTrigger
+                value="settings"
+                className="flex items-center data-[state=active]:bg-gray-700 data-[state=active]:shadow-soft data-[state=active]:text-primary"
+              >
+                <Settings className="h-4 w-4 mr-2" />
+                {t("settings")}
+              </TabsTrigger>
+            </TabsList>
+
+            <TabsContent value="dashboard" className="space-y-6">
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                <div className="lg:col-span-2">
+                  <TradingViewChart selectedAccount={selectedAccount} />
+                </div>
+                <div>
+                  <TradingInterface
+                    currentPrice={currentPrice}
+                    balance={balance}
+                    setBalance={setBalance}
+                    setTrades={setTrades}
+                  />
+                </div>
+              </div>
+            </TabsContent>
+
+            <TabsContent value="positions">
+              <OpenPositions currentPrice={currentPrice} balance={balance} />
+            </TabsContent>
+
+            <TabsContent value="history">
+              <TradeHistory trades={trades} />
+            </TabsContent>
+
+            <TabsContent value="settings">
+              <BotSettings isRunning={isRunning} setIsRunning={setIsRunning} />
+            </TabsContent>
+          </Tabs>
+        </div>
       </div>
     </div>
   )

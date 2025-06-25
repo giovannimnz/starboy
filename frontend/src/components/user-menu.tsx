@@ -33,7 +33,6 @@ export default function UserMenu({ balance, currentPrice, onAccountChange }: Use
   const accounts = [
     { key: "binance.spot", label: t("binance.spot") },
     { key: "binance.futures", label: t("binance.futures") },
-    { key: "agregado", label: t("agregado") },
   ]
 
   const languages = [
@@ -102,42 +101,44 @@ export default function UserMenu({ balance, currentPrice, onAccountChange }: Use
       <div className="relative" ref={menuRef}>
         {/* Trigger Button */}
         <Button
-          variant="ghost"
-          className="flex items-center space-x-3 p-2 h-auto bg-gray-800 hover:bg-gray-700 border border-gray-700"
+          variant="outline"
+          className="flex items-center space-x-3 p-3 h-auto bg-background hover:bg-accent border-border shadow-soft hover:shadow-soft-md transition-all duration-200"
           onClick={() => setIsOpen(!isOpen)}
         >
-          <Avatar className="h-8 w-8">
+          <Avatar className="h-8 w-8 shadow-soft">
             <AvatarImage src="/placeholder.svg?height=32&width=32" alt={user?.name} />
-            <AvatarFallback className="bg-orange-500 text-white text-sm">{user?.name?.charAt(0) || "U"}</AvatarFallback>
+            <AvatarFallback className="bg-primary text-primary-foreground text-sm font-semibold">
+              {user?.name?.charAt(0) || "U"}
+            </AvatarFallback>
           </Avatar>
           <div className="text-right">
-            <div className="text-sm font-medium text-white">
+            <div className="text-sm font-semibold text-foreground">
               ${portfolioValue.toLocaleString(undefined, { maximumFractionDigits: 2 })}
             </div>
-            <div className="text-xs text-gray-400">{t("portfolio")}</div>
+            <div className="text-xs text-muted-foreground">{t("portfolio")}</div>
           </div>
-          <ChevronDown className={`h-4 w-4 text-gray-400 transition-transform ${isOpen ? "rotate-180" : ""}`} />
+          <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${isOpen ? "rotate-180" : ""}`} />
         </Button>
 
         {/* Dropdown Menu */}
         {isOpen && (
-          <Card className="absolute right-0 top-full mt-2 w-80 bg-gray-900 border-gray-700 shadow-xl z-50">
+          <Card className="absolute right-0 top-full mt-2 w-80 bg-popover border-border shadow-soft-xl z-50">
             <CardContent className="p-0">
               {/* Balance Section */}
-              <div className="p-4 bg-gray-800 border-b border-gray-700">
-                <div className="flex items-center justify-between mb-3">
-                  <div>
-                    <div className="text-lg font-semibold text-white">
+              <div className="p-4 bg-muted/30 border-b border-border">
+                <div className="flex items-center justify-between">
+                  <div className="flex-1">
+                    <div className="text-lg font-bold text-foreground mb-2">
                       ${portfolioValue.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                     </div>
                     <div className="relative">
                       <select
                         value={selectedAccount}
                         onChange={(e) => handleAccountChange(e.target.value)}
-                        className="text-sm text-gray-400 bg-transparent border-none outline-none cursor-pointer hover:text-gray-200 transition-colors"
+                        className="text-sm text-white bg-black border border-gray-600 rounded px-2 py-1 cursor-pointer hover:bg-gray-900 transition-colors focus:outline-none focus:ring-1 focus:ring-orange-500 focus:border-orange-500 min-w-[140px]"
                       >
                         {accounts.map((account) => (
-                          <option key={account.key} value={account.key} className="bg-gray-800 text-gray-400">
+                          <option key={account.key} value={account.key} className="bg-black text-white">
                             {account.label}
                           </option>
                         ))}
@@ -147,25 +148,12 @@ export default function UserMenu({ balance, currentPrice, onAccountChange }: Use
                   <Button
                     size="sm"
                     variant="outline"
-                    className="border-gray-600 text-gray-300 hover:bg-gray-700"
+                    className="ml-3 border-border text-muted-foreground hover:bg-accent shadow-soft"
                     onClick={handleRefreshBalance}
                     disabled={isRefreshing}
                   >
                     <RefreshCw className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`} />
                   </Button>
-                </div>
-
-                <div className="grid grid-cols-2 gap-3 text-sm">
-                  <div>
-                    <div className="text-gray-400">{t("usd.balance")}</div>
-                    <div className="text-white font-medium">
-                      ${balance.usd.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-gray-400">{t("btc.balance")}</div>
-                    <div className="text-white font-medium">{balance.btc.toFixed(8)}</div>
-                  </div>
                 </div>
               </div>
 
@@ -173,7 +161,7 @@ export default function UserMenu({ balance, currentPrice, onAccountChange }: Use
               <div className="p-2">
                 <Button
                   variant="ghost"
-                  className="w-full justify-start text-white hover:bg-gray-800 mb-1"
+                  className="w-full justify-start text-foreground hover:bg-accent mb-1"
                   onClick={() => handleMenuAction("profile")}
                 >
                   <User className="h-4 w-4 mr-3" />
@@ -183,7 +171,7 @@ export default function UserMenu({ balance, currentPrice, onAccountChange }: Use
                 <div className="relative">
                   <Button
                     variant="ghost"
-                    className={`w-full justify-start text-white hover:bg-gray-800 mb-1 ${showLanguages ? "bg-gray-800" : ""}`}
+                    className={`w-full justify-start text-foreground hover:bg-accent mb-1 ${showLanguages ? "bg-accent" : ""}`}
                     onClick={() => handleMenuAction("language")}
                   >
                     <Globe className="h-4 w-4 mr-3" />
@@ -200,12 +188,12 @@ export default function UserMenu({ balance, currentPrice, onAccountChange }: Use
                         <Button
                           key={lang.key}
                           variant="ghost"
-                          className="w-full justify-start text-sm text-gray-300 hover:bg-gray-700 py-1 h-auto"
+                          className="w-full justify-start text-sm text-muted-foreground hover:bg-accent py-1 h-auto"
                           onClick={() => handleLanguageChange(lang.key)}
                         >
                           <div className="flex items-center justify-between w-full">
                             <span>{lang.label}</span>
-                            {language === lang.key && <Check className="h-3 w-3 text-orange-500" />}
+                            {language === lang.key && <Check className="h-3 w-3 text-primary" />}
                           </div>
                         </Button>
                       ))}
@@ -215,17 +203,17 @@ export default function UserMenu({ balance, currentPrice, onAccountChange }: Use
 
                 <Button
                   variant="ghost"
-                  className="w-full justify-start text-white hover:bg-gray-800 mb-3"
+                  className="w-full justify-start text-foreground hover:bg-accent mb-3"
                   onClick={() => handleMenuAction("support")}
                 >
                   <HelpCircle className="h-4 w-4 mr-3" />
                   {t("suporte")}
                 </Button>
 
-                <div className="border-t border-gray-700 pt-2">
+                <div className="border-t border-border pt-2">
                   <Button
                     variant="ghost"
-                    className="w-full justify-start text-red-400 hover:bg-red-900/20 hover:text-red-300"
+                    className="w-full justify-start text-destructive hover:bg-destructive/10 hover:text-destructive"
                     onClick={() => handleMenuAction("logout")}
                   >
                     <LogOut className="h-4 w-4 mr-3" />

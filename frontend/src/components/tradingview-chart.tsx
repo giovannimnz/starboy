@@ -4,11 +4,72 @@ import { useEffect, useRef, useState } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Input } from "@/components/ui/input"
-import { Search } from "lucide-react"
+import { Badge } from "@/components/ui/badge"
+import { Search, Clock, TrendingUp, TrendingDown } from "lucide-react"
+import { useTheme } from "next-themes"
 
 interface TradingViewChartProps {
   selectedAccount: string
 }
+
+interface Signal {
+  id: number
+  type: "buy" | "sell"
+  pair: string
+  price: number
+  confidence: number
+  time: string
+  status: "active" | "completed" | "expired"
+}
+
+// Mock data for recent signals
+const mockSignals: Signal[] = [
+  {
+    id: 1,
+    type: "buy",
+    pair: "BTC/USDT",
+    price: 29876.54,
+    confidence: 85,
+    time: "14:32",
+    status: "active",
+  },
+  {
+    id: 2,
+    type: "sell",
+    pair: "ETH/USDT",
+    price: 1842.33,
+    confidence: 78,
+    time: "14:15",
+    status: "completed",
+  },
+  {
+    id: 3,
+    type: "buy",
+    pair: "ADA/USDT",
+    price: 0.3456,
+    confidence: 92,
+    time: "13:58",
+    status: "active",
+  },
+  {
+    id: 4,
+    type: "sell",
+    pair: "SOL/USDT",
+    price: 24.87,
+    confidence: 71,
+    time: "13:42",
+    status: "expired",
+  },
+  {
+    id: 5,
+    type: "buy",
+    pair: "DOT/USDT",
+    price: 5.234,
+    confidence: 88,
+    time: "13:28",
+    status: "completed",
+  },
+]
 
 // Mock trading pairs data
 const tradingPairs = {
@@ -57,6 +118,7 @@ export default function TradingViewChart({ selectedAccount }: TradingViewChartPr
   const [selectedSymbol, setSelectedSymbol] = useState("BTCUSDT.P")
   const [searchTerm, setSearchTerm] = useState("")
   const [isSelectOpen, setIsSelectOpen] = useState(false)
+  const { theme } = useTheme()
 
   // Get available pairs for selected account
   const getAvailablePairs = () => {
@@ -96,37 +158,54 @@ export default function TradingViewChart({ selectedAccount }: TradingViewChartPr
     const selectedPair = getAvailablePairs().find((pair) => pair.symbol === selectedSymbol) || getAvailablePairs()[0]
     const tradingViewSymbol = getTradingViewSymbol(selectedPair)
 
+    const isLightTheme = theme === "light"
+
     script.innerHTML = JSON.stringify({
       autosize: true,
       symbol: tradingViewSymbol,
       interval: "15",
       timezone: "America/Sao_Paulo",
-      theme: "dark",
+      theme: isLightTheme ? "light" : "dark",
       style: "1",
       locale: "pt_BR",
-      toolbar_bg: "#1a1a1a",
+      toolbar_bg: isLightTheme ? "#ffffff" : "#1a1a1a",
       enable_publishing: false,
-      backgroundColor: "#1a1a1a",
-      gridColor: "#333333",
+      backgroundColor: isLightTheme ? "#ffffff" : "#1a1a1a",
+      gridColor: isLightTheme ? "#e5e7eb" : "#333333",
       hide_top_toolbar: false,
       hide_legend: false,
       save_image: false,
       container_id: "tradingview_chart",
       studies: ["Volume@tv-basicstudies"],
-      overrides: {
-        "paneProperties.background": "#1a1a1a",
-        "paneProperties.backgroundType": "solid",
-        "paneProperties.gridProperties.color": "#333333",
-        "scalesProperties.textColor": "#ffffff",
-        "scalesProperties.backgroundColor": "#1a1a1a",
-        "mainSeriesProperties.candleStyle.upColor": "#00ff88",
-        "mainSeriesProperties.candleStyle.downColor": "#ff4444",
-        "mainSeriesProperties.candleStyle.borderUpColor": "#00ff88",
-        "mainSeriesProperties.candleStyle.borderDownColor": "#ff4444",
-        "mainSeriesProperties.candleStyle.wickUpColor": "#00ff88",
-        "mainSeriesProperties.candleStyle.wickDownColor": "#ff4444",
-        volumePaneSize: "medium",
-      },
+      overrides: isLightTheme
+        ? {
+            "paneProperties.background": "#ffffff",
+            "paneProperties.backgroundType": "solid",
+            "paneProperties.gridProperties.color": "#e5e7eb",
+            "scalesProperties.textColor": "#374151",
+            "scalesProperties.backgroundColor": "#ffffff",
+            "mainSeriesProperties.candleStyle.upColor": "#10b981",
+            "mainSeriesProperties.candleStyle.downColor": "#ef4444",
+            "mainSeriesProperties.candleStyle.borderUpColor": "#10b981",
+            "mainSeriesProperties.candleStyle.borderDownColor": "#ef4444",
+            "mainSeriesProperties.candleStyle.wickUpColor": "#10b981",
+            "mainSeriesProperties.candleStyle.wickDownColor": "#ef4444",
+            volumePaneSize: "medium",
+          }
+        : {
+            "paneProperties.background": "#1a1a1a",
+            "paneProperties.backgroundType": "solid",
+            "paneProperties.gridProperties.color": "#333333",
+            "scalesProperties.textColor": "#ffffff",
+            "scalesProperties.backgroundColor": "#1a1a1a",
+            "mainSeriesProperties.candleStyle.upColor": "#00ff88",
+            "mainSeriesProperties.candleStyle.downColor": "#ff4444",
+            "mainSeriesProperties.candleStyle.borderUpColor": "#00ff88",
+            "mainSeriesProperties.candleStyle.borderDownColor": "#ff4444",
+            "mainSeriesProperties.candleStyle.wickUpColor": "#00ff88",
+            "mainSeriesProperties.candleStyle.wickDownColor": "#ff4444",
+            volumePaneSize: "medium",
+          },
     })
 
     chartContainerRef.current.appendChild(script)
@@ -136,7 +215,7 @@ export default function TradingViewChart({ selectedAccount }: TradingViewChartPr
         chartContainerRef.current.innerHTML = ""
       }
     }
-  }, [selectedSymbol, selectedAccount])
+  }, [selectedSymbol, selectedAccount, theme])
 
   // Update selected symbol when account changes
   useEffect(() => {
@@ -163,48 +242,74 @@ export default function TradingViewChart({ selectedAccount }: TradingViewChartPr
     return getDisplayName(currentPair)
   }
 
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case "active":
+        return "bg-green-500/20 text-green-400 border-green-500/30"
+      case "completed":
+        return "bg-blue-500/20 text-blue-400 border-blue-500/30"
+      case "expired":
+        return "bg-gray-500/20 text-gray-400 border-gray-500/30"
+      default:
+        return "bg-gray-500/20 text-gray-400 border-gray-500/30"
+    }
+  }
+
+  const getStatusText = (status: string) => {
+    switch (status) {
+      case "active":
+        return "Ativo"
+      case "completed":
+        return "OK"
+      case "expired":
+        return "Exp"
+      default:
+        return status
+    }
+  }
+
   return (
-    <Card className="h-full">
+    <Card className="h-full shadow-soft-md border-border/50">
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-white">Gráfico de Preços</CardTitle>
+          <CardTitle className="text-foreground font-semibold">Gráfico de Preços</CardTitle>
           <div className="relative w-64">
             <Select open={isSelectOpen} onOpenChange={setIsSelectOpen}>
               <SelectTrigger
-                className="bg-gray-800 border-gray-600 text-white focus:border-orange-500"
+                className="bg-background border-border text-foreground focus:border-primary focus:ring-1 focus:ring-primary/20 shadow-soft"
                 onClick={() => setIsSelectOpen(!isSelectOpen)}
               >
                 <SelectValue placeholder="Selecione o par">
                   <span className="truncate">{getCurrentPairDisplay()}</span>
                 </SelectValue>
               </SelectTrigger>
-              <SelectContent className="bg-gray-800 border-gray-600 max-h-80">
-                <div className="p-2 border-b border-gray-600">
+              <SelectContent className="bg-popover border-border max-h-80 shadow-soft-lg">
+                <div className="p-2 border-b border-border">
                   <div className="relative">
-                    <Search className="absolute left-2 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
+                    <Search className="absolute left-2 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                     <Input
                       placeholder="Pesquisar par..."
                       value={searchTerm}
                       onChange={(e) => setSearchTerm(e.target.value)}
-                      className="pl-8 bg-gray-700 border-gray-600 text-white focus:border-orange-500"
+                      className="pl-8 bg-background border-border text-foreground focus:border-primary focus:ring-1 focus:ring-primary/20"
                       onClick={(e) => e.stopPropagation()}
                     />
                   </div>
                 </div>
                 <div className="max-h-60 overflow-y-auto">
                   {filteredPairs.length === 0 ? (
-                    <div className="p-3 text-gray-400 text-center">Nenhum par encontrado</div>
+                    <div className="p-3 text-muted-foreground text-center">Nenhum par encontrado</div>
                   ) : (
                     filteredPairs.map((pair) => (
                       <SelectItem
                         key={pair.symbol}
                         value={pair.symbol}
-                        className="text-white hover:bg-gray-700 focus:bg-gray-700 cursor-pointer"
+                        className="text-foreground hover:bg-accent focus:bg-accent cursor-pointer"
                         onClick={() => handleSymbolSelect(pair.symbol)}
                       >
                         <div className="flex flex-col">
                           <span className="font-medium">{pair.displaySymbol || pair.symbol.replace(".P", "")}</span>
-                          <span className="text-xs text-gray-400">{pair.name}</span>
+                          <span className="text-xs text-muted-foreground">{pair.name}</span>
                         </div>
                       </SelectItem>
                     ))
@@ -217,7 +322,58 @@ export default function TradingViewChart({ selectedAccount }: TradingViewChartPr
       </CardHeader>
       <CardContent className="p-0">
         <div className="h-[400px] w-full">
-          <div id="tradingview_chart" ref={chartContainerRef} className="h-full w-full bg-gray-900 rounded-b-lg" />
+          <div id="tradingview_chart" ref={chartContainerRef} className="h-full w-full bg-background rounded-b-lg" />
+        </div>
+
+        {/* Recent Signals Section */}
+        <div className="p-4 border-t border-border bg-card/50">
+          <div className="flex items-center mb-3">
+            <Clock className="h-4 w-4 mr-2 text-primary" />
+            <h3 className="text-sm font-semibold text-foreground">Últimos 5 Sinais</h3>
+          </div>
+          <div className="grid grid-cols-5 gap-2">
+            {mockSignals.map((signal) => (
+              <div
+                key={signal.id}
+                className="bg-gray-800/50 border border-gray-700 rounded-lg p-2 hover:bg-gray-800/70 transition-colors"
+              >
+                <div className="flex flex-col items-center space-y-1">
+                  {/* Icon and Type */}
+                  <div className={`p-1.5 rounded-full ${signal.type === "buy" ? "bg-green-500/20" : "bg-red-500/20"}`}>
+                    {signal.type === "buy" ? (
+                      <TrendingUp className="h-3 w-3 text-green-400" />
+                    ) : (
+                      <TrendingDown className="h-3 w-3 text-red-400" />
+                    )}
+                  </div>
+
+                  {/* Pair */}
+                  <div className="text-xs font-semibold text-foreground text-center">
+                    {signal.pair.replace("/USDT", "")}
+                  </div>
+
+                  {/* Price */}
+                  <div className="text-xs text-muted-foreground text-center">
+                    $
+                    {signal.price < 1
+                      ? signal.price.toFixed(4)
+                      : signal.price.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                  </div>
+
+                  {/* Time and Status */}
+                  <div className="flex flex-col items-center space-y-1">
+                    <div className="text-xs text-muted-foreground">{signal.time}</div>
+                    <Badge variant="outline" className={`text-xs px-1 py-0 h-4 ${getStatusColor(signal.status)}`}>
+                      {getStatusText(signal.status)}
+                    </Badge>
+                  </div>
+
+                  {/* Confidence */}
+                  <div className="text-xs text-primary font-medium">{signal.confidence}%</div>
+                </div>
+              </div>
+            ))}
+          </div>
         </div>
       </CardContent>
     </Card>

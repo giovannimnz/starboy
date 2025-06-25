@@ -5,7 +5,6 @@ import type React from "react"
 import { useState } from "react"
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
-import { Switch } from "@/components/ui/switch"
 import { Label } from "@/components/ui/label"
 import { Input } from "@/components/ui/input"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -19,6 +18,7 @@ export default function BotSettings({ isRunning, setIsRunning }: BotSettingsProp
   const [strategy, setStrategy] = useState("simple")
   const [maxRisk, setMaxRisk] = useState("2")
   const [maxPositions, setMaxPositions] = useState("3")
+  const [maxCapitalAllocation, setMaxCapitalAllocation] = useState("50")
 
   const handleToggleBot = () => {
     setIsRunning((prev) => !prev)
@@ -96,6 +96,27 @@ export default function BotSettings({ isRunning, setIsRunning }: BotSettingsProp
             </Select>
             <p className="text-xs text-gray-400">Maximum number of open positions at the same time</p>
           </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="max-capital-allocation">Alocação Máxima do Capital (%)</Label>
+            <Input
+              id="max-capital-allocation"
+              type="number"
+              min="1"
+              max="100"
+              step="1"
+              placeholder="Digite o percentual (1-100%)"
+              value={maxCapitalAllocation}
+              onChange={(e) => {
+                const value = e.target.value
+                if (value === "" || (Number(value) >= 1 && Number(value) <= 100)) {
+                  setMaxCapitalAllocation(value)
+                }
+              }}
+              className="focus:ring-orange-500 focus:border-orange-500"
+            />
+            <p className="text-xs text-gray-400">Percentual máximo do capital total que pode ser usado pelo bot</p>
+          </div>
         </CardContent>
         <CardFooter>
           <Button className="w-full bg-orange-500 hover:bg-orange-600" onClick={handleToggleBot}>
@@ -111,10 +132,16 @@ export default function BotSettings({ isRunning, setIsRunning }: BotSettingsProp
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex items-center justify-between">
-            <Label htmlFor="bot-status">Bot Status</Label>
+            <Label>Bot Status</Label>
             <div className="flex items-center space-x-2">
-              <Switch id="bot-status" checked={isRunning} onCheckedChange={handleToggleBot} />
-              <span>{isRunning ? "Running" : "Stopped"}</span>
+              <div
+                className={`h-3 w-3 rounded-full ${
+                  isRunning
+                    ? "bg-green-500 shadow-[0_0_10px_rgba(34,197,94,0.5)]"
+                    : "bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.5)]"
+                }`}
+              ></div>
+              <span className="font-medium text-white">{isRunning ? "Running" : "Stopped"}</span>
             </div>
           </div>
 
@@ -131,6 +158,10 @@ export default function BotSettings({ isRunning, setIsRunning }: BotSettingsProp
               <div className="flex justify-between items-center">
                 <span className="text-sm text-gray-400">Max Positions:</span>
                 <span className="font-medium text-white">{maxPositions}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-sm text-gray-400">Alocação Máxima:</span>
+                <span className="font-medium text-white">{maxCapitalAllocation}%</span>
               </div>
             </div>
           </div>
@@ -153,6 +184,10 @@ export default function BotSettings({ isRunning, setIsRunning }: BotSettingsProp
               <div className="flex justify-between">
                 <span className="text-xs text-gray-500">P&L:</span>
                 <span className="text-xs text-white">$0.00</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-xs text-gray-500">Capital Alocado:</span>
+                <span className="text-xs text-white">0% / {maxCapitalAllocation}%</span>
               </div>
             </div>
           </div>
