@@ -139,6 +139,20 @@ async function cancelSignal(db, signalId, status, reason, accountId) {
       console.warn(`[SIGNAL] ⚠️ Erro ao enviar notificação Telegram:`, telegramError.message);
     }
     
+    if (signalData.length > 0) {
+      const symbol = signalData[0].symbol;
+      // Verificar se ainda há sinais aguardando para esse símbolo
+      const [pending] = await db.query(`
+        SELECT COUNT(*) as count FROM webhook_signals
+        WHERE symbol = ? AND conta_id = ? AND status = 'AGUARDANDO_ACIONAMENTO'
+      `, [symbol, accountId]);
+      if (pending[0].count === 0) {
+        // Fechar WebSocket de preço
+        const websockets = require('../api/websocket');
+        websockets.stopPriceMonitoring(symbol, accountId);
+        console.log(`[SIGNAL] 🔌 WebSocket de preço fechado para ${symbol} (conta ${accountId}) após cancelamento do último sinal`);
+      }
+    }
   } catch (error) {
     console.error(`[SIGNAL] Erro ao cancelar sinal ${signalId}:`, error.message);
   }

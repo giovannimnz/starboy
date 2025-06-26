@@ -4,7 +4,7 @@
 // Cada conta roda em seu próprio processo Node.js independente
 // ===============================================
 
-const { getDatabaseInstance } = require('../core/database/conexao');
+const { getDatabaseInstance } = require('../../../core/database/conexao');
 const { spawn } = require('child_process');
 const path = require('path');
 
@@ -86,8 +86,8 @@ async function startInstance(accountId) {
     const accountName = accounts[0].nome;
     console.log(`[INSTANCE-MANAGER] 🚀 Iniciando processo para conta ${accountId} (${accountName})...`);
     
-    // Criar processo separado para monitoramento
-    const monitoringScript = path.join(__dirname, '..', 'exchanges', 'binance', 'services', 'monitoramento.js');
+    // Criar processo separado para orchMonitor
+    const monitoringScript = path.join(__dirname, '..', 'monitoring', 'orchMonitor.js');
     
     console.log(`[INSTANCE-MANAGER] 📁 Script: ${monitoringScript}`);
     

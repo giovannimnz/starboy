@@ -771,51 +771,66 @@ async function moveClosedPositionsAndOrders(db, positionId) {
     const [orderResult] = await connection.query("SELECT * FROM ordens WHERE id_posicao = ?", [positionId]);
     console.log(`Encontradas ${orderResult.length} ordens para posição ${positionId}.`);
 
-    // 3. Construir esquemas dinâmicos para mover ordens
-    const [renew_sl_firs] = await connection.query(`SHOW COLUMNS FROM ordens LIKE 'renew_sl_firs'`);
-    const [renew_sl_seco] = await connection.query(`SHOW COLUMNS FROM ordens LIKE 'renew_sl_seco'`);
-    const [orign_sig] = await connection.query(`SHOW COLUMNS FROM ordens LIKE 'orign_sig'`);
-
-    const [dest_renew_sl_firs] = await connection.query(`SHOW COLUMNS FROM ordens_fechadas LIKE 'renew_sl_firs'`);
-    const [dest_renew_sl_seco] = await connection.query(`SHOW COLUMNS FROM ordens_fechadas LIKE 'renew_sl_seco'`);
-    const [dest_orign_sig] = await connection.query(`SHOW COLUMNS FROM ordens_fechadas LIKE 'orign_sig'`);
-
-    let sourceCols = "tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao, " +
-        "id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only, close_position, " +
-        "last_update";
-
-    let destCols = sourceCols;
-
-    if (renew_sl_firs.length > 0 && dest_renew_sl_firs.length > 0) {
-      sourceCols += ", renew_sl_firs";
-      destCols += ", renew_sl_firs";
-    }
-
-    if (renew_sl_seco.length > 0 && dest_renew_sl_seco.length > 0) {
-      sourceCols += ", renew_sl_seco";
-      destCols += ", renew_sl_seco";
-    }
-
-    if (orign_sig.length > 0 && dest_orign_sig.length > 0) {
-      sourceCols += ", orign_sig";
-      destCols += ", orign_sig";
-    }
-
-    // 4. Inserir ordens na tabela de histórico
+    // 3. ✅ INSERIR ORDENS NO HISTÓRICO COM TODOS OS CAMPOS
     if (orderResult.length > 0) {
-      await connection.query(
-          `INSERT INTO ordens_fechadas (${destCols})
-         SELECT ${sourceCols} FROM ordens WHERE id_posicao = ?`,
-          [positionId]
-      );
+      for (const order of orderResult) {
+        await connection.query(`
+          INSERT INTO ordens_fechadas (
+            id_original, id_original_ordens, tipo_ordem, preco, quantidade, id_posicao, status,
+            data_hora_criacao, id_externo, side, simbolo, tipo_ordem_bot,
+            target, reduce_only, close_position, last_update, renew_sl_firs, renew_sl_seco,
+            orign_sig, dados_originais_ws, quantidade_executada, preco_executado, observacao,
+            conta_id, commission, commission_asset, trade_id, client_order_id, time_in_force,
+            stop_price, execution_type, last_filled_quantity, last_filled_price, order_trade_time,
+            realized_profit, position_side
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `, [
+          order.id, // id_original
+          order.id, // id_original_ordens
+          order.tipo_ordem,
+          order.preco,
+          order.quantidade,
+          order.id_posicao,
+          order.status,
+          formatDateForMySQL(order.data_hora_criacao || new Date()),
+          order.id_externo,
+          order.side,
+          order.simbolo,
+          order.tipo_ordem_bot,
+          order.target,
+          order.reduce_only,
+          order.close_position,
+          formatDateForMySQL(order.last_update || new Date()),
+          order.renew_sl_firs,
+          order.renew_sl_seco,
+          order.orign_sig,
+          order.dados_originais_ws,
+          order.quantidade_executada || 0,
+          order.preco_executado,
+          order.observacao || 'Movida automaticamente para histórico',
+          order.conta_id,
+          order.commission || 0,
+          order.commission_asset,
+          order.trade_id,
+          order.client_order_id,
+          order.time_in_force,
+          order.stop_price,
+          order.execution_type,
+          order.last_filled_quantity,
+          order.last_filled_price,
+          order.order_trade_time,
+          order.realized_profit,
+          order.position_side
+        ]);
+      }
       console.log(`Ordens com id_posicao ${positionId} movidas para ordens_fechadas.`);
     }
 
-    // 5. IMPORTANTE: Excluir ordens ANTES de excluir a posição
+    // 4. IMPORTANTE: Excluir ordens ANTES de excluir a posição
     await connection.query("DELETE FROM ordens WHERE id_posicao = ?", [positionId]);
     console.log(`Ordens com id_posicao ${positionId} excluídas de ordens.`);
 
-    // 6. Verificar se ainda existem ordens referenciando esta posição (garantia extra)
+    // 5. Verificar se ainda existem ordens referenciando esta posição (garantia extra)
     const [remainingOrders] = await connection.query(
         "SELECT COUNT(*) AS count FROM ordens WHERE id_posicao = ?",
         [positionId]
@@ -825,35 +840,49 @@ async function moveClosedPositionsAndOrders(db, positionId) {
       throw new Error(`Ainda existem ${remainingOrders[0].count} ordens vinculadas à posição ${positionId}.`);
     }
 
-    // 7. Verificar se posição tem coluna orign_sig
-    const [posColumns] = await connection.query(`SHOW COLUMNS FROM posicoes LIKE 'orign_sig'`);
-    const hasOrignSig = posColumns.length > 0;
-
-    // 8. Copiar posição para tabela histórica com consulta dinâmica
-    if (hasOrignSig) {
-      await connection.query(
-          `INSERT INTO posicoes_fechadas 
-         (simbolo, quantidade, preco_medio, status, data_hora_abertura, data_hora_fechamento, 
-          side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente, orign_sig)
-         SELECT simbolo, quantidade, preco_medio, status, data_hora_abertura, ?, 
-          side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente, orign_sig
-         FROM posicoes WHERE id = ?`,
-          [nowFormatted, positionId]
-      );
-    } else {
-      await connection.query(
-          `INSERT INTO posicoes_fechadas 
-         (simbolo, quantidade, preco_medio, status, data_hora_abertura, data_hora_fechamento, 
-          side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente)
-         SELECT simbolo, quantidade, preco_medio, status, data_hora_abertura, ?, 
-          side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente
-         FROM posicoes WHERE id = ?`,
-          [nowFormatted, positionId]
-      );
-    }
+    // 6. ✅ INSERIR POSIÇÃO NO HISTÓRICO COM TODOS OS CAMPOS
+    const position = positionResult[0];
+    await connection.query(`
+      INSERT INTO posicoes_fechadas (
+        id_original, simbolo, quantidade, quantidade_aberta, preco_medio, status,
+        data_hora_abertura, data_hora_fechamento, motivo_fechamento,
+        side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente,
+        orign_sig, conta_id, trailing_stop_level, pnl_corrente, observacoes,
+        breakeven_price, accumulated_realized, unrealized_pnl, margin_type,
+        isolated_wallet, position_side, event_reason, webhook_data_raw
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      position.id, // id_original
+      position.simbolo,
+      position.quantidade,
+      position.quantidade_aberta,
+      position.preco_medio,
+      position.status,
+      formatDateForMySQL(position.data_hora_abertura),
+      nowFormatted, // data_hora_fechamento
+      'Movida automaticamente para histórico',
+      position.side,
+      position.leverage,
+      formatDateForMySQL(position.data_hora_ultima_atualizacao || new Date()),
+      position.preco_entrada,
+      position.preco_corrente,
+      position.orign_sig,
+      position.conta_id,
+      position.trailing_stop_level,
+      position.pnl_corrente,
+      position.observacoes,
+      position.breakeven_price,
+      position.accumulated_realized,
+      position.unrealized_pnl,
+      position.margin_type,
+      position.isolated_wallet,
+      position.position_side,
+      position.event_reason,
+      position.webhook_data_raw
+    ]);
     console.log(`Posição com id ${positionId} movida para posicoes_fechadas.`);
 
-    // 9. Agora é seguro excluir a posição
+    // 7. Agora é seguro excluir a posição
     await connection.query("DELETE FROM posicoes WHERE id = ?", [positionId]);
     console.log(`Posição com id ${positionId} excluída de posicoes.`);
 
@@ -962,6 +991,8 @@ async function insertWebhookSignalWithDetails(db, testSymbol, positionId, orderI
  */
 function formatDateForMySQL(date) {
   if (!date) return null;
+
+  const d = new Date(date);
 
   // Converter para objeto Date se for string
   let dateObj = date instanceof Date ? date : new Date(date);

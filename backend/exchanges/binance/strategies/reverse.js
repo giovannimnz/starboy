@@ -307,7 +307,7 @@ async function executeReverse(signal, currentPrice, accountId) {
 
     // ✅ CONFIGURAR WEBSOCKET DE PROFUNDIDADE - VERSÃO APENAS WEBSOCKET
     console.log(`[LIMIT_ENTRY] Iniciando WebSocket de profundidade para ${signal.symbol}`);
-    depthWs = websockets.setupBookDepthWebsocket(signal.symbol, (depthData, receivedAccountId) => {
+    depthWs = websockets.bookTicker(signal.symbol, (depthData, receivedAccountId) => {
       // CORREÇÃO: Validar accountId se fornecido
       if (receivedAccountId && receivedAccountId !== accountId) {
         console.warn(`[LIMIT_ENTRY_DEPTH_WS] Dados recebidos para conta diferente: esperado ${accountId}, recebido ${receivedAccountId}`);
@@ -509,7 +509,7 @@ async function executeReverse(signal, currentPrice, accountId) {
       // Garantir que o preço esteja no tick correto
       currentLocalMakerPrice = await roundPriceToTickSize(signal.symbol, currentLocalMakerPrice, numericAccountId);
 
-      console.log(`[LIMIT_ENTRY] Preço MAKER ${binanceSide}: ${currentLocalMakerPrice.toFixed(pricePrecision)} | Book: Bid=${bestBid.toFixed(pricePrecision)}, Ask=${bestAsk.toFixed(pricePrecision)}, Spread=${(bestAsk-bestBid).toFixed(pricePrecision)}`);
+      console.log(`[LIMIT_ENTRY] Preço MAKER ${binanceSide}: ${currentLocalMakerPrice.toFixed(pricePrecision)} | Book: Bid=${bestBid.toFixed(pricePrecision)}, Ask=${currentBestAsk.toFixed(pricePrecision)}, Spread=${(bestAsk-bestBid).toFixed(pricePrecision)}`);
 
       let orderPlacedOrEditedThisIteration = false;
 

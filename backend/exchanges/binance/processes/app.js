@@ -1,6 +1,6 @@
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '../../config/.env') });
-const { initializeDatabase, getDatabaseInstance, initPool } = require('../core/database/conexao');
+const { initializeDatabase, getDatabaseInstance, initPool } = require('../../../core/database/conexao');
 const readline = require('readline');
 
 const {

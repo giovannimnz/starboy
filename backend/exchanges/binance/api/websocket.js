@@ -557,7 +557,7 @@ async function handlePriceUpdate(symbol, tickerData, accountId) {
     if (tickerData.e === 'ticker' || tickerData.e === '24hrTicker') {
       // Ticker de 24h - usar preço de fechamento atual
       currentPrice = parseFloat(tickerData.c);
-      console.log(`[WEBSOCKET] 💰 Usando preço de ticker 24h: ${currentPrice}`);
+      //console.log(`[WEBSOCKET] 💰 Usando preço de ticker 24h: ${currentPrice}`);
     } else {
       // BookTicker ou outros - usar média de bid/ask
       const bestBid = parseFloat(tickerData.b);
@@ -565,7 +565,7 @@ async function handlePriceUpdate(symbol, tickerData, accountId) {
       
       if (!isNaN(bestBid) && !isNaN(bestAsk) && bestBid > 0 && bestAsk > 0) {
         currentPrice = (bestBid + bestAsk) / 2;
-        console.log(`[WEBSOCKET] 💰 Usando média bid/ask: ${currentPrice} (bid: ${bestBid}, ask: ${bestAsk})`);
+        //console.log(`[WEBSOCKET] 💰 Usando média bid/ask: ${currentPrice} (bid: ${bestBid}, ask: ${bestAsk})`);
       } else {
         console.warn(`[WEBSOCKET] ⚠️ Preços inválidos para ${symbol}: bid=${bestBid}, ask=${bestAsk}`);
         return;
@@ -582,9 +582,9 @@ async function handlePriceUpdate(symbol, tickerData, accountId) {
 
     // ✅ CHAMAR CALLBACK onPriceUpdate
     if (accountState.monitoringCallbacks && accountState.monitoringCallbacks.onPriceUpdate) {
-      console.log(`[WEBSOCKET] 🔄 Chamando onPriceUpdate para ${symbol}...`);
+      //console.log(`[WEBSOCKET] 🔄 Chamando onPriceUpdate para ${symbol}...`);
       await accountState.monitoringCallbacks.onPriceUpdate(symbol, currentPrice, db, accountId);
-      console.log(`[WEBSOCKET] ✅ onPriceUpdate executado para ${symbol}`);
+      //console.log(`[WEBSOCKET] ✅ onPriceUpdate executado para ${symbol}`);
     } else {
       console.warn(`[WEBSOCKET] ⚠️ Callback onPriceUpdate não encontrado para conta ${accountId}`);
       console.warn(`[WEBSOCKET] Estado dos callbacks:`, {

@@ -219,7 +219,7 @@ async function cancelOrphanOrders(accountId) {
 }
 
 /**
- * ✅ FUNÇÃO MELHORADA: Mover ordens para histórico (CANCELED + FILLED órfãs)
+ * ✅ FUNÇÃO CORRIGIDA: Mover ordens para histórico COM TODOS OS CAMPOS
  */
 async function moveOrdersToHistory(accountId) {
   try {
@@ -254,451 +254,60 @@ async function moveOrdersToHistory(accountId) {
     await connection.beginTransaction();
     
     try {
-      // ✅ VERIFICAR SE TABELA DESTINO TEM COLUNAS NECESSÁRIAS
-      const [destColumns] = await connection.query(`SHOW COLUMNS FROM ordens_fechadas`);
-      const destColumnNames = destColumns.map(col => col.Field);
-      
       let movedCount = 0;
       
       for (const order of ordersToMove) {
-        // ✅ PREPARAR DADOS PARA INSERÇÃO
-        const insertData = {
-          tipo_ordem: order.tipo_ordem,
-          preco: order.preco,
-          quantidade: order.quantidade,
-          id_posicao: order.id_posicao,
-          status: order.status,
-          data_hora_criacao: order.data_hora_criacao ? formatDateForMySQL(new Date(order.data_hora_criacao)) : null,
-          id_externo: order.id_externo,
-          side: order.side,
-          simbolo: order.simbolo,
-          tipo_ordem_bot: order.tipo_ordem_bot,
-          target: order.target,
-          reduce_only: order.reduce_only,
-          close_position: order.close_position,
-          last_update: order.last_update ? formatDateForMySQL(new Date(order.last_update)) : formatDateForMySQL(new Date()),
-          conta_id: order.conta_id,
-          preco_executado: order.preco_executado || 0,
-          quantidade_executada: order.quantidade_executada || 0,
-          observacao: order.observacao || 
-            (order.status === 'CANCELED' ? 'Movida via cleanup - órfã' : 'Movida automaticamente - posição fechada'),
-          orign_sig: order.orign_sig,
-          dados_originais_ws: order.dados_originais_ws ? 
-            (typeof order.dados_originais_ws === 'string' ? order.dados_originais_ws : JSON.stringify(order.dados_originais_ws)) : null
-        };
-        
-        // ✅ SANITIZAR DADOS COMPLETOS
-        const sanitizedData = sanitizeObjectForMySQL(insertData);
-        
-        // ✅ FILTRAR APENAS CAMPOS EXISTENTES
-        const validData = {};
-        Object.keys(sanitizedData).forEach(key => {
-          if (destColumnNames.includes(key) && sanitizedData[key] !== undefined) {
-            validData[key] = sanitizedData[key];
-          }
-        });
-
-        const columns = Object.keys(validData);
-        const values = Object.values(validData);
-        const placeholders = columns.map(() => '?').join(', ');
-        
-        await connection.query(
-          `INSERT INTO ordens_fechadas (${columns.join(', ')}) VALUES (${placeholders})`,
-          values
-        );
-        
-        await connection.query(
-          'DELETE FROM ordens WHERE id_externo = ? AND conta_id = ?',
-          [order.id_externo, accountId]
-        );
-        
-        movedCount++;
-      }
-      
-      await connection.commit();
-      console.log(`[CLEANUP] ✅ ${movedCount} ordens movidas para histórico com sucesso`);
-      
-      return movedCount;
-      
-    } catch (moveError) {
-      await connection.rollback();
-      console.error(`[CLEANUP] ❌ Erro ao mover ordens para histórico:`, moveError.message);
-      throw moveError;
-    } finally {
-      connection.release();
-    }
-    
-  } catch (error) {
-    console.error(`[CLEANUP] ❌ Erro na função moveOrdersToHistory:`, error.message);
-    return 0;
-  }
-}
-
-/**
- * ✅ FUNÇÃO SUPER ROBUSTA: Sanitizar valores para MySQL
- */
-function sanitizeValueForMySQL(value) {
-  // 1. Casos null/undefined
-  if (value === null || value === undefined) {
-    return null;
-  }
-  
-  // 2. Verificar se tem método toString válido
-  if (value && typeof value.toString !== 'function') {
-    console.warn(`[CLEANUP] ⚠️ Valor sem toString válido, convertendo para null:`, typeof value);
-    return null;
-  }
-  
-  // 3. Date objects
-  if (value instanceof Date) {
-    if (isNaN(value.getTime())) {
-      console.warn(`[CLEANUP] ⚠️ Data inválida detectada, convertendo para null`);
-      return null;
-    }
-    return formatDateForMySQL(value);
-  }
-  
-  // 4. Objetos (mas não Date)
-  if (typeof value === 'object' && value !== null) {
-    try {
-      // Tentar JSON.stringify
-      const jsonString = JSON.stringify(value);
-      if (jsonString === '{}' || jsonString === '[]') {
-        return null; // Objetos/arrays vazios
-      }
-      return jsonString;
-    } catch (jsonError) {
-      console.warn(`[CLEANUP] ⚠️ Erro ao serializar objeto:`, jsonError.message);
-      return null;
-    }
-  }
-  
-  // 5. Tipos problemáticos
-  if (typeof value === 'function' || typeof value === 'symbol') {
-    console.warn(`[CLEANUP] ⚠️ Tipo problemático detectado (${typeof value}), convertendo para null`);
-    return null;
-  }
-  
-  // 6. BigInt
-  if (typeof value === 'bigint') {
-    try {
-      return value.toString();
-    } catch (bigintError) {
-      console.warn(`[CLEANUP] ⚠️ Erro ao converter BigInt:`, bigintError.message);
-      return null;
-    }
-  }
-  
-  // 7. Verificação final para strings muito grandes
-  if (typeof value === 'string' && value.length > 65535) {
-    console.warn(`[CLEANUP] ⚠️ String muito grande (${value.length} chars), truncando...`);
-    return value.substring(0, 65535);
-  }
-  
-  // 8. Para números, verificar se são válidos
-  if (typeof value === 'number') {
-    if (isNaN(value) || !isFinite(value)) {
-      console.warn(`[CLEANUP] ⚠️ Número inválido detectado (${value}), convertendo para null`);
-      return null;
-    }
-  }
-  
-  // 9. Teste final de toString
-  try {
-    const stringValue = String(value);
-    if (stringValue === '[object Object]') {
-      console.warn(`[CLEANUP] ⚠️ Objeto sem serialização adequada detectado, convertendo para null`);
-      return null;
-    }
-    return value;
-  } catch (toStringError) {
-    console.warn(`[CLEANUP] ⚠️ Erro final ao converter para string:`, toStringError.message);
-    return null;
-  }
-}
-
-/**
- * ✅ FUNÇÃO MELHORADA: Sanitizar objeto completo para inserção no MySQL
- * @param {Object} obj - Objeto a ser sanitizado
- * @returns {Object} - Objeto sanitizado
- */
-function sanitizeObjectForMySQL(obj) {
-  if (!obj || typeof obj !== 'object') {
-    return obj;
-  }
-  
-  const sanitizedObj = {};
-  
-  for (const [key, value] of Object.entries(obj)) {
-    try {
-      sanitizedObj[key] = sanitizeValueForMySQL(value);
-    } catch (sanitizeError) {
-      console.error(`[CLEANUP] ❌ Erro ao sanitizar campo '${key}' (valor: ${typeof value}):`, sanitizeError.message);
-      sanitizedObj[key] = null; // Valor seguro em caso de erro
-    }
-  }
-  
-  return sanitizedObj;
-}
-
-/**
- * ✅ FUNÇÃO CORRIGIDA: Mover posição para histórico com debug completo
- */
-async function movePositionToHistory(db, positionId, status = 'CLOSED', reason = 'Movida automaticamente', accountId) {
-  let connection;
-  
-  try {
-    console.log(`[MOVE_POSITION] 📚 Iniciando processo para posição ${positionId} (conta ${accountId})...`);
-    
-    // Debugging intensivo
-    console.log(`[MOVE_POSITION] 🔍 PARÂMETROS RECEBIDOS:`);
-    console.log(`  - positionId: ${positionId} (${typeof positionId})`);
-    console.log(`  - status: ${status} (${typeof status})`);
-    console.log(`  - reason: ${reason} (${typeof reason})`);
-    console.log(`  - accountId: ${accountId} (${typeof accountId})`);
-    
-    connection = await db.getConnection();
-    await connection.beginTransaction();
-
-    // 1. Primeiro obter apenas o ID e símbolo (consulta mínima)
-    const [basicPositionResult] = await connection.query(
-      'SELECT id, simbolo FROM posicoes WHERE id = ? AND conta_id = ?',
-      [positionId, accountId]
-    );
-    
-    if (basicPositionResult.length === 0) {
-      console.log(`[MOVE_POSITION] ⚠️ Posição ${positionId} não encontrada para conta ${accountId}`);
-      await connection.rollback();
-      return false;
-    }
-    
-    // Usar apenas o símbolo, que é seguro
-    const symbol = basicPositionResult[0].simbolo || 'UNKNOWN';
-    console.log(`[MOVE_POSITION] 📋 Processando posição ${symbol} (ID: ${positionId})`);
-    
-    // 2. Obter apenas IDs das ordens relacionadas (sem dados complexos)
-    const [orderIdsResult] = await connection.query(
-      'SELECT id FROM ordens WHERE id_posicao = ? AND conta_id = ?',
-      [positionId, accountId]
-    );
-    
-    // 3. Processar cada ordem INDIVIDUALMENTE com try/catch separado
-    if (orderIdsResult.length > 0) {
-      console.log(`[MOVE_POSITION] 📋 Processando ${orderIdsResult.length} ordens relacionadas...`);
-      
-      for (const orderIdRow of orderIdsResult) {
-        try {
-          const orderId = orderIdRow.id;
-          
-          // 3.1 Primeiro copiamos apenas campos PRIMITIVOS para histórico
-          await connection.query(`
-            INSERT INTO ordens_fechadas 
-            (tipo_ordem, preco, quantidade, id_posicao, status, id_externo, 
-             side, simbolo, tipo_ordem_bot, last_update, conta_id, observacao)
-            SELECT 
-              IFNULL(tipo_ordem, 'UNKNOWN') as tipo_ordem, 
-              IFNULL(preco, 0) as preco, 
-              IFNULL(quantidade, 0) as quantidade,
-              id_posicao,
-              'CANCELED' as status,
-              IFNULL(id_externo, '0') as id_externo,
-              IFNULL(side, 'UNKNOWN') as side,
-              IFNULL(simbolo, ?) as simbolo,
-              IFNULL(tipo_ordem_bot, 'UNKNOWN') as tipo_ordem_bot,
-              NOW() as last_update,
-              ? as conta_id,
-              'Movida durante fechamento da posição (Safe Mode)' as observacao
-            FROM ordens WHERE id = ? AND conta_id = ?
-          `, [symbol, accountId, orderId, accountId]);
-          
-          console.log(`[MOVE_POSITION] ✅ Ordem ${orderId} movida para histórico (modo seguro)`);
-        } catch (orderError) {
-          console.error(`[MOVE_POSITION] ⚠️ Erro ao processar ordem ${orderIdRow.id}:`, orderError.message);
-          // Continuar processando outras ordens
-        }
-      }
-      
-      // 3.2 Deletar todas as ordens
-      await connection.query(
-        'DELETE FROM ordens WHERE id_posicao = ? AND conta_id = ?', 
-        [positionId, accountId]
-      );
-      console.log(`[MOVE_POSITION] ✅ Ordens removidas da tabela ativa`);
-    }
-    
-    // 4. USAR MÉTODO ULTRA-SEGURO PARA POSIÇÃO: Consulta direta com SELECT...INSERT
-    try {
-      // 4.1 Verificar se a tabela destino tem as colunas necessárias
-      const [colsResult] = await connection.query(`
-        SELECT column_name 
-        FROM information_schema.columns 
-        WHERE table_schema = DATABASE() 
-        AND table_name = 'posicoes_fechadas'
-        AND column_name IN ('simbolo', 'quantidade', 'preco_medio', 'status', 'side', 
-                          'leverage', 'preco_entrada', 'preco_corrente', 'conta_id', 'observacoes')
-      `);
-      
-      if (colsResult.length < 5) {
-        throw new Error(`Tabela posicoes_fechadas não tem colunas necessárias (${colsResult.length} encontradas)`);
-      }
-      
-      // 4.2 Método ultra-seguro: Inserir usando SQL puro sem objetos complexos
-      await connection.query(`
-        INSERT INTO posicoes_fechadas 
-        (simbolo, quantidade, preco_medio, status, data_hora_abertura, data_hora_fechamento,
-         side, leverage, preco_entrada, preco_corrente, conta_id, observacoes)
-        SELECT 
-          ?, -- simbolo (valor seguro)
-          IFNULL(quantidade, 0), -- quantidade com fallback seguro
-          IFNULL(preco_medio, 0), -- preço médio com fallback
-          ?, -- status (parâmetro)
-          IFNULL(data_hora_abertura, NOW()), -- data abertura
-          NOW(), -- data fechamento (agora)
-          IFNULL(side, ''), -- side
-          IFNULL(leverage, 1), -- leverage
-          IFNULL(preco_entrada, 0), -- preço entrada
-          IFNULL(preco_corrente, 0), -- preço corrente
-          ?, -- conta_id (parâmetro)
-          ? -- observações (com reason)
-        FROM posicoes 
-        WHERE id = ? AND conta_id = ?
-        LIMIT 1
-      `, [
-        symbol, // símbolo (já validado)
-        status, // status
-        accountId, // conta_id
-        `Posição fechada. ${reason || ''}`.trim(), // observações
-        positionId, // filtro: id 
-        accountId // filtro: conta_id
-      ]);
-      
-      console.log(`[MOVE_POSITION] ✅ Posição ${symbol} inserida no histórico com método ultra-seguro`);
-    } catch (positionInsertError) {
-      console.error(`[MOVE_POSITION] ❌ Erro ao inserir posição no histórico (modo seguro):`, positionInsertError.message);
-      
-      // ÚLTIMA TENTATIVA: inserção manual com valores estáticos
-      try {
-        console.log(`[MOVE_POSITION] 🔄 Tentando inserção de emergência com valores hardcoded...`);
-        
+        // ✅ INSERIR COM TODOS OS CAMPOS
         await connection.query(`
-          INSERT INTO posicoes_fechadas 
-          (simbolo, quantidade, preco_medio, status, data_hora_abertura, data_hora_fechamento,
-           side, leverage, preco_entrada, preco_corrente, conta_id, observacoes)
-          VALUES (?, 0, 0, ?, NOW(), NOW(), '', 1, 0, 0, ?, ?)
+          INSERT INTO ordens_fechadas (
+            id_original, id_original_ordens, tipo_ordem, preco, quantidade, id_posicao, status,
+            data_hora_criacao, id_externo, side, simbolo, tipo_ordem_bot,
+            target, reduce_only, close_position, last_update, renew_sl_firs, renew_sl_seco,
+            orign_sig, dados_originais_ws, quantidade_executada, preco_executado, observacao,
+            conta_id, commission, commission_asset, trade_id, client_order_id, time_in_force,
+            stop_price, execution_type, last_filled_quantity, last_filled_price, order_trade_time,
+            realized_profit, position_side
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `, [
-          symbol,
-          status,
-          accountId,
-          `Inserção de emergência - posição ${positionId}. ${reason}`
+          order.id, // id_original
+          order.id, // id_original_ordens
+          order.tipo_ordem,
+          order.preco,
+          order.quantidade,
+          order.id_posicao,
+          order.status,
+          formatDateForMySQL(order.data_hora_criacao || new Date()),
+          order.id_externo,
+          order.side,
+          order.simbolo,
+          order.tipo_ordem_bot,
+          order.target,
+          order.reduce_only,
+          order.close_position,
+          formatDateForMySQL(order.last_update || new Date()),
+          order.renew_sl_firs,
+          order.renew_sl_seco,
+          order.orign_sig,
+          order.dados_originais_ws,
+          order.quantidade_executada || 0,
+          order.preco_executado,
+          order.observacao || (order.status === 'CANCELED' ? 'Movida via cleanup - órfã' : 'Movida automaticamente - posição fechada'),
+          order.conta_id,
+          order.commission || 0,
+          order.commission_asset,
+          order.trade_id,
+          order.client_order_id,
+          order.time_in_force,
+          order.stop_price,
+          order.execution_type,
+          order.last_filled_quantity,
+          order.last_filled_price,
+          order.order_trade_time,
+          order.realized_profit,
+          order.position_side
         ]);
         
-        console.log(`[MOVE_POSITION] ✅ Posição ${symbol} inserida com método de emergência`);
-      } catch (emergencyError) {
-        console.error(`[MOVE_POSITION] ❌ Até mesmo a inserção de emergência falhou:`, emergencyError.message);
-        throw emergencyError;
-      }
-    }
-    
-    // 5. Remover posição original
-    await connection.query(
-      'DELETE FROM posicoes WHERE id = ? AND conta_id = ?', 
-      [positionId, accountId]
-    );
-    console.log(`[MOVE_POSITION] ✅ Posição removida da tabela ativa`);
-    
-    await connection.commit();
-    console.log(`[MOVE_POSITION] ✅ Posição ${symbol} (ID: ${positionId}) movida com sucesso`);
-    
-    return true;
-    
-  } catch (error) {
-    if (connection) await connection.rollback();
-    console.error(`[MOVE_POSITION] ❌ Erro ao mover posição ${positionId}:`, error.message);
-    console.error(`[MOVE_POSITION] Stack trace:`, error.stack);
-    return false;
-  } finally {
-    if (connection) connection.release();
-  }
-}
-
-// ✅ ATUALIZAR moveOrdersToHistory também
-async function moveOrdersToHistory(accountId) {
-  try {
-    const db = await getDatabaseInstance();
-    
-    const [ordersToMove] = await db.query(`
-      SELECT o.*, p.status as position_status FROM ordens o
-      LEFT JOIN posicoes p ON o.id_posicao = p.id
-      WHERE o.conta_id = ? 
-        AND (
-          (o.status = 'CANCELED' AND o.last_update > DATE_SUB(NOW(), INTERVAL 1 MINUTE))
-          OR 
-          (o.status = 'FILLED' AND (p.id IS NULL OR p.status != 'OPEN') AND o.last_update < DATE_SUB(NOW(), INTERVAL 1 MINUTE))
-          OR 
-          (o.status = 'EXPIRED' AND (p.id IS NULL OR p.status != 'OPEN') AND o.last_update < DATE_SUB(NOW(), INTERVAL 1 MINUTE))
-        )
-    `, [accountId]);
-    
-    if (ordersToMove.length === 0) {
-      return 0;
-    }
-    
-    const connection = await db.getConnection();
-    await connection.beginTransaction();
-    
-    try {
-      const [destColumns] = await connection.query(`SHOW COLUMNS FROM ordens_fechadas`);
-      const destColumnNames = destColumns.map(col => col.Field);
-      
-      let movedCount = 0;
-      
-      for (const order of ordersToMove) {
-        // ✅ PREPARAR DADOS COM SANITIZAÇÃO
-        const insertData = {
-          tipo_ordem: order.tipo_ordem,
-          preco: order.preco,
-          quantidade: order.quantidade,
-          id_posicao: order.id_posicao,
-          status: order.status,
-          data_hora_criacao: order.data_hora_criacao ? formatDateForMySQL(new Date(order.data_hora_criacao)) : null,
-          id_externo: order.id_externo,
-          side: order.side,
-          simbolo: order.simbolo,
-          tipo_ordem_bot: order.tipo_ordem_bot,
-          target: order.target,
-          reduce_only: order.reduce_only,
-          close_position: order.close_position,
-          last_update: order.last_update ? formatDateForMySQL(new Date(order.last_update)) : formatDateForMySQL(new Date()),
-          conta_id: order.conta_id,
-          preco_executado: order.preco_executado || 0,
-          quantidade_executada: order.quantidade_executada || 0,
-          observacao: order.observacao || 
-            (order.status === 'CANCELED' ? 'Movida via cleanup - órfã' : 'Movida automaticamente - posição fechada'),
-          orign_sig: order.orign_sig,
-          dados_originais_ws: order.dados_originais_ws ? 
-            (typeof order.dados_originais_ws === 'string' ? order.dados_originais_ws : JSON.stringify(order.dados_originais_ws)) : null
-        };
-        
-        // ✅ SANITIZAR DADOS COMPLETOS
-        const sanitizedData = sanitizeObjectForMySQL(insertData);
-        
-        // ✅ FILTRAR APENAS CAMPOS EXISTENTES
-        const validData = {};
-        Object.keys(sanitizedData).forEach(key => {
-          if (destColumnNames.includes(key) && sanitizedData[key] !== undefined) {
-            validData[key] = sanitizedData[key];
-          }
-        });
-
-        const columns = Object.keys(validData);
-        const values = Object.values(validData);
-        const placeholders = columns.map(() => '?').join(', ');
-        
-        await connection.query(
-          `INSERT INTO ordens_fechadas (${columns.join(', ')}) VALUES (${placeholders})`,
-          values
-        );
-        
+        // ✅ REMOVER DA TABELA ATIVA
         await connection.query(
           'DELETE FROM ordens WHERE id_externo = ? AND conta_id = ?',
           [order.id_externo, accountId]
@@ -845,16 +454,41 @@ async function movePositionToHistory(positionId, accountId, force = false) {
     
     // Inserir no histórico
     await db.query(`
-      INSERT INTO posicoes_historico (id_externo, simbolo, quantidade, preco_medio, lucro_prejuizo, tipo, data_hora_fechamento, conta_id)
-      VALUES (?, ?, ?, ?, ?, ?, NOW(), ?)
+      INSERT INTO posicoes_fechadas (
+        id_original, simbolo, quantidade, preco_medio, status,
+        data_hora_abertura, data_hora_fechamento, motivo_fechamento,
+        side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente,
+        orign_sig, conta_id, quantidade_aberta, trailing_stop_level, pnl_corrente,
+        breakeven_price, accumulated_realized, unrealized_pnl, margin_type,
+        isolated_wallet, position_side, event_reason, webhook_data_raw
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
-      position.id_externo,
+      position.id, // id_original
       position.simbolo,
       position.quantidade,
       position.preco_medio,
-      position.lucro_prejuizo,
-      position.tipo,
-      accountId
+      position.status,
+      formatDateForMySQL(position.data_hora_abertura), // sempre formatar!
+      formatDateForMySQL(new Date()), // data_hora_fechamento = agora
+      reason || null, // motivo_fechamento
+      position.side,
+      position.leverage,
+      formatDateForMySQL(position.data_hora_ultima_atualizacao),
+      position.preco_entrada,
+      position.preco_corrente,
+      position.orign_sig,
+      position.conta_id,
+      position.quantidade_aberta,
+      position.trailing_stop_level,
+      position.pnl_corrente,
+      position.breakeven_price,
+      position.accumulated_realized,
+      position.unrealized_pnl,
+      position.margin_type,
+      position.isolated_wallet,
+      position.position_side,
+      position.event_reason,
+      position.webhook_data_raw
     ]);
     
     // Remover da tabela de posições
@@ -922,6 +556,264 @@ async function checkAndCloseWebsocket(accountId) {
   } catch (error) {
     console.error(`[WEBSOCKET] Erro ao fechar posições fantasma para conta ${accountId}:`, error.message);
     return 0;
+  }
+}
+
+/**
+ * ⚡️ SOLUÇÃO CORRIGIDA: Mover posição para histórico COM TODOS OS CAMPOS
+ * SEQUÊNCIA CORRETA: 1) Cancelar ordens na corretora → 2) Mover para histórico
+ * @param {Object} db - Conexão com o banco de dados
+ * @param {number} positionId - ID da posição
+ * @param {string} status - Status para o histórico
+ * @param {string} reason - Motivo do fechamento 
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<boolean>} - true se movida com sucesso
+ */
+async function movePositionToHistory(db, positionId, status = 'CLOSED', reason = 'Movida automaticamente', accountId) {
+  let connection;
+  
+  try {
+    console.log(`[MOVE_POSITION] 📚 Iniciando movimento da posição ${positionId} para conta ${accountId}...`);
+    
+    connection = await db.getConnection();
+    await connection.beginTransaction();
+
+    // 1. Obter a posição
+    const [positionResult] = await connection.query(
+      'SELECT * FROM posicoes WHERE id = ? AND conta_id = ?', 
+      [positionId, accountId]
+    );
+    
+    if (positionResult.length === 0) {
+      console.log(`[MOVE_POSITION] ⚠️ Posição ${positionId} não encontrada para conta ${accountId}`);
+      await connection.rollback();
+      return false;
+    }
+    
+    const position = positionResult[0];
+    const symbol = position.simbolo;
+    
+    // 2. Buscar ordens relacionadas ANTES de mover
+    const [relatedOrders] = await connection.query(
+      'SELECT id, id_externo, status FROM ordens WHERE id_posicao = ? AND conta_id = ?', 
+      [positionId, accountId]
+    );
+    
+    console.log(`[MOVE_POSITION] 📋 Encontradas ${relatedOrders.length} ordens relacionadas para ${symbol}...`);
+    
+    // 3. ✅ ETAPA CRÍTICA: CANCELAR ORDENS NA CORRETORA PRIMEIRO
+    let ordersToCancel = relatedOrders.filter(order => 
+      ['NEW', 'PARTIALLY_FILLED', 'PENDING_CANCEL'].includes(order.status)
+    );
+    
+    if (ordersToCancel.length > 0) {
+      console.log(`[MOVE_POSITION] 🗑️ Cancelando ${ordersToCancel.length} ordens ativas na corretora...`);
+      
+      for (const order of ordersToCancel) {
+        try {
+          console.log(`[MOVE_POSITION] 🔄 Cancelando ordem ${order.id_externo} na corretora...`);
+          
+          // Cancelar na corretora usando a API
+          const cancelResult = await api.cancelOrder(symbol, order.id_externo, accountId);
+          
+          if (cancelResult && cancelResult.status) {
+            console.log(`[MOVE_POSITION] ✅ Ordem ${order.id_externo} cancelada na corretora (status: ${cancelResult.status})`);
+            
+            // Atualizar status no banco imediatamente
+            await connection.query(`
+              UPDATE ordens 
+              SET status = ?, last_update = ?, observacao = ?
+              WHERE id = ? AND conta_id = ?
+            `, [
+              cancelResult.status,
+              formatDateForMySQL(new Date()),
+              `Cancelada durante fechamento da posição ${positionId}`,
+              order.id,
+              accountId
+            ]);
+          } else {
+            console.log(`[MOVE_POSITION] ⚠️ Resultado inesperado ao cancelar ordem ${order.id_externo}`);
+          }
+          
+        } catch (cancelError) {
+          console.error(`[MOVE_POSITION] ❌ Erro ao cancelar ordem ${order.id_externo} na corretora:`, cancelError.message);
+          
+          // Se a ordem não existe mais na corretora, marcar como CANCELED no banco
+          if (cancelError.message.includes('Unknown order') || 
+              cancelError.message.includes('-2011') ||
+              cancelError.message.includes('Order does not exist')) {
+            
+            console.log(`[MOVE_POSITION] 💡 Ordem ${order.id_externo} não existe na corretora, marcando como CANCELED`);
+            await connection.query(`
+              UPDATE ordens 
+              SET status = 'CANCELED', last_update = ?, observacao = ?
+              WHERE id = ? AND conta_id = ?
+            `, [
+              formatDateForMySQL(new Date()),
+              `Marcada como cancelada - não existe na corretora`,
+              order.id,
+              accountId
+            ]);
+          } else {
+            // Erro diferente - pode ser problema de rede, continuar mesmo assim
+            console.error(`[MOVE_POSITION] ⚠️ Continuando mesmo com erro de cancelamento...`);
+          }
+        }
+      }
+      
+      console.log(`[MOVE_POSITION] ✅ Processo de cancelamento na corretora concluído`);
+    } else {
+      console.log(`[MOVE_POSITION] ℹ️ Nenhuma ordem ativa para cancelar na corretora`);
+    }
+    
+    // 4. ✅ AGUARDAR UM POUCO PARA GARANTIR QUE CANCELAMENTOS FORAM PROCESSADOS
+    console.log(`[MOVE_POSITION] ⏳ Aguardando 2 segundos para confirmação dos cancelamentos...`);
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    
+    // 5. ✅ AGORA SIM: Buscar ordens atualizadas e mover para histórico
+    const [updatedOrders] = await connection.query(
+      'SELECT id FROM ordens WHERE id_posicao = ? AND conta_id = ?', 
+      [positionId, accountId]
+    );
+    
+    console.log(`[MOVE_POSITION] 📚 Movendo ${updatedOrders.length} ordens para histórico...`);
+    
+    // 6. ✅ INSERIR POSIÇÃO NO HISTÓRICO COM TODOS OS CAMPOS
+    await connection.query(`
+      INSERT INTO posicoes_fechadas (
+        id_original, simbolo, quantidade, quantidade_aberta, preco_medio, status,
+        data_hora_abertura, data_hora_fechamento, motivo_fechamento,
+        side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente,
+        orign_sig, conta_id, trailing_stop_level, pnl_corrente, observacoes,
+        breakeven_price, accumulated_realized, unrealized_pnl, margin_type,
+        isolated_wallet, position_side, event_reason, webhook_data_raw
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `, [
+      position.id, // id_original
+      position.simbolo,
+      position.quantidade,
+      position.quantidade_aberta,
+      position.preco_medio,
+      status,
+      formatDateForMySQL(position.data_hora_abertura),
+      formatDateForMySQL(new Date()), // data_hora_fechamento = agora
+      `${reason} | Ordens canceladas na corretora antes da movimentação`,
+      position.side,
+      position.leverage,
+      formatDateForMySQL(position.data_hora_ultima_atualizacao || new Date()),
+      position.preco_entrada,
+      position.preco_corrente,
+      position.orign_sig,
+      position.conta_id,
+      position.trailing_stop_level,
+      position.pnl_corrente,
+      position.observacoes,
+      position.breakeven_price,
+      position.accumulated_realized,
+      position.unrealized_pnl,
+      position.margin_type,
+      position.isolated_wallet,
+      position.position_side,
+      position.event_reason,
+      position.webhook_data_raw
+    ]);
+    
+    // 7. ✅ MOVER ORDENS PARA HISTÓRICO COM TODOS OS CAMPOS
+    for (const order of updatedOrders) {
+      await connection.query(`
+        INSERT INTO ordens_fechadas (
+          id_original, id_original_ordens, tipo_ordem, preco, quantidade, id_posicao, status,
+          data_hora_criacao, id_externo, side, simbolo, tipo_ordem_bot,
+          target, reduce_only, close_position, last_update, renew_sl_firs, renew_sl_seco,
+          orign_sig, dados_originais_ws, quantidade_executada, preco_executado, observacao,
+          conta_id, commission, commission_asset, trade_id, client_order_id, time_in_force,
+          stop_price, execution_type, last_filled_quantity, last_filled_price, order_trade_time,
+          realized_profit, position_side
+        )
+        SELECT
+          id, -- id_original
+          id, -- id_original_ordens
+          tipo_ordem,
+          preco,
+          quantidade,
+          id_posicao,
+          status,
+          data_hora_criacao,
+          id_externo,
+          side,
+          simbolo,
+          tipo_ordem_bot,
+          target,
+          reduce_only,
+          close_position,
+          ?, -- last_update (formatado)
+          renew_sl_firs,
+          renew_sl_seco,
+          orign_sig,
+          dados_originais_ws,
+          quantidade_executada,
+          preco_executado,
+          CONCAT(
+            IFNULL(observacao, ''), 
+            ' | Cancelada na corretora antes da movimentação para histórico'
+          ),
+          conta_id,
+          commission,
+          commission_asset,
+          trade_id,
+          client_order_id,
+          time_in_force,
+          stop_price,
+          execution_type,
+          last_filled_quantity,
+          last_filled_price,
+          order_trade_time,
+          realized_profit,
+          position_side
+        FROM ordens
+        WHERE id = ? AND conta_id = ?
+      `, [
+        formatDateForMySQL(new Date()),
+        order.id,
+        accountId
+      ]);
+    }
+    
+    // 8. Remover ordens da tabela ativa
+    if (updatedOrders.length > 0) {
+      await connection.query(
+        'DELETE FROM ordens WHERE id_posicao = ? AND conta_id = ?', 
+        [positionId, accountId]
+      );
+    }
+    
+    // 9. Remover a posição
+    await connection.query(
+      'DELETE FROM posicoes WHERE id = ? AND conta_id = ?', 
+      [positionId, accountId]
+    );
+    
+    await connection.commit();
+    console.log(`[MOVE_POSITION] ✅ Posição ${symbol} (ID: ${positionId}) movida com sucesso após cancelar ordens na corretora`);
+    
+    // 10. Enviar notificação ao Telegram
+    try {
+      const message = formatPositionClosedMessage(position);
+      sendTelegramMessage(message, accountId);
+      console.log(`[MOVE_POSITION] 📱 Notificação enviada ao Telegram`);
+    } catch (telegramError) {
+      console.log(`[MOVE_POSITION] ⚠️ Erro ao enviar notificação: ${telegramError.message}`);
+    }
+    
+    return true;
+    
+  } catch (error) {
+    if (connection) await connection.rollback();
+    console.error(`[MOVE_POSITION] ❌ Erro ao mover posição ${positionId}:`, error.message);
+    console.error(`[MOVE_POSITION] Stack:`, error.stack);
+    return false;
+  } finally {
+    if (connection) connection.release();
   }
 }
 
@@ -1000,8 +892,5 @@ module.exports = {
   //Movidos do positionHistory.js
   movePositionToHistory,
   checkAndCloseWebsocket,
-  syncAndCloseGhostPositions,
-  // ✅ EXPORTAR NOVAS FUNÇÕES UTILITÁRIAS
-  sanitizeValueForMySQL,
-  sanitizeObjectForMySQL
+  syncAndCloseGhostPositions
 };
