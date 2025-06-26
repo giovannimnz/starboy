@@ -134,13 +134,12 @@ async function initializeMonitoring(accountId) {
       if (saldoResult && saldoResult.success) {
         console.log(`[MONITOR] ✅ Saldo atualizado: Disponível ${saldoResult.saldo_disponivel} USDT | Base cálculo ${saldoResult.saldo_base_calculo} USDT`);
       } else {
-        console.warn(`[MONITOR] ⚠️ Falha ao atualizar saldo da corretora: ${saldoResult?.error || 'Erro desconhecido'}`);
+        console.warn(`[MONITOR] ⚠️ Falha ao atualizar saldo da corretora: ${saldoResult?.error || 'Erro desconheido'}`);
       }
     } catch (saldoError) {
       console.error(`[MONITOR] ❌ Erro ao atualizar saldo da corretora:`, saldoError.message);
     }
-
-    // Atualizar saldo de spot
+// Atualizar saldo de spot
 console.log(`💰 Atualizando saldo de spot para conta ${accountId}...`);
 try {
   const saldoSpotResult = await getSpotAccountBalanceDetails(accountId);
