@@ -182,7 +182,6 @@ async function initializeMonitoring(accountId) {
     // === ETAPA 3: Carregar credenciais ===
     console.log(`🔑 ETAPA 3: Carregando credenciais da conta ${accountId}...`);
     try {
-      // CORREÇÃO: Usar api.loadCredentialsFromDatabase
       const credentials = await api.loadCredentialsFromDatabase(accountId);
       
       // CORREÇÃO: Verificar credenciais REST obrigatórias
@@ -203,6 +202,19 @@ async function initializeMonitoring(accountId) {
       throw credError;
     }
 
+    // === ETAPA 3.5: Atualizar saldo da corretora ===
+    console.log(`💰 ETAPA 3.5: Atualizando saldo da corretora para conta ${accountId}...`);
+    try {
+      const saldoResult = await getFuturesAccountBalanceDetails(accountId);
+      if (saldoResult && saldoResult.success) {
+        console.log(`[MONITOR] ✅ Saldo atualizado: Disponível ${saldoResult.saldo_disponivel} USDT | Base cálculo ${saldoResult.saldo_base_calculo} USDT`);
+      } else {
+        console.warn(`[MONITOR] ⚠️ Falha ao atualizar saldo da corretora: ${saldoResult?.error || 'Erro desconhecido'}`);
+      }
+    } catch (saldoError) {
+      console.error(`[MONITOR] ❌ Erro ao atualizar saldo da corretora:`, saldoError.message);
+    }
+    
 // === ETAPA 3.5: Inicializar Bot do Telegram ===
 console.log(`🤖 ETAPA 3.5: Inicializando bot do Telegram para conta ${accountId}...`);
 try {
