@@ -358,6 +358,7 @@ async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}
     }
     
     const { apiKey, secretKey, apiUrl } = accountState;
+    const baseUrl = customApiUrl || apiUrl;
     
     if (!apiKey || !secretKey || !apiUrl) {
       throw new Error(`Credenciais incompletas para conta ${accountId}: apiKey=${!!apiKey}, secretKey=${!!secretKey}, apiUrl=${!!apiUrl}`);
@@ -443,9 +444,9 @@ async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}
     // Construir URL final
     let fullUrl;
     if (method === 'GET') {
-      fullUrl = `${apiUrl}${endpoint}?${finalQueryString}`;
+      fullUrl = `${baseUrl}${endpoint}?${finalQueryString}`;
     } else {
-      fullUrl = `${apiUrl}${endpoint}`;
+      fullUrl = `${baseUrl}${endpoint}`;
     }
     
     console.log(`[API] Fazendo requisição: ${method} ${fullUrl.split('?')[0]}`);
