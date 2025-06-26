@@ -279,11 +279,13 @@ export default function TradingViewChart({ selectedAccount, selectedAccountId }:
 
   const getDisplayName = (pair: any) => {
     const displaySymbol = pair.displaySymbol || pair.symbol.replace(".P", "")
-    return `${displaySymbol} - ${pair.name}`
+    return pair.name
+      ? `${displaySymbol} - ${pair.name}`
+      : displaySymbol
   }
 
   const getCurrentPairDisplay = () => {
-    const currentPair = getAvailablePairs().find((pair) => pair.symbol === selectedSymbol)
+    const currentPair = symbols.find((pair) => pair.symbol === selectedSymbol)
     if (!currentPair) return "BTCUSDT - Bitcoin"
     return getDisplayName(currentPair)
   }
