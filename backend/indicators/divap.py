@@ -416,12 +416,12 @@ def get_account_base_balance():
         )
         cursor = conn.cursor(dictionary=True)
         
-        sql = "SELECT saldo_base_calculo FROM contas WHERE ativa = 1 LIMIT 1"
+        sql = "SELECT saldo_base_calculo_futuros FROM contas WHERE ativa = 1 LIMIT 1"
         cursor.execute(sql)
         result = cursor.fetchone()
             
-        if result and 'saldo_base_calculo' in result and result['saldo_base_calculo'] is not None:
-            return float(result['saldo_base_calculo'])
+         if result and 'saldo_base_calculo_futuros' in result and result['saldo_base_calculo_futuros'] is not None:
+            return float(result['saldo_base_calculo_futuros'])
 
         return 1000.0
 
