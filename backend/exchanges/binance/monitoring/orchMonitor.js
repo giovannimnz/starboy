@@ -126,31 +126,6 @@ async function initializeMonitoring(accountId) {
       throw new Error(`Não foi possível conectar ao banco de dados para conta ${accountId}`);
     }
     console.log(`✅ Banco de dados conectado com sucesso para conta ${accountId}\n`);
-    
-    // === ETAPA 1.5: Atualizar saldo da corretora ===
-    console.log(`💰 ETAPA 1.5: Atualizando saldo da corretora para conta ${accountId}...`);
-    try {
-      const saldoResult = await getFuturesAccountBalanceDetails(accountId);
-      if (saldoResult && saldoResult.success) {
-        console.log(`[MONITOR] ✅ Saldo atualizado: Disponível ${saldoResult.saldo_disponivel} USDT | Base cálculo ${saldoResult.saldo_base_calculo} USDT`);
-      } else {
-        console.warn(`[MONITOR] ⚠️ Falha ao atualizar saldo da corretora: ${saldoResult?.error || 'Erro desconheido'}`);
-      }
-    } catch (saldoError) {
-      console.error(`[MONITOR] ❌ Erro ao atualizar saldo da corretora:`, saldoError.message);
-    }
-// Atualizar saldo de spot
-console.log(`💰 Atualizando saldo de spot para conta ${accountId}...`);
-try {
-  const saldoSpotResult = await getSpotAccountBalanceDetails(accountId);
-  if (saldoSpotResult && saldoSpotResult.success) {
-    console.log(`[MONITOR] ✅ Saldo spot atualizado: Disponível ${saldoSpotResult.saldo_disponivel} USDT | Base cálculo ${saldoSpotResult.saldo_base_calculo} USDT`);
-  } else {
-    console.warn(`[MONITOR] ⚠️ Falha ao atualizar saldo spot: ${saldoSpotResult?.error || 'Erro desconhecido'}`);
-  }
-} catch (saldoError) {
-  console.error(`[MONITOR] ❌ Erro ao atualizar saldo spot:`, saldoError.message);
-}
 
     // === ETAPA 2: Verificar consistência de ambiente ===
     console.log(`🔍 ETAPA 2: Verificando consistência de ambiente para conta ${accountId}...`);
@@ -191,11 +166,24 @@ try {
       if (saldoResult && saldoResult.success) {
         console.log(`[MONITOR] ✅ Saldo atualizado: Disponível ${saldoResult.saldo_disponivel} USDT | Base cálculo ${saldoResult.saldo_base_calculo} USDT`);
       } else {
-        console.warn(`[MONITOR] ⚠️ Falha ao atualizar saldo da corretora: ${saldoResult?.error || 'Erro desconhecido'}`);
+        console.warn(`[MONITOR] ⚠️ Falha ao atualizar saldo da corretora: ${saldoResult?.error || 'Erro desconheido'}`);
       }
     } catch (saldoError) {
       console.error(`[MONITOR] ❌ Erro ao atualizar saldo da corretora:`, saldoError.message);
     }
+    
+// Atualizar saldo de spot
+console.log(`💰 Atualizando saldo de spot para conta ${accountId}...`);
+try {
+  const saldoSpotResult = await getSpotAccountBalanceDetails(accountId);
+  if (saldoSpotResult && saldoSpotResult.success) {
+    console.log(`[MONITOR] ✅ Saldo spot atualizado: Disponível ${saldoSpotResult.saldo_disponivel} USDT | Base cálculo ${saldoSpotResult.saldo_base_calculo} USDT`);
+  } else {
+    console.warn(`[MONITOR] ⚠️ Falha ao atualizar saldo spot: ${saldoSpotResult?.error || 'Erro desconhecido'}`);
+  }
+} catch (saldoError) {
+  console.error(`[MONITOR] ❌ Erro ao atualizar saldo spot:`, saldoError.message);
+}
     
 // === ETAPA 3.5: Inicializar Bot do Telegram ===
 console.log(`🤖 ETAPA 3.5: Inicializando bot do Telegram para conta ${accountId}...`);
