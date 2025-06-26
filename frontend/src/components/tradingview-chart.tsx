@@ -1,6 +1,7 @@
 "use client"
 
 import { useEffect, useRef, useState } from "react"
+import { api } from "@/lib/api" // certifique-se de importar sua api
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Input } from "@/components/ui/input"
@@ -10,6 +11,7 @@ import { useTheme } from "next-themes"
 
 interface TradingViewChartProps {
   selectedAccount: string
+  selectedAccountId: number | null // Passe o ID da conta selecionada!
 }
 
 interface Signal {
@@ -113,11 +115,13 @@ const tradingPairs = {
   ],
 }
 
-export default function TradingViewChart({ selectedAccount }: TradingViewChartProps) {
+export default function TradingViewChart({ selectedAccount, selectedAccountId }: TradingViewChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null)
   const [selectedSymbol, setSelectedSymbol] = useState("BTCUSDT.P")
   const [searchTerm, setSearchTerm] = useState("")
   const [isSelectOpen, setIsSelectOpen] = useState(false)
+  const [symbols, setSymbols] = useState<any[]>([])
+  const [loadingSymbols, setLoadingSymbols] = useState(false)
   const { theme } = useTheme()
 
   // Get available pairs for selected account
@@ -127,10 +131,10 @@ export default function TradingViewChart({ selectedAccount }: TradingViewChartPr
   }
 
   // Filter pairs based on search term
-  const filteredPairs = getAvailablePairs().filter(
+  const filteredPairs = symbols.filter(
     (pair) =>
-      pair.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      (pair.displaySymbol || pair.symbol).toLowerCase().includes(searchTerm.toLowerCase()),
+      pair.base_asset.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      pair.symbol.toLowerCase().includes(searchTerm.toLowerCase()),
   )
 
   // Get TradingView symbol format
@@ -155,8 +159,8 @@ export default function TradingViewChart({ selectedAccount }: TradingViewChartPr
     script.type = "text/javascript"
     script.async = true
 
-    const selectedPair = getAvailablePairs().find((pair) => pair.symbol === selectedSymbol) || getAvailablePairs()[0]
-    const tradingViewSymbol = getTradingViewSymbol(selectedPair)
+    const selectedPair = symbols.find((pair) => pair.symbol === selectedSymbol) || symbols[0]
+    const tradingViewSymbol = selectedPair ? `BINANCE:${selectedPair.symbol}` : "BINANCE:BTCUSDT"
 
     const isLightTheme = theme === "light"
 
@@ -224,6 +228,17 @@ export default function TradingViewChart({ selectedAccount }: TradingViewChartPr
       setSelectedSymbol(availablePairs[0].symbol)
     }
   }, [selectedAccount])
+
+  // Fetch symbols for the selected account
+  useEffect(() => {
+    if (!selectedAccountId) return
+    setLoadingSymbols(true)
+    api.getAccountSymbols(selectedAccountId)
+      .then(res => {
+        if (res.success) setSymbols(res.data)
+      })
+      .finally(() => setLoadingSymbols(false))
+  }, [selectedAccountId])
 
   const handleSymbolSelect = (symbol: string) => {
     setSelectedSymbol(symbol)
@@ -297,7 +312,9 @@ export default function TradingViewChart({ selectedAccount }: TradingViewChartPr
                   </div>
                 </div>
                 <div className="max-h-60 overflow-y-auto">
-                  {filteredPairs.length === 0 ? (
+                  {loadingSymbols ? (
+                    <div className="p-3 text-muted-foreground text-center">Carregando...</div>
+                  ) : filteredPairs.length === 0 ? (
                     <div className="p-3 text-muted-foreground text-center">Nenhum par encontrado</div>
                   ) : (
                     filteredPairs.map((pair) => (
@@ -308,8 +325,8 @@ export default function TradingViewChart({ selectedAccount }: TradingViewChartPr
                         onClick={() => handleSymbolSelect(pair.symbol)}
                       >
                         <div className="flex flex-col">
-                          <span className="font-medium">{pair.displaySymbol || pair.symbol.replace(".P", "")}</span>
-                          <span className="text-xs text-muted-foreground">{pair.name}</span>
+                          <span className="font-medium">{pair.symbol}</span>
+                          <span className="text-xs text-muted-foreground">{pair.base_asset} / {pair.quote_asset}</span>
                         </div>
                       </SelectItem>
                     ))
