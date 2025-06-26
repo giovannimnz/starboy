@@ -602,11 +602,11 @@ async function handlePriceUpdate(symbol, tickerData, accountId) {
 /**
  * Configura websocket para BookTicker com validação robusta
  */
-function setupBookDepthWebsocket(symbol, callback, accountId) {
+function bookTicker(symbol, callback, accountId) {
   // CORREÇÃO: Validação rigorosa do accountId
   if (!accountId || typeof accountId !== 'number') {
-    console.error(`[WEBSOCKET] ❌ ERRO: accountId inválido para setupBookDepthWebsocket: ${accountId} (tipo: ${typeof accountId})`);
-    throw new Error(`setupBookDepthWebsocket: accountId é obrigatório e deve ser um número, recebido: ${accountId}`);
+    console.error(`[WEBSOCKET] ❌ ERRO: accountId inválido para bookTicker: ${accountId} (tipo: ${typeof accountId})`);
+    throw new Error(`bookTicker: accountId é obrigatório e deve ser um número, recebido: ${accountId}`);
   }
   
   console.log(`[WEBSOCKET] Configurando BookTicker para ${symbol} (conta ${accountId})`);
@@ -987,7 +987,7 @@ module.exports = {
   // Funções de WebSocket de preços
   ensurePriceWebsocketExists,
   handlePriceUpdate,
-  setupBookDepthWebsocket,
+  bookTicker,
   stopPriceMonitoring,
   getPriceWebsockets,
   
