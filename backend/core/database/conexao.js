@@ -1042,7 +1042,7 @@ async function updateAccountBalance(db, saldo, accountId) {
     try {
       // 1. Buscar saldo_futuros atual e saldo_base_calculo_futuros para conta específica
       const [currentAccount] = await connection.query(
-          'SELECT saldo, saldo_base_calculo_futuros FROM contas WHERE id = ?',
+          'SELECT saldo_futuros, saldo_base_calculo_futuros FROM contas WHERE id = ?',
           [accountId]
       );
 

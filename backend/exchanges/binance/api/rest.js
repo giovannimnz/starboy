@@ -1098,7 +1098,7 @@ async function getFuturesAccountBalanceDetails(accountId) {
     
     // Obter saldo_futuros anterior para comparação
     const [previousBalance] = await db.query(
-      'SELECT saldo, saldo_base_calculo_futuros FROM contas WHERE id = ?',
+      'SELECT saldo_futuros, saldo_base_calculo_futuros FROM contas WHERE id = ?',
       [accountId]
     );
     

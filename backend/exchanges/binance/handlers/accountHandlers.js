@@ -94,15 +94,15 @@ async function handleBalanceUpdates(connection, balances, accountId, reason, eve
           console.log(`[ACCOUNT] 💰 ${asset}: Wallet=${walletBalance.toFixed(4)}, Cross=${crossWalletBalance.toFixed(4)}, Change=${balanceChange >= 0 ? '+' : ''}${balanceChange.toFixed(4)}, Reason=${reason}`);
           
           const [currentData] = await connection.query(
-            'SELECT saldo, saldo_base_calculo FROM contas WHERE id = ?',
+            'SELECT saldo_futuros, saldo_base_calculo_futuros FROM contas WHERE id = ?',
             [accountId]
           );
           
-          const previousBalance = currentData.length > 0 ? parseFloat(currentData[0].saldo || '0') : 0;
-          const previousBaseCalculo = currentData.length > 0 ? parseFloat(currentData[0].saldo_base_calculo || '0') : 0;
+          const previousBalance = currentData.length > 0 ? parseFloat(currentData[0].saldo_futuros || '0') : 0;
+          const previousBaseCalculo = currentData.length > 0 ? parseFloat(currentData[0].saldo_base_calculo_futuros || '0') : 0;
           
           // ✅ CORREÇÃO: Lógica correta do saldo_base_calculo
-          // saldo_base_calculo SÓ AUMENTA, NUNCA DIMINUI
+          // saldo_base_calculo_futuros SÓ AUMENTA, NUNCA DIMINUI
           let novaBaseCalculo = previousBaseCalculo;
           if (walletBalance > previousBaseCalculo) {
             novaBaseCalculo = walletBalance;
@@ -117,8 +117,8 @@ async function handleBalanceUpdates(connection, balances, accountId, reason, eve
           
           // ✅ CONSTRUIR UPDATE DINÂMICO - SEMPRE ATUALIZAR O SALDO
           let updateQuery = `UPDATE contas SET 
-                           saldo = ?,
-                           saldo_base_calculo = ?,
+                           saldo_futuros = ?,
+                           saldo_base_calculo_futuros = ?,
                            ultima_atualizacao = NOW()`;
           let updateValues = [walletBalance, novaBaseCalculo];
           

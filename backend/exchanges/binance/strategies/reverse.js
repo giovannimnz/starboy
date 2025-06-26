@@ -1313,11 +1313,11 @@ async function getAvailableBalance(accountId) {
             throw new Error(`AccountId inválido: ${accountId}`);
         }
 
-        // ✅ USAR saldo_base_calculo DO BANCO EM VEZ DO SALDO DISPONÍVEL DA CORRETORA
+        // ✅ USAR saldo_base_calculo_futuros DO BANCO
         const db = await getDatabaseInstance(accountId);
         
         const [rows] = await db.query(
-            'SELECT saldo_base_calculo FROM contas WHERE id = ? AND ativa = 1',
+            'SELECT saldo_base_calculo_futuros FROM contas WHERE id = ? AND ativa = 1',
             [accountId]
         );
 
@@ -1325,10 +1325,10 @@ async function getAvailableBalance(accountId) {
             throw new Error(`Conta ${accountId} não encontrada ou não está ativa`);
         }
 
-        const saldoBaseCalculo = parseFloat(rows[0].saldo_base_calculo || 0);
+        const saldoBaseCalculoFuturos = parseFloat(rows[0].saldo_base_calculo_futuros || 0);
         
-        console.log(`[LIMIT_ENTRY] ✅ saldo obtido: ${saldoBaseCalculo} USDT`);
-        return saldoBaseCalculo;
+        console.log(`[LIMIT_ENTRY] ✅ saldo obtido: ${saldoBaseCalculoFuturos} USDT`);
+        return saldoBaseCalculoFuturos;
 
     } catch (error) {
         console.error(`[LIMIT_ENTRY] Erro ao obter saldo_base_calculo para conta ${accountId}:`, error.message);

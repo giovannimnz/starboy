@@ -320,18 +320,18 @@ async function syncAccountBalanceViaWebSocket(accountId) {
     
     // Obter saldo base de cálculo atual
     const [currentData] = await db.query(
-      'SELECT saldo_base_calculo FROM contas WHERE id = ?',
+      'SELECT saldo_base_calculo_futuros FROM contas WHERE id = ?',
       [accountId]
     );
     
-    const previousBaseCalculo = currentData.length > 0 ? parseFloat(currentData[0].saldo_base_calculo || '0') : 0;
+    const previousBaseCalculo = currentData.length > 0 ? parseFloat(currentData[0].saldo_base_calculo_futuros || '0') : 0;
     const calculoBasadaEm5Porcento = saldoDisponivel * 0.05;
     const newBaseCalculo = Math.max(calculoBasadaEm5Porcento, previousBaseCalculo);
     
     // Atualizar banco de dados
     const currentDateTime = formatDateForMySQL(new Date());
     await db.query(
-      'UPDATE contas SET saldo = ?, saldo_base_calculo = ?, ultima_atualizacao = ? WHERE id = ?',
+      'UPDATE contas SET saldo_futuros = ?, saldo_base_calculo_futuros = ?, ultima_atualizacao = ? WHERE id = ?',
       [realSaldo, newBaseCalculo, currentDateTime, accountId]
     );
     
