@@ -1085,44 +1085,44 @@ async function getFuturesAccountBalanceDetails(accountId) {
     }
 
     const saldoTotal = parseFloat(usdtBalance.balance || '0');
-    const saldoDisponivel = parseFloat(usdtBalance.availableBalance || '0');
-    const saldoUtilizado = saldoTotal - saldoDisponivel;
+    const saldoDisponivelFuturos = parseFloat(usdtBalance.availableBalance || '0');
+    const saldoUtilizado = saldoTotal - saldoDisponivelFuturos;
 
     console.log(`[API] ✅ saldo_futuros obtido para conta ${accountId}:`);
     console.log(`  - Total: ${saldoTotal.toFixed(2)} USDT`);
-    console.log(`  - Disponível: ${saldoDisponivel.toFixed(2)} USDT`);
+    console.log(`  - Disponível: ${saldoDisponivelFuturos.toFixed(2)} USDT`);
     console.log(`  - Em uso: ${saldoUtilizado.toFixed(2)} USDT`);
     
     // ATUALIZAR NO BANCO DE DADOS
     const db = await getDatabaseInstance(accountId);
     
     // Obter saldo_futuros anterior para comparação
-    const [previousBalance] = await db.query(
+    const [previousBalanceFutures] = await db.query(
       'SELECT saldo_futuros, saldo_base_calculo_futuros FROM contas WHERE id = ?',
       [accountId]
     );
     
-    const previousSaldoFuturos = previousBalance.length > 0 ? parseFloat(previousBalance[0].saldo_futuros || '0') : 0;
-    const previousBaseCalculo = previousBalance.length > 0 ? parseFloat(previousBalance[0].saldo_base_calculo_futuros || '0') : 0;
+    const previousSaldoFuturos = previousBalanceFutures.length > 0 ? parseFloat(previousBalanceFutures[0].saldo_futuros || '0') : 0;
+    const previousBaseCalculoFuturos = previousBalanceFutures.length > 0 ? parseFloat(previousBalanceFutures[0].saldo_base_calculo_futuros || '0') : 0;
     
     // ✅ CORREÇÃO: Lógica correta do saldo_base_calculo
     // saldo_base_calculo_futuros SÓ AUMENTA, NUNCA DIMINUI
-    let novaBaseCalculo = previousBaseCalculo;
-    if (saldoDisponivel > previousBaseCalculo) {
-      novaBaseCalculo = saldoDisponivel;
-      console.log(`[API] saldo_futuros base de cálculo atualizado: ${previousBaseCalculo.toFixed(2)} → ${novaBaseCalculo.toFixed(2)}`);
+    let novaBaseCalculoFuturos = previousBaseCalculoFuturos;
+    if (saldoDisponivelFuturos > previousBaseCalculoFuturos) {
+      novaBaseCalculoFuturos = saldoDisponivelFuturos;
+      console.log(`[API] saldo_futuros base de cálculo atualizado: ${previousBaseCalculoFuturos.toFixed(2)} → ${novaBaseCalculoFuturos.toFixed(2)}`);
     } else {
-      console.log(`[API] saldo_futuros base de cálculo mantido: ${previousBaseCalculo.toFixed(2)} (saldo_futuros atual: ${saldoDisponivel.toFixed(2)})`);
+      console.log(`[API] saldo_futuros base de cálculo mantido: ${previousBaseCalculoFuturos.toFixed(2)} (saldo_futuros atual: ${saldoDisponivelFuturos.toFixed(2)})`);
     }
     
     console.log(`[API] Cálculo da base:`);
-    console.log(`  - saldo_futuros atual: ${saldoDisponivel.toFixed(2)} USDT`);
-    console.log(`  - Base anterior: ${previousBaseCalculo.toFixed(2)} USDT`);
-    console.log(`  - Nova base: ${novaBaseCalculo.toFixed(2)} USDT`);
+    console.log(`  - saldo_futuros atual: ${saldoDisponivelFuturos.toFixed(2)} USDT`);
+    console.log(`  - Base anterior: ${previousBaseCalculoFuturos.toFixed(2)} USDT`);
+    console.log(`  - Nova base: ${novaBaseCalculoFuturos.toFixed(2)} USDT`);
     
     await db.query(
       'UPDATE contas SET saldo_futuros = ?, saldo_base_calculo_futuros = ?, ultima_atualizacao = NOW() WHERE id = ?',
-      [saldoDisponivel, novaBaseCalculo, accountId]
+      [saldoDisponivelFuturos, novaBaseCalculoFuturos, accountId]
     );
 
     // RETORNAR FORMATO PADRONIZADO
@@ -1130,10 +1130,10 @@ async function getFuturesAccountBalanceDetails(accountId) {
       success: true,
       accountId: accountId,
       saldo: saldoTotal,
-      saldo_disponivel: saldoDisponivel,
-      saldo_base_calculo: novaBaseCalculo,
+      saldo_disponivel: saldoDisponivelFuturos,
+      saldo_base_calculo: novaBaseCalculoFuturos,
       previousSaldoFuturos: previousSaldoFuturos,
-      previousBaseCalculo: previousBaseCalculo,
+      previousBaseCalculoFuturos: previousBaseCalculoFuturos,
       assets: balanceData,
       timestamp: new Date().toISOString()
     };
@@ -1149,7 +1149,7 @@ async function getFuturesAccountBalanceDetails(accountId) {
       saldo_disponivel: 0,
       saldo_base_calculo: 0,
       previousSaldoFuturos: 0,
-      previousBaseCalculo: 0,
+      previousBaseCalculoFuturos: 0,
       timestamp: new Date().toISOString()
     };
   }
