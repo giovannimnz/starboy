@@ -473,43 +473,43 @@ async function executeReverse(signal, currentPrice, accountId) {
       // ✅ LÓGICA DE CÁLCULO DE PREÇO MELHORADA - MANTIDA
       let currentLocalMakerPrice;
       if (binanceSide === 'BUY') {
-        const spreadSize = bestAsk - bestBid;
-        const moreBidPrice = bestBid + tickSize;
-        
-        if (spreadSize > tickSize && moreBidPrice < bestAsk) {
-          currentLocalMakerPrice = moreBidPrice;
-          console.log(`[LIMIT_ENTRY] Estratégia agressiva: Ordem BUY posicionada DENTRO do spread a ${currentLocalMakerPrice.toFixed(pricePrecision)} (1 tick acima do melhor bid)`);
+        // Sempre tenta entrar 1 tick acima do bestBid, mas nunca >= bestAsk
+        let candidatePrice = bestBid + tickSize;
+        if (candidatePrice < bestAsk) {
+          currentLocalMakerPrice = candidatePrice;
+          console.log(`[LIMIT_ENTRY] BUY agressivo: dentro do spread a ${currentLocalMakerPrice.toFixed(pricePrecision)} (1 tick acima do bid)`);
         } else {
-          currentLocalMakerPrice = bestBid;
-          console.log(`[LIMIT_ENTRY] Spread muito estreito (${spreadSize.toFixed(pricePrecision)}). Posicionando ordem BUY no melhor bid: ${currentLocalMakerPrice.toFixed(pricePrecision)}`);
-        }
-        
-        if (currentLocalMakerPrice >= bestAsk - tickSize) {
+          // Se não couber no spread, coloca no melhor bid possível (garante maker)
           currentLocalMakerPrice = bestAsk - tickSize;
-          console.log(`[LIMIT_ENTRY] Ajuste: preço BUY ajustado para garantir ordem maker: ${currentLocalMakerPrice.toFixed(pricePrecision)} (1 tick abaixo do ask)`);
+          if (currentLocalMakerPrice <= bestBid) {
+            currentLocalMakerPrice = bestBid;
+            console.log(`[LIMIT_ENTRY] BUY: spread apertado, colocando no bestBid: ${currentLocalMakerPrice.toFixed(pricePrecision)}`);
+          } else {
+            console.log(`[LIMIT_ENTRY] BUY: spread apertado, ajustando para 1 tick abaixo do ask: ${currentLocalMakerPrice.toFixed(pricePrecision)}`);
+          }
         }
       } else { // SELL
-        const spreadSize = bestAsk - bestBid;
-        const lessAskPrice = bestAsk - tickSize;
-        
-        if (spreadSize > tickSize && lessAskPrice > bestBid) {
-          currentLocalMakerPrice = lessAskPrice;
-          console.log(`[LIMIT_ENTRY] Estratégia agressiva: Ordem SELL posicionada DENTRO do spread a ${currentLocalMakerPrice.toFixed(pricePrecision)} (1 tick abaixo do melhor ask)`);
+        // Sempre tenta entrar 1 tick abaixo do bestAsk, mas nunca <= bestBid
+        let candidatePrice = bestAsk - tickSize;
+        if (candidatePrice > bestBid) {
+          currentLocalMakerPrice = candidatePrice;
+          console.log(`[LIMIT_ENTRY] SELL agressivo: dentro do spread a ${currentLocalMakerPrice.toFixed(pricePrecision)} (1 tick abaixo do ask)`);
         } else {
-          currentLocalMakerPrice = bestAsk;
-          console.log(`[LIMIT_ENTRY] Spread muito estreito (${spreadSize.toFixed(pricePrecision)}). Posicionando ordem SELL no melhor ask: ${currentLocalMakerPrice.toFixed(pricePrecision)}`);
-        }
-        
-        if (currentLocalMakerPrice <= bestBid + tickSize) {
+          // Se não couber no spread, coloca no melhor ask possível (garante maker)
           currentLocalMakerPrice = bestBid + tickSize;
-          console.log(`[LIMIT_ENTRY] Ajuste: preço SELL ajustado para garantir ordem maker: ${currentLocalMakerPrice.toFixed(pricePrecision)} (1 tick acima do bid)`);
+          if (currentLocalMakerPrice >= bestAsk) {
+            currentLocalMakerPrice = bestAsk;
+            console.log(`[LIMIT_ENTRY] SELL: spread apertado, colocando no bestAsk: ${currentLocalMakerPrice.toFixed(pricePrecision)}`);
+          } else {
+            console.log(`[LIMIT_ENTRY] SELL: spread apertado, ajustando para 1 tick acima do bid: ${currentLocalMakerPrice.toFixed(pricePrecision)}`);
+          }
         }
       }
 
       // Garantir que o preço esteja no tick correto
       currentLocalMakerPrice = await roundPriceToTickSize(signal.symbol, currentLocalMakerPrice, numericAccountId);
 
-      console.log(`[LIMIT_ENTRY] Preço MAKER ${binanceSide}: ${currentLocalMakerPrice.toFixed(pricePrecision)} | Book: Bid=${bestBid.toFixed(pricePrecision)}, Ask=${currentBestAsk.toFixed(pricePrecision)}, Spread=${(bestAsk-bestBid).toFixed(pricePrecision)}`);
+      console.log(`[LIMIT_ENTRY] Preço MAKER ${binanceSide}: ${currentLocalMakerPrice.toFixed(pricePrecision)} | Book: Bid=${bestBid.toFixed(pricePrecision)}, Ask=${bestAsk.toFixed(pricePrecision)}, Spread=${(bestAsk-bestBid).toFixed(pricePrecision)}`);
 
       let orderPlacedOrEditedThisIteration = false;
 
@@ -563,7 +563,7 @@ async function executeReverse(signal, currentPrice, accountId) {
             }
           } else if (status === 'PARTIALLY_FILLED') {
             const priceDifference = Math.abs(orderPriceOnExchange - currentLocalMakerPrice);
-            const shouldEditOrder = priceDifference > tickSize;
+            const shouldEditOrder = priceDifference >= tickSize || orderPriceOnExchange !== currentLocalMakerPrice;
             
             if (shouldEditOrder) {
               console.log(`[LIMIT_ENTRY] ⚡ Ordem ${activeOrderId} parcialmente preenchida, mas preço mudou significativamente (${priceDifference.toFixed(pricePrecision)} > ${tickSize}). Cancelando e recriando...`);
@@ -583,7 +583,7 @@ async function executeReverse(signal, currentPrice, accountId) {
             }
           } else if (status === 'NEW') {
             const priceDifference = Math.abs(orderPriceOnExchange - currentLocalMakerPrice);
-            const shouldEditOrder = priceDifference > tickSize;
+            const shouldEditOrder = priceDifference >= tickSize || orderPriceOnExchange !== currentLocalMakerPrice;
             
             if (shouldEditOrder) {
               console.log(`[LIMIT_ENTRY] ✏️ Editando ordem ${activeOrderId}: ${orderPriceOnExchange.toFixed(pricePrecision)} → ${currentLocalMakerPrice.toFixed(pricePrecision)} (diferença: ${priceDifference.toFixed(pricePrecision)})`);
