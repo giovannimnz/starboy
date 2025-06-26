@@ -115,13 +115,18 @@ const tradingPairs = {
   ],
 }
 
+const top20Symbols = [
+  "BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT", "TONUSDT", "ADAUSDT", "AVAXUSDT", "SHIBUSDT",
+  "DOTUSDT", "TRXUSDT", "LINKUSDT", "MATICUSDT", "LTCUSDT", "BCHUSDT", "ICPUSDT", "NEARUSDT", "UNIUSDT", "ETCUSDT"
+];
+
 export default function TradingViewChart({ selectedAccount, selectedAccountId }: TradingViewChartProps) {
   const chartContainerRef = useRef<HTMLDivElement>(null)
   const [selectedSymbol, setSelectedSymbol] = useState("BTCUSDT.P")
-  const [searchTerm, setSearchTerm] = useState("")
-  const [isSelectOpen, setIsSelectOpen] = useState(false)
   const [symbols, setSymbols] = useState<any[]>([])
   const [loadingSymbols, setLoadingSymbols] = useState(false)
+  const [searchTerm, setSearchTerm] = useState("")
+  const [isSelectOpen, setIsSelectOpen] = useState(false)
   const { theme } = useTheme()
 
   // Get available pairs for selected account
@@ -239,6 +244,32 @@ export default function TradingViewChart({ selectedAccount, selectedAccountId }:
       })
       .finally(() => setLoadingSymbols(false))
   }, [selectedAccountId])
+
+  // Carregar top 20 ao abrir o select
+  useEffect(() => {
+    if (!isSelectOpen || searchTerm) return
+    if (!selectedAccountId) return
+    setLoadingSymbols(true)
+    api.getAccountSymbols(selectedAccountId)
+      .then(res => {
+        if (res.success) {
+          // Filtra só os top 20
+          setSymbols(res.data.filter((s: any) => top20Symbols.includes(s.symbol)))
+        }
+      })
+      .finally(() => setLoadingSymbols(false))
+  }, [isSelectOpen, selectedAccountId, searchTerm])
+
+  // Buscar no backend só quando digitar
+  useEffect(() => {
+    if (!isSelectOpen || !searchTerm || !selectedAccountId) return
+    setLoadingSymbols(true)
+    api.getAccountSymbols(selectedAccountId, searchTerm)
+      .then(res => {
+        if (res.success) setSymbols(res.data)
+      })
+      .finally(() => setLoadingSymbols(false))
+  }, [searchTerm, isSelectOpen, selectedAccountId])
 
   const handleSymbolSelect = (symbol: string) => {
     setSelectedSymbol(symbol)

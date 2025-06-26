@@ -1,6 +1,6 @@
 const { getDatabaseInstance } = require('../../../core/database/conexao');
 // Importe a função que consulta saldo na corretora (ajuste o caminho se necessário)
-const { getFuturesAccountBalanceDetails } = require('../../../exchanges/binance/api/rest');
+const { getFuturesAccountBalanceDetails, getSpotAccountBalanceDetails } = require('../../../exchanges/binance/api/rest');
 
 async function dashboardRoutes(fastify, options) {
   // 1. Selecionar conta (detalhes completos)
@@ -186,13 +186,19 @@ async function dashboardRoutes(fastify, options) {
       if (!contaRows.length) {
         return reply.status(404).send({ error: 'Conta não encontrada' });
       }
-      // Aqui, id_corretora 1 = 'binance'
-      const exchange = contaRows[0].id_corretora === 1 ? 'binance' : 'binance'; // ajuste se tiver outras exchanges
+      // Buscar nome da corretora
+      const idCorretora = contaRows[0].id_corretora;
+      const [corretoraRows] = await db.query('SELECT corretora FROM corretoras WHERE id = ?', [idCorretora]);
+      if (!corretoraRows.length) {
+        return reply.status(404).send({ error: 'Corretora não encontrada' });
+      }
+      const exchange = corretoraRows[0].corretora.toLowerCase();
 
+      // Query filtrando por quote_asset = 'USDT'
       let query = `
         SELECT id, exchange, symbol, status, pair, contract_type, base_asset, quote_asset, margin_asset, price_precision, quantity_precision, base_asset_precision, quote_precision, onboard_date, liquidation_fee, market_take_bound, updated_at
         FROM exchange_symbols
-        WHERE exchange = ?
+        WHERE exchange = ? AND quote_asset = 'USDT'
       `;
       const params = [exchange];
       if (search) {
@@ -337,6 +343,43 @@ async function dashboardRoutes(fastify, options) {
       reply.send({ success: true, data: symbols, total: symbols.length });
     } catch (error) {
       fastify.log.error('Erro ao buscar symbols:', error);
+      reply.status(500).send({ error: 'Erro interno do servidor' });
+    }
+  });
+
+  // Atualização de saldos (futuros e spot) - nova rota
+  fastify.post('/dashboard/account/:id/atualizar-saldos', {
+    schema: {
+      description: 'Atualiza os saldos de futuros e spot da conta consultando a corretora.',
+      tags: ['Dashboard'],
+      params: {
+        type: 'object',
+        properties: {
+          id: { type: 'integer' }
+        },
+        required: ['id']
+      }
+    }
+  }, async (request, reply) => {
+    const { id } = request.params;
+    try {
+      // Atualiza saldo futuros
+      const fut = await getFuturesAccountBalanceDetails(Number(id));
+      // Atualiza saldo spot
+      const spot = await getSpotAccountBalanceDetails(Number(id));
+
+      if (!fut?.success && !spot?.success) {
+        return reply.status(500).send({ error: 'Erro ao consultar saldos na corretora' });
+      }
+
+      reply.send({
+        success: true,
+        saldo_futuros: fut?.saldo,
+        saldo_spot: spot?.saldo,
+        atualizado_em: new Date().toISOString()
+      });
+    } catch (error) {
+      fastify.log.error('Erro ao atualizar saldos:', error);
       reply.status(500).send({ error: 'Erro interno do servidor' });
     }
   });
