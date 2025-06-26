@@ -250,7 +250,7 @@ async function loadCredentialsFromDatabase(accountId) {
   
   const [rows] = await db.query(
     `SELECT c.id, c.nome, c.api_key, c.api_secret, c.ws_api_key, c.ws_api_secret, 
-            co.ambiente, co.corretora, co.futures_rest_api_url, co.futures_ws_market_url, co.futures_ws_api_url
+            co.ambiente, co.corretora, co.futures_rest_api_url, co.futures_ws_market_url, co.futures_ws_api_url, co.spot_rest_api_url
      FROM contas c
      JOIN corretoras co ON c.id_corretora = co.id
      WHERE c.id = ? AND c.ativa = 1`,
@@ -290,6 +290,7 @@ async function loadCredentialsFromDatabase(accountId) {
   accountState.apiUrl = creds.futures_rest_api_url;
   accountState.wsUrl = creds.futures_ws_market_url;
   accountState.wsApiUrl = creds.futures_ws_api_url;
+  accountState.spotApiUrl = creds.spot_rest_api_url;
   accountState.ambiente = creds.ambiente;
   accountState.corretora = creds.corretora;
   accountState.nomeConta = creds.nome;
@@ -336,7 +337,7 @@ async function loadCredentialsFromDatabase(accountId) {
  * @param {Object} params - Parâmetros da requisição
  * @returns {Promise<Object>} - Resposta da API
  */
-async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}, body = null) {
+async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}, body = null, customApiUrl = null) {
   try {
     console.log(`[API] makeAuthenticatedRequest chamado: accountId=${accountId}, method=${method}, endpoint=${endpoint}`);
     
@@ -1070,8 +1071,12 @@ async function getSpotAccountBalanceDetails(accountId) {
       throw new Error(`AccountId inválido: ${accountId}`);
     }
 
-    // CHAMADA REST API PARA /api/v3/account (Spot)
-    const accountData = await makeAuthenticatedRequest(accountId, 'GET', '/api/v3/account');
+    // Buscar o estado da conta para pegar o spotApiUrl
+    const accountState = getAccountConnectionState(accountId, false);
+    const spotApiUrl = accountState?.spotApiUrl;
+
+    // Chamar makeAuthenticatedRequest com o spotApiUrl
+    const accountData = await makeAuthenticatedRequest(accountId, 'GET', '/api/v3/account', {}, null, spotApiUrl);
 
     if (!accountData || !Array.isArray(accountData.balances)) {
       throw new Error('Resposta inválida da API de saldo spot');
@@ -1746,6 +1751,7 @@ async function newStopOrder(accountId, symbol, quantity, side, stopPrice, price 
     
     // ENVIAR ORDEM
     const response = await makeAuthenticatedRequest(accountId, 'POST', '/v1/order', orderParams);
+    
     
     // ✅ VALIDAÇÃO CORRIGIDA DA RESPOSTA
     if (response && response.orderId) {
