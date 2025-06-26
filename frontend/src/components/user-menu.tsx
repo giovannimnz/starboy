@@ -113,7 +113,7 @@ export default function UserMenu({ balance, currentPrice, onAccountChange }: Use
           </Avatar>
           <div className="text-right">
             <div className="text-sm font-semibold text-foreground">
-              ${portfolioValue.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+              ${Number(portfolioValue).toFixed(2).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </div>
             <div className="text-xs text-muted-foreground">{t("portfolio")}</div>
           </div>
@@ -129,7 +129,7 @@ export default function UserMenu({ balance, currentPrice, onAccountChange }: Use
                 <div className="flex items-center justify-between">
                   <div className="flex-1">
                     <div className="text-lg font-bold text-foreground mb-2">
-                      ${portfolioValue.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                      ${Number(portfolioValue).toFixed(2).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </div>
                     <div className="relative">
                       <select

@@ -278,44 +278,46 @@ export default function TradingInterface({ currentPrice, balance, setBalance, se
             </div>
 
             {/* Order Summary */}
-            <div className="space-y-2 p-3 bg-gray-800 rounded-lg">
-              <div className="text-sm space-y-1">
-                <div className="flex justify-between">
-                  <span className="text-gray-400">Order Type:</span>
-                  <span className="text-white">{getOrderTypeLabel(orderType)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-400">Margin:</span>
-                  <span className="text-white">{marginType === "cross" ? "Cruzada" : "Isolada"}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-400">Leverage:</span>
-                  <span className="text-white">{leverage}x</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-400">Price:</span>
-                  <span className="text-white">
-                    ${needsPriceField ? limitPrice || currentPrice.toLocaleString() : currentPrice.toLocaleString()}
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-400">Amount:</span>
-                  <span className="text-white">{calculateAmount().toFixed(8)} BTC</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-400">Total:</span>
-                  <span className="text-white">${calculateTotal().toFixed(2)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-400">Available:</span>
-                  <span className="text-white">
-                    {direction === "buy"
-                      ? `$${balance.usd.toLocaleString(undefined, { maximumFractionDigits: 2 })}`
-                      : `${balance.btc.toFixed(8)} BTC`}
-                  </span>
-                </div>
-              </div>
-            </div>
+{/* 
+<div className="space-y-2 p-3 bg-gray-800 rounded-lg">
+  <div className="text-sm space-y-1">
+    <div className="flex justify-between">
+      <span className="text-gray-400">Order Type:</span>
+      <span className="text-white">{getOrderTypeLabel(orderType)}</span>
+    </div>
+    <div className="flex justify-between">
+      <span className="text-gray-400">Margin:</span>
+      <span className="text-white">{marginType === "cross" ? "Cruzada" : "Isolada"}</span>
+    </div>
+    <div className="flex justify-between">
+      <span className="text-gray-400">Leverage:</span>
+      <span className="text-white">{leverage}x</span>
+    </div>
+    <div className="flex justify-between">
+      <span className="text-gray-400">Price:</span>
+      <span className="text-white">
+        ${needsPriceField ? limitPrice || currentPrice.toLocaleString() : currentPrice.toLocaleString()}
+      </span>
+    </div>
+    <div className="flex justify-between">
+      <span className="text-gray-400">Amount:</span>
+      <span className="text-white">{calculateAmount().toFixed(8)} BTC</span>
+    </div>
+    <div className="flex justify-between">
+      <span className="text-gray-400">Total:</span>
+      <span className="text-white">${calculateTotal().toFixed(2)}</span>
+    </div>
+    <div className="flex justify-between">
+      <span className="text-gray-400">Available:</span>
+      <span className="text-white">
+        {direction === "buy"
+          ? `$${balance.usd.toLocaleString(undefined, { maximumFractionDigits: 2 })}`
+          : `${balance.btc.toFixed(8)} BTC`}
+      </span>
+    </div>
+  </div>
+</div>
+*/}
 
             {/* Execute Button */}
             <Button

@@ -804,7 +804,7 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
                                       </div>
                                       {account.saldo !== undefined && (
                                         <div className="text-orange-400 text-sm">
-                                          Saldo: ${account.saldo?.toLocaleString()}
+                                          Saldo: ${Number(account.saldo).toFixed(2).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                         </div>
                                       )}
                                     </div>

@@ -176,7 +176,7 @@ async function checkAndCreateTables() {
           ativa TINYINT DEFAULT 1,
           max_posicoes INT DEFAULT 10,
           saldo_base_calculo DECIMAL(15,8) DEFAULT 0,
-          saldo DECIMAL(15,8) DEFAULT 0,
+          saldo_futuros DECIMAL(15,8) DEFAULT 0,
           data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
           ultima_atualizacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
           celular VARCHAR(20),
@@ -1024,9 +1024,9 @@ function formatDateForMySQL(date) {
 }
 
 /**
- * Atualiza o saldo da conta e possivelmente o saldo_base_calculo
+ * Atualiza o saldo_futuros da conta e possivelmente o saldo_base_calculo_futuros
  * @param {Object} db - Conexão com o banco de dados
- * @param {number} saldo - Novo valor de saldo
+ * @param {number} saldo_futuros - Novo valor de saldo
  * @param {number} accountId - ID da conta (obrigatório)
  * @returns {Promise<Object>} - Objeto com os valores atualizados
  */
@@ -1040,9 +1040,9 @@ async function updateAccountBalance(db, saldo, accountId) {
     await connection.beginTransaction();
 
     try {
-      // 1. Buscar saldo atual e saldo_base_calculo para conta específica
+      // 1. Buscar saldo_futuros atual e saldo_base_calculo_futuros para conta específica
       const [currentAccount] = await connection.query(
-          'SELECT saldo, saldo_base_calculo FROM contas WHERE id = ?',
+          'SELECT saldo, saldo_base_calculo_futuros FROM contas WHERE id = ?',
           [accountId]
       );
 
@@ -1050,23 +1050,23 @@ async function updateAccountBalance(db, saldo, accountId) {
         throw new Error(`Conta com ID ${accountId} não encontrada`);
       }
 
-      const currentSaldo = parseFloat(currentAccount[0].saldo || 0);
-      const currentBaseCalculo = parseFloat(currentAccount[0].saldo_base_calculo || 0);
+      const currentSaldo = parseFloat(currentAccount[0].saldo_futuros || 0);
+      const currentBaseCalculo = parseFloat(currentAccount[0].saldo_base_calculo_futuros || 0);
       
-      // ✅ CORREÇÃO: Lógica correta do saldo_base_calculo
-      // saldo_base_calculo SÓ AUMENTA se o novo saldo for maior
+      // ✅ CORREÇÃO: Lógica correta do saldo_base_calculo_futuros
+      // saldo_base_calculo_futuros SÓ AUMENTA se o novo saldo_futuros for maior
       let novoBaseCalculo = currentBaseCalculo;
       
-      if (saldo > currentBaseCalculo) {
+      if (saldo_futuros > currentBaseCalculo) {
         novoBaseCalculo = saldo;
-        console.log(`[DB] Atualizando saldo_base_calculo da conta ${accountId}: ${currentBaseCalculo.toFixed(2)} → ${novoBaseCalculo.toFixed(2)}`);
+        console.log(`[DB] Atualizando saldo_base_calculo_futuros da conta ${accountId}: ${currentBaseCalculo.toFixed(2)} → ${novoBaseCalculo.toFixed(2)}`);
       } else {
-        console.log(`[DB] Mantendo saldo_base_calculo da conta ${accountId}: ${currentBaseCalculo.toFixed(2)} (saldo atual: ${saldo.toFixed(2)})`);
+        console.log(`[DB] Mantendo saldo_base_calculo_futuros da conta ${accountId}: ${currentBaseCalculo.toFixed(2)} (saldo_futuros atual: ${saldo.toFixed(2)})`);
       }
 
       // 3. Atualizar valores no banco
       await connection.query(
-          'UPDATE contas SET saldo = ?, saldo_base_calculo = ?, ultima_atualizacao = NOW() WHERE id = ?',
+          'UPDATE contas SET saldo_futuros = ?, saldo_base_calculo_futuros = ?, ultima_atualizacao = NOW() WHERE id = ?',
           [saldo, novoBaseCalculo, accountId]
       );
 
@@ -1075,7 +1075,7 @@ async function updateAccountBalance(db, saldo, accountId) {
       return {
         accountId: accountId,
         saldo: saldo,
-        saldo_base_calculo: novoBaseCalculo
+        saldo_base_calculo_futuros: novoBaseCalculo
       };
     } catch (error) {
       await connection.rollback();
@@ -1084,16 +1084,16 @@ async function updateAccountBalance(db, saldo, accountId) {
       connection.release();
     }
   } catch (error) {
-    console.error(`[DB] Erro ao atualizar saldo da conta ${accountId}: ${error.message}`);
+    console.error(`[DB] Erro ao atualizar saldo_futuros da conta ${accountId}: ${error.message}`);
     throw error;
   }
 }
 
 /**
- * Obtém o saldo_base_calculo do banco de dados
+ * Obtém o saldo_base_calculo_futuros do banco de dados
  * @param {Object} db - Conexão com o banco de dados
  * @param {number} accountId - ID da conta (obrigatório)
- * @returns {Promise<number>} - Valor do saldo_base_calculo
+ * @returns {Promise<number>} - Valor do saldo_base_calculo_futuros
  */
 async function getBaseCalculoBalance(db, accountId) {
   // CORREÇÃO: Validar accountId obrigatório
@@ -1104,7 +1104,7 @@ async function getBaseCalculoBalance(db, accountId) {
   try {
     // CORREÇÃO: Usar tabela 'contas' em vez de 'conta'
     const [rows] = await db.query(
-      'SELECT saldo_base_calculo FROM contas WHERE id = ?', 
+      'SELECT saldo_base_calculo_futuros FROM contas WHERE id = ?', 
       [accountId]
     );
     
@@ -1112,9 +1112,9 @@ async function getBaseCalculoBalance(db, accountId) {
       throw new Error(`Conta ${accountId} não encontrada`);
     }
     
-    return parseFloat(rows[0].saldo_base_calculo || 0);
+    return parseFloat(rows[0].saldo_base_calculo_futuros || 0);
   } catch (error) {
-    console.error(`[DB] Erro ao obter saldo_base_calculo da conta ${accountId}:`, error.message);
+    console.error(`[DB] Erro ao obter saldo_base_calculo_futuros da conta ${accountId}:`, error.message);
     throw error;
   }
 }

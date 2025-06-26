@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import TradingInterface from "@/components/trading-interface"
@@ -12,6 +12,7 @@ import { BarChart3, Settings, History, TrendingUp } from "lucide-react"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { useLanguage } from "@/contexts/language-context"
 import TradingViewChart from "@/components/tradingview-chart"
+import { fetchBrokerBalance } from "@/lib/api"
 
 export default function Dashboard() {
   const { t } = useLanguage()
@@ -23,6 +24,7 @@ export default function Dashboard() {
   const [isRunning, setIsRunning] = useState(false)
   const [trades, setTrades] = useState<any[]>([])
   const [selectedAccount, setSelectedAccount] = useState("binance.futures")
+  const [selectedAccountId, setSelectedAccountId] = useState("")
 
   // Balances separados para cada conta
   const [balances, setBalances] = useState({
@@ -54,6 +56,24 @@ export default function Dashboard() {
     setSelectedAccount(account)
   }
 
+  useEffect(() => {
+    async function loadBalance() {
+      try {
+        const data = await fetchBrokerBalance(selectedAccountId)
+        setBalances((prev) => ({
+          ...prev,
+          [selectedAccount]: {
+            usd: data.usd,
+            btc: data.btc,
+          },
+        }))
+      } catch (e) {
+        // Trate erro
+      }
+    }
+    if (selectedAccountId) loadBalance()
+  }, [selectedAccountId, selectedAccount])
+
   const currentBalance = getCurrentBalance()
   const portfolioValue = currentBalance.usd + currentBalance.btc * currentPrice
 
@@ -83,7 +103,7 @@ export default function Dashboard() {
               </CardHeader>
               <CardContent>
                 <div className="text-3xl font-bold text-foreground">
-                  ${portfolioValue.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                  ${Number(portfolioValue).toFixed(2).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 </div>
                 <div className="text-xs text-muted-foreground mt-1">
                   {selectedAccount === "binance.spot" ? "Binance Spot" : "Binance Futures"}

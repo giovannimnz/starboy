@@ -1058,13 +1058,13 @@ function getTimestamp() {
 }
 
 /**
- * Obtém detalhes do saldo da conta de futuros via REST API
+ * Obtém detalhes do saldo_futuros da conta de futuros via REST API
  * @param {number} accountId - ID da conta
- * @returns {Promise<Object>} - Detalhes do saldo formatados
+ * @returns {Promise<Object>} - Detalhes do saldo_futuros formatados
  */
 async function getFuturesAccountBalanceDetails(accountId) {
   try {
-    console.log(`[API] Obtendo detalhes do saldo para conta ${accountId}...`);
+    console.log(`[API] Obtendo detalhes do saldo_futuros para conta ${accountId}...`);
     
     if (!accountId || typeof accountId !== 'number') {
       throw new Error(`AccountId inválido: ${accountId}`);
@@ -1077,18 +1077,18 @@ async function getFuturesAccountBalanceDetails(accountId) {
       throw new Error('Resposta inválida da API de saldo');
     }
 
-    // PROCESSAR DADOS DO SALDO USDT
+    // PROCESSAR DADOS DO saldo_futuros USDT
     const usdtBalance = balanceData.find(asset => asset.asset === 'USDT');
     
     if (!usdtBalance) {
-      throw new Error('Saldo USDT não encontrado na resposta');
+      throw new Error('saldo_futuros USDT não encontrado na resposta');
     }
 
     const saldoTotal = parseFloat(usdtBalance.balance || '0');
     const saldoDisponivel = parseFloat(usdtBalance.availableBalance || '0');
     const saldoUtilizado = saldoTotal - saldoDisponivel;
 
-    console.log(`[API] ✅ Saldo obtido para conta ${accountId}:`);
+    console.log(`[API] ✅ saldo_futuros obtido para conta ${accountId}:`);
     console.log(`  - Total: ${saldoTotal.toFixed(2)} USDT`);
     console.log(`  - Disponível: ${saldoDisponivel.toFixed(2)} USDT`);
     console.log(`  - Em uso: ${saldoUtilizado.toFixed(2)} USDT`);
@@ -1096,32 +1096,32 @@ async function getFuturesAccountBalanceDetails(accountId) {
     // ATUALIZAR NO BANCO DE DADOS
     const db = await getDatabaseInstance(accountId);
     
-    // Obter saldo anterior para comparação
+    // Obter saldo_futuros anterior para comparação
     const [previousBalance] = await db.query(
-      'SELECT saldo, saldo_base_calculo FROM contas WHERE id = ?',
+      'SELECT saldo, saldo_base_calculo_futuros FROM contas WHERE id = ?',
       [accountId]
     );
     
-    const previousSaldo = previousBalance.length > 0 ? parseFloat(previousBalance[0].saldo || '0') : 0;
-    const previousBaseCalculo = previousBalance.length > 0 ? parseFloat(previousBalance[0].saldo_base_calculo || '0') : 0;
+    const previousSaldoFuturos = previousBalance.length > 0 ? parseFloat(previousBalance[0].saldo_futuros || '0') : 0;
+    const previousBaseCalculo = previousBalance.length > 0 ? parseFloat(previousBalance[0].saldo_base_calculo_futuros || '0') : 0;
     
     // ✅ CORREÇÃO: Lógica correta do saldo_base_calculo
-    // saldo_base_calculo SÓ AUMENTA, NUNCA DIMINUI
+    // saldo_base_calculo_futuros SÓ AUMENTA, NUNCA DIMINUI
     let novaBaseCalculo = previousBaseCalculo;
     if (saldoDisponivel > previousBaseCalculo) {
       novaBaseCalculo = saldoDisponivel;
-      console.log(`[API] Saldo base de cálculo atualizado: ${previousBaseCalculo.toFixed(2)} → ${novaBaseCalculo.toFixed(2)}`);
+      console.log(`[API] saldo_futuros base de cálculo atualizado: ${previousBaseCalculo.toFixed(2)} → ${novaBaseCalculo.toFixed(2)}`);
     } else {
-      console.log(`[API] Saldo base de cálculo mantido: ${previousBaseCalculo.toFixed(2)} (saldo atual: ${saldoDisponivel.toFixed(2)})`);
+      console.log(`[API] saldo_futuros base de cálculo mantido: ${previousBaseCalculo.toFixed(2)} (saldo_futuros atual: ${saldoDisponivel.toFixed(2)})`);
     }
     
     console.log(`[API] Cálculo da base:`);
-    console.log(`  - Saldo atual: ${saldoDisponivel.toFixed(2)} USDT`);
+    console.log(`  - saldo_futuros atual: ${saldoDisponivel.toFixed(2)} USDT`);
     console.log(`  - Base anterior: ${previousBaseCalculo.toFixed(2)} USDT`);
     console.log(`  - Nova base: ${novaBaseCalculo.toFixed(2)} USDT`);
     
     await db.query(
-      'UPDATE contas SET saldo = ?, saldo_base_calculo = ?, ultima_atualizacao = NOW() WHERE id = ?',
+      'UPDATE contas SET saldo_futuros = ?, saldo_base_calculo_futuros = ?, ultima_atualizacao = NOW() WHERE id = ?',
       [saldoDisponivel, novaBaseCalculo, accountId]
     );
 
@@ -1132,14 +1132,14 @@ async function getFuturesAccountBalanceDetails(accountId) {
       saldo: saldoTotal,
       saldo_disponivel: saldoDisponivel,
       saldo_base_calculo: novaBaseCalculo,
-      previousSaldo: previousSaldo,
+      previousSaldoFuturos: previousSaldoFuturos,
       previousBaseCalculo: previousBaseCalculo,
       assets: balanceData,
       timestamp: new Date().toISOString()
     };
     
   } catch (error) {
-    console.error(`[API] ❌ Erro ao obter detalhes do saldo para conta ${accountId}:`, error.message);
+    console.error(`[API] ❌ Erro ao obter detalhes do saldo_futuros para conta ${accountId}:`, error.message);
     
     return {
       success: false,
@@ -1148,7 +1148,7 @@ async function getFuturesAccountBalanceDetails(accountId) {
       saldo: 0,
       saldo_disponivel: 0,
       saldo_base_calculo: 0,
-      previousSaldo: 0,
+      previousSaldoFuturos: 0,
       previousBaseCalculo: 0,
       timestamp: new Date().toISOString()
     };
