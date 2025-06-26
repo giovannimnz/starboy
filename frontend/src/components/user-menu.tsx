@@ -8,6 +8,7 @@ import { RefreshCw, User, Globe, HelpCircle, LogOut, ChevronDown, Check } from "
 import { useAuth } from "@/contexts/auth-context"
 import { useLanguage } from "@/contexts/language-context"
 import ProfileModal from "./profile-modal"
+import { api } from "@/lib/api"
 
 interface UserMenuProps {
   balance: {
@@ -26,6 +27,9 @@ export default function UserMenu({ balance, currentPrice, onAccountChange }: Use
   const [selectedAccount, setSelectedAccount] = useState("binance.futures")
   const [showLanguages, setShowLanguages] = useState(false)
   const [showProfileModal, setShowProfileModal] = useState(false)
+  const [brokerAccounts, setBrokerAccounts] = useState<any[]>([])
+  const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null)
+  const [currentBalance, setCurrentBalance] = useState({ usd: 0, btc: 0 })
   const menuRef = useRef<HTMLDivElement>(null)
 
   const portfolioValue = balance.usd + balance.btc * currentPrice
@@ -56,16 +60,67 @@ export default function UserMenu({ balance, currentPrice, onAccountChange }: Use
     }
   }, [])
 
-  const handleRefreshBalance = async () => {
-    setIsRefreshing(true)
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 1000))
-    setIsRefreshing(false)
+  // Carregar contas do usuário ao abrir menu
+  useEffect(() => {
+    if (user?.id) {
+      api.getUserBrokerAccounts(user.id).then((res) => {
+        if (res.success) setBrokerAccounts(res.data)
+      })
+    }
+  }, [user?.id])
+
+  // Atualizar saldo ao trocar de conta selecionada
+  useEffect(() => {
+    if (selectedAccountId) {
+      loadBalance(selectedAccountId)
+    }
+  }, [selectedAccountId])
+
+  // Função para carregar saldo real do banco
+  const loadBalance = async (accountId: number) => {
+    try {
+      // Descobrir se é spot ou futuros pelo selectedAccount
+      if (selectedAccount === "binance.spot") {
+        const res = await api.getAccountSpotBalance(accountId)
+        setCurrentBalance({ usd: Number(res.saldo_spot), btc: 0 })
+      } else {
+        const res = await api.getAccountFuturesBalance(accountId)
+        setCurrentBalance({ usd: Number(res.saldo_futuros), btc: 0 })
+      }
+    } catch (e) {
+      setCurrentBalance({ usd: 0, btc: 0 })
+    }
   }
 
+  // Ao trocar de conta no select
   const handleAccountChange = (accountKey: string) => {
     setSelectedAccount(accountKey)
+    // Buscar o id da conta selecionada
+    const acc = brokerAccounts.find((a) =>
+      accountKey === "binance.spot"
+        ? a.nome_corretora.toLowerCase() === "binance" && a.nome.toLowerCase().includes("spot")
+        : a.nome_corretora.toLowerCase() === "binance" && a.nome.toLowerCase().includes("futuro")
+    )
+    setSelectedAccountId(acc?.id || null)
     onAccountChange?.(accountKey)
+  }
+
+  // Atualizar saldo na corretora e recarregar do banco
+  const handleRefreshBalance = async () => {
+    setIsRefreshing(true)
+    try {
+      if (selectedAccountId) {
+        // Atualiza saldo na corretora (futuros e spot)
+        await api.updateAccountBalance(selectedAccountId)
+        await api.getAccountFuturesBalance(selectedAccountId)
+        await api.getAccountSpotBalance(selectedAccountId)
+        // Recarrega saldo do banco
+        await loadBalance(selectedAccountId)
+      }
+    } catch (e) {
+      // Trate erro
+    }
+    setIsRefreshing(false)
   }
 
   const handleLanguageChange = (langKey: string) => {
@@ -115,7 +170,9 @@ export default function UserMenu({ balance, currentPrice, onAccountChange }: Use
             <div className="text-sm font-semibold text-foreground">
               ${Number(portfolioValue).toFixed(2).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </div>
-            <div className="text-xs text-muted-foreground">{t("portfolio")}</div>
+            <div className="text-xs text-muted-foreground">
+              {selectedAccount === "binance.spot" ? "Spot" : "Futuros"}
+            </div>
           </div>
           <ChevronDown className={`h-4 w-4 text-muted-foreground transition-transform ${isOpen ? "rotate-180" : ""}`} />
         </Button>

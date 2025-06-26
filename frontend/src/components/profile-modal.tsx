@@ -24,8 +24,10 @@ interface BrokerAccount {
   nome_corretora: string
   ambiente: string
   ativa: boolean
-  saldo?: number
-  saldo_base_calculo?: number
+  saldo_futuros?: number
+  saldo_spot?: number
+  saldo_base_calculo_futuros?: number
+  saldo_base_calculo_spot?: number
   data_criacao: string
   ultima_atualizacao?: string
 }
@@ -427,16 +429,29 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
   const handleTestConnection = async (account: BrokerAccount) => {
     setIsTestingConnection(true)
     try {
-      const response = await api.testBrokerConnection(account.id)
+      // Atualiza saldo futuros
+      const fut = await api.getAccountFuturesBalance(account.id)
+      // Atualiza saldo spot
+      const spot = await api.getAccountSpotBalance(account.id)
 
-      if (response.success) {
-        setSuccessMessage(`Conexão com "${account.nome}" testada com sucesso!`)
-        setShowSuccessModal(true)
-      } else {
-        alert(`Erro ao testar conexão: ${response.error || 'Erro desconhecido'}`)
-      }
+      // Atualiza na lista local (opcional, para refletir imediatamente)
+      setBrokerAccounts((prev) =>
+        prev.map((acc) =>
+          acc.id === account.id
+            ? {
+                ...acc,
+                saldo_futuros: fut.saldo_futuros,
+                saldo_spot: spot.saldo_spot,
+              }
+            : acc
+        )
+      )
+
+      setSuccessMessage(
+        `Conexão testada e saldos atualizados!\nFuturos: $${Number(fut.saldo_futuros).toFixed(2)} | Spot: $${Number(spot.saldo_spot).toFixed(2)}`
+      )
+      setShowSuccessModal(true)
     } catch (error) {
-      console.error("Erro ao testar conexão:", error)
       alert(`Erro ao testar conexão: ${error.message}`)
     } finally {
       setIsTestingConnection(false)
@@ -787,14 +802,9 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
                             {brokerAccounts.map((account) => {
                               const brokerInfo = getBrokerIcon(account.nome_corretora)
                               return (
-                                <div
-                                  key={account.id}
-                                  className="flex items-center justify-between p-3 bg-gray-700 rounded-lg border border-gray-600"
-                                >
+                                <div key={account.id} className="flex items-center justify-between p-3 bg-gray-700 rounded-lg border border-gray-600">
                                   <div className="flex items-center space-x-3">
-                                    <div
-                                      className={`w-8 h-8 ${brokerInfo.color} rounded flex items-center justify-center`}
-                                    >
+                                    <div className={`w-8 h-8 ${brokerInfo.color} rounded flex items-center justify-center`}>
                                       <span className="text-white font-bold text-sm">{brokerInfo.icon}</span>
                                     </div>
                                     <div>
@@ -802,11 +812,10 @@ export default function ProfileModal({ isOpen, onClose }: ProfileModalProps) {
                                       <div className="text-gray-400 text-sm">
                                         {account.nome_corretora} ({account.ambiente.toUpperCase()})
                                       </div>
-                                      {account.saldo !== undefined && (
-                                        <div className="text-orange-400 text-sm">
-                                          Saldo: ${Number(account.saldo).toFixed(2).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                        </div>
-                                      )}
+                                      <div className="text-orange-400 text-xs mt-1">
+                                        Futuros: ${Number(account.saldo_futuros ?? 0).toFixed(2)}<br />
+                                        Spot: ${Number(account.saldo_spot ?? 0).toFixed(2)}
+                                      </div>
                                     </div>
                                     <CheckCircle className="h-4 w-4 text-green-500" />
                                   </div>

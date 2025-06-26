@@ -28,8 +28,10 @@ async function accountsRoutes(fastify, options) {
           c.descricao,
           c.id_corretora,
           c.ativa,
-          c.saldo,
-          c.saldo_base_calculo,
+          c.saldo_futuros,
+          c.saldo_spot,
+          c.saldo_base_calculo_futuros,
+          c.saldo_base_calculo_spot,
           c.data_criacao,
           c.ultima_atualizacao,
           cor.corretora as nome_corretora,
@@ -323,6 +325,52 @@ async function accountsRoutes(fastify, options) {
         success: false,
         error: 'Erro ao testar conexão com a corretora' 
       });
+    }
+  });
+
+  // GET /accounts/:id/saldo-futuros
+  fastify.get('/accounts/:id/saldo-futuros', async (request, reply) => {
+    const { id } = request.params;
+    const db = await getDatabaseInstance();
+    try {
+      const [rows] = await db.query(
+        `SELECT saldo_futuros, saldo_base_calculo_futuros, ultima_atualizacao FROM contas WHERE id = ?`, [id]
+      );
+      if (rows.length === 0) {
+        return reply.status(404).send({ error: 'Conta não encontrada' });
+      }
+      reply.send({
+        success: true,
+        saldo_futuros: rows[0].saldo_futuros,
+        saldo_base_calculo_futuros: rows[0].saldo_base_calculo_futuros,
+        ultima_atualizacao: rows[0].ultima_atualizacao
+      });
+    } catch (error) {
+      fastify.log.error('Erro ao buscar saldo futuros:', error);
+      reply.status(500).send({ error: 'Erro interno do servidor' });
+    }
+  });
+
+  // GET /accounts/:id/saldo-spot
+  fastify.get('/accounts/:id/saldo-spot', async (request, reply) => {
+    const { id } = request.params;
+    const db = await getDatabaseInstance();
+    try {
+      const [rows] = await db.query(
+        `SELECT saldo_spot, saldo_base_calculo_spot, ultima_atualizacao FROM contas WHERE id = ?`, [id]
+      );
+      if (rows.length === 0) {
+        return reply.status(404).send({ error: 'Conta não encontrada' });
+      }
+      reply.send({
+        success: true,
+        saldo_spot: rows[0].saldo_spot,
+        saldo_base_calculo_spot: rows[0].saldo_base_calculo_spot,
+        ultima_atualizacao: rows[0].ultima_atualizacao
+      });
+    } catch (error) {
+      fastify.log.error('Erro ao buscar saldo spot:', error);
+      reply.status(500).send({ error: 'Erro interno do servidor' });
     }
   });
 }

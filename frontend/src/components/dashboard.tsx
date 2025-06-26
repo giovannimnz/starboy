@@ -12,10 +12,12 @@ import { BarChart3, Settings, History, TrendingUp } from "lucide-react"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { useLanguage } from "@/contexts/language-context"
 import TradingViewChart from "@/components/tradingview-chart"
-import { fetchBrokerBalance } from "@/lib/api"
+import { api } from "@/lib/api"
+import { useAuth } from "@/contexts/auth-context"
 
 export default function Dashboard() {
   const { t } = useLanguage()
+  const { user } = useAuth()
   const [activeTab, setActiveTab] = useState("dashboard")
   const [currentPrice, setCurrentPrice] = useState(29876.54)
   const [priceChange, setPriceChange] = useState(2.34)
@@ -24,7 +26,10 @@ export default function Dashboard() {
   const [isRunning, setIsRunning] = useState(false)
   const [trades, setTrades] = useState<any[]>([])
   const [selectedAccount, setSelectedAccount] = useState("binance.futures")
-  const [selectedAccountId, setSelectedAccountId] = useState("")
+  const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null)
+  const [currentBalance, setCurrentBalance] = useState({ usd: 0, btc: 0 })
+  const [spotBalance, setSpotBalance] = useState(0)
+  const [futuresBalance, setFuturesBalance] = useState(0)
 
   // Balances separados para cada conta
   const [balances, setBalances] = useState({
@@ -44,7 +49,7 @@ export default function Dashboard() {
   }
 
   // Função para atualizar o saldo da conta selecionada
-  const setCurrentBalance = (newBalance: { usd: number; btc: number }) => {
+  const setCurrentBalanceState = (newBalance: { usd: number; btc: number }) => {
     setBalances((prev) => ({
       ...prev,
       [selectedAccount]: newBalance,
@@ -56,26 +61,54 @@ export default function Dashboard() {
     setSelectedAccount(account)
   }
 
+  // Carregar contas do usuário e setar o ID da conta padrão
   useEffect(() => {
-    async function loadBalance() {
-      try {
-        const data = await fetchBrokerBalance(selectedAccountId)
-        setBalances((prev) => ({
-          ...prev,
-          [selectedAccount]: {
-            usd: data.usd,
-            btc: data.btc,
-          },
-        }))
-      } catch (e) {
-        // Trate erro
+    async function loadAccounts() {
+      const res = await api.getUserBrokerAccounts(user.id)
+      if (res.success && res.data.length > 0) {
+        setSelectedAccountId(res.data[0].id)
       }
     }
-    if (selectedAccountId) loadBalance()
+    if (user?.id) loadAccounts()
+  }, [user?.id])
+
+  // Buscar saldo real ao trocar de conta
+  useEffect(() => {
+    async function loadBalance() {
+      if (!selectedAccountId) return
+      if (selectedAccount === "binance.spot") {
+        const res = await api.getAccountSpotBalance(selectedAccountId)
+        setCurrentBalance({ usd: Number(res.saldo_spot), btc: 0 })
+      } else {
+        const res = await api.getAccountFuturesBalance(selectedAccountId)
+        setCurrentBalance({ usd: Number(res.saldo_futuros), btc: 0 })
+      }
+    }
+    loadBalance()
   }, [selectedAccountId, selectedAccount])
 
-  const currentBalance = getCurrentBalance()
-  const portfolioValue = currentBalance.usd + currentBalance.btc * currentPrice
+  useEffect(() => {
+    async function loadSpot() {
+      if (selectedAccountId) {
+        const res = await api.getAccountSpotBalance(selectedAccountId)
+        setSpotBalance(Number(res.saldo_spot))
+      }
+    }
+    loadSpot()
+  }, [selectedAccountId])
+
+  useEffect(() => {
+    async function loadFutures() {
+      if (selectedAccountId) {
+        const res = await api.getAccountFuturesBalance(selectedAccountId)
+        setFuturesBalance(Number(res.saldo_futuros))
+      }
+    }
+    loadFutures()
+  }, [selectedAccountId])
+
+  const currentBalanceState = getCurrentBalance()
+  const portfolioValue = currentBalanceState.usd + currentBalanceState.btc * currentPrice
 
   return (
     <div className="min-h-screen bg-dark-gradient">
@@ -87,26 +120,39 @@ export default function Dashboard() {
               <h1 className="text-4xl font-bold text-gradient mb-2">{t("atius.capital")}</h1>
               <p className="text-muted-foreground font-medium">{t("professional.trading.platform")}</p>
             </div>
-            <div className="flex items-center space-x-4">
-              <ThemeToggle />
-              <UserMenu balance={currentBalance} currentPrice={currentPrice} onAccountChange={handleAccountChange} />
+            <div className="flex flex-col items-end space-y-1">
+              <div className="flex items-center space-x-4">
+                <ThemeToggle />
+                <UserMenu balance={currentBalance} currentPrice={currentPrice} onAccountChange={handleAccountChange} />
+              </div>
             </div>
           </div>
 
           {/* Stats Cards */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            <Card className="bg-card-dark shadow-soft-md border-border hover:shadow-soft-lg transition-shadow duration-200">
-              <CardHeader className="pb-3">
+            <Card className="bg-card-dark shadow-soft-md border-border hover:shadow-soft-lg transition-shadow duration-200 relative">
+              <CardHeader className="pb-3 flex flex-row justify-between items-start">
                 <CardTitle className="text-sm font-semibold text-muted-foreground uppercase tracking-wide">
                   Saldo da conta
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="text-3xl font-bold text-foreground">
-                  ${Number(portfolioValue).toFixed(2).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                <div className="flex items-center justify-between">
+                  <div className="text-3xl font-bold text-foreground">
+                    ${Number(currentBalance.usd).toFixed(2).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                  </div>
+                  <div className="text-xs text-muted-foreground opacity-70 ml-4">
+                    {selectedAccount === "binance.spot"
+                      ? `Futuros: $${Number(futuresBalance).toFixed(2)}`
+                      : `Spot: $${Number(spotBalance).toFixed(2)}`}
+                  </div>
                 </div>
                 <div className="text-xs text-muted-foreground mt-1">
                   {selectedAccount === "binance.spot" ? "Binance Spot" : "Binance Futures"}
+                </div>
+                {/* Totalizador abaixo, à direita */}
+                <div className="text-xs text-muted-foreground opacity-70 mt-2 text-right">
+                  Totalizador: ${Number(currentBalance.usd + spotBalance).toFixed(2)}
                 </div>
               </CardContent>
             </Card>
@@ -200,7 +246,7 @@ export default function Dashboard() {
                   <TradingInterface
                     currentPrice={currentPrice}
                     balance={currentBalance}
-                    setBalance={setCurrentBalance}
+                    setBalance={setCurrentBalanceState}
                     setTrades={setTrades}
                   />
                 </div>

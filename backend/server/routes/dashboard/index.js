@@ -235,6 +235,111 @@ async function dashboardRoutes(fastify, options) {
     // Exemplo: apenas confirma a seleção
     reply.send({ success: true, message: `Símbolo ${symbol} selecionado para a conta ${id}.` });
   });
+
+  // GET /dashboard/account/:id/saldo-futuros
+  fastify.get('/dashboard/account/:id/saldo-futuros', async (request, reply) => {
+    const { id } = request.params;
+    const db = await getDatabaseInstance();
+    try {
+      const [rows] = await db.query(
+        `SELECT saldo_futuros, saldo_base_calculo_futuros, ultima_atualizacao FROM contas WHERE id = ?`, [id]
+      );
+      if (rows.length === 0) {
+        return reply.status(404).send({ error: 'Conta não encontrada' });
+      }
+      reply.send({
+        success: true,
+        saldo_futuros: rows[0].saldo_futuros,
+        saldo_base_calculo_futuros: rows[0].saldo_base_calculo_futuros,
+        ultima_atualizacao: rows[0].ultima_atualizacao
+      });
+    } catch (error) {
+      fastify.log.error('Erro ao buscar saldo futuros:', error);
+      reply.status(500).send({ error: 'Erro interno do servidor' });
+    }
+  });
+
+  // GET /dashboard/account/:id/saldo-spot
+  fastify.get('/dashboard/account/:id/saldo-spot', async (request, reply) => {
+    const { id } = request.params;
+    const db = await getDatabaseInstance();
+    try {
+      const [rows] = await db.query(
+        `SELECT saldo_spot, saldo_base_calculo_spot, ultima_atualizacao FROM contas WHERE id = ?`, [id]
+      );
+      if (rows.length === 0) {
+        return reply.status(404).send({ error: 'Conta não encontrada' });
+      }
+      reply.send({
+        success: true,
+        saldo_spot: rows[0].saldo_spot,
+        saldo_base_calculo_spot: rows[0].saldo_base_calculo_spot,
+        ultima_atualizacao: rows[0].ultima_atualizacao
+      });
+    } catch (error) {
+      fastify.log.error('Erro ao buscar saldo spot:', error);
+      reply.status(500).send({ error: 'Erro interno do servidor' });
+    }
+  });
+
+  // GET /dashboard/account/:id/symbols
+  fastify.get('/dashboard/account/:id/symbols', {
+    schema: {
+      description: 'Lista todos os symbols de futuros disponíveis para a corretora da conta selecionada.',
+      tags: ['Dashboard'],
+      params: {
+        type: 'object',
+        properties: {
+          id: { type: 'integer' }
+        },
+        required: ['id']
+      },
+      querystring: {
+        type: 'object',
+        properties: {
+          search: { type: 'string', description: 'Filtro de pesquisa (opcional)' }
+        }
+      }
+    }
+  }, async (request, reply) => {
+    const { id } = request.params;
+    const { search } = request.query;
+    const db = await getDatabaseInstance();
+    try {
+      // 1. Buscar id_corretora da conta
+      const [contaRows] = await db.query('SELECT id_corretora FROM contas WHERE id = ?', [id]);
+      if (!contaRows.length) {
+        return reply.status(404).send({ error: 'Conta não encontrada' });
+      }
+      const idCorretora = contaRows[0].id_corretora;
+
+      // 2. Buscar nome da corretora
+      const [corretoraRows] = await db.query('SELECT corretora FROM corretoras WHERE id = ?', [idCorretora]);
+      if (!corretoraRows.length) {
+        return reply.status(404).send({ error: 'Corretora não encontrada' });
+      }
+      const exchange = corretoraRows[0].corretora.toLowerCase();
+
+      // 3. Buscar symbols de futuros para essa corretora
+      let query = `
+        SELECT id, exchange, symbol, status, pair, contract_type, base_asset, quote_asset, margin_asset, price_precision, quantity_precision, base_asset_precision, quote_precision, onboard_date, liquidation_fee, market_take_bound, updated_at
+        FROM exchange_symbols
+        WHERE exchange = ? AND contract_type IS NOT NULL
+      `;
+      const params = [exchange];
+      if (search) {
+        query += ` AND (symbol LIKE ? OR pair LIKE ? OR base_asset LIKE ? OR quote_asset LIKE ?)`;
+        params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
+      }
+      query += ' ORDER BY symbol ASC';
+
+      const [symbols] = await db.query(query, params);
+      reply.send({ success: true, data: symbols, total: symbols.length });
+    } catch (error) {
+      fastify.log.error('Erro ao buscar symbols:', error);
+      reply.status(500).send({ error: 'Erro interno do servidor' });
+    }
+  });
 }
 
 module.exports = dashboardRoutes;
