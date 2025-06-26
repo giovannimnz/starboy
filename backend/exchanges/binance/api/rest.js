@@ -1058,6 +1058,94 @@ function getTimestamp() {
 }
 
 /**
+ * Obtém detalhes do saldo_spot da conta spot via REST API
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Detalhes do saldo_spot formatados
+ */
+async function getSpotAccountBalanceDetails(accountId) {
+  try {
+    console.log(`[API] Obtendo detalhes do saldo_spot para conta ${accountId}...`);
+
+    if (!accountId || typeof accountId !== 'number') {
+      throw new Error(`AccountId inválido: ${accountId}`);
+    }
+
+    // CHAMADA REST API PARA /api/v3/account (Spot)
+    const accountData = await makeAuthenticatedRequest(accountId, 'GET', '/api/v3/account');
+
+    if (!accountData || !Array.isArray(accountData.balances)) {
+      throw new Error('Resposta inválida da API de saldo spot');
+    }
+
+    // Encontrar saldo USDT
+    const usdtBalance = accountData.balances.find(asset => asset.asset === 'USDT');
+    if (!usdtBalance) {
+      throw new Error('Saldo USDT não encontrado na resposta spot');
+    }
+
+    const saldoTotal = parseFloat(usdtBalance.free || '0') + parseFloat(usdtBalance.locked || '0');
+    const saldoDisponivelSpot = parseFloat(usdtBalance.free || '0');
+
+    console.log(`[API] ✅ saldo_spot obtido para conta ${accountId}:`);
+    console.log(`  - Total: ${saldoTotal.toFixed(2)} USDT`);
+    console.log(`  - Disponível: ${saldoDisponivelSpot.toFixed(2)} USDT`);
+
+    // ATUALIZAR NO BANCO DE DADOS
+    const db = await getDatabaseInstance(accountId);
+
+    // Obter saldo_spot anterior para comparação
+    const [previousBalanceSpot] = await db.query(
+      'SELECT saldo_spot, saldo_base_calculo_spot FROM contas WHERE id = ?',
+      [accountId]
+    );
+
+    const previousSaldoSpot = previousBalanceSpot.length > 0 ? parseFloat(previousBalanceSpot[0].saldo_spot || '0') : 0;
+    const previousBaseCalculoSpot = previousBalanceSpot.length > 0 ? parseFloat(previousBalanceSpot[0].saldo_base_calculo_spot || '0') : 0;
+
+    // saldo_base_calculo_spot SÓ AUMENTA, NUNCA DIMINUI
+    let novaBaseCalculoSpot = previousBaseCalculoSpot;
+    if (saldoDisponivelSpot > previousBaseCalculoSpot) {
+      novaBaseCalculoSpot = saldoDisponivelSpot;
+      console.log(`[API] saldo_spot base de cálculo atualizado: ${previousBaseCalculoSpot.toFixed(2)} → ${novaBaseCalculoSpot.toFixed(2)}`);
+    } else {
+      console.log(`[API] saldo_spot base de cálculo mantido: ${previousBaseCalculoSpot.toFixed(2)} (saldo_spot atual: ${saldoDisponivelSpot.toFixed(2)})`);
+    }
+
+    await db.query(
+      'UPDATE contas SET saldo_spot = ?, saldo_base_calculo_spot = ?, ultima_atualizacao = NOW() WHERE id = ?',
+      [saldoDisponivelSpot, novaBaseCalculoSpot, accountId]
+    );
+
+    return {
+      success: true,
+      accountId: accountId,
+      saldo: saldoTotal,
+      saldo_disponivel: saldoDisponivelSpot,
+      saldo_base_calculo: novaBaseCalculoSpot,
+      previousSaldoSpot: previousSaldoSpot,
+      previousBaseCalculoSpot: previousBaseCalculoSpot,
+      assets: accountData.balances,
+      timestamp: new Date().toISOString()
+    };
+
+  } catch (error) {
+    console.error(`[API] ❌ Erro ao obter detalhes do saldo_spot para conta ${accountId}:`, error.message);
+
+    return {
+      success: false,
+      accountId: accountId,
+      error: error.message,
+      saldo: 0,
+      saldo_disponivel: 0,
+      saldo_base_calculo: 0,
+      previousSaldoSpot: 0,
+      previousBaseCalculoSpot: 0,
+      timestamp: new Date().toISOString()
+    };
+  }
+}
+
+/**
  * Obtém detalhes do saldo_futuros da conta de futuros via REST API
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Detalhes do saldo_futuros formatados
@@ -1942,5 +2030,8 @@ module.exports = {
   
   // WebSocket
   getListenKey,
-  checkServerTime
+  checkServerTime,
+
+  // Spot API
+  getSpotAccountBalanceDetails,
 };

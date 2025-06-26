@@ -1,7 +1,7 @@
 const path = require('path');
 const schedule = require('node-schedule');
 const { getDatabaseInstance } = require('../../../core/database/conexao');
-const { verifyAndFixEnvironmentConsistency, getFuturesAccountBalanceDetails } = require('../api/rest');
+const { verifyAndFixEnvironmentConsistency, getFuturesAccountBalanceDetails, getSpotAccountBalanceDetails } = require('../api/rest');
 const websockets = require('../api/websocket');
 const api = require('../api/rest');
 const { initializeTelegramBot, stopAllTelegramBots } = require('../telegram/telegramBot');
@@ -105,36 +105,6 @@ function setupSignalHandlers(accountIdForLog) {
 }
 
 /**
- * Sincroniza saldo da conta via WebSocket API (MELHORADA)
- * @param {number} accountId - ID da conta (obrigatório)
- * @returns {Promise<Object|null>} Resultado da sincronização
- */
-async function syncAccountBalance(accountId) {
-  if (!accountId || typeof accountId !== 'number') {
-    throw new Error(`AccountId é obrigatório para syncAccountBalance: ${accountId}`);
-  }
-
-  try {
-    console.log(`[MONITOR] Sincronizando saldo da conta ${accountId} via WebSocket API...`);
-
-    const result = await getFuturesAccountBalanceDetails(accountId);
-    
-    if (result && result.success) {
-      console.log(`[MONITOR] ✅ Saldo sincronizado via REST API para conta ${accountId}:`);
-      console.log(`[MONITOR] 💰 Total: ${result.totalBalance} USDT, Disponível: ${result.availableBalance} USDT`);
-      return result;
-    } else {
-      console.error(`[MONITOR] ❌ Falha na sincronização via REST API para conta ${accountId}:`, result?.error || 'Resposta inválida');
-      return null;
-    }
-    
-  } catch (error) {
-    console.error(`[MONITOR] ❌ Erro ao sincronizar saldo da conta ${accountId}: ${error.message}`);
-    return null;
-  }
-}
-
-/**
  * Função principal para inicializar o monitoramento
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Jobs agendados
@@ -169,6 +139,19 @@ async function initializeMonitoring(accountId) {
     } catch (saldoError) {
       console.error(`[MONITOR] ❌ Erro ao atualizar saldo da corretora:`, saldoError.message);
     }
+
+    // Atualizar saldo de spot
+console.log(`💰 Atualizando saldo de spot para conta ${accountId}...`);
+try {
+  const saldoSpotResult = await getSpotAccountBalanceDetails(accountId);
+  if (saldoSpotResult && saldoSpotResult.success) {
+    console.log(`[MONITOR] ✅ Saldo spot atualizado: Disponível ${saldoSpotResult.saldo_disponivel} USDT | Base cálculo ${saldoSpotResult.saldo_base_calculo} USDT`);
+  } else {
+    console.warn(`[MONITOR] ⚠️ Falha ao atualizar saldo spot: ${saldoSpotResult?.error || 'Erro desconhecido'}`);
+  }
+} catch (saldoError) {
+  console.error(`[MONITOR] ❌ Erro ao atualizar saldo spot:`, saldoError.message);
+}
 
     // === ETAPA 2: Verificar consistência de ambiente ===
     console.log(`🔍 ETAPA 2: Verificando consistência de ambiente para conta ${accountId}...`);
