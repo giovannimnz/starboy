@@ -157,6 +157,19 @@ async function initializeMonitoring(accountId) {
     }
     console.log(`✅ Banco de dados conectado com sucesso para conta ${accountId}\n`);
     
+    // === ETAPA 1.5: Atualizar saldo da corretora ===
+    console.log(`💰 ETAPA 1.5: Atualizando saldo da corretora para conta ${accountId}...`);
+    try {
+      const saldoResult = await getFuturesAccountBalanceDetails(accountId);
+      if (saldoResult && saldoResult.success) {
+        console.log(`[MONITOR] ✅ Saldo atualizado: Disponível ${saldoResult.saldo_disponivel} USDT | Base cálculo ${saldoResult.saldo_base_calculo} USDT`);
+      } else {
+        console.warn(`[MONITOR] ⚠️ Falha ao atualizar saldo da corretora: ${saldoResult?.error || 'Erro desconhecido'}`);
+      }
+    } catch (saldoError) {
+      console.error(`[MONITOR] ❌ Erro ao atualizar saldo da corretora:`, saldoError.message);
+    }
+
     // === ETAPA 2: Verificar consistência de ambiente ===
     console.log(`🔍 ETAPA 2: Verificando consistência de ambiente para conta ${accountId}...`);
     try {
