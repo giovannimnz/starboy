@@ -397,6 +397,14 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
           await connection.query(closeQuery, closeValues);
           
           console.log(`[ACCOUNT_UPDATE] ✅ Posição ${symbol} marcada como FECHADA com dados completos do webhook`);
+
+          // NOVO: mover para histórico e cancelar ordens pendentes
+          const { movePositionToHistory } = require('../services/cleanup');
+          try {
+            await movePositionToHistory(connection, positionToClose[0].id, 'CLOSED', reason, accountId);
+          } catch (moveError) {
+            console.error(`[ACCOUNT_UPDATE] ❌ Erro ao mover posição para histórico:`, moveError.message);
+          }
         }
       }
     }

@@ -9,8 +9,7 @@ const { onPriceUpdate, checkNewTrades, checkExpiredSignals, checkCanceledSignals
 const { syncPositionsWithExchange, syncOrdersWithExchange, logOpenPositionsAndOrdersVisual, syncPositionsWithAutoClose } = require('../services/positionSync');
 const orderHandlers = require('../handlers/orderHandlers');
 const accountHandlers = require('../handlers/accountHandlers');
-const { cleanupOrphanSignals, forceCloseGhostPositions, cancelOrphanOrders } = require('../services/cleanup');
-const { syncAndCloseGhostPositions } = require('../services/positionHistory');
+const { cleanupOrphanSignals, moveOrdersToHistory, movePositionToHistory, cancelOrphanOrders } = require('../services/cleanup');
 const { checkOrderTriggers } = require('./trailingStopLoss');
 
 // === DEBUGGING ROBUSTO ===
@@ -383,6 +382,50 @@ try {
   await syncPositionsWithExchange(accountId);
   await syncOrdersWithExchange(accountId);
 
+  // ✅ NOVO: LIMPEZA DE POSIÇÕES FECHADAS (movido do job agendado)
+  console.log(`[MONITOR] 📚 Verificando posições CLOSED para movimentação...`);
+  try {
+    const db = await getDatabaseInstance();
+    
+    // ✅ Buscar posições CLOSED para mover
+    const [closedPositions] = await db.query(`
+      SELECT id, simbolo, status, data_hora_fechamento, observacoes 
+      FROM posicoes 
+      WHERE status = 'CLOSED' AND conta_id = ?
+    `, [accountId]);
+    
+    if (closedPositions.length > 0) {
+      console.log(`[MONITOR] 📚 Movendo ${closedPositions.length} posições CLOSED para histórico...`);
+      
+      for (const position of closedPositions) {
+        try {
+          // ✅ CORREÇÃO: Usar a função do cleanup.js com sanitização
+          const { movePositionToHistory } = require('../services/cleanup');
+          
+          const moved = await movePositionToHistory(
+            db,                    // conexão do banco
+            position.id,           // ID da posição
+            'CLOSED',              // status
+            position.observacoes || 'Auto-movida durante inicialização', // reason
+            accountId              // conta ID
+          );
+          
+          if (moved) {
+            console.log(`[MONITOR] ✅ Posição ${position.simbolo} movida para histórico`);
+          }
+          
+        } catch (moveError) {
+          console.error(`[MONITOR] ❌ Erro ao mover posição ${position.simbolo}:`, moveError.message);
+        }
+      }
+    } else {
+      console.log(`[MONITOR] ℹ️ Nenhuma posição CLOSED encontrada para movimentação`);
+    }
+    
+  } catch (cleanupClosedError) {
+    console.error(`[MONITOR] ⚠️ Erro na limpeza de posições CLOSED:`, cleanupClosedError.message);
+  }
+
   // ✅ LIMPEZA SIMPLIFICADA DE ORDENS ÓRFÃS (Nova versão)
   console.log(`[MONITOR] 🔍 Verificando ordens órfãs para conta ${accountId}...`);
   const orphanResult = await cancelOrphanOrders(accountId);
@@ -394,7 +437,6 @@ try {
   }
   
   // ✅ MOVER ORDENS CANCELED PARA HISTÓRICO
-  const { moveOrdersToHistory } = require('../services/cleanup');
   const movedOrders = await moveOrdersToHistory(accountId);
   if (movedOrders > 0) {
     console.log(`[MONITOR] 📚 ${movedOrders} ordens movidas para histórico para conta ${accountId}`);
@@ -442,9 +484,14 @@ async function startPriceMonitoringInline(accountId) {
 
     // ✅ PRIORITÁRIO: Símbolos com sinais AGUARDANDO_ACIONAMENTO
     const [pendingSignals] = await db.query(`
-      SELECT DISTINCT symbol
-      FROM webhook_signals
-      WHERE conta_id = ? AND status = 'AGUARDANDO_ACIONAMENTO'
+      SELECT
+      id, symbol, side, leverage, capital_pct, entry_price, sl_price, 
+      tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, conta_id,
+      status, created_at, timeout_at, max_lifetime_minutes, chat_id
+      FROM webhook_signals 
+      WHERE conta_id = ? 
+      AND status = 'AGUARDANDO_ACIONAMENTO'
+      ORDER BY created_at ASC
     `, [accountId]);
 
     // ✅ SECUNDÁRIO: Símbolos com posições abertas
@@ -544,87 +591,87 @@ async function startPriceMonitoringInline(accountId) {
     });
 
     accountJobs.verifyWebSocketHealth = schedule.scheduleJob('*/2 * * * *', async () => {
-  if (isShuttingDown) return;
-  try {
-    const db = await getDatabaseInstance();
-    
-    // Verificar se há sinais aguardando
-    const [signals] = await db.query(`
-      SELECT symbol FROM webhook_signals 
-      WHERE conta_id = ? AND status = 'AGUARDANDO_ACIONAMENTO'
-      GROUP BY symbol
-      LIMIT 5
-    `, [accountId]);
-    
-    if (signals.length > 0) {
-      //console.log(`[MONITOR] 🔍 Verificando saúde do WebSocket para ${signals.length} símbolos:`);
-      
-      for (const signal of signals) {
-        try {
-          const priceWebsockets = websockets.getPriceWebsockets(accountId);
+      if (isShuttingDown) return;
+      try {
+        const db = await getDatabaseInstance();
+        
+        // Verificar se há sinais aguardando
+        const [signals] = await db.query(`
+          SELECT symbol FROM webhook_signals 
+          WHERE conta_id = ? AND status = 'AGUARDANDO_ACIONAMENTO'
+          GROUP BY symbol
+          LIMIT 5
+        `, [accountId]);
+        
+        if (signals.length > 0) {
+          //console.log(`[MONITOR] 🔍 Verificando saúde do WebSocket para ${signals.length} símbolos:`);
           
-          if (priceWebsockets && priceWebsockets.has(signal.symbol)) {
-            const ws = priceWebsockets.get(signal.symbol);
-            const isOpen = ws && ws.readyState === 1; // WebSocket.OPEN
-            
-            if (isOpen) {
-              //console.log(`[MONITOR]   ✅ ${signal.symbol}: WebSocket ativo`);
-            } else {
-              console.log(`[MONITOR]   ❌ ${signal.symbol}: WebSocket inativo (readyState: ${ws?.readyState})`);
+          for (const signal of signals) {
+            try {
+              const priceWebsockets = websockets.getPriceWebsockets(accountId);
               
-              // Tentar recriar o WebSocket
-              console.log(`[MONITOR] 🔄 Recriando WebSocket para ${signal.symbol}...`);
-              await websockets.ensurePriceWebsocketExists(signal.symbol, accountId);
+              if (priceWebsockets && priceWebsockets.has(signal.symbol)) {
+                const ws = priceWebsockets.get(signal.symbol);
+                const isOpen = ws && ws.readyState === 1; // WebSocket.OPEN
+                
+                if (isOpen) {
+                  //console.log(`[MONITOR]   ✅ ${signal.symbol}: WebSocket ativo`);
+                } else {
+                  console.log(`[MONITOR]   ❌ ${signal.symbol}: WebSocket inativo (readyState: ${ws?.readyState})`);
+                  
+                  // Tentar recriar o WebSocket
+                  console.log(`[MONITOR] 🔄 Recriando WebSocket para ${signal.symbol}...`);
+                  await websockets.ensurePriceWebsocketExists(signal.symbol, accountId);
+                }
+              } else {
+                console.log(`[MONITOR]   ❌ ${signal.symbol}: WebSocket não encontrado`);
+                
+                // Criar WebSocket
+                console.log(`[MONITOR] 🆕 Criando WebSocket para ${signal.symbol}...`);
+                await websockets.ensurePriceWebsocketExists(signal.symbol, accountId);
+              }
+              
+            } catch (wsError) {
+              console.error(`[MONITOR] ❌ Erro ao verificar WebSocket ${signal.symbol}:`, wsError.message);
             }
-          } else {
-            console.log(`[MONITOR]   ❌ ${signal.symbol}: WebSocket não encontrado`);
-            
-            // Criar WebSocket
-            console.log(`[MONITOR] 🆕 Criando WebSocket para ${signal.symbol}...`);
-            await websockets.ensurePriceWebsocketExists(signal.symbol, accountId);
           }
+        }
+        
+      } catch (error) {
+        console.error(`[MONITOR] ❌ Erro na verificação de saúde do WebSocket:`, error.message);
+      }
+    });
+
+    // ✅ Job de verificação de sinais expirados a cada 1 minuto
+    accountJobs.checkExpiredSignals = schedule.scheduleJob('*/1 * * * *', async () => {
+      if (isShuttingDown) return;
+      try {
+        if (typeof checkExpiredSignals === 'function') {
+          const expiredCount = await checkExpiredSignals(accountId);
+          if (expiredCount > 0) {
+            console.log(`[MONITOR] ⏰ ${expiredCount} sinais expirados cancelados para conta ${accountId}`);
+          }
+        } else {
+          console.error(`[MONITOR] ❌ checkExpiredSignals não é uma função válida`);
+        }
+        
+      } catch (error) {
+        console.error(`[MONITOR] ⚠️ Erro na verificação de sinais expirados para conta ${accountId}:`, error.message);
+        
+        // ✅ DEBUG: Mostrar detalhes do erro de import
+        if (error.message.includes('not defined')) {
+          console.error(`[MONITOR] 🔍 Verifique se checkExpiredSignals está exportado em signalProcessor.js`);
           
-        } catch (wsError) {
-          console.error(`[MONITOR] ❌ Erro ao verificar WebSocket ${signal.symbol}:`, wsError.message);
+          try {
+            console.log(`[MONITOR] 🔍 Funções disponíveis em signalProcessor:`, Object.keys(signalProcessor));
+          } catch (importError) {
+            console.error(`[MONITOR] ❌ Erro ao importar signalProcessor:`, importError.message);
+          }
         }
       }
-    }
-    
-  } catch (error) {
-    console.error(`[MONITOR] ❌ Erro na verificação de saúde do WebSocket:`, error.message);
-  }
-});
+    });
 
-    // ✅ NOVO: Job de verificação de sinais expirados a cada 1 minuto (mais frequente)
-accountJobs.checkExpiredSignals = schedule.scheduleJob('*/1 * * * *', async () => {
-  if (isShuttingDown) return;
-  try {
-    if (typeof checkExpiredSignals === 'function') {
-      const expiredCount = await checkExpiredSignals(accountId);
-      if (expiredCount > 0) {
-        console.log(`[MONITOR] ⏰ ${expiredCount} sinais expirados cancelados para conta ${accountId}`);
-      }
-    } else {
-      console.error(`[MONITOR] ❌ checkExpiredSignals não é uma função válida`);
-    }
-    
-  } catch (error) {
-    console.error(`[MONITOR] ⚠️ Erro na verificação de sinais expirados para conta ${accountId}:`, error.message);
-    
-    // ✅ DEBUG: Mostrar detalhes do erro de import
-    if (error.message.includes('not defined')) {
-      console.error(`[MONITOR] 🔍 Verifique se checkExpiredSignals está exportado em signalProcessor.js`);
-      
-      try {
-        console.log(`[MONITOR] 🔍 Funções disponíveis em signalProcessor:`, Object.keys(signalProcessor));
-      } catch (importError) {
-        console.error(`[MONITOR] ❌ Erro ao importar signalProcessor:`, importError.message);
-      }
-    }
-  }
-});
-
-    // ✅ NOVO: Job avançado de monitoramento de posições a cada 1 minuto
+    // ✅ Job avançado de monitoramento de posições a cada 1 minuto
     accountJobs.syncPositionsWithAutoClose = schedule.scheduleJob('*/1 * * * *', async () => {
       if (isShuttingDown) return;
       try {
@@ -634,49 +681,10 @@ accountJobs.checkExpiredSignals = schedule.scheduleJob('*/1 * * * *', async () =
       }
     });
 
-    // ✅ MANTER APENAS JOB DE LIMPEZA DE POSIÇÕES FECHADAS
-    accountJobs.cleanupClosedPositions = schedule.scheduleJob('*/1 * * * *', async () => {
-      if (isShuttingDown) return;
-      try {
-        const db = await getDatabaseInstance();
-        
-        // ✅ Buscar posições CLOSED para mover
-        const [closedPositions] = await db.query(`
-          SELECT id, simbolo, status, data_hora_fechamento, observacoes 
-          FROM posicoes 
-          WHERE status = 'CLOSED' AND conta_id = ?
-          AND data_hora_fechamento < DATE_SUB(NOW(), INTERVAL 1 MINUTE)
-        `, [accountId]);
-        
-        if (closedPositions.length > 0) {
-          console.log(`[MONITOR] 📚 Movendo ${closedPositions.length} posições CLOSED para histórico...`);
-          
-          for (const position of closedPositions) {
-            try {
-              const moved = await moveOrdersToHistory(
-                db, 
-                position.id, 
-                'CLOSED', 
-                position.observacoes || 'Auto-movida - posição fechada',
-                accountId
-              );
-              
-              if (moved) {
-                console.log(`[MONITOR] ✅ Posição ${position.simbolo} movida para histórico`);
-              }
-              
-            } catch (moveError) {
-              console.error(`[MONITOR] ❌ Erro ao mover posição ${position.simbolo}:`, moveError.message);
-            }
-          }
-        }
-        
-      } catch (error) {
-        console.error(`[MONITOR] ⚠️ Erro na limpeza de posições CLOSED:`, error.message);
-      }
-    });
+    // ✅ REMOVIDO: Job de limpeza de posições CLOSED (movido para inicialização)
+    // accountJobs.cleanupClosedPositions = schedule.scheduleJob(...) - REMOVIDO
 
-    // ✅ NOVO: Job de log de status a cada 1 minuto
+    // ✅ Job de log de status a cada 1 minuto
     accountJobs.logStatus = schedule.scheduleJob('*/1 * * * *', async () => {
       if (isShuttingDown) return;
       try {
@@ -689,21 +697,21 @@ accountJobs.checkExpiredSignals = schedule.scheduleJob('*/1 * * * *', async () =
     // Armazenar jobs para cleanup no shutdown
     scheduledJobs[accountId] = accountJobs;
 
-console.log(`[MONITOR] ✅ Sistema de monitoramento avançado inicializado com sucesso para conta ${accountId}!`);
-console.log(`[MONITOR] 📊 Jobs agendados: ${Object.keys(accountJobs).length}`);
-console.log(`[MONITOR] 📋 Jobs ativos:`);
-Object.keys(accountJobs).forEach(jobName => { 
-  console.log(`[MONITOR]   - ${jobName}: ${accountJobs[jobName] ? '✅' : '❌'}`); 
-});
-console.log(`[MONITOR] 🎯 Funcionalidades ativas:`);
-console.log(`[MONITOR]   - Trailing Stop Loss: ✅`);
-console.log(`[MONITOR]   - Signal Timeout: ✅`);
-console.log(`[MONITOR]   - Telegram Bot: ✅`);
-console.log(`[MONITOR]   - Enhanced Monitoring: ✅`);
-console.log(`[MONITOR]   - Position History: ✅`);
-console.log(`[MONITOR]   - Cleanup System (Órfãs Simplificado): ✅`); // ✅ ATUALIZADO
-console.log(`[MONITOR]   - Orphan Order Detection: ✅`); // ✅ NOVO
-console.log(`[MONITOR]   - WebSocket API: ✅`);
+    console.log(`[MONITOR] ✅ Sistema de monitoramento avançado inicializado com sucesso para conta ${accountId}!`);
+    console.log(`[MONITOR] 📊 Jobs agendados: ${Object.keys(accountJobs).length}`);
+    console.log(`[MONITOR] 📋 Jobs ativos:`);
+    Object.keys(accountJobs).forEach(jobName => { 
+      console.log(`[MONITOR]   - ${jobName}: ${accountJobs[jobName] ? '✅' : '❌'}`); 
+    });
+    console.log(`[MONITOR] 🎯 Funcionalidades ativas:`);
+    console.log(`[MONITOR]   - Trailing Stop Loss: ✅`);
+    console.log(`[MONITOR]   - Signal Timeout: ✅`);
+    console.log(`[MONITOR]   - Telegram Bot: ✅`);
+    console.log(`[MONITOR]   - Enhanced Monitoring: ✅`);
+    console.log(`[MONITOR]   - Position History: ✅`);
+    console.log(`[MONITOR]   - Cleanup System (Órfãs Simplificado): ✅`);
+    console.log(`[MONITOR]   - Orphan Order Detection: ✅`);
+    console.log(`[MONITOR]   - WebSocket API: ✅`);
 
     try {
       await logOpenPositionsAndOrdersVisual(accountId);

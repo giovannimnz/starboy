@@ -1,5 +1,7 @@
 const { getDatabaseInstance, moveClosedPositionsAndOrders } = require('../../../core/database/conexao');
 const { getAllOpenPositions, getOpenOrders } = require('../api/rest');
+// ✅ CORREÇÃO: Importar do cleanup.js
+const { movePositionToHistory } = require('../services/cleanup');
 
 /**
  * Sincroniza posições do banco com a corretora
@@ -213,7 +215,6 @@ async function syncPositionsWithAutoClose(accountId) {
     //console.log(`[SYNC_AUTO] 🔄 Iniciando sincronização avançada para conta ${accountId}...`);
     
     const db = await getDatabaseInstance();
-    const { movePositionToHistory } = require('./positionHistory');
     
     // Obter posições do banco e corretora
     const [dbPositions] = await db.query(`
@@ -249,6 +250,7 @@ async function syncPositionsWithAutoClose(accountId) {
         console.log(`[SYNC_AUTO] 🔄 Posição ${dbPos.simbolo} fechada na corretora, movendo para histórico...`);
         
         try {
+          // ✅ CORREÇÃO: Usar função corrigida do cleanup.js
           const moved = await movePositionToHistory(
             db, 
             dbPos.id, 

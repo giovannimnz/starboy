@@ -880,7 +880,7 @@ async function executeReverse(signal, currentPrice, accountId) {
 
     // ✅ ATUALIZAR APENAS O STATUS DO SINAL
     await connection.query(
-      `UPDATE webhook_signals SET status = 'EXECUTADO', entry_price = ? WHERE id = ?`,
+      `UPDATE webhook_signals SET status = 'EXECUTADO' WHERE id = ?`,
       [averageEntryPrice, signal.id]
     );
 

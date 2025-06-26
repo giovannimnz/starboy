@@ -8,6 +8,40 @@ const MIN_CHECK_INTERVAL = 10000; // 10 segundos
 const TWO_MINUTES_RECHECK_NO_SL = 2 * 60 * 1000; // 2 minutos
 
 /**
+ * ✅ FUNÇÃO PRINCIPAL: Substitui o enhancedMonitoring
+ * Atualiza posições com trailing stop loss
+ * @param {Object} db - Instância do banco
+ * @param {string} symbol - Símbolo da moeda
+ * @param {number} currentPrice - Preço atual
+ * @param {number} accountId - ID da conta
+ */
+async function updatePositionPricesWithTrailing(db, symbol, currentPrice, accountId) {
+  try {
+    // Buscar posições abertas para o símbolo
+    const [positions] = await db.query(`
+      SELECT * FROM posicoes 
+      WHERE simbolo = ? AND conta_id = ? AND status = 'OPEN'
+    `, [symbol, accountId]);
+
+    if (positions.length === 0) {
+      return;
+    }
+
+    // Processar trailing stop para cada posição
+    for (const position of positions) {
+      try {
+        await checkOrderTriggers(db, position, currentPrice, accountId);
+      } catch (positionError) {
+        console.error(`[TRAILING] Erro ao processar posição ${position.simbolo}:`, positionError.message);
+      }
+    }
+
+  } catch (error) {
+    console.error('[TRAILING] Erro no enhanced monitoring:', error.message);
+  }
+}
+
+/**
  * ✅ SISTEMA COMPLETO DE TRAILING STOP BASEADO NO _DEV
  * Verifica e atualiza trailing stops para posições abertas
  * @param {Object} db - Instância do banco
@@ -50,17 +84,46 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
     const currentTrailingLevel = trailingStateResult.length > 0 && trailingStateResult[0].trailing_stop_level ? 
                                 trailingStateResult[0].trailing_stop_level : 'ORIGINAL';
 
-    // ✅ BUSCAR DADOS DO SINAL RELACIONADO
-    const [signalInfo] = await db.query(
-      `SELECT tp1_price, tp3_price, entry_price, sl_price
-       FROM webhook_signals 
-       WHERE position_id = ? 
-       ORDER BY created_at DESC LIMIT 1`,
-      [positionId]
-    );
+    // ✅ BUSCAR DADOS DO SINAL RELACIONADO USANDO orign_sig
+    let signalInfo = [];
+    
+    if (position.orign_sig) {
+      // Extrair o ID do sinal de orign_sig (formato: WEBHOOK_123)
+      const signalIdMatch = position.orign_sig.match(/WEBHOOK_(\d+)/);
+      if (signalIdMatch) {
+        const signalId = signalIdMatch[1];
+        
+        const [result] = await db.query(`
+          SELECT tp1_price, tp3_price, entry_price, sl_price, symbol, side
+          FROM webhook_signals 
+          WHERE id = ? AND conta_id = ?
+          ORDER BY created_at DESC LIMIT 1
+        `, [signalId, accountId]);
+        
+        signalInfo = result;
+        
+        if (signalInfo.length > 0) {
+          console.log(`${functionPrefix} 📋 Sinal encontrado: ID ${signalId} para posição ${positionId}`);
+        }
+      }
+    }
+
+    // ✅ FALLBACK: Buscar por símbolo se orign_sig não funcionar
+    if (signalInfo.length === 0) {
+      console.log(`${functionPrefix} ⚠️ Nenhum sinal encontrado via orign_sig, buscando por símbolo...`);
+      
+      const [result] = await db.query(`
+        SELECT tp1_price, tp3_price, entry_price, sl_price, symbol, side
+        FROM webhook_signals 
+        WHERE symbol = ? AND conta_id = ? AND status IN ('EXECUTADO', 'PROCESSANDO')
+        ORDER BY created_at DESC LIMIT 1
+      `, [position.simbolo, accountId]);
+      
+      signalInfo = result;
+    }
 
     if (signalInfo.length === 0) {
-      console.log(`${functionPrefix} ⚠️ Nenhum sinal encontrado para posição ${positionId}`);
+      console.log(`${functionPrefix} ⚠️ Nenhum sinal encontrado para posição ${positionId} (${position.simbolo})`);
       return;
     }
 
@@ -77,13 +140,15 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
       return;
     }
 
-    console.log(`${functionPrefix} 📊 Posição ${position.simbolo} (${side}):`);
+    // ✅ LOG MAIS DETALHADO
+    console.log(`${functionPrefix} 📊 Posição ${position.simbolo} (${side}) - ID: ${positionId}:`);
     console.log(`${functionPrefix}   - Preço atual: ${currentPrice}`);
     console.log(`${functionPrefix}   - Preço entrada: ${entryPrice}`);
     console.log(`${functionPrefix}   - TP1: ${tp1Price}`);
     console.log(`${functionPrefix}   - TP3: ${tp3Price || 'N/A'}`);
     console.log(`${functionPrefix}   - SL original: ${originalSlPrice || 'N/A'}`);
     console.log(`${functionPrefix}   - Nível trailing atual: ${currentTrailingLevel}`);
+    console.log(`${functionPrefix}   - Origin signal: ${position.orign_sig || 'N/A'}`);
 
     // ✅ DETERMINAR SE ALVOS FORAM ATINGIDOS
     let priceHitTP1 = false;
@@ -96,6 +161,10 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
       priceHitTP1 = currentPrice <= tp1Price && currentTrailingLevel === 'ORIGINAL';
       priceHitTP3 = !isNaN(tp3Price) && tp3Price > 0 && currentPrice <= tp3Price && currentTrailingLevel === 'BREAKEVEN';
     }
+
+    console.log(`${functionPrefix} 🎯 Verificação de gatilhos:`);
+    console.log(`${functionPrefix}   - TP1 atingido: ${priceHitTP1}`);
+    console.log(`${functionPrefix}   - TP3 atingido: ${priceHitTP3}`);
 
     // ✅ REPOSICIONAMENTO PARA BREAKEVEN (APÓS TP1)
     if (priceHitTP1) {
@@ -169,6 +238,12 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
     else if (priceHitTP3) {
       console.log(`${functionPrefix} 🚀 TP3 atingido para ${position.simbolo}. Movendo SL para TP1.`);
       
+      // ✅ 1. ATUALIZAR NÍVEL DE TRAILING
+      await db.query(
+        `UPDATE posicoes SET trailing_stop_level = 'TP1', data_hora_ultima_atualizacao = NOW() WHERE id = ?`,
+        [positionId]
+      );
+      
       // Cancelar SLs existentes
       const canceledCount = await cancelStopLossOrders(db, positionId, accountId);
       console.log(`${functionPrefix} 🗑️ ${canceledCount} ordens SL canceladas`);
@@ -195,7 +270,25 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
         
         if (slResponse && slResponse.orderId) {
           console.log(`${functionPrefix} ✅ SL TP1 criado: ${slResponse.orderId} (closePosition=true)`);
-          // Telegram notification...
+          
+          // ✅ NOTIFICAÇÃO TELEGRAM
+          try {
+            const message = formatAlertMessage(
+              'STOP LOSS MOVIDO PARA TP1',
+              `🚀 <b>${position.simbolo}</b>\n\n` +
+              `📈 TP3 atingido!\n` +
+              `🛡️ Stop Loss movido para <b>TP1</b>\n` +
+              `💰 Novo SL: <b>$${tp1Price.toFixed(4)}</b>\n\n` +
+              `🎯 Lucro garantido!\n` +
+              `⚡ Modo: Close Position`,
+              'SUCCESS'
+            );
+            
+            await sendTelegramMessage(accountId, message);
+            console.log(`${functionPrefix} 📱 Notificação de SL TP1 enviada`);
+          } catch (telegramError) {
+            console.warn(`${functionPrefix} ⚠️ Erro ao enviar notificação:`, telegramError.message);
+          }
         }
       } catch (error) {
         console.error(`${functionPrefix} ❌ Erro ao criar SL em TP1:`, error.message);
@@ -442,5 +535,7 @@ async function moveStopLossToBreakeven(db, position, accountId) {
 
 module.exports = {
   checkOrderTriggers,
-  cancelAllActiveStopLosses
+  cancelAllActiveStopLosses,
+  lastTrailingCheck,
+  updatePositionPricesWithTrailing
 };

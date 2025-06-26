@@ -151,13 +151,14 @@ async function checkSignalTriggers(symbol, currentPrice, db, accountId) {
   try {
     // Buscar sinais AGUARDANDO_ACIONAMENTO para este símbolo
     const [pendingSignals] = await db.query(`
-      SELECT 
-        id, symbol, side, entry_price, sl_price, timeframe, 
-        created_at, timeout_at, max_lifetime_minutes, status
-      FROM webhook_signals
-      WHERE symbol = ? 
-        AND conta_id = ? 
-        AND status = 'AGUARDANDO_ACIONAMENTO'
+      SELECT
+      id, symbol, side, leverage, capital_pct, entry_price, sl_price, 
+      tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, conta_id,
+      status, created_at, timeout_at, max_lifetime_minutes, chat_id
+      FROM webhook_signals 
+      WHERE symbol = ?
+      AND conta_id = ? 
+      AND status = 'AGUARDANDO_ACIONAMENTO'
       ORDER BY created_at ASC
     `, [symbol, accountId]);
 
@@ -517,11 +518,14 @@ async function checkNewTrades(accountId) {
     
     // Buscar apenas sinais PENDING (como na versão antiga)
     const [pendingSignals] = await db.query(`
-      SELECT * FROM webhook_signals 
+      SELECT
+      id, symbol, side, leverage, capital_pct, entry_price, sl_price, 
+      tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, conta_id,
+      status, created_at, timeout_at, max_lifetime_minutes, chat_id
+      FROM webhook_signals 
       WHERE conta_id = ? 
       AND status = 'PENDING'
       ORDER BY created_at ASC
-      LIMIT 10
     `, [accountId]);
     
     if (pendingSignals.length === 0) return 0;
@@ -769,9 +773,9 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
     // 1. ATUALIZAR CACHE DE PREÇOS
     const cacheUpdated = updatePriceCache(symbol, currentPrice, accountId);
     
-    // 2. ATUALIZAR POSIÇÕES (usar enhancedMonitoring)
+    // 2. ✅ ATUALIZAR POSIÇÕES COM TRAILING STOP (SEM enhancedMonitoring)
     try {
-      const { updatePositionPricesWithTrailing } = require('./enhancedMonitoring');
+      const { updatePositionPricesWithTrailing } = require('./trailingStopLoss');
       await updatePositionPricesWithTrailing(db, symbol, currentPrice, accountId);
     } catch (positionError) {
       console.error(`[SIGNAL] ❌ Erro ao atualizar posições:`, positionError.message);
@@ -779,12 +783,14 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
     
     // 3. VERIFICAR SINAIS AGUARDANDO ACIONAMENTO (mantém o nome original)
     const [pendingSignals] = await db.query(`
-      SELECT id, symbol, side, entry_price, sl_price, timeframe, 
-             created_at, timeout_at, max_lifetime_minutes, chat_id
-      FROM webhook_signals
-      WHERE symbol = ? 
-        AND conta_id = ? 
-        AND status = 'AGUARDANDO_ACIONAMENTO'
+      SELECT
+      id, symbol, side, leverage, capital_pct, entry_price, sl_price, 
+      tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, conta_id,
+      status, created_at, timeout_at, max_lifetime_minutes, chat_id
+      FROM webhook_signals 
+      WHERE symbol = ?
+      AND conta_id = ? 
+      AND status = 'AGUARDANDO_ACIONAMENTO'
       ORDER BY created_at ASC
     `, [symbol, accountId]);
     

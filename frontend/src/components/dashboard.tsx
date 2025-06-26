@@ -97,7 +97,7 @@ export default function Dashboard() {
                   Negociações em aberto
                 </CardTitle>
               </CardHeader>
-              <CardContent className="p-4">
+              <CardContent className="p-3 pt-2">
                 <div className="grid grid-cols-2 gap-3">
                   <div className="bg-gray-800/50 rounded-lg p-3 border border-gray-700">
                     <div className="text-center">
