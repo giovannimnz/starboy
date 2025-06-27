@@ -946,5 +946,3 @@ if (require.main === module) {
 } else {
   console.log(`[MONITOR] 📚 Carregado como módulo`);
 }
-
-// Remover a execução automática do final do arquivo se existir

@@ -635,7 +635,7 @@ async function logOpenPositionsAndOrdersVisual(accountId) {
         }
       });
     } else {
-      //console.log(`[SYNC_CHECK] ✅ Banco e corretora estão sincronizados`);
+      console.log(`[SYNC_CHECK] ✅ Banco e corretora estão sincronizados`);
     }
     
     console.log('===========================================\n');
