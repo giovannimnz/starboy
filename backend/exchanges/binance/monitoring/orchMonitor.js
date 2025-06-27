@@ -262,7 +262,7 @@ try {
     ...currentHandlers,
     onPriceUpdate: async (symbol, price, db, acctId) => {
       try {
-        console.log(`[MONITOR] 📊 Preço recebido: ${symbol} = ${price} (conta ${acctId})`);
+        //console.log(`[MONITOR] 📊 Preço recebido: ${symbol} = ${price} (conta ${acctId})`);
         await onPriceUpdate(symbol, price, db, acctId);
       } catch (error) {
         console.error(`[MONITOR] ❌ Erro em onPriceUpdate:`, error.message);
