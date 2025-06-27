@@ -578,13 +578,13 @@ async function handlePriceUpdate(symbol, tickerData, accountId) {
       return;
     }
 
-    //console.log(`[WEBSOCKET] ✅ Preço final calculado para ${symbol}: ${currentPrice}`);
+    console.log(`[WEBSOCKET] ✅ Preço final calculado para ${symbol}: ${currentPrice}`);
 
     // ✅ CHAMAR CALLBACK onPriceUpdate
     if (accountState.monitoringCallbacks && accountState.monitoringCallbacks.onPriceUpdate) {
       //console.log(`[WEBSOCKET] 🔄 Chamando onPriceUpdate para ${symbol}...`);
       await accountState.monitoringCallbacks.onPriceUpdate(symbol, currentPrice, db, accountId);
-      //console.log(`[WEBSOCKET] ✅ onPriceUpdate executado para ${symbol}`);
+      console.log(`[WEBSOCKET] ✅ onPriceUpdate executado para ${symbol}`);
     } else {
       console.warn(`[WEBSOCKET] ⚠️ Callback onPriceUpdate não encontrado para conta ${accountId}`);
       console.warn(`[WEBSOCKET] Estado dos callbacks:`, {
