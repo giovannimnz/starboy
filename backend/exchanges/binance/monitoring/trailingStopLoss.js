@@ -124,14 +124,14 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
     }
 
     // LOG DETALHADO
-    console.log(`[TRAILING] 📊 Posição ${position.simbolo} (${side}) - ID: ${position.id}:`);
-    console.log(`[TRAILING]   - Preço atual: ${currentPrice}`);
-    console.log(`[TRAILING]   - Preço entrada: ${entryPrice}`);
-    console.log(`[TRAILING]   - TP1: ${tp1Price}`);
-    console.log(`[TRAILING]   - TP3: ${tp3Price || 'N/A'}`);
-    console.log(`[TRAILING]   - SL original: ${originalSlPrice || 'N/A'}`);
-    console.log(`[TRAILING]   - Nível trailing atual: ${position.trailing_stop_level || 'ORIGINAL'}`);
-    console.log(`[TRAILING]   - Origin signal: ${position.orign_sig || 'N/A'}`);
+    //console.log(`[TRAILING] 📊 Posição ${position.simbolo} (${side}) - ID: ${position.id}:`);
+    //console.log(`[TRAILING]   - Preço atual: ${currentPrice}`);
+    //console.log(`[TRAILING]   - Preço entrada: ${entryPrice}`);
+    //console.log(`[TRAILING]   - TP1: ${tp1Price}`);
+    //console.log(`[TRAILING]   - TP3: ${tp3Price || 'N/A'}`);
+    //console.log(`[TRAILING]   - SL original: ${originalSlPrice || 'N/A'}`);
+    //console.log(`[TRAILING]   - Nível trailing atual: ${position.trailing_stop_level || 'ORIGINAL'}`);
+    //console.log(`[TRAILING]   - Origin signal: ${position.orign_sig || 'N/A'}`);
 
     // DETERMINAR SE ALVOS FORAM ATINGIDOS
     let priceHitTP1 = false;
