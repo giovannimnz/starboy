@@ -153,7 +153,8 @@ async function startWebSocketApi(accountId) {
     await api.loadCredentialsFromDatabase(accountId);
     let accountState = getAccountConnectionState(accountId);
 
-    if (!accountState || !accountState.wsApiKey || !accountState.wsApiUrl) {
+    // Troca wsApiUrl por futuresWsApiUrl
+    if (!accountState || !accountState.wsApiKey || !accountState.futuresWsApiUrl) {
       console.error(`[WS-API] Credenciais ou URL da WebSocket API não encontradas para conta ${accountId}`);
       return false;
     }
@@ -164,7 +165,7 @@ async function startWebSocketApi(accountId) {
     }
 
     console.log(`[WS-API] Iniciando WebSocket API para conta ${accountId}...`);
-    const endpoint = accountState.wsApiUrl;
+    const endpoint = accountState.futuresWsApiUrl;
 
     return new Promise((resolve, reject) => {
       const wsInstance = new WebSocket(endpoint);
@@ -484,23 +485,24 @@ async function ensurePriceWebsocketExists(symbol, accountId) {
   }
 
   let accountState = getAccountConnectionState(accountId, true);
-  if (!accountState.wsUrl) {
+  // Troca wsUrl por futuresWsMarketUrl
+  if (!accountState.futuresWsMarketUrl) {
     console.log(`[WEBSOCKET] Carregando credenciais para conta ${accountId}...`);
     await api.loadCredentialsFromDatabase(accountId);
     accountState = getAccountConnectionState(accountId);
   }
   
-  if (!accountState || !accountState.wsUrl) {
+  if (!accountState || !accountState.futuresWsMarketUrl) {
       console.error(`[WEBSOCKET] URL de mercado não encontrada para conta ${accountId} após carregar credenciais`);
       console.error(`[WEBSOCKET] Estado da conta: ${JSON.stringify(accountState, null, 2)}`);
       return;
   }
 
   console.log(`[WEBSOCKET] 🔄 Iniciando monitoramento de preço para ${symbol} (conta ${accountId})`);
-  console.log(`[WEBSOCKET] Usando URL: ${accountState.wsUrl}`);
+  console.log(`[WEBSOCKET] Usando URL: ${accountState.futuresWsMarketUrl}`);
 
   // ✅ CORREÇÃO: Usar ticker em vez de bookTicker para garantir dados mais frequentes
-  const wsEndpointUrl = `${accountState.wsUrl}/ws/${symbol.toLowerCase()}@ticker`;
+  const wsEndpointUrl = `${accountState.futuresWsMarketUrl}/ws/${symbol.toLowerCase()}@ticker`;
   console.log(`[WEBSOCKET] Endpoint: ${wsEndpointUrl}`);
   
   const ws = new WebSocket(wsEndpointUrl);
@@ -578,13 +580,13 @@ async function handlePriceUpdate(symbol, tickerData, accountId) {
       return;
     }
 
-    console.log(`[WEBSOCKET] ✅ Preço final calculado para ${symbol}: ${currentPrice}`);
+    //console.log(`[WEBSOCKET] ✅ Preço final calculado para ${symbol}: ${currentPrice}`);
 
     // ✅ CHAMAR CALLBACK onPriceUpdate
     if (accountState.monitoringCallbacks && accountState.monitoringCallbacks.onPriceUpdate) {
       //console.log(`[WEBSOCKET] 🔄 Chamando onPriceUpdate para ${symbol}...`);
       await accountState.monitoringCallbacks.onPriceUpdate(symbol, currentPrice, db, accountId);
-      console.log(`[WEBSOCKET] ✅ onPriceUpdate executado para ${symbol}`);
+      //console.log(`[WEBSOCKET] ✅ onPriceUpdate executado para ${symbol}`);
     } else {
       console.warn(`[WEBSOCKET] ⚠️ Callback onPriceUpdate não encontrado para conta ${accountId}`);
       console.warn(`[WEBSOCKET] Estado dos callbacks:`, {
@@ -613,13 +615,14 @@ function bookTicker(symbol, callback, accountId) {
   
   const accountState = getAccountConnectionState(accountId, true);
   
-  if (!accountState || !accountState.wsUrl) {
+  // Troca wsUrl por futuresWsMarketUrl
+  if (!accountState || !accountState.futuresWsMarketUrl) {
     console.error(`[WEBSOCKET] Estado da conta ${accountId} ou wsUrl não encontrado`);
     return null;
   }
   
   // CORREÇÃO: Usar formato da versão antiga que funcionava
-  const wsEndpoint = `${accountState.wsUrl}/ws/${symbol.toLowerCase()}@bookTicker`;
+  const wsEndpoint = `${accountState.futuresWsMarketUrl}/ws/${symbol.toLowerCase()}@bookTicker`;
   console.log(`[WEBSOCKET] Conectando BookTicker: ${wsEndpoint}`);
   
   let ws = new WebSocket(wsEndpoint);
@@ -762,10 +765,12 @@ async function startUserDataStream(db, accountId) {
     if (!listenKey) {
       throw new Error(`Falha ao obter ListenKey para conta ${accountId}`);
     }
-
     const accountState = getAccountConnectionState(accountId, true);
-    const userDataEndpoint = `${accountState.wsUrl}/ws/${listenKey}`;
-    
+    // Troca wsUrl por futuresWsMarketUrl
+    if (!accountState.futuresWsMarketUrl) {
+      await api.loadCredentialsFromDatabase(accountId);
+    }
+    const userDataEndpoint = `${accountState.futuresWsMarketUrl}/ws/${listenKey}`;
     const ws = new WebSocket(userDataEndpoint);
     accountState.userDataStream = ws;
 

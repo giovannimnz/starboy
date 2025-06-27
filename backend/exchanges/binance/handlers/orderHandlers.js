@@ -2,6 +2,8 @@ const { getDatabaseInstance, insertPosition, insertNewOrder, formatDateForMySQL 
 const websockets = require('../api/websocket');
 const { sendTelegramMessage, formatOrderMessage, formatPositionClosedMessage } = require('../telegram/telegramBot');
 
+const targetCache = new Map();
+
 /**
  * ✅ FUNÇÃO UNIFICADA: Processa atualizações de ordens via WebSocket
  * Suporta MÚLTIPLOS formatos de entrada
@@ -22,14 +24,28 @@ async function handleOrderUpdate(messageOrAccountId, orderDataOrDb = null, db = 
       accountId = orderDataOrDb;
       connection = db;
       
-      // ✅ VALIDAÇÃO DO FORMATO ANTIGO
-      if (!orderMsg || !orderMsg.o || !orderMsg.o.i || !orderMsg.o.s || !accountId) {
-        console.error(`[ORDER] Parâmetros inválidos (formato antigo): orderMsg.o.i=${orderMsg?.o?.i}, orderMsg.o.s=${orderMsg?.o?.s}, accountId=${accountId}`);
+      // ✅ VALIDAÇÃO DO FORMATO ANTIGO - CORREÇÃO AQUI
+      if (!orderMsg) {
+        console.error(`[ORDER] Mensagem de ordem inválida para conta ${accountId}`);
         return;
       }
       
-      // Extrair dados da ordem do formato antigo
-      orderUpdateData = orderMsg.o;
+      // ✅ EXTRAIR DADOS CORRETAMENTE BASEADO NO FORMATO BINANCE
+      if (orderMsg.e === 'ORDER_TRADE_UPDATE' && orderMsg.o) {
+        // Formato padrão da Binance: { e: 'ORDER_TRADE_UPDATE', o: { ... } }
+        orderUpdateData = orderMsg.o;
+      } else if (orderMsg.i && orderMsg.s) {
+        // Formato direto: { i: orderId, s: symbol, ... }
+        orderUpdateData = orderMsg;
+      } else {
+        console.error(`[ORDER] Formato de mensagem não reconhecido para conta ${accountId}:`, {
+          hasE: orderMsg.e,
+          hasO: !!orderMsg.o,
+          hasI: !!orderMsg.i,
+          hasS: !!orderMsg.s
+        });
+        return;
+      }
     }
 
     // ✅ VALIDAÇÃO UNIFICADA
@@ -38,19 +54,8 @@ async function handleOrderUpdate(messageOrAccountId, orderDataOrDb = null, db = 
       return;
     }
 
-    // ✅ PROCESSAR DADOS DA ORDEM
-    let orderData;
-    
-    if (orderUpdateData && orderUpdateData.i && orderUpdateData.s) {
-      // Formato direto: { i: orderId, s: symbol, X: status, ... }
-      orderData = orderUpdateData;
-    } else if (orderUpdateData && orderUpdateData.o) {
-      // Formato encapsulado: { e: 'ORDER_TRADE_UPDATE', o: { ... } }
-      orderData = orderUpdateData.o;
-    } else {
-      console.warn(`[ORDER] ⚠️ Formato de dados não reconhecido para conta ${accountId}:`, orderUpdateData);
-      return;
-    }
+    // ✅ PROCESSAR DADOS DA ORDEM - AGORA orderUpdateData JÁ ESTÁ CORRETO
+    const orderData = orderUpdateData;
     
     const orderId = orderData.i?.toString();
     const symbol = orderData.s;
@@ -94,7 +99,9 @@ async function handleOrderUpdate(messageOrAccountId, orderDataOrDb = null, db = 
     }
 
     // ✅ 3. ATUALIZAR ORDEM EXISTENTE
-    await updateExistingOrder(connection, orderData, accountId, existingOrders[0]);
+    if (orderExists) {
+      await updateExistingOrder(connection, orderData, accountId, existingOrders[0]);
+    }
 
     // ✅ 4. VERIFICAR SE DEVE MOVER PARA HISTÓRICO
     const finalStatuses = ['FILLED', 'CANCELED', 'CANCELLED', 'EXPIRED', 'REJECTED'];
@@ -138,6 +145,14 @@ async function handleOrderUpdate(messageOrAccountId, orderDataOrDb = null, db = 
       console.log(`[ORDER]   - Quantidade: ${executedQty}`);
       console.log(`[ORDER]   - Preço médio: ${avgPrice}`);
       console.log(`[ORDER]   - Valor total: ${totalValue.toFixed(2)} USDT`);
+    } else if (orderStatus === 'NEW') {
+      console.log(`[ORDER] ✅ Nova ordem registrada:`);
+      console.log(`[ORDER]   - ID: ${orderId}`);
+      console.log(`[ORDER]   - Símbolo: ${symbol}`);
+      console.log(`[ORDER]   - Tipo: ${orderData.o} (${orderData.R ? 'REDUCE_ONLY' : 'NORMAL'})`);
+      console.log(`[ORDER]   - Side: ${orderData.S}`);
+      console.log(`[ORDER]   - Quantidade: ${orderData.q}`);
+      console.log(`[ORDER]   - Preço: ${orderData.p}`);
     }
 
   } catch (error) {
@@ -271,50 +286,70 @@ async function handleTradeExecution(connection, order, accountId, existingOrder)
          dados_originais_ws = ?,
          last_update = NOW()
          WHERE id_externo = ? AND conta_id = ?`,
-        [order.X, executedQty, avgPrice, commission, commissionAsset, tradeId, JSON.stringify(order), orderId, accountId]
+        [
+          order.X, // status
+          executedQty,
+          avgPrice,
+          commission,
+          commissionAsset,
+          tradeId,
+          JSON.stringify(order),
+          orderId,
+          accountId
+        ]
       );
-    } else {
-      // Criar ordem se não existe (pode acontecer com ordens externas)
-      console.log(`[ORDER] Ordem ${orderId} executada mas não encontrada no banco, criando...`);
-      await handleNewOrder(connection, order, accountId, null);
-    }
-
-    // SE ORDEM FOI TOTALMENTE PREENCHIDA, VERIFICAR SE PRECISA CRIAR/ATUALIZAR POSIÇÃO
-    if (order.X === 'FILLED' && !order.R) { // Se não é reduce only
-      await handlePositionFromOrder(connection, order, accountId);
-    }
-
-    // ✅ NOTIFICAÇÃO TELEGRAM PARA ORDENS IMPORTANTES
-    if (order.X === 'FILLED' && existingOrder) {
-      try {
-        // Verificar se é ordem importante (SL, TP, ou entrada grande)
-        const orderType = existingOrder.tipo_ordem_bot;
-        const shouldNotify = orderType === 'STOP_LOSS' || 
-                           orderType === 'TAKE_PROFIT' || 
-                           orderType === 'REDUCAO_PARCIAL' ||
-                           (orderType === 'ENTRADA' && executedQty * avgPrice > 100); // Entradas > $100
+      
+      console.log(`[ORDER] ✅ Ordem ${orderId} atualizada: ${order.X}, Executado: ${executedQty} @ ${avgPrice}`);
+      
+      // ✅ NOVA VERIFICAÇÃO: Se ordem foi totalmente executada, verificar fechamento
+      if (order.X === 'FILLED') {
+        console.log(`[ORDER] 🎯 Ordem ${orderId} totalmente executada, verificando fechamento de posição...`);
         
-        if (shouldNotify) {
-          const message = formatOrderMessage(
-            symbol, 
-            order.S, 
-            orderType, 
-            executedQty.toFixed(6), 
-            avgPrice.toFixed(4), 
-            'FILLED'
-          );
-          
-          await sendTelegramMessage(accountId, message);
-          console.log(`[ORDER] 📱 Notificação de ordem ${orderType} enviada`);
-        }
-      } catch (telegramError) {
-        console.warn(`[ORDER] ⚠️ Erro ao enviar notificação de ordem:`, telegramError.message);
+        // Executar verificação em background para não bloquear
+        setTimeout(async () => {
+          try {
+            await checkPositionClosureAfterOrderExecution(orderId, accountId);
+          } catch (checkError) {
+            console.error(`[ORDER] ⚠️ Erro na verificação de fechamento:`, checkError.message);
+          }
+        }, 2000); // Aguardar 2 segundos para garantir que tudo foi processado
       }
-    }
+      
+      // ✅ NOTIFICAÇÃO TELEGRAM PARA ORDENS IMPORTANTES
+      if (order.X === 'FILLED' && existingOrder) {
+        try {
+          // Verificar se é ordem importante (SL, TP, ou entrada grande)
+          const orderType = existingOrder.tipo_ordem_bot;
+          const shouldNotify = orderType === 'STOP_LOSS' || 
+                             orderType === 'TAKE_PROFIT' || 
+                             orderType === 'REDUCAO_PARCIAL' ||
+                             (orderType === 'ENTRADA' && executedQty * avgPrice > 100); // Entradas > $100
+          
+          if (shouldNotify) {
+            const message = formatOrderMessage(
+              symbol, 
+              order.S, 
+              orderType, 
+              executedQty.toFixed(6), 
+              avgPrice.toFixed(4), 
+              'FILLED'
+            );
+            
+            await sendTelegramMessage(accountId, message);
+            console.log(`[ORDER] 📱 Notificação de ordem ${orderType} enviada`);
+          }
+        } catch (telegramError) {
+          console.warn(`[ORDER] ⚠️ Erro ao enviar notificação de ordem:`, telegramError.message);
+        }
+      }
 
-    console.log(`[ORDER] Trade executado: ${orderId} - ${lastFilledQty} @ ${lastFilledPrice} (Total: ${executedQty}) - Comissão: ${commission} ${commissionAsset}`);
+    } else {
+      console.warn(`[ORDER] ⚠️ Ordem ${orderId} não encontrada no banco para atualização`);
+    }
+    
   } catch (error) {
-    console.error(`[ORDER] Erro ao tratar execução de trade ${orderId}:`, error.message);
+    console.error(`[ORDER] ❌ Erro ao processar execução da ordem ${orderId}:`, error.message);
+    throw error;
   }
 }
 
@@ -504,7 +539,7 @@ async function handlePositionFromOrder(connection, order, accountId) {
 /**
  * ✅ NOVA FUNÇÃO: Mover ordem automaticamente quando FILLED ou CANCELLED
  */
-async function autoMoveOrderOnCompletion(orderId, newStatus, accountId) {
+async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCount = 0) {
   if (!['FILLED', 'CANCELED', 'CANCELLED', 'EXPIRED', 'REJECTED'].includes(newStatus)) {
     return false;
   }
@@ -512,8 +547,6 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId) {
   let connection;
   try {
     const db = await getDatabaseInstance();
-    console.log(`[ORDER_AUTO_MOVE] 🔄 Movendo ordem ${orderId} (${newStatus}) para histórico...`);
-
     connection = await db.getConnection();
     await connection.beginTransaction();
 
@@ -573,6 +606,18 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId) {
 
   } catch (error) {
     if (connection) await connection.rollback();
+
+    // Retry em caso de deadlock
+    if (
+      error.message &&
+      error.message.includes('Deadlock found when trying to get lock') &&
+      retryCount < 3
+    ) {
+      console.warn(`[ORDER_AUTO_MOVE] ⚠️ Deadlock ao mover ordem ${orderId}. Tentando novamente (${retryCount + 1}/3)...`);
+      await new Promise(resolve => setTimeout(resolve, 500 * (retryCount + 1)));
+      return autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCount + 1);
+    }
+
     console.error(`[ORDER_AUTO_MOVE] ❌ Erro ao mover ordem ${orderId}:`, error.message);
     return false;
   } finally {
@@ -764,8 +809,35 @@ async function insertExternalOrder(dbConnection, orderData, accountId) {
       }
     }
     
+    // Determinar tipo de ordem bot
     const orderBotType = determineOrderBotTypeFromExternal(orderData);
-    
+
+    // === NOVO BLOCO: Definir target apenas para RPs e TP final ===
+    let target = null;
+    let orignSig = 'EXTERNAL_ORDER';
+    if (orderData.c && orderData.c.startsWith('WEBHOOK_')) {
+      orignSig = orderData.c;
+    } else if (orderData.orign_sig) {
+      orignSig = orderData.orign_sig;
+    }
+
+    // Inicializar cache se necessário
+    if (!targetCache.has(orignSig)) {
+      targetCache.set(orignSig, { rp: 1, tp: 5 });
+    }
+    const cache = targetCache.get(orignSig);
+
+    if (orderBotType === 'REDUCAO_PARCIAL') {
+      target = cache.rp;
+      cache.rp += 1;
+    } else if (orderBotType === 'TAKE_PROFIT') {
+      target = cache.tp;
+    }
+    // Limpar cache se for TP final (última ordem do ciclo)
+    if (orderBotType === 'TAKE_PROFIT') {
+      targetCache.delete(orignSig);
+    }
+
     // ✅ MAPEAMENTO COMPLETO DOS CAMPOS
     const orderInsertData = {
       // Campos básicos existentes
@@ -779,7 +851,7 @@ async function insertExternalOrder(dbConnection, orderData, accountId) {
       side: orderData.S,
       simbolo: orderData.s,
       tipo_ordem_bot: orderBotType,
-      target: null,
+      target: target, // <-- Aqui entra o target correto
       reduce_only: orderData.R === true ? 1 : 0,
       close_position: orderData.cp === true ? 1 : 0,
       last_update: formatDateForMySQL(new Date()),
@@ -859,19 +931,16 @@ async function insertExternalOrder(dbConnection, orderData, accountId) {
 }
 
 /**
- * ✅ FUNÇÃO CORRIGIDA: Atualizar ordem existente
+ * ✅ FUNÇÃO CORRIGIDA: Atualizar ordem existente com retry em caso de deadlock
  */
-async function updateExistingOrder(dbConnection, orderData, accountId, existingOrder) {
+async function updateExistingOrder(dbConnection, orderData, accountId, existingOrder, retryCount = 0) {
   try {
     const orderId = orderData.i.toString();
-    
-    // ✅ USAR CONEXÃO PASSADA OU OBTER NOVA
     let connection = dbConnection;
     if (!connection) {
       connection = await getDatabaseInstance(accountId);
     }
-    
-    // ✅ ATUALIZAR DADOS DA ORDEM
+
     await connection.query(`
       UPDATE ordens 
       SET status = ?, 
@@ -888,10 +957,20 @@ async function updateExistingOrder(dbConnection, orderData, accountId, existingO
       orderId,
       accountId
     ]);
-    
+
     console.log(`[ORDER] ✅ Ordem ${orderId} atualizada: ${orderData.X}`);
-    
+
   } catch (error) {
+    // Retry em caso de deadlock
+    if (
+      error.message &&
+      error.message.includes('Deadlock found when trying to get lock') &&
+      retryCount < 3
+    ) {
+      console.warn(`[ORDER] ⚠️ Deadlock ao atualizar ordem ${orderData.i}. Tentando novamente (${retryCount + 1}/3)...`);
+      await new Promise(resolve => setTimeout(resolve, 500 * (retryCount + 1)));
+      return updateExistingOrder(dbConnection, orderData, accountId, existingOrder, retryCount + 1);
+    }
     console.error(`[ORDER] ❌ Erro ao atualizar ordem ${orderData.i}:`, error.message);
     throw error;
   }
@@ -1127,9 +1206,34 @@ async function handleTradeExecution(connection, order, accountId, existingOrder)
         }, 2000); // Aguardar 2 segundos para garantir que tudo foi processado
       }
       
-      // Resto da função existente...
-      // (notificações Telegram, etc.)
-      
+      // ✅ NOTIFICAÇÃO TELEGRAM PARA ORDENS IMPORTANTES
+      if (order.X === 'FILLED' && existingOrder) {
+        try {
+          // Verificar se é ordem importante (SL, TP, ou entrada grande)
+          const orderType = existingOrder.tipo_ordem_bot;
+          const shouldNotify = orderType === 'STOP_LOSS' || 
+                             orderType === 'TAKE_PROFIT' || 
+                             orderType === 'REDUCAO_PARCIAL' ||
+                             (orderType === 'ENTRADA' && executedQty * avgPrice > 100); // Entradas > $100
+          
+          if (shouldNotify) {
+            const message = formatOrderMessage(
+              symbol, 
+              order.S, 
+              orderType, 
+              executedQty.toFixed(6), 
+              avgPrice.toFixed(4), 
+              'FILLED'
+            );
+            
+            await sendTelegramMessage(accountId, message);
+            console.log(`[ORDER] 📱 Notificação de ordem ${orderType} enviada`);
+          }
+        } catch (telegramError) {
+          console.warn(`[ORDER] ⚠️ Erro ao enviar notificação de ordem:`, telegramError.message);
+        }
+      }
+
     } else {
       console.warn(`[ORDER] ⚠️ Ordem ${orderId} não encontrada no banco para atualização`);
     }

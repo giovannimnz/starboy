@@ -889,7 +889,6 @@ module.exports = {
   moveOrdersToHistory,
   checkOrderExistsOnExchange,
   checkSingleOrderStatus,
-  //Movidos do positionHistory.js
   movePositionToHistory,
   checkAndCloseWebsocket,
   syncAndCloseGhostPositions

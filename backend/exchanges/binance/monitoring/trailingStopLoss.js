@@ -81,8 +81,9 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
       }
     }
     
-    const currentTrailingLevel = trailingStateResult.length > 0 && trailingStateResult[0].trailing_stop_level ? 
-                                trailingStateResult[0].trailing_stop_level : 'ORIGINAL';
+    const currentTrailingLevel = (trailingStateResult.length > 0 && trailingStateResult[0].trailing_stop_level)
+      ? trailingStateResult[0].trailing_stop_level.toUpperCase()
+      : 'ORIGINAL';
 
     // ✅ BUSCAR DADOS DO SINAL RELACIONADO USANDO orign_sig
     let signalInfo = [];
@@ -132,7 +133,7 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
     const tp3Price = parseFloat(signal.tp3_price || 0);
     const entryPrice = parseFloat(signal.entry_price || position.preco_entrada || 0);
     const originalSlPrice = parseFloat(signal.sl_price || 0);
-    const side = position.side.toUpperCase();
+    const side = (position.side || signal.side || '').toUpperCase();
 
     // Verificar validade dos preços
     if (isNaN(tp1Price) || tp1Price <= 0) {
@@ -154,11 +155,11 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
     let priceHitTP1 = false;
     let priceHitTP3 = false;
     
-    if (side === 'BUY' || side === 'COMPRA') {
-      priceHitTP1 = currentPrice >= tp1Price && currentTrailingLevel === 'ORIGINAL';
+    if (side === 'BUY' || side === 'COMPRA' || side === 'LONG') {
+      priceHitTP1 = Number(currentPrice) >= Number(tp1Price) && currentTrailingLevel === 'ORIGINAL';
       priceHitTP3 = !isNaN(tp3Price) && tp3Price > 0 && currentPrice >= tp3Price && currentTrailingLevel === 'BREAKEVEN';
-    } else if (side === 'SELL' || side === 'VENDA') {
-      priceHitTP1 = currentPrice <= tp1Price && currentTrailingLevel === 'ORIGINAL';
+    } else if (side === 'SELL' || side === 'VENDA' || side === 'SHORT') {
+      priceHitTP1 = Number(currentPrice) <= Number(tp1Price) && currentTrailingLevel === 'ORIGINAL';
       priceHitTP3 = !isNaN(tp3Price) && tp3Price > 0 && currentPrice <= tp3Price && currentTrailingLevel === 'BREAKEVEN';
     }
 
@@ -185,21 +186,21 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
       
       // ✅ 4. CRIAR NOVO SL NO BREAKEVEN COM closePosition=true
       const newSLBreakevenPrice = entryPrice;
-      const oppositeSide = side === 'BUY' || side === 'COMPRA' ? 'SELL' : 'BUY';
+      const oppositeSide = (side === 'BUY' || side === 'COMPRA' || side === 'LONG') ? 'SELL' : 'BUY';
       
       try {
         console.log(`${functionPrefix} 📝 Criando SL breakeven: ${newSLBreakevenPrice} (closePosition=true)`);
-        
+
         const slResponse = await newStopOrder(
-          accountId,                 // accountId
-          position.simbolo,          // symbol
-          null,                      // ✅ quantity = null
-          oppositeSide,              // side
-          newSLBreakevenPrice,       // stopPrice
-          null,                      // price
-          false,                     // ✅ reduceOnly = false
-          true,                      // ✅ closePosition = true
-          'STOP_MARKET'              // orderType
+          accountId,
+          position.simbolo,
+          null,
+          oppositeSide, // <-- aqui!
+          newSLBreakevenPrice,
+          null,
+          false,
+          true,
+          'STOP_MARKET'
         );
         
         if (slResponse && slResponse.orderId) {
@@ -251,7 +252,7 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
       await new Promise(resolve => setTimeout(resolve, 2000));
       
       // ✅ CRIAR SL EM TP1 COM closePosition=true
-      const oppositeSide = side === 'BUY' || side === 'COMPRA' ? 'SELL' : 'BUY';
+      const oppositeSide = (side === 'BUY' || side === 'COMPRA' || side === 'LONG') ? 'SELL' : 'BUY';
       
       try {
         console.log(`${functionPrefix} 📝 Criando SL em TP1: ${tp1Price} (closePosition=true)`);
@@ -259,12 +260,12 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
         const slResponse = await newStopOrder(
           accountId,
           position.simbolo,
-          null,                // ✅ quantity = null
+          null,
           oppositeSide,
           tp1Price,
           null,
-          false,               // ✅ reduceOnly = false
-          true,                // ✅ closePosition = true
+          false,
+          true,
           'STOP_MARKET'
         );
         

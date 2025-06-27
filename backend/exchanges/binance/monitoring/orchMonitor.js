@@ -111,10 +111,12 @@ function setupSignalHandlers(accountIdForLog) {
  */
 async function initializeMonitoring(accountId) {
   setupSignalHandlers(accountId);
-  
   if (!accountId || typeof accountId !== 'number') {
     throw new Error(`AccountId inválido: ${accountId} (tipo: ${typeof accountId})`);
   }
+
+  // Garantir que o estado da conta está carregado no Map antes de qualquer operação
+  await api.loadCredentialsFromDatabase(accountId);
 
   console.log(`[MONITOR] Inicializando sistema de monitoramento para conta ID: ${accountId}...`);
 
@@ -233,7 +235,7 @@ try {
   console.warn(`[MONITOR] ⚠️ Erro ao verificar sincronização de tempo:`, timeError.message);
 }
 
-// === ETAPA 5: Inicializar WebSocket (SEM WebSocket API) ===
+// === ETAPA 5: Inicializando WebSocket (SEM WebSocket API) ===
 console.log(`🌐 ETAPA 5: Inicializando WebSockets para conta ${accountId}...`);
 
 try {

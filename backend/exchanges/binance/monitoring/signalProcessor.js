@@ -71,12 +71,12 @@ function timeframeToMs(timeframe) {
   const numValue = parseInt(value, 10);
 
   switch(unit.toLowerCase()) {
-    case 'm': return numValue * 60 * 1000;                    // minutos
-    case 'h': return numValue * 60 * 60 * 1000;               // horas
-    case 'd': return numValue * 24 * 60 * 60 * 1000;          // dias
-    case 'w': return numValue * 7 * 24 * 60 * 60 * 1000;      // semanas
-    case 'M': return numValue * 30 * 24 * 60 * 60 * 1000;     // meses
-    case 'y': return numValue * 365 * 24 * 60 * 60 * 1000;    // anos
+    case 'm': return numValue * 60 * 1000;                      // minutos
+    case 'h': return numValue * 60 * 60 * 1000;                 // horas
+    case 'd': return numValue * 24 * 60 * 60 * 1000;            // dias
+    case 'w': return numValue * 7 * 24 * 60 * 60 * 1000;        // semanas
+    case 'M': return numValue * 30 * 24 * 60 * 60 * 1000;       // meses
+    case 'y': return numValue * 365 * 24 * 60 * 60 * 1000;      // anos
     default: return 0;
   }
 }
@@ -126,12 +126,12 @@ async function cancelSignal(db, signalId, status, reason, accountId) {
         const signal = signalData[0];
         const side = signal.side === 'BUY' ? '🟢 COMPRA' : '🔴 VENDA';
         const message = `⏰ <b>SINAL CANCELADO</b>\n\n` +
-                       `📊 <b>${signal.symbol}</b>\n` +
-                       `${side} | ${signal.leverage}x\n` +
-                       `💰 Entrada: $${signal.entry_price}\n\n` +
-                       `📝 <b>Motivo:</b>\n${reason}\n\n` +
-                       `🆔 Sinal: #${signalId}\n` +
-                       `⏰ ${new Date().toLocaleString('pt-BR')}`;
+                        `📊 <b>${signal.symbol}</b>\n` +
+                        `${side} | ${signal.leverage}x\n` +
+                        `💰 Entrada: $${signal.entry_price}\n\n` +
+                        `📝 <b>Motivo:</b>\n${reason}\n\n` +
+                        `🆔 Sinal: #${signalId}\n` +
+                        `⏰ ${new Date().toLocaleString('pt-BR')}`;
         
         await sendTelegramMessage(accountId, message);
       }
@@ -349,25 +349,44 @@ async function processSignal(signal, db, accountId) {
     const now = new Date();
     let timeoutAt = null;
     let maxLifetimeMinutes = null;
-    
+
     if (signal.timeframe) {
       const timeframeMs = timeframeToMs(signal.timeframe);
       if (timeframeMs > 0) {
         const maxLifetimeMs = timeframeMs * 3;
         timeoutAt = new Date(now.getTime() + maxLifetimeMs);
         maxLifetimeMinutes = Math.floor(maxLifetimeMs / (60 * 1000));
-        
         console.log(`[SIGNAL] ⏰ Timeout definido para: ${timeoutAt.toISOString()} (${maxLifetimeMinutes} min)`);
       }
     }
-    
+    // Se não veio do timeframe, tenta usar timeout_at ou max_lifetime_minutes já existentes
+    if (!timeoutAt && signal.timeout_at) {
+      timeoutAt = new Date(signal.timeout_at);
+    }
+    if (!maxLifetimeMinutes && signal.max_lifetime_minutes) {
+      maxLifetimeMinutes = signal.max_lifetime_minutes;
+    }
+    // Se só timeout_at está presente, calcula maxLifetimeMinutes
+    if (timeoutAt && !maxLifetimeMinutes) {
+      maxLifetimeMinutes = Math.floor((timeoutAt.getTime() - now.getTime()) / 60000);
+    }
+    // Se só maxLifetimeMinutes está presente, calcula timeoutAt
+    if (!timeoutAt && maxLifetimeMinutes) {
+      timeoutAt = new Date(now.getTime() + maxLifetimeMinutes * 60000);
+    }
+    // Fallback: se ainda não tem, define padrão 45 minutos
+    if (!timeoutAt || !maxLifetimeMinutes) {
+      maxLifetimeMinutes = 45;
+      timeoutAt = new Date(now.getTime() + maxLifetimeMinutes * 60000);
+    }
+
     await db.query(
       `UPDATE webhook_signals SET 
         status = 'AGUARDANDO_ACIONAMENTO',
         timeout_at = ?,
         max_lifetime_minutes = ?,
         updated_at = NOW()
-       WHERE id = ?`,
+        WHERE id = ?`,
       [timeoutAt, maxLifetimeMinutes, signalId]
     );
     
@@ -580,99 +599,6 @@ async function checkNewTrades(accountId) {
 }
 
 /**
- * ✅ VALIDAÇÕES CRÍTICAS ANTES DO PROCESSAMENTO
- */
-async function validateSignalBeforeProcessing(signal, accountId, db) {
-  try {
-    // ✅ 1. Verificar se já expirou (sem REST)
-    if (isSignalExpired(signal)) {
-      return { isValid: false, reason: 'Sinal expirado antes do processamento' };
-    }
-    
-    // ✅ 2. Verificar se já existe posição (banco de dados local)
-    const positionExists = await checkPositionExists(db, signal.symbol, accountId);
-    if (positionExists) {
-      return { isValid: false, reason: `Posição já existe para ${signal.symbol}` };
-    }
-    
-    // ✅ 3. Verificar Stop Loss usando cache de preços (WebSocket)
-    const cachedPrice = getPriceFromCache(signal.symbol, accountId);
-    if (cachedPrice && isStopLossAlreadyHit(signal, cachedPrice.price)) {
-      return { isValid: false, reason: `Stop loss já atingido: preço=${cachedPrice.price}, sl=${signal.sl_price}` };
-    }
-    
-    // ✅ 4. Verificar máximo de posições (banco local)
-    const [positionCount] = await db.query(
-      'SELECT COUNT(*) as count FROM posicoes WHERE conta_id = ? AND status = "OPEN"',
-      [accountId]
-    );
-    
-    if (positionCount[0].count >= 5) {
-      return { isValid: false, reason: 'Limite máximo de posições atingido' };
-    }
-    
-    return { isValid: true, reason: 'Validação passou' };
-    
-  } catch (error) {
-    return { isValid: false, reason: `Erro na validação: ${error.message}` };
-  }
-}
-
-/**
- * ✅ DETERMINA ESTRATÉGIA DE ENTRADA
- */
-function determineEntryStrategy(signal) {
-  // Sinal MARKET - execução imediata
-  if (!signal.entry_price || signal.entry_price <= 0) {
-    return 'IMMEDIATE';
-  }
-  
-  // Sinal LIMIT com preço específico - aguardar gatilho
-  if (signal.entry_price > 0) {
-    return 'WAIT_FOR_TRIGGER';
-  }
-  
-  return 'INVALID';
-}
-
-/**
- * ✅ EXECUÇÃO IMEDIATA (para sinais MARKET)
- */
-async function processSignalImmediate(signal, db, accountId) {
-  console.log(`[SIGNAL] 🚀 Executando entrada IMEDIATA para sinal ${signal.id}`);
-  
-  // Atualizar status
-  await db.query(
-    'UPDATE webhook_signals SET status = ?, updated_at = NOW() WHERE id = ?',
-    ['PROCESSANDO', signal.id]
-  );
-  
-  try {
-    const currentPrice = await api.getPrice(signal.symbol, accountId);
-    const entryResult = await executeReverse(signal, currentPrice, accountId);
-    
-    if (entryResult && entryResult.success) {
-      await db.query(
-        'UPDATE webhook_signals SET status = ?, updated_at = NOW() WHERE id = ?',
-        ['EXECUTADO', signal.id]
-      );
-      
-      console.log(`[SIGNAL] ✅ Entrada IMEDIATA executada com sucesso para sinal ${signal.id}`);
-    } else {
-      throw new Error(entryResult?.error || 'Falha na execução da entrada');
-    }
-    
-  } catch (error) {
-    await db.query(
-      'UPDATE webhook_signals SET status = ?, error_message = ?, updated_at = NOW() WHERE id = ?',
-      ['ERROR', error.message.substring(0, 250), signal.id]
-    );
-    
-    throw error;
-  }
-}
-
-/**
  * ✅ COLOCAR SINAL EM AGUARDO PARA GATILHO
  */
 async function setSignalWaitingForTrigger(signal, db, accountId) {
@@ -744,28 +670,10 @@ function isStopLossAlreadyHit(signal, currentPrice) {
   return false;
 }
 
-/**
- * ✅ CALCULAR CUSTO ESTIMADO DA POSIÇÃO
- */
-function calculateEstimatedPositionCost(signal) {
-  const leverage = parseInt(signal.leverage || 1);
-  const capitalPct = parseFloat(signal.capital_pct || 1) / 100;
-  const price = parseFloat(signal.entry_price || signal.price || 100);
-  
-  // Estimativa baseada em saldo médio de $1000
-  const estimatedBalance = 1000;
-  const positionValue = estimatedBalance * capitalPct;
-  const marginRequired = positionValue / leverage;
-  
-  return marginRequired * 1.1; // 10% de margem de segurança
-}
-
 async function onPriceUpdate(symbol, currentPrice, db, accountId) {
   try {
-    // ✅ LOG CONDICIONAL: Só mostrar se houver atividade relevante
     let hasRelevantActivity = false;
     
-    // ✅ CORRIGIDO: Renomeado para evitar redeclaração
     const [pendingSignalsCount] = await db.query(`
       SELECT COUNT(*) as count FROM webhook_signals
       WHERE symbol = ? AND conta_id = ? AND status = 'AGUARDANDO_ACIONAMENTO'
@@ -773,7 +681,6 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
     
     if (pendingSignalsCount[0].count > 0) {
       hasRelevantActivity = true;
-      console.log(`[SIGNAL] 📊 onPriceUpdate via WebSocket: ${symbol} = ${currentPrice} (conta ${accountId}) - ${pendingSignalsCount[0].count} sinais aguardando`);
     }
     
     // Validação básica
@@ -785,7 +692,7 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
     }
     
     // 1. ATUALIZAR CACHE DE PREÇOS
-    const cacheUpdated = updatePriceCache(symbol, currentPrice, accountId);
+    updatePriceCache(symbol, currentPrice, accountId);
     
     // 2. ✅ ATUALIZAR POSIÇÕES COM TRAILING STOP (SEM enhancedMonitoring)
     try {
@@ -809,12 +716,13 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
     `, [symbol, accountId]);
     
     if (pendingSignals.length === 0) {
-      // ✅ DEBUG: Mostrar quando não há sinais
-      // console.log(`[SIGNAL] ℹ️ Nenhum sinal aguardando para ${symbol} (conta ${accountId})`);
       return;
     }
     
-    console.log(`[SIGNAL] 🔍 Encontrados ${pendingSignals.length} sinais aguardando para ${symbol}`);
+    // Apenas logar se houver sinais para evitar spam
+    if(hasRelevantActivity){
+        //console.log(`[SIGNAL] 🔍 Encontrados ${pendingSignals.length} sinais aguardando para ${symbol}`);
+    }
     
     const now = new Date();
     
@@ -823,23 +731,26 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
       const slPrice = parseFloat(signal.sl_price || 0);
       const side = signal.side.toUpperCase();
       
-      console.log(`[SIGNAL] 🔍 Verificando sinal ${signal.id}: ${side} ${symbol} entrada=${entryPrice}, atual=${currentPrice}, sl=${slPrice}`);
-  
       // 4. VERIFICAR TIMEOUT
       let isTimedOut = false;
+      let maxLifetimeMinutes = signal.max_lifetime_minutes;
+      let timeoutAt = signal.timeout_at ? new Date(signal.timeout_at) : null;
       if (signal.timeframe) {
         const timeframeMs = timeframeToMs(signal.timeframe);
         const maxLifetime = timeframeMs * 3;
         const createdAt = new Date(signal.created_at);
         const ageMs = now.getTime() - createdAt.getTime();
-        
         if (ageMs > maxLifetime) {
           isTimedOut = true;
-          console.log(`[SIGNAL] ⏰ Sinal ${signal.id} expirou por timeout: ${ageMs}ms > ${maxLifetime}ms`);
+        }
+        if (!maxLifetimeMinutes) {
+          maxLifetimeMinutes = Math.floor(maxLifetime / 60000);
+        }
+        if (!timeoutAt) {
+          timeoutAt = new Date(createdAt.getTime() + maxLifetime);
         }
       } else if (signal.timeout_at && now >= new Date(signal.timeout_at)) {
         isTimedOut = true;
-        console.log(`[SIGNAL] ⏰ Sinal ${signal.id} expirou por timeout_at`);
       }
       
       // 5. VERIFICAR STOP LOSS
@@ -850,25 +761,17 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
         } else if (side === 'SELL' || side === 'VENDA') {
           stopLossHit = currentPrice >= slPrice;
         }
-        
-        if (stopLossHit) {
-          console.log(`[SIGNAL] 🛑 Stop loss atingido para sinal ${signal.id}: ${currentPrice} vs ${slPrice}`);
-        }
       }
       
-      // 6. ✅ VERIFICAR GATILHO DE ENTRADA (VERSÃO CORRIGIDA)
+      // 6. VERIFICAR GATILHO DE ENTRADA
       let entryTriggered = false;
       if (entryPrice > 0) {
         if (side === 'BUY' || side === 'COMPRA') {
           entryTriggered = currentPrice >= entryPrice;
-          console.log(`[SIGNAL] 🎯 LONG ${symbol}: ${currentPrice} >= ${entryPrice} = ${entryTriggered}`);
         } else if (side === 'SELL' || side === 'VENDA') {
           entryTriggered = currentPrice <= entryPrice;
-          console.log(`[SIGNAL] 🎯 SHORT ${symbol}: ${currentPrice} <= ${entryPrice} = ${entryTriggered}`);
         }
       }
-      
-      console.log(`[SIGNAL] 📊 Status sinal ${signal.id}: timeout=${isTimedOut}, stopLoss=${stopLossHit}, gatilho=${entryTriggered}`);
       
       // 7. EXECUTAR AÇÕES
       if (isTimedOut) {
@@ -877,7 +780,7 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
           `Sinal expirou (timeframe: ${signal.timeframe})`, accountId);
         
       } else if (stopLossHit) {
-        console.log(`[SIGNAL] 🛑 Cancelando sinal ${signal.id} por stop loss atingido`);
+        console.log(`[SIGNAL] 🛑 Cancelando sinal ${signal.id} por stop loss atingido: ${currentPrice} vs ${slPrice}`);
         await cancelSignal(db, signal.id, 'SL_BEFORE_ENTRY', 
           `Stop loss (${slPrice}) atingido antes da entrada (preço atual: ${currentPrice})`, accountId);
         
@@ -886,7 +789,6 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
         console.log(`[SIGNAL] 📊 Detalhes: ${side} ${symbol} - Preço atual: ${currentPrice}, Entrada: ${entryPrice}`);
         
         try {
-          // Atualizar status para PROCESSANDO
           await db.query(
             'UPDATE webhook_signals SET status = ?, updated_at = NOW() WHERE id = ?',
             ['PROCESSANDO', signal.id]
@@ -894,7 +796,6 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
           
           console.log(`[SIGNAL] 🔄 Status atualizado para PROCESSANDO, chamando executeReverse...`);
           
-          // ✅ CHAMAR limitMakerEntry
           const entryResult = await executeReverse(signal, currentPrice, accountId);
           
           if (entryResult && entryResult.success) {
@@ -905,14 +806,13 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
               ['EXECUTADO', signal.id]
             );
             
-            // Enviar notificação de sucesso
             if (signal.chat_id) {
               try {
                 const message = `✅ Entrada Executada\n\n` +
-                               `📊 ${symbol}\n` +
-                               `🎯 Preço: ${currentPrice}\n` +
-                               `💰 Quantidade: ${entryResult.filledQuantity || 'N/A'}\n\n` +
-                               `🆔 Sinal: #${signal.id}`;
+                                `📊 ${symbol}\n` +
+                                `🎯 Preço: ${currentPrice}\n` +
+                                `💰 Quantidade: ${entryResult.filledQuantity || 'N/A'}\n\n` +
+                                `🆔 Sinal: #${signal.id}`;
                 
                 await sendTelegramMessage(accountId, message);
                 console.log(`[SIGNAL] 📱 Notificação enviada para sinal ${signal.id}`);
@@ -934,18 +834,42 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
           );
         }
       } else {
-        // ✅ LOG PERIÓDICO (A CADA 1 MINUTO)
+        // ✅ LOG PERIÓDICO (A CADA 1 MINUTO) - Bloco onde os logs foram centralizados
         const logKey = `${symbol}_${signal.id}`;
         const currentTime = Date.now();
         const lastLogTime = lastPriceLogTime.get(logKey) || 0;
-        
-        if (currentTime - lastLogTime >= 60000) {
+
+        if (currentTime - lastLogTime >= 60000) { // 60000ms = 1 minuto
+          // Calcular minutos desde o início e total de timeout
+          let elapsedMinutes = 0;
+          let totalMinutes = 0;
+
           const createdAt = new Date(signal.created_at);
-          const elapsedMinutes = Math.round((now - createdAt) / 60000);
-          const totalMinutes = signal.max_lifetime_minutes || 0;
-          
-          console.log(`[SIGNAL] 📊 Sinal ${signal.id} (${symbol}): Atual=${currentPrice}, Entrada=${entryPrice}, SL=${slPrice} | ${elapsedMinutes}/${totalMinutes}min`);
-          
+          elapsedMinutes = Math.floor((now.getTime() - createdAt.getTime()) / 60000);
+
+          if (signal.max_lifetime_minutes && signal.max_lifetime_minutes > 0) {
+            totalMinutes = signal.max_lifetime_minutes;
+          } else if (signal.timeframe) {
+            const timeframeMs = timeframeToMs(signal.timeframe);
+            if (timeframeMs > 0) {
+              totalMinutes = Math.floor((timeframeMs * 3) / 60000);
+            }
+          } else if (signal.timeout_at) {
+            const timeoutAt = new Date(signal.timeout_at);
+            totalMinutes = Math.floor((timeoutAt.getTime() - createdAt.getTime()) / 60000);
+          }
+          // Se ainda não conseguiu, define um valor padrão de 60 minutos
+          if (!totalMinutes || totalMinutes <= 0) totalMinutes = 60;
+
+          // Logs que agora só aparecerão a cada minuto
+          console.log(`[SIGNAL] 🔍 Verificando sinal ${signal.id}: ${side} ${symbol} entrada=${entryPrice}, atual=${currentPrice}, sl=${slPrice}`);
+          if (side === 'BUY' || side === 'COMPRA') {
+            console.log(`[SIGNAL] 🎯 LONG ${symbol}: ${currentPrice} >= ${entryPrice} = ${entryTriggered}`);
+          } else if (side === 'SELL' || side === 'VENDA') {
+            console.log(`[SIGNAL] 🎯 SHORT ${symbol}: ${currentPrice} <= ${entryPrice} = ${entryTriggered}`);
+          }
+          console.log(`[SIGNAL] 📊 Status sinal ${signal.id}: timeout=${isTimedOut}, stopLoss=${stopLossHit}, gatilho=${entryTriggered} | Timeout: ${elapsedMinutes}/${totalMinutes} min`);
+          // Atualiza o tempo do último log para este sinal
           lastPriceLogTime.set(logKey, currentTime);
         }
       }

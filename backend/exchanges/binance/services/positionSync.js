@@ -225,9 +225,8 @@ async function syncPositionsWithAutoClose(accountId) {
     `, [accountId]);
 
     const exchangePositions = await getAllOpenPositions(accountId);
-    
-    console.log(`[SYNC_AUTO] 📊 Banco: ${dbPositions.length} posições | Corretora: ${exchangePositions.length} posições`);
 
+    // Lógica para exibir logs apenas se houver diferença ou alteração
     let syncResults = {
       checked: dbPositions.length,
       movedToHistory: 0,
@@ -247,10 +246,7 @@ async function syncPositionsWithAutoClose(accountId) {
       
       if (!exchangePos || Math.abs(parseFloat(exchangePos.quantidade)) <= 0.000001) {
         // POSIÇÃO NÃO EXISTE MAIS NA CORRETORA - MOVER PARA HISTÓRICO
-        console.log(`[SYNC_AUTO] 🔄 Posição ${dbPos.simbolo} fechada na corretora, movendo para histórico...`);
-        
         try {
-          // ✅ CORREÇÃO: Usar função corrigida do cleanup.js
           const moved = await movePositionToHistory(
             db, 
             dbPos.id, 
@@ -258,24 +254,18 @@ async function syncPositionsWithAutoClose(accountId) {
             'Sincronização automática - posição não encontrada na corretora',
             accountId
           );
-          
           if (moved) {
             syncResults.movedToHistory++;
-            console.log(`[SYNC_AUTO] ✅ Posição ${dbPos.simbolo} movida para histórico`);
           } else {
             syncResults.errors.push(`Falha ao mover ${dbPos.simbolo} para histórico`);
           }
-          
         } catch (moveError) {
-          console.error(`[SYNC_AUTO] ❌ Erro ao mover ${dbPos.simbolo}:`, moveError.message);
           syncResults.errors.push(`Erro ao mover ${dbPos.simbolo}: ${moveError.message}`);
         }
-        
       } else {
         // POSIÇÃO EXISTE - ATUALIZAR PREÇO CORRENTE SE NECESSÁRIO
         const currentExchangePrice = parseFloat(exchangePos.precoAtual);
         const dbCurrentPrice = parseFloat(dbPos.preco_corrente || 0);
-        
         if (Math.abs(currentExchangePrice - dbCurrentPrice) > 0.001) {
           try {
             await db.query(`
@@ -283,23 +273,32 @@ async function syncPositionsWithAutoClose(accountId) {
               SET preco_corrente = ?, data_hora_ultima_atualizacao = NOW()
               WHERE id = ?
             `, [currentExchangePrice, dbPos.id]);
-            
             syncResults.updatedPrices++;
-            console.log(`[SYNC_AUTO] 📊 Preço atualizado para ${dbPos.simbolo}: ${dbCurrentPrice} → ${currentExchangePrice}`);
-            
           } catch (updateError) {
-            console.error(`[SYNC_AUTO] ❌ Erro ao atualizar preço ${dbPos.simbolo}:`, updateError.message);
             syncResults.errors.push(`Erro ao atualizar preço ${dbPos.simbolo}: ${updateError.message}`);
           }
         }
       }
     }
 
-    console.log(`[SYNC_AUTO] ✅ Sincronização avançada concluída para conta ${accountId}:`);
-    console.log(`[SYNC_AUTO]   - Posições verificadas: ${syncResults.checked}`);
-    console.log(`[SYNC_AUTO]   - Movidas para histórico: ${syncResults.movedToHistory}`);
-    console.log(`[SYNC_AUTO]   - Preços atualizados: ${syncResults.updatedPrices}`);
-    console.log(`[SYNC_AUTO]   - Erros: ${syncResults.errors.length}`);
+    // Exibir TODO o diagnóstico de sincronização apenas se houver diferença ou alteração
+    const bancoCount = dbPositions.length;
+    const corretoraCount = exchangePositions.length;
+    const { movedToHistory, updatedPrices, errors } = syncResults;
+    const houveMudanca = (bancoCount !== corretoraCount) || movedToHistory > 0 || updatedPrices > 0 || errors.length > 0;
+    if (houveMudanca) {
+      console.log(`[CONTA-${accountId}] === \uD83D\uDD0D DIAGNÓSTICO DE SINCRONIZAÇÃO ===`);
+      console.log(`[CONTA-${accountId}] [API] Obtendo posições abertas para conta ${accountId}...`);
+      // Aqui você pode adicionar outros logs de requisição/diagnóstico relevantes
+      console.log(`[CONTA-${accountId}] [API] ✅ ${corretoraCount} posições abertas encontradas para conta ${accountId}`);
+      console.log(`[CONTA-${accountId}] [SYNC_AUTO] \uD83D\uDCCA Banco: ${bancoCount} posições | Corretora: ${corretoraCount} posições`);
+      console.log(`[SYNC_AUTO] ✅ Sincronização avançada concluída para conta ${accountId}:`);
+      console.log(`[SYNC_AUTO]   - Posições verificadas: ${syncResults.checked}`);
+      console.log(`[SYNC_AUTO]   - Movidas para histórico: ${movedToHistory}`);
+      console.log(`[SYNC_AUTO]   - Preços atualizados: ${updatedPrices}`);
+      console.log(`[SYNC_AUTO]   - Erros: ${errors.length}`);
+      console.log('===========================================');
+    }
 
     return syncResults;
 
@@ -636,7 +635,7 @@ async function logOpenPositionsAndOrdersVisual(accountId) {
         }
       });
     } else {
-      console.log(`[SYNC_CHECK] ✅ Banco e corretora estão sincronizados`);
+      //console.log(`[SYNC_CHECK] ✅ Banco e corretora estão sincronizados`);
     }
     
     console.log('===========================================\n');

@@ -470,6 +470,51 @@ async function insertPosition(connection, positionData, webhookSignalId = null) 
   }
 }
 
+/**
+ * Insere uma nova posição na tabela posicoes, preenchendo orign_sig com message_source do último webhook_signals
+ * @param {Object} db - Conexão com o banco de dados
+ * @param {Object} positionData - Dados da posição (deve conter pelo menos simbolo, quantidade, preco_entrada, etc)
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<number>} - ID da nova posição
+ */
+async function insertPosition(db, positionData, accountId) {
+  try {
+    // Buscar message_source do último webhook_signals para o símbolo e conta
+    let orignSig = null;
+    if (positionData.simbolo && accountId) {
+      const [signals] = await db.query(
+        `SELECT message_source FROM webhook_signals WHERE symbol = ? AND conta_id = ? ORDER BY created_at DESC LIMIT 1`,
+        [positionData.simbolo, accountId]
+      );
+      if (signals.length > 0 && signals[0].message_source) {
+        orignSig = signals[0].message_source;
+      }
+    }
+    // Inserir posição com orign_sig
+    const [result] = await db.query(
+      `INSERT INTO posicoes (simbolo, quantidade, quantidade_aberta, preco_medio, status, data_hora_abertura, side, leverage, preco_entrada, preco_corrente, orign_sig, conta_id)
+       VALUES (?, ?, ?, ?, ?, NOW(), ?, ?, ?, ?, ?, ?)`,
+      [
+        positionData.simbolo,
+        positionData.quantidade || 0,
+        positionData.quantidade_aberta || 0,
+        positionData.preco_medio || positionData.preco_entrada || 0,
+        positionData.status || 'OPEN',
+        positionData.side || null,
+        positionData.leverage || null,
+        positionData.preco_entrada || 0,
+        positionData.preco_corrente || 0,
+        orignSig,
+        accountId
+      ]
+    );
+    return result.insertId;
+  } catch (error) {
+    console.error(`[DB] Erro ao inserir posição:`, error.message);
+    throw error;
+  }
+}
+
 // Verificar se uma ordem já existe
 async function checkOrderExists(db, id_externo) {
   try {
@@ -749,7 +794,7 @@ async function updatePositionInDb(db, positionId, quantidade, preco_entrada, pre
 
 // Atualizar a função moveClosedPositionsAndOrders para usar formatDateForMySQL
 
-async function moveClosedPositionsAndOrders(db, positionId) {
+async function moveClosedPositionsAndOrders(db, positionId, retryCount = 0) {
   let connection;
   try {
     // Usar formatDateForMySQL para formatar a data atual
@@ -888,11 +933,19 @@ async function moveClosedPositionsAndOrders(db, positionId) {
 
     await connection.commit();
     console.log(`Posição ${positionId} e suas ordens movidas para histórico com sucesso.`);
-
   } catch (error) {
     if (connection) {
       await connection.rollback();
-      console.error('Transação revertida:', error.message);
+    }
+    // Retry em caso de deadlock
+    if (
+      error.message &&
+      error.message.includes('Deadlock found when trying to get lock') &&
+      retryCount < 3
+    ) {
+      console.warn(`[DB] Deadlock ao mover posição ${positionId}. Tentando novamente (${retryCount + 1}/3)...`);
+      await new Promise(resolve => setTimeout(resolve, 500 * (retryCount + 1)));
+      return moveClosedPositionsAndOrders(db, positionId, retryCount + 1);
     }
     console.error(`Erro ao mover posições fechadas: ${error.message}`);
     throw error;
@@ -1120,91 +1173,129 @@ async function getBaseCalculoBalance(db, accountId) {
 }
 
 /**
- * Obtém as credenciais da API da Binance do banco de dados
+ * Obtém as credenciais da API da Binance do banco de dados, incluindo todos os campos relevantes da corretora vinculada
  * @param {Object} options - Opções de consulta
  * @param {boolean} options.forceRefresh - Se true, força uma nova consulta ao banco de dados
  * @param {number} options.accountId - ID da conta a ser consultada (obrigatório)
- * @returns {Promise<Object>} - Objeto com as credenciais
+ * @returns {Promise<Object>} - Objeto com as credenciais e dados completos da corretora
  */
 async function getApiCredentials(options = {}) {
-  // CORREÇÃO: Tornar accountId obrigatório
   const { forceRefresh = false, accountId } = options;
-  
   if (!accountId || typeof accountId !== 'number') {
     throw new Error(`AccountId é obrigatório: ${accountId} (tipo: ${typeof accountId})`);
   }
-
   const cacheKey = `credentials_${accountId}`;
-  
   if (!forceRefresh && credentialsCache.has(cacheKey)) {
     const cached = credentialsCache.get(cacheKey);
     const now = Date.now();
-    
     if (now - cached.timestamp < CACHE_DURATION) {
       console.log(`[DB] Usando credenciais em cache para conta ${accountId}`);
       return cached.data;
     }
   }
-
   try {
     const db = await getDatabaseInstance();
-    
     if (!db) {
       throw new Error('Não foi possível obter conexão com o banco de dados');
     }
-
     console.log(`[DB] Carregando credenciais da conta ${accountId} do banco de dados...`);
-    
-    // CORREÇÃO: Query usando tabela 'contas'
+    // JOIN completo para trazer todos os campos relevantes de conta e corretora
     const [rows] = await db.query(`
       SELECT 
         c.id,
         c.nome,
+        c.descricao,
+        c.id_corretora,
         c.api_key, 
         c.api_secret,
         c.ws_api_key,
         c.ws_api_secret,
-        c.private_key,
-        c.api_url,
-        c.ws_url,
-        c.ws_api_url,
+        c.testnet_spot_api_key,
+        c.testnet_spot_api_secret,
+        c.telegram_chat_id,
+        c.telegram_bot_token,
+        c.telegram_bot_token_controller,
         c.ativa,
-        c.id_corretora,
+        c.max_posicoes,
+        c.saldo_futuros,
+        c.saldo_spot,
+        c.saldo_base_calculo_futuros,
+        c.saldo_base_calculo_spot,
+        c.data_criacao,
+        c.ultima_atualizacao,
+        c.celular,
+        c.saldo_cross_wallet,
+        c.balance_change,
+        c.last_event_reason,
+        c.event_time,
+        c.transaction_time,
+        c.user_id,
+        cor.id as corretora_id,
         cor.corretora,
         cor.ambiente,
+        cor.spot_rest_api_url,
         cor.futures_rest_api_url,
+        cor.futures_ws_market_url,
         cor.futures_ws_api_url,
-        cor.futures_ws_market_url
+        cor.ativa as corretora_ativa,
+        cor.data_criacao as corretora_data_criacao,
+        cor.ultima_atualizacao as corretora_ultima_atualizacao
       FROM contas c
       LEFT JOIN corretoras cor ON c.id_corretora = cor.id
-      WHERE c.id = ? AND c.ativa = 1
+      WHERE c.id = ?
     `, [accountId]);
-
     if (rows.length === 0) {
-      throw new Error(`Conta ${accountId} não encontrada no banco de dados ou não está ativa`);
+      throw new Error(`Conta ${accountId} não encontrada no banco de dados`);
     }
-
     const account = rows[0];
-    
+    // Ambiente sempre da corretora
+    const ambiente = (account.ambiente && account.ambiente.toLowerCase().includes('testnet')) ? 'testnet' : 'prd';
     const credentials = {
-      accountId: accountId,
-      accountName: account.nome,
+      accountId: account.id,
+      nome: account.nome,
+      descricao: account.descricao,
+      id_corretora: account.id_corretora,
       apiKey: account.api_key,
       apiSecret: account.api_secret,
       wsApiKey: account.ws_api_key,
       wsApiSecret: account.ws_api_secret,
-      privateKey: account.private_key,
-      apiUrl: account.api_url || account.futures_rest_api_url || 'https://fapi.binance.com/fapi',
-      wsUrl: account.ws_url || account.futures_ws_market_url || 'wss://fstream.binance.com/ws',
-      wsApiUrl: account.ws_api_url || account.futures_ws_api_url || 'wss://ws-fapi.binance.com/ws-fapi/v1',
-      corretora: account.corretora || 'binance',
-      ambiente: account.ambiente || 'prd'
+      testnetSpotApiKey: account.testnet_spot_api_key,
+      testnetSpotApiSecret: account.testnet_spot_api_secret,
+      telegramChatId: account.telegram_chat_id,
+      telegramBotToken: account.telegram_bot_token,
+      telegramBotTokenController: account.telegram_bot_token_controller,
+      ativa: account.ativa,
+      max_posicoes: account.max_posicoes,
+      saldo_futuros: account.saldo_futuros,
+      saldo_spot: account.saldo_spot,
+      saldo_base_calculo_futuros: account.saldo_base_calculo_futuros,
+      saldo_base_calculo_spot: account.saldo_base_calculo_spot,
+      data_criacao: account.data_criacao,
+      ultima_atualizacao: account.ultima_atualizacao,
+      celular: account.celular,
+      saldo_cross_wallet: account.saldo_cross_wallet,
+      balance_change: account.balance_change,
+      last_event_reason: account.last_event_reason,
+      event_time: account.event_time,
+      transaction_time: account.transaction_time,
+      user_id: account.user_id,
+      corretora: {
+        id: account.corretora_id,
+        nome: account.corretora,
+        ambiente,
+        spot_rest_api_url: account.spot_rest_api_url,
+        futures_rest_api_url: account.futures_rest_api_url,
+        futures_ws_market_url: account.futures_ws_market_url,
+        futures_ws_api_url: account.futures_ws_api_url,
+        ativa: account.corretora_ativa,
+        data_criacao: account.corretora_data_criacao,
+        ultima_atualizacao: account.corretora_ultima_atualizacao
+      }
     };
-
-    console.log(`[DB] ✅ Credenciais carregadas para conta ${accountId} (${account.nome})`);
-    
+    // Atualiza cache
+    credentialsCache.set(cacheKey, { data: credentials, timestamp: Date.now() });
+    console.log(`[DB] ✅ Credenciais e corretora carregadas para conta ${accountId} (${account.nome})`);
     return credentials;
-
   } catch (error) {
     console.error(`[DB] Erro ao carregar credenciais da conta ${accountId}:`, error.message);
     throw error;

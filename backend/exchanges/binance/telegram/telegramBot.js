@@ -560,7 +560,6 @@ module.exports = {
   testTelegramBotFixed,
   stopAllTelegramBots,
   listActiveBots,
-  // ✅ NOVAS FUNÇÕES DE FORMATAÇÃO:
   formatEntryMessage,
   formatErrorMessage,
   formatOrderMessage,

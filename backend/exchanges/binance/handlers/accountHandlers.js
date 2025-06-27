@@ -184,8 +184,9 @@ async function handleBalanceUpdates(connection, balances, accountId, reason, eve
 
 /**
  * ✅ VERSÃO COMPLETA: Processa atualizações de posições com TODOS os campos
+ * Adicionado retry automático em caso de deadlock nas queries de update/insert
  */
-async function handlePositionUpdates(connection, positions, accountId, reason, eventTime, transactionTime) {
+async function handlePositionUpdates(connection, positions, accountId, reason, eventTime, transactionTime, retryCount = 0) {
   try {
     console.log(`[ACCOUNT] 📊 Processando ${positions.length} atualizações de posição para conta ${accountId} (motivo: ${reason})`);
     
@@ -206,20 +207,48 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
         // ✅ POSIÇÃO ABERTA OU AUMENTADA
         
         // Verificar se é nova posição
-        const [existingPositions] = await connection.query(
-          'SELECT id FROM posicoes WHERE simbolo = ? AND status = ? AND conta_id = ?',
-          [symbol, 'OPEN', accountId]
-        );
+        let existingPositions;
+        try {
+          [existingPositions] = await connection.query(
+            'SELECT id FROM posicoes WHERE simbolo = ? AND status = ? AND conta_id = ?',
+            [symbol, 'OPEN', accountId]
+          );
+        } catch (error) {
+          if (
+            error.message &&
+            error.message.includes('Deadlock found when trying to get lock') &&
+            retryCount < 3
+          ) {
+            console.warn(`[ACCOUNT] ⚠️ Deadlock ao buscar posição aberta (${symbol}). Tentando novamente (${retryCount + 1}/3)...`);
+            await new Promise(resolve => setTimeout(resolve, 500 * (retryCount + 1)));
+            return handlePositionUpdates(connection, positions, accountId, reason, eventTime, transactionTime, retryCount + 1);
+          }
+          throw error;
+        }
         
         if (existingPositions.length === 0) {
           // ✅ NOVA POSIÇÃO - BUSCAR SINAL ORIGINAL
-          const [recentSignal] = await connection.query(`
-            SELECT id, side, leverage 
-            FROM webhook_signals 
-            WHERE symbol = ? AND status IN ('ENTRADA_EM_PROGRESSO', 'EXECUTADO') 
-            AND created_at > DATE_SUB(NOW(), INTERVAL 10 MINUTE)
-            ORDER BY id DESC LIMIT 1
-          `, [symbol]);
+          let recentSignal;
+          try {
+            [recentSignal] = await connection.query(`
+              SELECT id, side, leverage 
+              FROM webhook_signals 
+              WHERE symbol = ? AND status IN ('ENTRADA_EM_PROGRESSO', 'EXECUTADO') 
+              AND created_at > DATE_SUB(NOW(), INTERVAL 10 MINUTE)
+              ORDER BY id DESC LIMIT 1
+            `, [symbol]);
+          } catch (error) {
+            if (
+              error.message &&
+              error.message.includes('Deadlock found when trying to get lock') &&
+              retryCount < 3
+            ) {
+              console.warn(`[ACCOUNT] ⚠️ Deadlock ao buscar sinal original (${symbol}). Tentando novamente (${retryCount + 1}/3)...`);
+              await new Promise(resolve => setTimeout(resolve, 500 * (retryCount + 1)));
+              return handlePositionUpdates(connection, positions, accountId, reason, eventTime, transactionTime, retryCount + 1);
+            }
+            throw error;
+          }
           
           // ✅ VERIFICAR COLUNAS DA TABELA POSICOES
           const [columns] = await connection.query(`SHOW COLUMNS FROM posicoes`);
@@ -273,77 +302,77 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
             });
           }
           
-          const newPositionId = await insertPosition(connection, completePositionData, recentSignal[0]?.id);
+          // Adiciona retry no insertPosition
+          let newPositionId;
+          let insertTries = 0;
+          while (insertTries < 3) {
+            try {
+              newPositionId = await insertPosition(connection, completePositionData, recentSignal[0]?.id);
+              break;
+            } catch (error) {
+              if (
+                error.message &&
+                error.message.includes('Deadlock found when trying to get lock') &&
+                insertTries < 2
+              ) {
+                console.warn(`[ACCOUNT] ⚠️ Deadlock ao inserir nova posição (${symbol}). Tentando novamente (${insertTries + 1}/3)...`);
+                await new Promise(resolve => setTimeout(resolve, 500 * (insertTries + 1)));
+                insertTries++;
+                continue;
+              }
+              throw error;
+            }
+          }
           console.log(`[ACCOUNT_UPDATE] ✅ Nova posição COMPLETA criada: ${symbol} (ID: ${newPositionId}) com todos os campos do webhook`);
           
-          // Atualizar sinal com position_id
+          // Atualizar sinal com position_id (com retry)
           if (recentSignal[0]) {
-            await connection.query(
-              `UPDATE webhook_signals SET position_id = ? WHERE id = ?`,
-              [newPositionId, recentSignal[0].id]
-            );
+            let updateTries = 0;
+            while (updateTries < 3) {
+              try {
+                await connection.query(
+                  `UPDATE webhook_signals SET position_id = ? WHERE id = ?`,
+                  [newPositionId, recentSignal[0].id]
+                );
+                break;
+              } catch (error) {
+                if (
+                  error.message &&
+                  error.message.includes('Deadlock found when trying to get lock') &&
+                  updateTries < 2
+                ) {
+                  console.warn(`[ACCOUNT] ⚠️ Deadlock ao atualizar webhook_signals (${symbol}). Tentando novamente (${updateTries + 1}/3)...`);
+                  await new Promise(resolve => setTimeout(resolve, 500 * (updateTries + 1)));
+                  updateTries++;
+                  continue;
+                }
+                throw error;
+              }
+            }
           }
           
         } else {
           // ✅ ATUALIZAR POSIÇÃO EXISTENTE COM TODOS OS CAMPOS
           const positionId = existingPositions[0].id;
-          
-          // Verificar colunas novamente
-          const [columns] = await connection.query(`SHOW COLUMNS FROM posicoes`);
-          const existingColumns = columns.map(col => col.Field);
-          
-          let updateQuery = `UPDATE posicoes SET 
-                           quantidade = ?,
-                           preco_medio = ?,
-                           preco_entrada = ?,
-                           preco_corrente = ?,
-                           data_hora_ultima_atualizacao = NOW()`;
-          let updateValues = [Math.abs(positionAmt), entryPrice, entryPrice, entryPrice];
-          
-          // ✅ ADICIONAR CAMPOS NOVOS SE EXISTIREM
-          if (existingColumns.includes('breakeven_price')) {
-            updateQuery += `, breakeven_price = ?`;
-            updateValues.push(breakevenPrice);
+          let updateTries = 0;
+          while (updateTries < 3) {
+            try {
+              await connection.query(updateQuery, updateValues);
+              break;
+            } catch (error) {
+              if (
+                error.message &&
+                error.message.includes('Deadlock found when trying to get lock') &&
+                updateTries < 2
+              ) {
+                console.warn(`[ACCOUNT] ⚠️ Deadlock ao atualizar posição existente (${symbol}). Tentando novamente (${updateTries + 1}/3)...`);
+                await new Promise(resolve => setTimeout(resolve, 500 * (updateTries + 1)));
+                updateTries++;
+                continue;
+              }
+              throw error;
+            }
           }
-          if (existingColumns.includes('accumulated_realized')) {
-            updateQuery += `, accumulated_realized = ?`;
-            updateValues.push(accumulatedRealized);
-          }
-          if (existingColumns.includes('unrealized_pnl')) {
-            updateQuery += `, unrealized_pnl = ?`;
-            updateValues.push(unrealizedPnl);
-          }
-          if (existingColumns.includes('margin_type')) {
-            updateQuery += `, margin_type = ?`;
-            updateValues.push(marginType);
-          }
-          if (existingColumns.includes('isolated_wallet')) {
-            updateQuery += `, isolated_wallet = ?`;
-            updateValues.push(isolatedWallet);
-          }
-          if (existingColumns.includes('position_side')) {
-            updateQuery += `, position_side = ?`;
-            updateValues.push(positionSide);
-          }
-          if (existingColumns.includes('event_reason')) {
-            updateQuery += `, event_reason = ?`;
-            updateValues.push(reason);
-          }
-          if (existingColumns.includes('webhook_data_raw')) {
-            updateQuery += `, webhook_data_raw = ?`;
-            updateValues.push(JSON.stringify({
-              ...positionData,
-              eventTime: eventTime,
-              transactionTime: transactionTime,
-              reason: reason
-            }));
-          }
-          
-          updateQuery += ` WHERE id = ?`;
-          updateValues.push(positionId);
-          
-          await connection.query(updateQuery, updateValues);
-          
           console.log(`[ACCOUNT_UPDATE] ✅ Posição ${symbol} atualizada COMPLETAMENTE com todos os campos do webhook`);
         }
         

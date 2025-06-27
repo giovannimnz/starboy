@@ -144,8 +144,8 @@ async function executeReverse(signal, currentPrice, accountId) {
     console.log(`[LIMIT_ENTRY] ✅ Handler WebSocket registrado com backup para conta ${accountId}`);
 
     // ✅ CONSTANTES CORRIGIDAS PARA MAIS EFICIÊNCIA
-    const MAX_CHASE_ATTEMPTS = 50; // Reduzido de 100
-    const CHASE_TIMEOUT_MS = 120000; // 2 minutos em vez de 3
+    const MAX_CHASE_ATTEMPTS = 100; // Reduzido de 100
+    const CHASE_TIMEOUT_MS = 300000; // 2 minutos em vez de 3
     const WAIT_FOR_ORDER_CONFIRMATION_MS = 10000; // Reduzido de 15s
     const EDIT_WAIT_TIMEOUT_MS = 2000; // Reduzido de 3s
     const MAX_DEPTH_STALENESS_MS = 2000; // Reduzido de 3s
@@ -850,26 +850,15 @@ async function executeReverse(signal, currentPrice, accountId) {
     // Verificar se entrada foi completada
     const fillRatio = totalEntrySize > 0 ? totalFilledSize / totalEntrySize : 0;
 
-    if (totalFilledSize >= totalEntrySize) {
+    // Só considerar completa se 100% preenchido
+    const isEntryReallyComplete = fillRatio >= 1.0;
+
+    if (isEntryReallyComplete) {
         isEntryComplete = true;
     }
 
     console.log(`[LIMIT_ENTRY] ✅ Entrada executada: ${totalFilledSize.toFixed(quantityPrecision)}/${totalEntrySize.toFixed(quantityPrecision)} (${(fillRatio * 100).toFixed(1)}%)`);
     console.log(`[LIMIT_ENTRY] 📡 Aguardando confirmação da posição via webhook para criar SL/TP/RPs...`);
-
-    // ❌ REMOVER TODO O BLOCO DE INSERÇÃO DE ORDENS DE ENTRADA:
-    /*
-    // ✅ REGISTRAR ORDENS NO BANCO - VERSÃO MELHORADA
-    for (const fill of partialFills) {
-      const orderData = {
-        tipo_ordem: (marketOrderResponseForDb && fill.orderId === String(marketOrderResponseForDb.orderId)) ? 'MARKET' : 'LIMIT',
-        preco: fill.price,
-        quantidade: fill.qty,
-        // ... resto dos dados
-      };
-      await insertNewOrder(connection, orderData);
-    }
-    */
 
     // ✅ SUBSTITUIR POR LOG APENAS:
     console.log(`[LIMIT_ENTRY] 📊 Ordens de entrada executadas: ${partialFills.length} fills`);
@@ -916,7 +905,7 @@ async function executeReverse(signal, currentPrice, accountId) {
 
     // ✅ CRIAR SL/TP/RPS - VERSÃO TOTALMENTE CORRIGIDA DA DEV
     let slTpRpsCreated = false;
-    if (fillRatio >= ENTRY_COMPLETE_THRESHOLD_RATIO) {
+    if (isEntryReallyComplete) {
       console.log(`[LIMIT_ENTRY] 🎯 Entrada considerada COMPLETA (${(fillRatio * 100).toFixed(1)}%). Criando SL/TP/RPs.`);
       slTpRpsCreated = true;
 
@@ -1242,6 +1231,8 @@ async function executeReverse(signal, currentPrice, accountId) {
       }
     }
   }
+
+    return { success: true };
 }
 
 // ✅ FUNÇÃO waitForOrderExecution ADAPTADA DA DEV COM MELHORIAS
@@ -1388,10 +1379,6 @@ function calculateOrderSize(availableBalance, capitalPercentage, entryPrice, lev
     // ✅ ATUALIZAR LOG PARA MOSTRAR QUE ESTÁ USANDO saldo_base_calculo
     console.log(`[MONITOR] Cálculo baseado em saldo_base_calculo:`);
     console.log(`[MONITOR]   - saldo_base_calculo: ${availableBalance.toFixed(2)} USDT`);
-    console.log(`[MONITOR]   - capital (${(capitalPercentage*100).toFixed(1)}%): ${capital.toFixed(2)} USDT`);
-    console.log(`[MONITOR]   - rawSize: ${rawSize.toFixed(8)}`);
-    console.log(`[MONITOR]   - stepSize: ${stepSize}`);
-    console.log(`[MONITOR]   - steps: ${stepsFloor}`);
     console.log(`[MONITOR]   - formatado: ${formattedSize}`);
 
     return formattedSize;
