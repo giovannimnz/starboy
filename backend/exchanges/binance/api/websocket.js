@@ -578,7 +578,7 @@ async function handlePriceUpdate(symbol, tickerData, accountId) {
       return;
     }
 
-    console.log(`[WEBSOCKET] ✅ Preço final calculado para ${symbol}: ${currentPrice}`);
+    //console.log(`[WEBSOCKET] ✅ Preço final calculado para ${symbol}: ${currentPrice}`);
 
     // ✅ CHAMAR CALLBACK onPriceUpdate
     if (accountState.monitoringCallbacks && accountState.monitoringCallbacks.onPriceUpdate) {
