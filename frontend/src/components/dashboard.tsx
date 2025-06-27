@@ -14,6 +14,7 @@ import { useLanguage } from "@/contexts/language-context"
 import TradingViewChart from "@/components/tradingview-chart"
 import { api } from "@/lib/api"
 import { useAuth } from "@/contexts/auth-context"
+import { Select } from "@/components/ui/select"
 
 export default function Dashboard() {
   const { t } = useLanguage()
@@ -30,6 +31,7 @@ export default function Dashboard() {
   const [currentBalance, setCurrentBalance] = useState({ usd: 0, btc: 0 })
   const [spotBalance, setSpotBalance] = useState(0)
   const [futuresBalance, setFuturesBalance] = useState(0)
+  const [isRefreshing, setIsRefreshing] = useState(false)
 
   // Balances separados para cada conta
   const [balances, setBalances] = useState({
@@ -110,6 +112,31 @@ export default function Dashboard() {
   const currentBalanceState = getCurrentBalance()
   const portfolioValue = currentBalanceState.usd + currentBalanceState.btc * currentPrice
 
+  const handleRefreshBalances = async () => {
+    if (!selectedAccountId) return
+    setIsRefreshing(true)
+    try {
+      // Chama a API que atualiza os saldos na corretora e no banco
+      await api.updateAllAccountBalances(selectedAccountId)
+      // Após atualizar, busca os saldos atualizados do banco
+      const [spot, futures] = await Promise.all([
+        api.getAccountSpotBalance(selectedAccountId),
+        api.getAccountFuturesBalance(selectedAccountId),
+      ])
+      setSpotBalance(Number(spot.saldo_spot))
+      setFuturesBalance(Number(futures.saldo_futuros))
+      // Atualiza o saldo principal exibido
+      if (selectedAccount === "binance.spot") {
+        setCurrentBalance({ usd: Number(spot.saldo_spot), btc: 0 })
+      } else {
+        setCurrentBalance({ usd: Number(futures.saldo_futuros), btc: 0 })
+      }
+    } catch (e) {
+      alert("Erro ao atualizar saldos: " + (e.message || e))
+    }
+    setIsRefreshing(false)
+  }
+
   return (
     <div className="min-h-screen bg-dark-gradient">
       <div className="container mx-auto p-4">
@@ -152,7 +179,7 @@ export default function Dashboard() {
                 </div>
                 {/* Totalizador abaixo, à direita */}
                 <div className="text-xs text-muted-foreground opacity-70 mt-2 text-right">
-                  Totalizador: ${Number(currentBalance.usd + spotBalance).toFixed(2)}
+                  Totalizador: ${(Number(spotBalance) + Number(futuresBalance)).toFixed(2)}
                 </div>
               </CardContent>
             </Card>

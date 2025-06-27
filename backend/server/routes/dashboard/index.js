@@ -172,13 +172,14 @@ async function dashboardRoutes(fastify, options) {
       querystring: {
         type: 'object',
         properties: {
-          search: { type: 'string', description: 'Filtro de pesquisa (opcional)' }
+          search: { type: 'string', description: 'Filtro de pesquisa (opcional)' },
+          limit: { type: 'integer', description: 'Limite de resultados (opcional)' }
         }
       }
     }
   }, async (request, reply) => {
     const { id } = request.params;
-    const { search } = request.query;
+    const { search, limit } = request.query;
     const db = await getDatabaseInstance();
     try {
       // Buscar exchange/corretora da conta
@@ -206,7 +207,10 @@ async function dashboardRoutes(fastify, options) {
         params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
       }
       query += ' ORDER BY symbol ASC';
-
+      if (limit) {
+        query += ' LIMIT ?';
+        params.push(Number(limit));
+      }
       const [symbols] = await db.query(query, params);
       reply.send({ success: true, data: symbols, total: symbols.length });
     } catch (error) {

@@ -1244,6 +1244,19 @@ async function getCorretoraPorId(db, corretoraId = 1) {
   }
 }
 
+// Registrar log no banco de dados
+async function registrarLog(nivel, mensagem, contexto = null) {
+  try {
+    const db = await getDatabaseInstance();
+    await db.query(
+      'INSERT INTO logs (nivel, mensagem, contexto) VALUES (?, ?, ?)',
+      [nivel, mensagem, contexto]
+    );
+  } catch (error) {
+    console.error('[LOG] Erro ao registrar log no banco:', error.message);
+  }
+}
+
 // Exportar as funções
 module.exports = {
   initPool,
@@ -1276,7 +1289,8 @@ module.exports = {
   formatDateForMySQL,
   updateAccountBalance,
   getBaseCalculoBalance,
-  getCorretoraPorId
+  getCorretoraPorId,
+  registrarLog
 };
 
 
