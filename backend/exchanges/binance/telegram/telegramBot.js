@@ -4,9 +4,6 @@ const { getDatabaseInstance } = require('../../../core/database/conexao');
 // Mapa simples para bots
 const activeBots = new Map();
 
-/**
- * ✅ INICIALIZAÇÃO SIMPLIFICADA BASEADA NO STARBOY_DEV
- */
 async function initializeTelegramBot(accountId, forceRestart = false) {
   try {
     console.log(`[TELEGRAM] 🚀 Inicializando bot SIMPLIFICADO para conta ${accountId}...`);
@@ -124,16 +121,14 @@ async function initializeTelegramBot(accountId, forceRestart = false) {
       console.error(`[TELEGRAM] Bot error:`, err.message);
     });
     
-    // ✅ IMPLEMENTAR POLLING MANUAL COMO FALLBACK
+    // ✅ INICIAR APENAS POLLING MANUAL (NÃO TENTAR PADRÃO)
     let isPolling = false;
     let offset = 0;
-    
+
     const startManualPolling = async () => {
       if (isPolling) return;
       isPolling = true;
-      
       console.log(`[TELEGRAM] 🔄 Iniciando polling manual...`);
-      
       while (isPolling) {
         try {
           const updates = await bot.telegram.getUpdates({
@@ -141,20 +136,15 @@ async function initializeTelegramBot(accountId, forceRestart = false) {
             limit: 10,
             timeout: 3
           });
-          
           for (const update of updates) {
             offset = update.update_id + 1;
-            
             try {
               await bot.handleUpdate(update);
             } catch (updateError) {
               console.error(`[TELEGRAM] Erro ao processar update:`, updateError.message);
             }
           }
-          
-          // Pequena pausa
           await new Promise(resolve => setTimeout(resolve, 1000));
-          
         } catch (pollingError) {
           if (isPolling) {
             console.error(`[TELEGRAM] Erro no polling manual:`, pollingError.message);
@@ -163,40 +153,14 @@ async function initializeTelegramBot(accountId, forceRestart = false) {
         }
       }
     };
-    
-    // Adicionar método para parar o polling
     bot.stopManualPolling = () => {
       console.log(`[TELEGRAM] 🛑 Parando polling manual...`);
       isPolling = false;
     };
-    
-    // ✅ TENTAR POLLING PADRÃO PRIMEIRO, COM FALLBACK PARA MANUAL
-    try {
-      console.log(`[TELEGRAM] 🚀 Tentando polling padrão...`);
-      
-      await Promise.race([
-        bot.launch({
-          polling: {
-            timeout: 2,
-            limit: 5
-          }
-        }),
-        new Promise((_, reject) => 
-          setTimeout(() => reject(new Error('Timeout padrão')), 5000)
-        )
-      ]);
-      
-      console.log(`[TELEGRAM] ✅ Polling padrão funcionando!`);
-      
-    } catch (launchError) {
-      console.log(`[TELEGRAM] ⚠️ Polling padrão falhou, usando manual: ${launchError.message}`);
-      
-      // Iniciar polling manual em background
-      startManualPolling().catch(err => {
-        console.error(`[TELEGRAM] Erro no polling manual:`, err.message);
-      });
-    }
-    
+    // Iniciar polling manual SEM tentar o padrão
+    startManualPolling().catch(err => {
+      console.error(`[TELEGRAM] Erro no polling manual:`, err.message);
+    });
     // Testar se bot está respondendo
     try {
       const botInfo = await bot.telegram.getMe();
@@ -204,12 +168,9 @@ async function initializeTelegramBot(accountId, forceRestart = false) {
     } catch (testError) {
       throw new Error(`Bot não está respondendo: ${testError.message}`);
     }
-    
     // Salvar no mapa
     activeBots.set(accountId, bot);
-    
     console.log(`[TELEGRAM] 🎉 Bot inicializado para conta ${accountId} (${accountName})`);
-    
     return bot;
     
   } catch (error) {
@@ -560,6 +521,7 @@ module.exports = {
   testTelegramBotFixed,
   stopAllTelegramBots,
   listActiveBots,
+
   formatEntryMessage,
   formatErrorMessage,
   formatOrderMessage,
