@@ -257,6 +257,32 @@ async function moveOrdersToHistory(accountId) {
       let movedCount = 0;
       
       for (const order of ordersToMove) {
+        // Atualizar posição relacionada, se houver
+        if (order.id_posicao) {
+          // Buscar posição atual
+          const [positions] = await connection.query(
+            'SELECT total_commission, total_realized FROM posicoes WHERE id = ? AND conta_id = ?',
+            [order.id_posicao, accountId]
+          );
+          if (positions.length > 0) {
+            const pos = positions[0];
+            const newTotalCommission = (parseFloat(pos.total_commission) || 0) + (parseFloat(order.commission) || 0);
+            const newTotalRealized = (parseFloat(pos.total_realized) || 0) + (parseFloat(order.realized_profit) || 0);
+
+            let newLiquidPnl;
+            if (newTotalCommission < 0) {
+              newLiquidPnl = newTotalRealized + newTotalCommission;
+            } else {
+              newLiquidPnl = newTotalRealized - newTotalCommission;
+            }
+
+            await connection.query(
+              'UPDATE posicoes SET total_commission = ?, total_realized = ?, liquid_pnl = ? WHERE id = ? AND conta_id = ?',
+              [newTotalCommission, newTotalRealized, newLiquidPnl, order.id_posicao, accountId]
+            );
+            console.log(`[CLEANUP] Posição ${order.id_posicao} atualizada: total_commission=${newTotalCommission}, total_realized=${newTotalRealized}, liquid_pnl=${newLiquidPnl}`);
+          }
+        }
         // ✅ INSERIR COM TODOS OS CAMPOS
         await connection.query(`
           INSERT INTO ordens_fechadas (
@@ -306,13 +332,11 @@ async function moveOrdersToHistory(accountId) {
           order.realized_profit,
           order.position_side
         ]);
-        
         // ✅ REMOVER DA TABELA ATIVA
         await connection.query(
           'DELETE FROM ordens WHERE id_externo = ? AND conta_id = ?',
           [order.id_externo, accountId]
         );
-        
         movedCount++;
       }
       
@@ -720,6 +744,33 @@ async function movePositionToHistory(db, positionId, status = 'CLOSED', reason =
     
     // 7. ✅ MOVER ORDENS PARA HISTÓRICO COM TODOS OS CAMPOS
     for (const order of updatedOrders) {
+      // Atualizar posição relacionada, se houver
+      if (order.id_posicao) {
+        // Buscar posição atual
+        const [positions] = await connection.query(
+          'SELECT total_commission, total_realized FROM posicoes WHERE id = ? AND conta_id = ?',
+          [order.id_posicao, accountId]
+        );
+        if (positions.length > 0) {
+          const pos = positions[0];
+          const newTotalCommission = (parseFloat(pos.total_commission) || 0) + (parseFloat(order.commission) || 0);
+          const newTotalRealized = (parseFloat(pos.total_realized) || 0) + (parseFloat(order.realized_profit) || 0);
+
+          // Regra para cálculo do liquid_pnl
+          let newLiquidPnl;
+          if (newTotalCommission < 0) {
+            newLiquidPnl = newTotalRealized + newTotalCommission;
+          } else {
+            newLiquidPnl = newTotalRealized - newTotalCommission;
+          }
+
+          await connection.query(
+            'UPDATE posicoes SET total_commission = ?, total_realized = ?, liquid_pnl = ? WHERE id = ? AND conta_id = ?',
+            [newTotalCommission, newTotalRealized, newLiquidPnl, order.id_posicao, accountId]
+          );
+          console.log(`[CLEANUP] Posição ${order.id_posicao} atualizada: total_commission=${newTotalCommission}, total_realized=${newTotalRealized}, liquid_pnl=${newLiquidPnl}`);
+        }
+      }
       await connection.query(`
         INSERT INTO ordens_fechadas (
           id_original, id_original_ordens, tipo_ordem, preco, quantidade, id_posicao, status,
