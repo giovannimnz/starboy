@@ -85,49 +85,31 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
       ? trailingStateResult[0].trailing_stop_level.toUpperCase()
       : 'ORIGINAL';
 
-    // ✅ BUSCAR DADOS DO SINAL RELACIONADO USANDO orign_sig
+    // Buscar dados do sinal relacionado usando position_id
     let signalInfo = [];
-    
-    if (position.orign_sig) {
-      // Extrair o ID do sinal de orign_sig (formato: WEBHOOK_123)
-      const signalIdMatch = position.orign_sig.match(/WEBHOOK_(\d+)/);
-      if (signalIdMatch) {
-        const signalId = signalIdMatch[1];
-        
-        const [result] = await db.query(`
-          SELECT tp1_price, tp3_price, entry_price, sl_price, symbol, side
-          FROM webhook_signals 
-          WHERE id = ? AND conta_id = ?
-          ORDER BY created_at DESC LIMIT 1
-        `, [signalId, accountId]);
-        
-        signalInfo = result;
-        
-        if (signalInfo.length > 0) {
-          console.log(`${functionPrefix} 📋 Sinal encontrado: ID ${signalId} para posição ${positionId}`);
-        }
-      }
-    }
-
-    // ✅ FALLBACK: Buscar por símbolo se orign_sig não funcionar
+    const [result] = await db.query(
+      `SELECT tp1_price, tp3_price, entry_price, sl_price, symbol, side
+       FROM webhook_signals
+       WHERE position_id = ?
+       ORDER BY created_at DESC LIMIT 1`,
+      [position.id]
+    );
+    signalInfo = result;
     if (signalInfo.length === 0) {
-      console.log(`${functionPrefix} ⚠️ Nenhum sinal encontrado via orign_sig, buscando por símbolo...`);
-      
-      const [result] = await db.query(`
-        SELECT tp1_price, tp3_price, entry_price, sl_price, symbol, side
-        FROM webhook_signals 
-        WHERE symbol = ? AND conta_id = ? AND status IN ('EXECUTADO', 'PROCESSANDO')
-        ORDER BY created_at DESC LIMIT 1
-      `, [position.simbolo, accountId]);
-      
-      signalInfo = result;
+      // Fallback: buscar por símbolo
+      const [fallbackResult] = await db.query(
+        `SELECT tp1_price, tp3_price, entry_price, sl_price, symbol, side
+         FROM webhook_signals
+         WHERE symbol = ? AND conta_id = ? AND status IN ('EXECUTADO', 'PROCESSANDO')
+         ORDER BY created_at DESC LIMIT 1`,
+        [position.simbolo, accountId]
+      );
+      signalInfo = fallbackResult;
     }
-
     if (signalInfo.length === 0) {
-      console.log(`${functionPrefix} ⚠️ Nenhum sinal encontrado para posição ${positionId} (${position.simbolo})`);
+      console.warn('[TRAILING] Nenhum sinal encontrado para a posição. Não é possível aplicar trailing.');
       return;
     }
-
     const signal = signalInfo[0];
     const tp1Price = parseFloat(signal.tp1_price || 0);
     const tp3Price = parseFloat(signal.tp3_price || 0);
@@ -137,165 +119,50 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
 
     // Verificar validade dos preços
     if (isNaN(tp1Price) || tp1Price <= 0) {
-      console.log(`${functionPrefix} ⚠️ TP1 não configurado ou inválido para posição ${positionId}`);
+      console.warn('[TRAILING] TP1 inválido, não é possível aplicar trailing.');
       return;
     }
 
-    // ✅ LOG MAIS DETALHADO
-    console.log(`${functionPrefix} 📊 Posição ${position.simbolo} (${side}) - ID: ${positionId}:`);
-    console.log(`${functionPrefix}   - Preço atual: ${currentPrice}`);
-    console.log(`${functionPrefix}   - Preço entrada: ${entryPrice}`);
-    console.log(`${functionPrefix}   - TP1: ${tp1Price}`);
-    console.log(`${functionPrefix}   - TP3: ${tp3Price || 'N/A'}`);
-    console.log(`${functionPrefix}   - SL original: ${originalSlPrice || 'N/A'}`);
-    console.log(`${functionPrefix}   - Nível trailing atual: ${currentTrailingLevel}`);
-    console.log(`${functionPrefix}   - Origin signal: ${position.orign_sig || 'N/A'}`);
+    // LOG DETALHADO
+    console.log(`[TRAILING] 📊 Posição ${position.simbolo} (${side}) - ID: ${position.id}:`);
+    console.log(`[TRAILING]   - Preço atual: ${currentPrice}`);
+    console.log(`[TRAILING]   - Preço entrada: ${entryPrice}`);
+    console.log(`[TRAILING]   - TP1: ${tp1Price}`);
+    console.log(`[TRAILING]   - TP3: ${tp3Price || 'N/A'}`);
+    console.log(`[TRAILING]   - SL original: ${originalSlPrice || 'N/A'}`);
+    console.log(`[TRAILING]   - Nível trailing atual: ${position.trailing_stop_level || 'ORIGINAL'}`);
+    console.log(`[TRAILING]   - Origin signal: ${position.orign_sig || 'N/A'}`);
 
-    // ✅ DETERMINAR SE ALVOS FORAM ATINGIDOS
+    // DETERMINAR SE ALVOS FORAM ATINGIDOS
     let priceHitTP1 = false;
     let priceHitTP3 = false;
     
     if (side === 'BUY' || side === 'COMPRA' || side === 'LONG') {
-      priceHitTP1 = Number(currentPrice) >= Number(tp1Price) && currentTrailingLevel === 'ORIGINAL';
-      priceHitTP3 = !isNaN(tp3Price) && tp3Price > 0 && currentPrice >= tp3Price && currentTrailingLevel === 'BREAKEVEN';
+      priceHitTP1 = currentPrice >= tp1Price;
+      priceHitTP3 = tp3Price > 0 ? currentPrice >= tp3Price : false;
     } else if (side === 'SELL' || side === 'VENDA' || side === 'SHORT') {
-      priceHitTP1 = Number(currentPrice) <= Number(tp1Price) && currentTrailingLevel === 'ORIGINAL';
-      priceHitTP3 = !isNaN(tp3Price) && tp3Price > 0 && currentPrice <= tp3Price && currentTrailingLevel === 'BREAKEVEN';
+      priceHitTP1 = currentPrice <= tp1Price;
+      priceHitTP3 = tp3Price > 0 ? currentPrice <= tp3Price : false;
     }
 
-    console.log(`${functionPrefix} 🎯 Verificação de gatilhos:`);
-    console.log(`${functionPrefix}   - TP1 atingido: ${priceHitTP1}`);
-    console.log(`${functionPrefix}   - TP3 atingido: ${priceHitTP3}`);
+    console.log(`[TRAILING] 🎯 Verificação de gatilhos:`);
+    console.log(`[TRAILING]   - TP1 atingido: ${priceHitTP1}`);
+    console.log(`[TRAILING]   - TP3 atingido: ${priceHitTP3}`);
 
-    // ✅ REPOSICIONAMENTO PARA BREAKEVEN (APÓS TP1)
-    if (priceHitTP1) {
-      console.log(`${functionPrefix} 🎯 TP1 atingido para ${position.simbolo}. Movendo SL para breakeven.`);
-      
-      // ✅ 1. ATUALIZAR NÍVEL DE TRAILING
-      await db.query(
-        `UPDATE posicoes SET trailing_stop_level = 'BREAKEVEN', data_hora_ultima_atualizacao = NOW() WHERE id = ?`,
-        [positionId]
-      );
-      
-      // ✅ 2. CANCELAR TODAS AS ORDENS DE SL ATIVAS
-      const canceledCount = await cancelStopLossOrders(db, positionId, accountId);
-      console.log(`${functionPrefix} 🗑️ ${canceledCount} ordens SL canceladas`);
-      
-      // ✅ 3. AGUARDAR CANCELAMENTOS
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      // ✅ 4. CRIAR NOVO SL NO BREAKEVEN COM closePosition=true
-      const newSLBreakevenPrice = entryPrice;
-      const oppositeSide = (side === 'BUY' || side === 'COMPRA' || side === 'LONG') ? 'SELL' : 'BUY';
-      
-      try {
-        console.log(`${functionPrefix} 📝 Criando SL breakeven: ${newSLBreakevenPrice} (closePosition=true)`);
-
-        const slResponse = await newStopOrder(
-          accountId,
-          position.simbolo,
-          null,
-          oppositeSide, // <-- aqui!
-          newSLBreakevenPrice,
-          null,
-          false,
-          true,
-          'STOP_MARKET'
-        );
-        
-        if (slResponse && slResponse.orderId) {
-          console.log(`${functionPrefix} ✅ SL breakeven criado: ${slResponse.orderId} (closePosition=true)`);
-          
-          // ✅ NÃO INSERIR NO BANCO - será feito via webhook
-          console.log(`${functionPrefix} 📡 Ordem será registrada via webhook automaticamente`);
-          
-          // ✅ NOTIFICAÇÃO TELEGRAM
-          try {
-            const message = formatAlertMessage(
-              'STOP LOSS MOVIDO',
-              `🎯 <b>${position.simbolo}</b>\n\n` +
-              `📈 TP1 atingido!\n` +
-              `🛡️ Stop Loss movido para <b>BREAKEVEN</b>\n` +
-              `💰 Novo SL: <b>$${newSLBreakevenPrice.toFixed(4)}</b>\n\n` +
-              `🔒 Posição protegida contra perdas!\n` +
-              `⚡ Modo: Close Position`,
-              'SUCCESS'
-            );
-            
-            await sendTelegramMessage(accountId, message);
-            console.log(`${functionPrefix} 📱 Notificação de SL breakeven enviada`);
-          } catch (telegramError) {
-            console.warn(`${functionPrefix} ⚠️ Erro ao enviar notificação:`, telegramError.message);
-          }
-          
-        } else {
-          throw new Error('Resposta inválida da API ao criar SL breakeven');
-        }
-      } catch (error) {
-        console.error(`${functionPrefix} ❌ Erro ao criar SL breakeven:`, error.message);
-      }
+    // REPOSICIONAMENTO PARA BREAKEVEN (APÓS TP1)
+    if (priceHitTP1 && !['TP1_BREAKEVEN', 'BREAKEVEN'].includes(currentTrailingLevel)) {
+      console.log(`[TRAILING] 🚀 TP1 atingido e nível atual não é TP1_BREAKEVEN/BREAKEVEN. Movendo SL para breakeven...`);
+      await moveStopLossToBreakeven(db, position, accountId);
+      return;
     }
-    // ✅ REPOSICIONAMENTO PARA TP1 (APÓS TP3)
-    else if (priceHitTP3) {
-      console.log(`${functionPrefix} 🚀 TP3 atingido para ${position.simbolo}. Movendo SL para TP1.`);
-      
-      // ✅ 1. ATUALIZAR NÍVEL DE TRAILING
-      await db.query(
-        `UPDATE posicoes SET trailing_stop_level = 'TP1', data_hora_ultima_atualizacao = NOW() WHERE id = ?`,
-        [positionId]
-      );
-      
-      // Cancelar SLs existentes
-      const canceledCount = await cancelStopLossOrders(db, positionId, accountId);
-      console.log(`${functionPrefix} 🗑️ ${canceledCount} ordens SL canceladas`);
-      
-      await new Promise(resolve => setTimeout(resolve, 2000));
-      
-      // ✅ CRIAR SL EM TP1 COM closePosition=true
-      const oppositeSide = (side === 'BUY' || side === 'COMPRA' || side === 'LONG') ? 'SELL' : 'BUY';
-      
-      try {
-        console.log(`${functionPrefix} 📝 Criando SL em TP1: ${tp1Price} (closePosition=true)`);
-        
-        const slResponse = await newStopOrder(
-          accountId,
-          position.simbolo,
-          null,
-          oppositeSide,
-          tp1Price,
-          null,
-          false,
-          true,
-          'STOP_MARKET'
-        );
-        
-        if (slResponse && slResponse.orderId) {
-          console.log(`${functionPrefix} ✅ SL TP1 criado: ${slResponse.orderId} (closePosition=true)`);
-          
-          // ✅ NOTIFICAÇÃO TELEGRAM
-          try {
-            const message = formatAlertMessage(
-              'STOP LOSS MOVIDO PARA TP1',
-              `🚀 <b>${position.simbolo}</b>\n\n` +
-              `📈 TP3 atingido!\n` +
-              `🛡️ Stop Loss movido para <b>TP1</b>\n` +
-              `💰 Novo SL: <b>$${tp1Price.toFixed(4)}</b>\n\n` +
-              `🎯 Lucro garantido!\n` +
-              `⚡ Modo: Close Position`,
-              'SUCCESS'
-            );
-            
-            await sendTelegramMessage(accountId, message);
-            console.log(`${functionPrefix} 📱 Notificação de SL TP1 enviada`);
-          } catch (telegramError) {
-            console.warn(`${functionPrefix} ⚠️ Erro ao enviar notificação:`, telegramError.message);
-          }
-        }
-      } catch (error) {
-        console.error(`${functionPrefix} ❌ Erro ao criar SL em TP1:`, error.message);
-      }
+    // REPOSICIONAMENTO PARA TP1 (APÓS TP3)
+    if (tp3Price > 0 && priceHitTP3 && position.trailing_stop_level !== 'TP3_TP1') {
+      // Aqui você pode implementar lógica para mover o SL para TP1, se desejar
+      // Exemplo: await moveStopLossToTP1(db, position, tp1Price, accountId);
+      console.log(`[TRAILING] 🚀 TP3 atingido e nível atual não é TP3_TP1. (Implementar lógica de trailing para TP3→TP1 se desejado)`);
+      // await moveStopLossToTP1(db, position, tp1Price, accountId);
+      return;
     }
-    
   } catch (error) {
     const positionIdError = position && position.id ? position.id : 'desconhecida';
     console.error(`[TRAILING] ❌ Erro em checkOrderTriggers para posição ${positionIdError}:`, error.message);
@@ -501,33 +368,27 @@ async function moveStopLossToBreakeven(db, position, accountId) {
 
     // ✅ 1. CANCELAR SLS EXISTENTES COM accountId CORRETO
     const canceledCount = await cancelStopLossOrders(db, positionId, accountId);
-    
     if (canceledCount === 0) {
       console.warn(`[TRAILING] ⚠️ Nenhuma ordem SL foi cancelada`);
     }
-
     // ✅ 2. AGUARDAR UM POUCO PARA CANCELAMENTO PROCESSAR
     await new Promise(resolve => setTimeout(resolve, 1000));
-
     // ✅ 3. CRIAR NOVO SL BREAKEVEN
     const result = await createBreakevenStopLoss(db, position, breakevenPrice, accountId);
-
     if (result.success) {
-      // ✅ 4. ATUALIZAR NÍVEL DE TRAILING NO BANCO
+      // ✅ 4. ATUALIZAR NÍVEL DE TRAILING NO BANCO (sempre como TP1_BREAKEVEN)
       await db.query(`
         UPDATE posicoes 
         SET trailing_stop_level = 'TP1_BREAKEVEN',
             data_hora_ultima_atualizacao = NOW()
         WHERE id = ?
       `, [positionId]);
-
       console.log(`[TRAILING] ✅ SL movido para breakeven com sucesso para posição ${positionId}`);
       return true;
     } else {
       console.error(`[TRAILING] ❌ Falha ao criar SL breakeven:`, result.error);
       return false;
     }
-
   } catch (error) {
     console.error(`[TRAILING] ❌ Erro ao mover SL para breakeven:`, error.message);
     return false;

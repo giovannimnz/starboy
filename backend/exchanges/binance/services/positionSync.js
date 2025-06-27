@@ -281,25 +281,6 @@ async function syncPositionsWithAutoClose(accountId) {
       }
     }
 
-    // Exibir TODO o diagnóstico de sincronização apenas se houver diferença ou alteração
-    const bancoCount = dbPositions.length;
-    const corretoraCount = exchangePositions.length;
-    const { movedToHistory, updatedPrices, errors } = syncResults;
-    const houveMudanca = (bancoCount !== corretoraCount) || movedToHistory > 0 || updatedPrices > 0 || errors.length > 0;
-    if (houveMudanca) {
-      console.log(`[CONTA-${accountId}] === \uD83D\uDD0D DIAGNÓSTICO DE SINCRONIZAÇÃO ===`);
-      console.log(`[CONTA-${accountId}] [API] Obtendo posições abertas para conta ${accountId}...`);
-      // Aqui você pode adicionar outros logs de requisição/diagnóstico relevantes
-      console.log(`[CONTA-${accountId}] [API] ✅ ${corretoraCount} posições abertas encontradas para conta ${accountId}`);
-      console.log(`[CONTA-${accountId}] [SYNC_AUTO] \uD83D\uDCCA Banco: ${bancoCount} posições | Corretora: ${corretoraCount} posições`);
-      console.log(`[SYNC_AUTO] ✅ Sincronização avançada concluída para conta ${accountId}:`);
-      console.log(`[SYNC_AUTO]   - Posições verificadas: ${syncResults.checked}`);
-      console.log(`[SYNC_AUTO]   - Movidas para histórico: ${movedToHistory}`);
-      console.log(`[SYNC_AUTO]   - Preços atualizados: ${updatedPrices}`);
-      console.log(`[SYNC_AUTO]   - Erros: ${errors.length}`);
-      console.log('===========================================');
-    }
-
     return syncResults;
 
   } catch (error) {
@@ -595,7 +576,7 @@ async function logOpenPositionsAndOrdersVisual(accountId) {
     // Posições da corretora  
     const exchangePositions = await getAllOpenPositions(accountId);
     
-    console.log(`[SYNC_CHECK] 📊 Banco: ${dbPositions.length} posições | Corretora: ${exchangePositions.length} posições`);
+    //console.log(`[SYNC_CHECK] 📊 Banco: ${dbPositions.length} posições | Corretora: ${exchangePositions.length} posições`);
     
     // ✅ DETECTAR DISCREPÂNCIAS
     const discrepancies = [];
@@ -635,7 +616,7 @@ async function logOpenPositionsAndOrdersVisual(accountId) {
         }
       });
     } else {
-      console.log(`[SYNC_CHECK] ✅ Banco e corretora estão sincronizados`);
+      //console.log(`[SYNC_CHECK] ✅ Banco e corretora estão sincronizados`);
     }
     
     console.log('===========================================\n');
