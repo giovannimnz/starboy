@@ -909,10 +909,6 @@ async function startMonitoringProcess() {
     const heartbeatInterval = setInterval(() => {
       heartbeatCounter++;
       
-      // Log de heartbeat a cada 5 minutos
-      if (heartbeatCounter % 30 === 0) {
-        console.log(`[MONITOR] ✅ Heartbeat configurado - Sistema operacional`);
-      }
     }, 10000);
     
     // ✅ LIMPEZA DO HEARTBEAT NO SHUTDOWN
