@@ -196,7 +196,7 @@ async function logOpenPositionsAndOrdersVisual(accountId) {
         console.log(`  ${pad(order.simbolo, 8)} | ${pad(order.tipo_ordem_bot, 10)} | ${pad(order.side, 4)} | ${pad(order.quantidade, 8)} @ ${pad(order.preco, 10)} (${order.status})`);
       });
     }
-    console.log('===========================================\n');
+    //console.log('===========================================\n');
   } catch (error) {
     console.error('[MONITOR] Erro ao obter posições e ordens:', error);
   }
@@ -563,7 +563,7 @@ function pad(str, width, char = ' ') {
 
 async function logOpenPositionsAndOrdersVisual(accountId) {
   try {
-    console.log('\n=== 🔍 DIAGNÓSTICO DE SINCRONIZAÇÃO ===');
+    //console.log('\n=== 🔍 DIAGNÓSTICO DE SINCRONIZAÇÃO ===');
     
     const db = await getDatabaseInstance();
     
@@ -619,7 +619,7 @@ async function logOpenPositionsAndOrdersVisual(accountId) {
       //console.log(`[SYNC_CHECK] ✅ Banco e corretora estão sincronizados`);
     }
     
-    console.log('===========================================\n');
+    //console.log('===========================================\n');
   } catch (error) {
     console.error(`[SYNC_CHECK] ❌ Erro na verificação de sincronização:`, error.message);
   }

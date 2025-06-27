@@ -357,7 +357,7 @@ async function getAllOpenPositions(accountId) {
         tipo: pos.marginType === 'isolated' ? 'ISOLATED' : 'CROSS'
       }));
 
-    console.log(`[API] ✅ ${openPositions.length} posições abertas encontradas para conta ${accountId}`);
+    //console.log(`[API] ✅ ${openPositions.length} posições abertas encontradas para conta ${accountId}`);
     return openPositions;
     
   } catch (error) {
