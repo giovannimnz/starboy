@@ -84,43 +84,15 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
     const currentTrailingLevel = trailingStateResult.length > 0 && trailingStateResult[0].trailing_stop_level ? 
                                 trailingStateResult[0].trailing_stop_level : 'ORIGINAL';
 
-    // ✅ BUSCAR DADOS DO SINAL RELACIONADO USANDO orign_sig
+    // Buscar o sinal vinculado via position_id
     let signalInfo = [];
-    
-    if (position.orign_sig) {
-      // Extrair o ID do sinal de orign_sig (formato: WEBHOOK_123)
-      const signalIdMatch = position.orign_sig.match(/WEBHOOK_(\d+)/);
-      if (signalIdMatch) {
-        const signalId = signalIdMatch[1];
-        
-        const [result] = await db.query(`
-          SELECT tp1_price, tp3_price, entry_price, sl_price, symbol, side
-          FROM webhook_signals 
-          WHERE id = ? AND conta_id = ?
-          ORDER BY created_at DESC LIMIT 1
-        `, [signalId, accountId]);
-        
-        signalInfo = result;
-        
-        if (signalInfo.length > 0) {
-          console.log(`${functionPrefix} 📋 Sinal encontrado: ID ${signalId} para posição ${positionId}`);
-        }
-      }
-    }
-
-    // ✅ FALLBACK: Buscar por símbolo se orign_sig não funcionar
-    if (signalInfo.length === 0) {
-      console.log(`${functionPrefix} ⚠️ Nenhum sinal encontrado via orign_sig, buscando por símbolo...`);
-      
-      const [result] = await db.query(`
-        SELECT tp1_price, tp3_price, entry_price, sl_price, symbol, side
-        FROM webhook_signals 
-        WHERE symbol = ? AND conta_id = ? AND status IN ('EXECUTADO', 'PROCESSANDO')
-        ORDER BY created_at DESC LIMIT 1
-      `, [position.simbolo, accountId]);
-      
-      signalInfo = result;
-    }
+    const [signalRows] = await db.query(`
+      SELECT tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, entry_price, sl_price, symbol, side
+      FROM webhook_signals
+      WHERE position_id = ? AND conta_id = ?
+      ORDER BY created_at DESC LIMIT 1
+    `, [positionId, accountId]);
+    signalInfo = signalRows;
 
     if (signalInfo.length === 0) {
       console.log(`${functionPrefix} ⚠️ Nenhum sinal encontrado para posição ${positionId} (${position.simbolo})`);
@@ -132,7 +104,7 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
     const tp3Price = parseFloat(signal.tp3_price || 0);
     const entryPrice = parseFloat(signal.entry_price || position.preco_entrada || 0);
     const originalSlPrice = parseFloat(signal.sl_price || 0);
-    const side = position.side.toUpperCase();
+    const side = position.side ? position.side.toUpperCase() : (signal.side ? signal.side.toUpperCase() : '');
 
     // Verificar validade dos preços
     if (isNaN(tp1Price) || tp1Price <= 0) {
