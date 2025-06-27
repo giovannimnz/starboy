@@ -1111,14 +1111,46 @@ async function executeReverse(signal, currentPrice, accountId) {
       console.warn(`[LIMIT_ENTRY] ⚠️ Erro ao enviar notificação de sucesso:`, telegramError.message);
     }
 
-    return {
-      success: true,
-      positionId,
-      averagePrice: averageEntryPrice,
-      filledQuantity: totalFilledSize,
-      partialWarning: !slTpRpsCreated && totalFilledSize > 0 && fillRatio < ENTRY_COMPLETE_THRESHOLD_RATIO
-    };
+    // Aguarde 3 segundos para garantir que as ordens e posição foram inseridas via WebSocket
+    await new Promise(resolve => setTimeout(resolve, 3000));
 
+    // Buscar a posição aberta no banco
+    const [positions] = await connection.query(
+      `SELECT id FROM posicoes WHERE simbolo = ? AND status = 'OPEN' AND conta_id = ? ORDER BY id DESC LIMIT 1`,
+      [signal.symbol, accountId]
+    );
+
+    if (positions.length > 0) {
+      positionId = positions[0].id;
+      // Atualizar o sinal com o id da posição
+      await connection.query(
+        `UPDATE webhook_signals SET position_id = ? WHERE id = ?`,
+        [positionId, signal.id]
+      );
+      console.log(`[LIMIT_ENTRY] 🔗 Sinal ${signal.id} vinculado à posição ${positionId}`);
+
+      // Atualizar ordens SL, RP1-4, TP5 com os campos corretos
+      // SL
+      await connection.query(
+        `UPDATE ordens SET id_posicao = ?, target = NULL, reduce_only = 1, close_position = 1
+         WHERE simbolo = ? AND tipo_ordem_bot = 'STOP_LOSS' AND conta_id = ? AND id_posicao IS NULL`,
+        [positionId, signal.symbol, accountId]
+      );
+      // RPs
+      for (let i = 1; i <= 4; i++) {
+        await connection.query(
+          `UPDATE ordens SET id_posicao = ?, target = ?, reduce_only = 1, close_position = 0
+           WHERE simbolo = ? AND tipo_ordem_bot = 'REDUCAO_PARCIAL' AND target IS NULL AND conta_id = ?`,
+          [positionId, i, signal.symbol, accountId]
+        );
+      }
+      // TP5
+      await connection.query(
+        `UPDATE ordens SET id_posicao = ?, target = 5, reduce_only = 1, close_position = 1
+         WHERE simbolo = ? AND tipo_ordem_bot = 'TAKE_PROFIT' AND conta_id = ? AND id_posicao IS NULL`,
+        [positionId, signal.symbol, accountId]
+      );
+    }
   } catch (error) { // This is the catch block for the main try
     const originalErrorMessage = error.message || String(error);
     console.error(`[LIMIT_ENTRY] ERRO FATAL DURANTE ENTRADA (Sinal ID ${signal.id}): ${originalErrorMessage}`, error.stack || error);
