@@ -136,7 +136,7 @@ async function cancelOrphanOrders(accountId) {
     for (const order of activeOrders) {
       try {
         // ✅ VERIFICAR SE ORDEM EXISTE NA CORRETORA
-        const orderStatus = await getOrderStatus(order.simbolo, order.id_externo, accountId);
+        const orderStatus = await api.getOrderStatus(order.simbolo, order.id_externo, accountId);
 
         if (orderStatus && orderStatus.orderId) {
           const exchangeStatus = orderStatus.status;
@@ -368,7 +368,7 @@ async function moveOrdersToHistory(accountId) {
  */
 async function checkOrderExistsOnExchange(symbol, orderId, accountId) {
   try {
-    const orderStatus = await getOrderStatus(symbol, orderId, accountId);
+    const orderStatus = await api.getOrderStatus(symbol, orderId, accountId);
     
     if (orderStatus && orderStatus.orderId && orderStatus.status) {
       return {
