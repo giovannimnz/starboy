@@ -420,7 +420,7 @@ def get_account_base_balance():
         cursor.execute(sql)
         result = cursor.fetchone()
             
-         if result and 'saldo_base_calculo_futuros' in result and result['saldo_base_calculo_futuros'] is not None:
+        if result and 'saldo_base_calculo_futuros' in result and result['saldo_base_calculo_futuros'] is not None:
             return float(result['saldo_base_calculo_futuros'])
 
         return 1000.0
@@ -540,13 +540,13 @@ def save_to_database(trade_data):
             chat_id_destino = -chat_id_destino
             
         sql = """
-              INSERT INTO webhook_signals
-              (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price,
-               chat_id, status, timeframe, message_id, message_id_orig, chat_id_orig_sinal,
-               tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, message_source,
-               divap_confirmado, cancelado_checker, error_message, conta_id)
-              VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-              """
+    INSERT INTO webhook_signals
+    (symbol, side, leverage, capital_pct, entry_price, sl_price,
+     chat_id, status, timeframe, message_id, message_id_orig, chat_id_orig_sinal,
+     tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, message_source,
+     divap_confirmado, cancelado_checker, error_message, conta_id)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+    """
 
         values = (
             trade_data["symbol"],
@@ -554,7 +554,6 @@ def save_to_database(trade_data):
             trade_data["leverage"],
             trade_data["capital_pct"],
             trade_data["entry"],
-            trade_data["tp"],
             trade_data["stop_loss"],
             chat_id_destino,
             trade_data.get("status", "PENDING"),
