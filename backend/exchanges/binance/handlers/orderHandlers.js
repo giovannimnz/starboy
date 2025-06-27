@@ -592,6 +592,30 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCou
     const placeholders = columns.map(() => '?').join(', ');
     const values = Object.values(finalDataToInsert);
 
+    // Atualizar posição relacionada, se houver
+    if (orderToMove.id_posicao) {
+      const [positions] = await connection.query(
+        'SELECT total_commission, total_realized FROM posicoes WHERE id = ? AND conta_id = ?',
+        [orderToMove.id_posicao, accountId]
+      );
+      if (positions.length > 0) {
+        const pos = positions[0];
+        const newTotalCommission = (parseFloat(pos.total_commission) || 0) + (parseFloat(orderToMove.commission) || 0);
+        const newTotalRealized = (parseFloat(pos.total_realized) || 0) + (parseFloat(orderToMove.realized_profit) || 0);
+        let newLiquidPnl;
+        if (newTotalCommission < 0) {
+          newLiquidPnl = newTotalRealized + newTotalCommission;
+        } else {
+          newLiquidPnl = newTotalRealized - newTotalCommission;
+        }
+        await connection.query(
+          'UPDATE posicoes SET total_commission = ?, total_realized = ?, liquid_pnl = ? WHERE id = ? AND conta_id = ?',
+          [newTotalCommission, newTotalRealized, newLiquidPnl, orderToMove.id_posicao, accountId]
+        );
+        console.log(`[ORDER_AUTO_MOVE] Posição ${orderToMove.id_posicao} atualizada: total_commission=${newTotalCommission}, total_realized=${newTotalRealized}, liquid_pnl=${newLiquidPnl}`);
+      }
+    }    
+
     await connection.query(
       `INSERT INTO ordens_fechadas (${columns.join(', ')}) VALUES (${placeholders})`,
       values
