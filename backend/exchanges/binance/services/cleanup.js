@@ -67,7 +67,7 @@ async function forceCloseGhostPositions(accountId) {
     }
     
     // Obter posições abertas na corretora
-    const exchangePositions = await getAllOpenPositions(accountId);
+    const exchangePositions = await api.getAllOpenPositions(accountId);
     
     let closedCount = 0;
     
@@ -553,7 +553,7 @@ async function checkAndCloseWebsocket(accountId) {
     }
     
     // Obter posições abertas na corretora via WebSocket
-    const exchangePositions = await api.getAllOpenPositions(accountId);
+    const exchangePositions = await api.api.getAllOpenPositions(accountId);
     
     let closedCount = 0;
     
@@ -887,7 +887,7 @@ async function syncAndCloseGhostPositions(accountId) {
     }
     
     // Obter posições abertas na corretora
-    const exchangePositions = await getAllOpenPositions(accountId);
+    const exchangePositions = await api.getAllOpenPositions(accountId);
     
     let closedCount = 0;
     

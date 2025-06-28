@@ -996,6 +996,100 @@ async function updateExistingOrder(dbConnection, orderData, accountId, existingO
       accountId
     ]);
     console.log(`[ORDER] ✅ Ordem ${orderId} atualizada: ${orderData.X}`);
+
+    // === NOVO BLOCO: Verificação e cálculo de comissão/profit ===
+    // Buscar ordem atualizada do banco
+    const [updatedRows] = await connection.query(
+      'SELECT * FROM ordens WHERE id_externo = ? AND conta_id = ?',
+      [orderId, accountId]
+    );
+    const updatedOrder = updatedRows[0];
+    if (!updatedOrder) return;
+
+    // Identificar tipo de ordem bot
+    const tipoOrdemBot = updatedOrder.tipo_ordem_bot;
+    const isAbertura = tipoOrdemBot === 'ENTRADA' || tipoOrdemBot === 'ENTRADA_MARKET';
+    const isFechamento = [
+      'REDUCAO_PARCIAL',
+      'STOP_LOSS',
+      'FECHAMENTO_MANUAL',
+      'TAKE_PROFIT',
+      'TAKE_PROFIT_MARKET'
+    ].includes(tipoOrdemBot);
+
+    // Identificar maker/taker
+    let isMaker = false;
+    if (updatedOrder.hasOwnProperty('is_maker_side')) {
+      isMaker = !!updatedOrder.is_maker_side;
+    } else if (updatedOrder.dados_originais_ws) {
+      try {
+        const ws = JSON.parse(updatedOrder.dados_originais_ws);
+        if (ws.hasOwnProperty('m')) isMaker = !!ws.m;
+      } catch {}
+    }
+    const taxa = isMaker ? 0.0002 : 0.0005;
+
+    // Cálculo de comissão
+    let precisaUpdate = false;
+    let novaComissao = updatedOrder.commission;
+    let novoProfit = updatedOrder.realized_profit;
+    const quantidadeExecutada = parseFloat(updatedOrder.quantidade_executada || 0);
+    const precoExecutado = parseFloat(updatedOrder.preco_executado || 0);
+
+    // Ordem de abertura: só comissão
+    if (isAbertura && (!novaComissao || novaComissao === 0)) {
+      novaComissao = quantidadeExecutada * precoExecutado * taxa;
+      precisaUpdate = true;
+      console.log(`[ORDER] 🧮 Comissão estimada (abertura): ${novaComissao}`);
+    }
+    // Ordem de fechamento: comissão e profit
+    if (isFechamento && ((!novaComissao || novaComissao === 0) || (!novoProfit && novoProfit !== 0))) {
+      if (!novaComissao || novaComissao === 0) {
+        novaComissao = quantidadeExecutada * precoExecutado * taxa;
+        precisaUpdate = true;
+        console.log(`[ORDER] 🧮 Comissão estimada (fechamento): ${novaComissao}`);
+      }
+      if (novoProfit === null || novoProfit === undefined) {
+        // Estimar profit realizado: diferença entre preço de entrada e saída * quantidade
+        // Busca preço de entrada da posição
+        let precoEntrada = null;
+        if (updatedOrder.id_posicao) {
+          const [posRows] = await connection.query('SELECT preco FROM posicoes WHERE id = ?', [updatedOrder.id_posicao]);
+          if (posRows.length > 0) precoEntrada = parseFloat(posRows[0].preco || 0);
+        }
+        if (precoEntrada !== null) {
+          if (updatedOrder.side === 'SELL') {
+            novoProfit = (precoExecutado - precoEntrada) * quantidadeExecutada;
+          } else {
+            novoProfit = (precoEntrada - precoExecutado) * quantidadeExecutada;
+          }
+          precisaUpdate = true;
+          console.log(`[ORDER] 🧮 Profit estimado: ${novoProfit}`);
+        }
+      }
+    }
+    // Atualizar ordem se necessário
+    if (precisaUpdate) {
+      await connection.query(
+        `UPDATE ordens SET commission = ?, realized_profit = ?, last_update = NOW() WHERE id_externo = ? AND conta_id = ?`,
+        [novaComissao, novoProfit, orderId, accountId]
+      );
+      console.log(`[ORDER] ✅ Ordem ${orderId} atualizada com comissão/profit estimados.`);
+    }
+    // Atualizar posição relacionada
+    if (updatedOrder.id_posicao && (precisaUpdate || isFechamento)) {
+      // Buscar totais atuais
+      const [posRows] = await connection.query('SELECT total_commission, total_realized FROM posicoes WHERE id = ?', [updatedOrder.id_posicao]);
+      if (posRows.length > 0) {
+        const totalCommission = parseFloat(posRows[0].total_commission || 0) + (novaComissao || 0);
+        const totalRealized = parseFloat(posRows[0].total_realized || 0) + (novoProfit || 0);
+        await connection.query(
+          `UPDATE posicoes SET total_commission = ?, total_realized = ?, last_update = NOW() WHERE id = ?`,
+          [totalCommission, totalRealized, updatedOrder.id_posicao]
+        );
+        console.log(`[ORDER] ✅ Posição ${updatedOrder.id_posicao} atualizada com totais de comissão/profit.`);
+      }
+    }
   } catch (error) {
     // Retry em caso de deadlock
     if (
