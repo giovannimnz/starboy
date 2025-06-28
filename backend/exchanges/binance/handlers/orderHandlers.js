@@ -962,28 +962,40 @@ async function updateExistingOrder(dbConnection, orderData, accountId, existingO
     const orderId = orderData.i.toString();
     let connection = dbConnection;
     if (!connection) {
-      connection = await getDatabaseInstance(accountId);
+      const db = await getDatabaseInstance();
+      connection = await db.getConnection();
     }
-
+    // Buscar valores atuais do banco
+    const [currentRows] = await connection.query(
+      'SELECT * FROM ordens WHERE id_externo = ? AND conta_id = ?',
+      [orderId, accountId]
+    );
+    const current = currentRows[0] || {};
+    // Para cada campo, só sobrescrever se o novo valor não for null/undefined
+    const realized_profit = orderData.rp !== null && orderData.rp !== undefined ? parseFloat(orderData.rp) : current.realized_profit;
+    const commission = orderData.n !== null && orderData.n !== undefined ? parseFloat(orderData.n) : current.commission;
+    const commission_asset = orderData.N !== null && orderData.N !== undefined ? orderData.N : current.commission_asset;
+    const trade_id = orderData.t !== null && orderData.t !== undefined ? orderData.t : current.trade_id;
+    const quantidade_executada = orderData.z !== null && orderData.z !== undefined ? parseFloat(orderData.z) : current.quantidade_executada;
+    const preco_executado = orderData.ap !== null && orderData.ap !== undefined ? parseFloat(orderData.ap) : current.preco_executado;
+    // Outros campos podem ser tratados da mesma forma se necessário
     await connection.query(`
       UPDATE ordens 
       SET status = ?, 
           quantidade_executada = ?,
           preco_executado = ?,
+          commission = ?,
+          commission_asset = ?,
+          trade_id = ?,
+          realized_profit = ?,
           dados_originais_ws = ?,
           last_update = NOW()
       WHERE id_externo = ? AND conta_id = ?
     `, [
-      orderData.X, // status
-      parseFloat(orderData.z || 0), // quantidade executada
-      parseFloat(orderData.ap || 0), // preço executado
-      JSON.stringify(orderData), // dados originais do WebSocket
-      orderId,
+      orderData.X,      quantidade_executada,      preco_executado,      commission,      commission_asset,      trade_id,      realized_profit,      JSON.stringify(orderData),      orderId,
       accountId
     ]);
-
     console.log(`[ORDER] ✅ Ordem ${orderId} atualizada: ${orderData.X}`);
-
   } catch (error) {
     // Retry em caso de deadlock
     if (

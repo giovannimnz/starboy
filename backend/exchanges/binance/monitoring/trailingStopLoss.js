@@ -145,9 +145,9 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
       priceHitTP3 = tp3Price > 0 ? currentPrice <= tp3Price : false;
     }
 
-    console.log(`[TRAILING] 🎯 Verificação de gatilhos:`);
-    console.log(`[TRAILING]   - TP1 atingido: ${priceHitTP1}`);
-    console.log(`[TRAILING]   - TP3 atingido: ${priceHitTP3}`);
+    //console.log(`[TRAILING] 🎯 Verificação de gatilhos:`);
+    //console.log(`[TRAILING]   - TP1 atingido: ${priceHitTP1}`);
+    //console.log(`[TRAILING]   - TP3 atingido: ${priceHitTP3}`);
 
     // REPOSICIONAMENTO PARA BREAKEVEN (APÓS TP1)
     if (priceHitTP1 && !['TP1_BREAKEVEN', 'BREAKEVEN'].includes(currentTrailingLevel)) {
