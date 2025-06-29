@@ -1793,6 +1793,43 @@ async function cancelOrder(symbol, orderId, accountId) {
   }
 }
 
+/**
+ * Obtém o histórico de trades (userTrades) para um símbolo e conta
+ * @param {number} accountId - ID da conta
+ * @param {string} symbol - Símbolo do par (ex: BTCUSDT)
+ * @param {Object} [options] - Parâmetros opcionais: { orderId, startTime, endTime, fromId, limit, recvWindow }
+ * @returns {Promise<Array>} - Lista de trades
+ */
+async function getUserTrades(accountId, symbol, options = {}) {
+  try {
+    if (!accountId || typeof accountId !== 'number') {
+      throw new Error(`AccountId inválido: ${accountId}`);
+    }
+    if (!symbol || typeof symbol !== 'string') {
+      throw new Error(`Símbolo inválido: ${symbol}`);
+    }
+    const params = { symbol };
+    if (options.orderId) params.orderId = options.orderId;
+    if (options.startTime) params.startTime = options.startTime;
+    if (options.endTime) params.endTime = options.endTime;
+    if (options.fromId) params.fromId = options.fromId;
+    if (options.limit) params.limit = options.limit;
+    if (options.recvWindow) params.recvWindow = options.recvWindow;
+
+    // ✅ CORREÇÃO: Endpoint correto sem duplicação
+    const trades = await makeAuthenticatedRequest(accountId, 'GET', '/v1/userTrades', params);
+    if (Array.isArray(trades)) {
+      return trades;
+    } else {
+      console.error(`[API] Resposta inválida ao obter userTrades para ${symbol}:`, trades);
+      return [];
+    }
+  } catch (error) {
+    console.error(`[API] Erro ao obter userTrades para ${symbol} (conta ${accountId}):`, error.message);
+    return [];
+  }
+}
+
 // ✅ MODULE.EXPORTS COMPLETO
 module.exports = {
   // Gerenciamento de Estados
@@ -1850,4 +1887,7 @@ module.exports = {
 
   // Spot API
   getSpotAccountBalanceDetails,
+
+  // User Trades
+  getUserTrades,
 };

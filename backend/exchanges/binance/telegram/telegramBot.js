@@ -4,6 +4,9 @@ const { getDatabaseInstance } = require('../../../core/database/conexao');
 // Mapa simples para bots
 const activeBots = new Map();
 
+/**
+ * ✅ INICIALIZAÇÃO SIMPLIFICADA BASEADA NO STARBOY_DEV
+ */
 async function initializeTelegramBot(accountId, forceRestart = false) {
   try {
     console.log(`[TELEGRAM] 🚀 Inicializando bot SIMPLIFICADO para conta ${accountId}...`);
@@ -410,9 +413,17 @@ function formatOrderMessage(symbol, side, orderType, quantity, price, status) {
 
 /**
  * Formata mensagem de mudança de saldo
+ * Só retorna mensagem se a mudança for >= 0.01 em valor absoluto
  */
 function formatBalanceMessage(accountId, previousBalance, newBalance, reason, balanceChange = null) {
   const change = balanceChange !== null ? balanceChange : (newBalance - previousBalance);
+  
+  // ✅ VERIFICAR SE A MUDANÇA É SIGNIFICATIVA (>= 0.01)
+  if (Math.abs(change) < 0.01) {
+    console.log(`[TELEGRAM] 📊 Mudança de saldo insignificante (${change.toFixed(4)}), mensagem não enviada`);
+    return null; // Não enviar mensagem para mudanças menores que 0.01
+  }
+  
   const changeText = change >= 0 ? `+${change.toFixed(4)}` : change.toFixed(4);
   const emoji = change >= 0 ? '📈' : '📉';
   
@@ -447,20 +458,39 @@ function formatBalanceMessage(accountId, previousBalance, newBalance, reason, ba
 
 /**
  * Formata mensagem de posição fechada
+ * Aceita objeto da posição (preferencial) ou parâmetros separados
  */
-function formatPositionClosedMessage(symbol, side, quantity, entryPrice, exitPrice, pnl) {
-  const pnlIcon = pnl >= 0 ? '💰' : '💸';
-  const pnlColor = pnl >= 0 ? '🟢' : '🔴';
-  const sideIcon = side === 'BUY' ? '🟢' : '🔴';
-  
+function formatPositionClosedMessage(positionOrSymbol, side, quantity, entryPrice, exitPrice, pnl) {
+  let symbol, _side, _quantity, _entry, _exit, _pnl;
+  if (typeof positionOrSymbol === 'object' && positionOrSymbol !== null) {
+    // Preferencial: objeto da posição
+    const pos = positionOrSymbol;
+    symbol = pos.simbolo;
+    _side = pos.side;
+    _quantity = pos.quantidade;
+    _entry = typeof pos.preco_entrada === 'number' ? pos.preco_entrada : parseFloat(pos.preco_entrada || '0');
+    _exit = typeof pos.preco_corrente === 'number' ? pos.preco_corrente : parseFloat(pos.preco_corrente || '0');
+    _pnl = typeof pos.liquid_pnl === 'number' ? pos.liquid_pnl : parseFloat(pos.liquid_pnl || '0');
+  } else {
+    // Compatibilidade: parâmetros separados
+    symbol = positionOrSymbol;
+    _side = side;
+    _quantity = quantity;
+    _entry = entryPrice;
+    _exit = exitPrice;
+    _pnl = pnl;
+  }
+  const pnlIcon = _pnl >= 0 ? '💰' : '💸';
+  const pnlColor = _pnl >= 0 ? '🟢' : '🔴';
+  const sideIcon = _side === 'BUY' ? '🟢' : '🔴';
   return `${pnlIcon} <b>POSIÇÃO FECHADA</b>\n\n` +
          `📊 <b>${symbol}</b>\n` +
-         `${sideIcon} ${side}\n\n` +
+         `${sideIcon} ${_side}\n\n` +
          `💰 <b>Resultado:</b>\n` +
-         `├ Quantidade: ${quantity}\n` +
-         `├ Entrada: $${entryPrice.toFixed(4)}\n` +
-         `├ Saída: $${exitPrice.toFixed(4)}\n` +
-         `└ ${pnlColor} PnL: ${pnl >= 0 ? '+' : ''}$${pnl.toFixed(2)}\n\n` +
+         `├ Quantidade: ${_quantity}\n` +
+         `├ Entrada: $${_entry.toFixed(4)}\n` +
+         `├ Saída: $${_exit.toFixed(4)}\n` +
+         `└ ${pnlColor} PnL: ${_pnl >= 0 ? '+' : ''}$${_pnl.toFixed(2)}\n\n` +
          `⏰ ${new Date().toLocaleString('pt-BR')}`;
 }
 
@@ -521,7 +551,8 @@ module.exports = {
   testTelegramBotFixed,
   stopAllTelegramBots,
   listActiveBots,
-
+  
+  // FUNÇÕES DE FORMATAÇÃO:
   formatEntryMessage,
   formatErrorMessage,
   formatOrderMessage,

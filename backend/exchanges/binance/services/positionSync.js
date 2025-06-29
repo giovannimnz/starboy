@@ -109,7 +109,7 @@ async function syncPositionsWithExchange(accountId) {
         console.warn(`[SYNC] Posição ${dbPos.simbolo} existe no banco mas não na corretora (conta ${accountId})`);
         syncResults.missingInExchange++;
         
-        // Opcional: Marcar como fechada no banco
+        // ✅ MARCAR COMO FECHADA E MOVER PARA HISTÓRICO
         try {
           await db.query(`
             UPDATE posicoes 
@@ -117,7 +117,21 @@ async function syncPositionsWithExchange(accountId) {
             WHERE id = ?
           `, [dbPos.id]);
           
-          //console.log(`[SYNC] ✅ Posição ${dbPos.simbolo} marcada como fechada no banco (conta ${accountId})`);
+          // ✅ MOVER IMEDIATAMENTE PARA HISTÓRICO
+          const moved = await movePositionToHistory(
+            db, 
+            dbPos.id, 
+            'CLOSED', 
+            'Sincronização - posição não encontrada na corretora',
+            accountId
+          );
+          
+          if (moved) {
+            console.log(`[SYNC] ✅ Posição ${dbPos.simbolo} fechada e movida para histórico (conta ${accountId})`);
+          } else {
+            console.log(`[SYNC] ✅ Posição ${dbPos.simbolo} marcada como fechada no banco (conta ${accountId})`);
+          }
+          
           syncResults.updated++;
         } catch (closeError) {
           console.error(`[SYNC] Erro ao fechar posição ${dbPos.simbolo} no banco:`, closeError.message);
@@ -127,6 +141,17 @@ async function syncPositionsWithExchange(accountId) {
     }
 
     //console.log(`[SYNC] ✅ Sincronização concluída para conta ${accountId}:`, syncResults);
+    
+    // ✅ APÓS SINCRONIZAÇÃO, VERIFICAR E MOVER POSIÇÕES CLOSED RESTANTES
+    try {
+      const moveResults = await moveClosedPositionsToHistory(accountId);
+      if (moveResults.moved > 0) {
+        console.log(`[SYNC] 📚 ${moveResults.moved} posições CLOSED adicionais movidas para histórico`);
+      }
+    } catch (moveError) {
+      console.warn(`[SYNC] ⚠️ Erro ao mover posições CLOSED restantes:`, moveError.message);
+    }
+    
     return syncResults;
 
   } catch (error) {
@@ -286,6 +311,16 @@ async function syncPositionsWithAutoClose(accountId) {
   } catch (error) {
     console.error(`[SYNC_AUTO] ❌ Erro crítico na sincronização avançada para conta ${accountId}:`, error.message);
     throw error;
+  } finally {
+    // ✅ SEMPRE VERIFICAR E MOVER POSIÇÕES CLOSED APÓS SINCRONIZAÇÃO
+    try {
+      const moveResults = await moveClosedPositionsToHistory(accountId);
+      if (moveResults.moved > 0) {
+        console.log(`[SYNC_AUTO] 📚 ${moveResults.moved} posições CLOSED movidas para histórico após sincronização`);
+      }
+    } catch (moveError) {
+      console.warn(`[SYNC_AUTO] ⚠️ Erro ao mover posições CLOSED após sincronização:`, moveError.message);
+    }
   }
 }
 
@@ -625,9 +660,77 @@ async function logOpenPositionsAndOrdersVisual(accountId) {
   }
 }
 
+/**
+ * ✅ FUNÇÃO PARA DETECTAR E MOVER POSIÇÕES CLOSED PARA HISTÓRICO
+ * Move automaticamente todas as posições com status CLOSED para posicoes_fechadas
+ */
+async function moveClosedPositionsToHistory(accountId) {
+  try {
+    //console.log(`[MOVE_CLOSED] 🔄 Verificando posições CLOSED para mover ao histórico (conta ${accountId})...`);
+    
+    const db = await getDatabaseInstance();
+    
+    // Buscar todas as posições com status CLOSED
+    const [closedPositions] = await db.query(`
+      SELECT id, simbolo, status, data_hora_fechamento, liquid_pnl
+      FROM posicoes 
+      WHERE status = 'CLOSED' AND conta_id = ?
+      ORDER BY data_hora_fechamento DESC
+    `, [accountId]);
+    
+    if (closedPositions.length === 0) {
+      //console.log(`[MOVE_CLOSED] ℹ️ Nenhuma posição CLOSED encontrada para conta ${accountId}`);
+      return { moved: 0, errors: [] };
+    }
+    
+    console.log(`[MOVE_CLOSED] 📊 Encontradas ${closedPositions.length} posições CLOSED para mover...`);
+    
+    let moveResults = {
+      moved: 0,
+      errors: []
+    };
+    
+    // Mover cada posição CLOSED para o histórico
+    for (const position of closedPositions) {
+      try {
+        console.log(`[MOVE_CLOSED] 📚 Movendo posição ${position.simbolo} (ID: ${position.id}) para histórico...`);
+        
+        const moved = await movePositionToHistory(
+          db, 
+          position.id, 
+          'CLOSED', 
+          'Movida automaticamente - detectada como CLOSED',
+          accountId
+        );
+        
+        if (moved) {
+          moveResults.moved++;
+          console.log(`[MOVE_CLOSED] ✅ Posição ${position.simbolo} (ID: ${position.id}) movida com sucesso para histórico`);
+        } else {
+          moveResults.errors.push(`Falha ao mover ${position.simbolo} (ID: ${position.id})`);
+          console.error(`[MOVE_CLOSED] ❌ Falha ao mover posição ${position.simbolo} para histórico`);
+        }
+        
+      } catch (moveError) {
+        moveResults.errors.push(`Erro ao mover ${position.simbolo}: ${moveError.message}`);
+        console.error(`[MOVE_CLOSED] ❌ Erro ao mover posição ${position.simbolo}:`, moveError.message);
+      }
+    }
+    
+    console.log(`[MOVE_CLOSED] ✅ Processamento concluído: ${moveResults.moved} movidas, ${moveResults.errors.length} erros`);
+    
+    return moveResults;
+    
+  } catch (error) {
+    console.error(`[MOVE_CLOSED] ❌ Erro crítico ao mover posições CLOSED:`, error.message);
+    return { moved: 0, errors: [error.message] };
+  }
+}
+
 module.exports = {
   syncPositionsWithExchange,
   logOpenPositionsAndOrdersVisual,
   syncPositionsWithAutoClose,
-  syncOrdersWithExchange
+  syncOrdersWithExchange,
+  moveClosedPositionsToHistory
 };

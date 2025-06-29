@@ -332,10 +332,10 @@ async function moveOrdersToHistory(accountId) {
           order.realized_profit,
           order.position_side
         ]);
-        // ✅ REMOVER DA TABELA ATIVA
+        // ✅ REMOVER DA TABELA ATIVA USANDO ID PRIMÁRIO
         await connection.query(
-          'DELETE FROM ordens WHERE id_externo = ? AND conta_id = ?',
-          [order.id_externo, accountId]
+          'DELETE FROM ordens WHERE id = ? AND conta_id = ?',
+          [order.id, accountId]
         );
         movedCount++;
       }
@@ -479,20 +479,15 @@ async function movePositionToHistory(positionId, accountId, force = false) {
     // Inserir no histórico
     await db.query(`
       INSERT INTO posicoes_fechadas (
-        id_original, simbolo, quantidade, preco_medio, status,
-        data_hora_abertura, data_hora_fechamento, motivo_fechamento,
-        side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente,
-        orign_sig, conta_id, quantidade_aberta, trailing_stop_level, pnl_corrente,
-        breakeven_price, accumulated_realized, unrealized_pnl, margin_type,
-        isolated_wallet, position_side, event_reason, webhook_data_raw
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id_original, simbolo, quantidade, preco_medio, status, data_hora_abertura, data_hora_fechamento, motivo_fechamento, side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente, orign_sig, conta_id, quantidade_aberta, trailing_stop_level, pnl_corrente, breakeven_price, accumulated_realized, unrealized_pnl, margin_type, isolated_wallet, position_side, event_reason, webhook_data_raw, observacoes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       position.id, // id_original
       position.simbolo,
       position.quantidade,
       position.preco_medio,
-      position.status,
-      formatDateForMySQL(position.data_hora_abertura), // sempre formatar!
+      status || position.status,
+      formatDateForMySQL(position.data_hora_abertura),
       formatDateForMySQL(new Date()), // data_hora_fechamento = agora
       reason || null, // motivo_fechamento
       position.side,
@@ -512,7 +507,8 @@ async function movePositionToHistory(positionId, accountId, force = false) {
       position.isolated_wallet,
       position.position_side,
       position.event_reason,
-      position.webhook_data_raw
+      position.webhook_data_raw,
+      position.observacoes
     ]);
     
     // Remover da tabela de posições
@@ -595,10 +591,8 @@ async function checkAndCloseWebsocket(accountId) {
  */
 async function movePositionToHistory(db, positionId, status = 'CLOSED', reason = 'Movida automaticamente', accountId) {
   let connection;
-  
   try {
     console.log(`[MOVE_POSITION] 📚 Iniciando movimento da posição ${positionId} para conta ${accountId}...`);
-    
     connection = await db.getConnection();
     await connection.beginTransaction();
 
@@ -607,80 +601,46 @@ async function movePositionToHistory(db, positionId, status = 'CLOSED', reason =
       'SELECT * FROM posicoes WHERE id = ? AND conta_id = ?', 
       [positionId, accountId]
     );
-    
     if (positionResult.length === 0) {
       console.log(`[MOVE_POSITION] ⚠️ Posição ${positionId} não encontrada para conta ${accountId}`);
       await connection.rollback();
       return false;
     }
-    
     const position = positionResult[0];
     const symbol = position.simbolo;
-    
+
     // 2. Buscar ordens relacionadas ANTES de mover
     const [relatedOrders] = await connection.query(
       'SELECT id, id_externo, status FROM ordens WHERE id_posicao = ? AND conta_id = ?', 
       [positionId, accountId]
     );
-    
     console.log(`[MOVE_POSITION] 📋 Encontradas ${relatedOrders.length} ordens relacionadas para ${symbol}...`);
-    
-    // 3. ✅ ETAPA CRÍTICA: CANCELAR ORDENS NA CORRETORA PRIMEIRO
+
+    // 3. Cancelar ordens na corretora
     let ordersToCancel = relatedOrders.filter(order => 
       ['NEW', 'PARTIALLY_FILLED', 'PENDING_CANCEL'].includes(order.status)
     );
-    
     if (ordersToCancel.length > 0) {
       console.log(`[MOVE_POSITION] 🗑️ Cancelando ${ordersToCancel.length} ordens ativas na corretora...`);
       
       for (const order of ordersToCancel) {
         try {
-          console.log(`[MOVE_POSITION] 🔄 Cancelando ordem ${order.id_externo} na corretora...`);
-          
-          // Cancelar na corretora usando a API
           const cancelResult = await api.cancelOrder(symbol, order.id_externo, accountId);
           
           if (cancelResult && cancelResult.status) {
-            console.log(`[MOVE_POSITION] ✅ Ordem ${order.id_externo} cancelada na corretora (status: ${cancelResult.status})`);
-            
-            // Atualizar status no banco imediatamente
-            await connection.query(`
-              UPDATE ordens 
-              SET status = ?, last_update = ?, observacao = ?
-              WHERE id = ? AND conta_id = ?
-            `, [
-              cancelResult.status,
-              formatDateForMySQL(new Date()),
-              `Cancelada durante fechamento da posição ${positionId}`,
-              order.id,
-              accountId
-            ]);
-          } else {
-            console.log(`[MOVE_POSITION] ⚠️ Resultado inesperado ao cancelar ordem ${order.id_externo}`);
+            await connection.query(
+              'UPDATE ordens SET status = ?, last_update = ?, observacao = ? WHERE id = ? AND conta_id = ?',
+              [cancelResult.status, formatDateForMySQL(new Date()), `Cancelada durante fechamento da posição ${positionId}`, order.id, accountId]
+            );
           }
-          
         } catch (cancelError) {
-          console.error(`[MOVE_POSITION] ❌ Erro ao cancelar ordem ${order.id_externo} na corretora:`, cancelError.message);
-          
-          // Se a ordem não existe mais na corretora, marcar como CANCELED no banco
           if (cancelError.message.includes('Unknown order') || 
               cancelError.message.includes('-2011') ||
               cancelError.message.includes('Order does not exist')) {
-            
-            console.log(`[MOVE_POSITION] 💡 Ordem ${order.id_externo} não existe na corretora, marcando como CANCELED`);
-            await connection.query(`
-              UPDATE ordens 
-              SET status = 'CANCELED', last_update = ?, observacao = ?
-              WHERE id = ? AND conta_id = ?
-            `, [
-              formatDateForMySQL(new Date()),
-              `Marcada como cancelada - não existe na corretora`,
-              order.id,
-              accountId
-            ]);
-          } else {
-            // Erro diferente - pode ser problema de rede, continuar mesmo assim
-            console.error(`[MOVE_POSITION] ⚠️ Continuando mesmo com erro de cancelamento...`);
+            await connection.query(
+              'UPDATE ordens SET status = "CANCELED", last_update = ?, observacao = ? WHERE id = ? AND conta_id = ?',
+              [formatDateForMySQL(new Date()), `Marcada como cancelada - não existe na corretora`, order.id, accountId]
+            );
           }
         }
       }
@@ -690,48 +650,39 @@ async function movePositionToHistory(db, positionId, status = 'CLOSED', reason =
       console.log(`[MOVE_POSITION] ℹ️ Nenhuma ordem ativa para cancelar na corretora`);
     }
     
-    // 4. ✅ AGUARDAR UM POUCO PARA GARANTIR QUE CANCELAMENTOS FORAM PROCESSADOS
-    console.log(`[MOVE_POSITION] ⏳ Aguardando 2 segundos para confirmação dos cancelamentos...`);
+    // 4. Aguardar 2 segundos
     await new Promise(resolve => setTimeout(resolve, 2000));
     
-    // 5. ✅ AGORA SIM: Buscar ordens atualizadas e mover para histórico
+    // 5. Buscar ordens atualizadas
     const [updatedOrders] = await connection.query(
       'SELECT id FROM ordens WHERE id_posicao = ? AND conta_id = ?', 
       [positionId, accountId]
     );
     
-    console.log(`[MOVE_POSITION] 📚 Movendo ${updatedOrders.length} ordens para histórico...`);
-    
-    // 6. ✅ INSERIR POSIÇÃO NO HISTÓRICO COM TODOS OS CAMPOS
+    // 6. INSERIR POSIÇÃO NO HISTÓRICO COM TODOS OS CAMPOS CORRETOS
     await connection.query(`
       INSERT INTO posicoes_fechadas (
-        id_original, simbolo, quantidade, quantidade_aberta, preco_medio, status,
-        data_hora_abertura, data_hora_fechamento, motivo_fechamento,
-        side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente,
-        orign_sig, conta_id, trailing_stop_level, pnl_corrente, observacoes,
-        breakeven_price, accumulated_realized, unrealized_pnl, margin_type,
-        isolated_wallet, position_side, event_reason, webhook_data_raw
+        id_original, simbolo, quantidade, preco_medio, status, data_hora_abertura, data_hora_fechamento, motivo_fechamento, side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente, orign_sig, conta_id, quantidade_aberta, trailing_stop_level, pnl_corrente, breakeven_price, accumulated_realized, unrealized_pnl, margin_type, isolated_wallet, position_side, event_reason, webhook_data_raw, observacoes
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       position.id, // id_original
       position.simbolo,
       position.quantidade,
-      position.quantidade_aberta,
       position.preco_medio,
-      status,
+      status || position.status,
       formatDateForMySQL(position.data_hora_abertura),
       formatDateForMySQL(new Date()), // data_hora_fechamento = agora
-      `${reason} | Ordens canceladas na corretora antes da movimentação`,
+      reason || null, // motivo_fechamento
       position.side,
       position.leverage,
-      formatDateForMySQL(position.data_hora_ultima_atualizacao || new Date()),
+      formatDateForMySQL(position.data_hora_ultima_atualizacao),
       position.preco_entrada,
       position.preco_corrente,
       position.orign_sig,
       position.conta_id,
+      position.quantidade_aberta,
       position.trailing_stop_level,
       position.pnl_corrente,
-      position.observacoes,
       position.breakeven_price,
       position.accumulated_realized,
       position.unrealized_pnl,
@@ -739,10 +690,11 @@ async function movePositionToHistory(db, positionId, status = 'CLOSED', reason =
       position.isolated_wallet,
       position.position_side,
       position.event_reason,
-      position.webhook_data_raw
+      position.webhook_data_raw,
+      position.observacoes
     ]);
-    
-    // 7. ✅ MOVER ORDENS PARA HISTÓRICO COM TODOS OS CAMPOS
+
+    // 7. MOVER ORDENS PARA HISTÓRICO (mantém igual)
     for (const order of updatedOrders) {
       // Atualizar posição relacionada, se houver
       if (order.id_posicao) {

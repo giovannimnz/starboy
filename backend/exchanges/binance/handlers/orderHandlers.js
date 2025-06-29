@@ -162,103 +162,6 @@ async function handleOrderUpdate(messageOrAccountId, orderDataOrDb = null, db = 
 }
 
 /**
- * Trata criação de nova ordem
- */
-async function handleNewOrder(connection, order, accountId, existingOrder) {
-  const orderId = String(order.i);
-  const symbol = order.s;
-  
-  try {
-    if (existingOrder) {
-      // Ordem já existe, apenas atualizar status e dados do WebSocket
-      await connection.query(
-        `UPDATE ordens SET 
-         status = ?, 
-         last_update = NOW(),
-         dados_originais_ws = ?
-         WHERE id_externo = ? AND conta_id = ?`,
-        [order.X, JSON.stringify(order), orderId, accountId]
-      );
-      
-      console.log(`[ORDER] Ordem existente ${orderId} atualizada para ${order.X}`);
-    } else {
-      // ✅ BUSCAR POSIÇÃO RELACIONADA ANTES DE CRIAR A ORDEM
-      let positionId = null;
-      
-      if (order.R === true) {
-        // Se é reduce-only, deve ter uma posição existente
-        const [existingPositions] = await connection.query(
-          'SELECT id FROM posicoes WHERE simbolo = ? AND status = ? AND conta_id = ?',
-          [symbol, 'OPEN', accountId]
-        );
-        
-        if (existingPositions.length > 0) {
-          positionId = existingPositions[0].id;
-          console.log(`[ORDER] Ordem reduce-only ${orderId} vinculada à posição ${positionId}`);
-        }
-      }
-      
-      // ✅ USAR ESTRUTURA CORRETA DA TABELA
-      const orderData = {
-        tipo_ordem: mapOrderType(order.o),
-        preco: parseFloat(order.p || '0'),
-        quantidade: parseFloat(order.q || '0'),
-        id_posicao: positionId, // NULL para ordens de entrada
-        status: order.X,
-        data_hora_criacao: formatDateForMySQL(new Date(order.T || Date.now())),
-        id_externo: orderId,
-        side: order.S,
-        simbolo: symbol,
-        tipo_ordem_bot: determineOrderBotType(order),
-        target: null,
-        reduce_only: order.R === true ? 1 : 0,
-        close_position: order.cp === true ? 1 : 0,
-        last_update: formatDateForMySQL(new Date()),
-        orign_sig: extractOriginSignal(order.c),
-        observacao: null,
-        preco_executado: parseFloat(order.ap || '0'),
-        quantidade_executada: parseFloat(order.z || '0'),
-        dados_originais_ws: JSON.stringify(order),
-        conta_id: accountId,
-        renew_sl_firs: null,
-        renew_sl_seco: null,
-        commission: parseFloat(order.n || '0'),
-        commission_asset: order.N || null,
-        trade_id: order.t || null
-      };
-
-      // ✅ INSERIR COM QUERY MANUAL PARA CONTROLE COMPLETO
-      const insertQuery = `
-        INSERT INTO ordens (
-          tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao,
-          id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only,
-          close_position, last_update, orign_sig, observacao, preco_executado,
-          quantidade_executada, dados_originais_ws, conta_id, renew_sl_firs,
-          renew_sl_seco, commission, commission_asset, trade_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `;
-      
-      const insertValues = [
-        orderData.tipo_ordem, orderData.preco, orderData.quantidade, orderData.id_posicao,
-        orderData.status, orderData.data_hora_criacao, orderData.id_externo, orderData.side,
-        orderData.simbolo, orderData.tipo_ordem_bot, orderData.target, orderData.reduce_only,
-        orderData.close_position, orderData.last_update, orderData.orign_sig, orderData.observacao,
-        orderData.preco_executado, orderData.quantidade_executada, orderData.dados_originais_ws,
-        orderData.conta_id, orderData.renew_sl_firs, orderData.renew_sl_seco, orderData.commission,
-        orderData.commission_asset, orderData.trade_id
-      ];
-
-      const [result] = await connection.query(insertQuery, insertValues);
-      const orderInsertId = result.insertId;
-      
-      console.log(`[ORDER] Nova ordem ${orderId} inserida no banco com ID ${orderInsertId}${positionId ? ` (vinculada à posição ${positionId})` : ' (sem posição vinculada)'}`);
-    }
-  } catch (error) {
-    console.error(`[ORDER] Erro ao tratar nova ordem ${orderId}:`, error.message);
-  }
-}
-
-/**
  * Trata execução de trade
  */
 async function handleTradeExecution(connection, order, accountId, existingOrder) {
@@ -354,189 +257,6 @@ async function handleTradeExecution(connection, order, accountId, existingOrder)
 }
 
 /**
- * Trata cancelamento de ordem
- */
-async function handleOrderCancellation(connection, order, accountId, existingOrder) {
-  const orderId = String(order.i);
-  
-  try {
-    if (existingOrder) {
-      await connection.query(
-        `UPDATE ordens SET 
-         status = 'CANCELED',
-         dados_originais_ws = ?,
-         last_update = NOW()
-         WHERE id_externo = ? AND conta_id = ?`,
-        [JSON.stringify(order), orderId, accountId]
-      );
-      
-      console.log(`[ORDER] Ordem ${orderId} cancelada`);
-    }
-  } catch (error) {
-    console.error(`[ORDER] Erro ao tratar cancelamento ${orderId}:`, error.message);
-  }
-}
-
-/**
- * Trata expiração de ordem
- */
-async function handleOrderExpiry(connection, order, accountId, existingOrder) {
-  const orderId = String(order.i);
-  
-  try {
-    if (existingOrder) {
-      await connection.query(
-        `UPDATE ordens SET 
-         status = 'EXPIRED',
-         dados_originais_ws = ?,
-         last_update = NOW()
-         WHERE id_externo = ? AND conta_id = ?`,
-        [JSON.stringify(order), orderId, accountId]
-      );
-      
-      console.log(`[ORDER] Ordem ${orderId} expirada`);
-    }
-  } catch (error) {
-    console.error(`[ORDER] Erro ao tratar expiração ${orderId}:`, error.message);
-  }
-}
-
-/**
- * Trata modificação de ordem
- */
-async function handleOrderAmendment(connection, order, accountId, existingOrder) {
-  const orderId = String(order.i);
-  
-  try {
-    if (existingOrder) {
-      await connection.query(
-        `UPDATE ordens SET 
-         preco = ?,
-         quantidade = ?,
-         status = ?,
-         dados_originais_ws = ?,
-         last_update = NOW()
-         WHERE id_externo = ? AND conta_id = ?`,
-        [parseFloat(order.p || '0'), parseFloat(order.q || '0'), order.X, JSON.stringify(order), orderId, accountId]
-      );
-      
-      console.log(`[ORDER] Ordem ${orderId} modificada`);
-    }
-  } catch (error) {
-    console.error(`[ORDER] Erro ao tratar modificação ${orderId}:`, error.message);
-  }
-}
-
-/**
- * Cria ou atualiza posição baseada na ordem executada
- */
-async function handlePositionFromOrder(connection, order, accountId) {
-  const symbol = order.s;
-  const side = order.S;
-  const executedQty = parseFloat(order.z || '0');
-  const avgPrice = parseFloat(order.ap || '0');
-  const orderId = String(order.i);
-  
-  try {
-    // BUSCAR POSIÇÃO EXISTENTE
-    const [existingPositions] = await connection.query(
-      'SELECT * FROM posicoes WHERE simbolo = ? AND status = ? AND conta_id = ?',
-      [symbol, 'OPEN', accountId]
-    );
-
-    let positionId = null;
-
-    if (existingPositions.length > 0) {
-      // ATUALIZAR POSIÇÃO EXISTENTE
-      const existingPos = existingPositions[0];
-      positionId = existingPos.id;
-      
-      const currentQty = parseFloat(existingPos.quantidade || '0');
-      const currentPrice = parseFloat(existingPos.preco_medio || '0');
-      
-      let newQty, newAvgPrice;
-      
-      if (existingPos.side === side) {
-        // MESMA DIREÇÃO - SOMAR QUANTIDADE E RECALCULAR PREÇO MÉDIO
-        newQty = currentQty + executedQty;
-        newAvgPrice = ((currentQty * currentPrice) + (executedQty * avgPrice)) / newQty;
-      } else {
-        // DIREÇÃO OPOSTA - REDUZIR QUANTIDADE
-        newQty = Math.abs(currentQty - executedQty);
-        newAvgPrice = newQty > 0 ? currentPrice : avgPrice;
-      }
-      
-      if (newQty <= 0.000001) {
-        // POSIÇÃO FECHADA
-        await connection.query(
-          `UPDATE posicoes SET 
-           status = 'CLOSED',
-           quantidade = 0,
-           data_hora_fechamento = NOW(),
-           data_hora_ultima_atualizacao = NOW()
-           WHERE id = ?`,
-          [existingPos.id]
-        );
-        
-        console.log(`[ORDER] Posição ${symbol} fechada via ordem ${orderId}`);
-        positionId = null;
-      } else {
-        // POSIÇÃO ATUALIZADA
-        await connection.query(
-          `UPDATE posicoes SET 
-           quantidade = ?,
-           preco_medio = ?,
-           preco_entrada = ?,
-           preco_corrente = ?,
-           side = ?,
-           data_hora_ultima_atualizacao = NOW()
-           WHERE id = ?`,
-          [newQty, newAvgPrice, newAvgPrice, avgPrice, side, existingPos.id]
-        );
-        
-        console.log(`[ORDER] Posição ${symbol} atualizada: ${newQty} @ ${newAvgPrice.toFixed(6)}`);
-      }
-    } else {
-      // CRIAR NOVA POSIÇÃO
-      const positionData = {
-        simbolo: symbol,
-        quantidade: executedQty,
-        preco_medio: avgPrice,
-        status: 'OPEN',
-        data_hora_abertura: formatDateForMySQL(new Date()),
-        side: side,
-        leverage: 1,
-        data_hora_ultima_atualizacao: formatDateForMySQL(new Date()),
-        preco_entrada: avgPrice,
-        preco_corrente: avgPrice,
-        orign_sig: extractOriginSignal(order.c),
-        quantidade_aberta: executedQty,
-        conta_id: accountId
-      };
-      
-      positionId = await insertPosition(connection, positionData);
-      console.log(`[ORDER] Nova posição ${symbol} criada: ID ${positionId}`);
-    }
-
-    // ✅ VINCULAR A ORDEM À POSIÇÃO APÓS CRIAÇÃO/ATUALIZAÇÃO
-    if (positionId) {
-      await connection.query(
-        `UPDATE ordens SET 
-         id_posicao = ?,
-         last_update = NOW()
-         WHERE id_externo = ? AND conta_id = ? AND id_posicao IS NULL`,
-        [positionId, orderId, accountId]
-      );
-      
-      console.log(`[ORDER] Ordem ${orderId} vinculada à posição ${positionId}`);
-    }
-
-  } catch (error) {
-    console.error(`[ORDER] Erro ao tratar posição para ordem ${orderId}:`, error.message);
-  }
-}
-
-/**
  * ✅ NOVA FUNÇÃO: Mover ordem automaticamente quando FILLED ou CANCELLED
  */
 async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCount = 0) {
@@ -592,30 +312,6 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCou
     const placeholders = columns.map(() => '?').join(', ');
     const values = Object.values(finalDataToInsert);
 
-    // Atualizar posição relacionada, se houver
-    if (orderToMove.id_posicao) {
-      const [positions] = await connection.query(
-        'SELECT total_commission, total_realized FROM posicoes WHERE id = ? AND conta_id = ?',
-        [orderToMove.id_posicao, accountId]
-      );
-      if (positions.length > 0) {
-        const pos = positions[0];
-        const newTotalCommission = (parseFloat(pos.total_commission) || 0) + (parseFloat(orderToMove.commission) || 0);
-        const newTotalRealized = (parseFloat(pos.total_realized) || 0) + (parseFloat(orderToMove.realized_profit) || 0);
-        let newLiquidPnl;
-        if (newTotalCommission < 0) {
-          newLiquidPnl = newTotalRealized + newTotalCommission;
-        } else {
-          newLiquidPnl = newTotalRealized - newTotalCommission;
-        }
-        await connection.query(
-          'UPDATE posicoes SET total_commission = ?, total_realized = ?, liquid_pnl = ? WHERE id = ? AND conta_id = ?',
-          [newTotalCommission, newTotalRealized, newLiquidPnl, orderToMove.id_posicao, accountId]
-        );
-        console.log(`[ORDER_AUTO_MOVE] Posição ${orderToMove.id_posicao} atualizada: total_commission=${newTotalCommission}, total_realized=${newTotalRealized}, liquid_pnl=${newLiquidPnl}`);
-      }
-    }    
-
     await connection.query(
       `INSERT INTO ordens_fechadas (${columns.join(', ')}) VALUES (${placeholders})`,
       values
@@ -648,7 +344,6 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCou
     if (connection) connection.release();
   }
 }
-
 
 /**
  * ✅ FUNÇÃO CORRIGIDA: Processa atualizações de ordens via WebSocket
@@ -979,6 +674,18 @@ async function updateExistingOrder(dbConnection, orderData, accountId, existingO
     const quantidade_executada = orderData.z !== null && orderData.z !== undefined ? parseFloat(orderData.z) : current.quantidade_executada;
     const preco_executado = orderData.ap !== null && orderData.ap !== undefined ? parseFloat(orderData.ap) : current.preco_executado;
     // Outros campos podem ser tratados da mesma forma se necessário
+
+    // === VALIDAÇÃO: Não atualizar se algum valor for NaN ===
+    const camposParaValidar = {
+      realized_profit, commission, quantidade_executada, preco_executado
+    };
+    for (const [campo, valor] of Object.entries(camposParaValidar)) {
+      if (valor !== undefined && valor !== null && isNaN(valor)) {
+        console.error(`[ORDER] ❌ Valor inválido (NaN) detectado em updateExistingOrder: ${campo}=${valor} | orderId=${orderId} | accountId=${accountId}`);
+        return; // Não faz update se algum valor for NaN
+      }
+    }
+
     await connection.query(`
       UPDATE ordens 
       SET status = ?, 
@@ -997,107 +704,14 @@ async function updateExistingOrder(dbConnection, orderData, accountId, existingO
     ]);
     console.log(`[ORDER] ✅ Ordem ${orderId} atualizada: ${orderData.X}`);
 
-    // === NOVO BLOCO: Verificação e cálculo de comissão/profit ===
-    // Buscar ordem atualizada do banco
-    const [updatedRows] = await connection.query(
-      'SELECT * FROM ordens WHERE id_externo = ? AND conta_id = ?',
-      [orderId, accountId]
-    );
-    const updatedOrder = updatedRows[0];
-    if (!updatedOrder) return;
-
-    // Identificar tipo de ordem bot
-    const tipoOrdemBot = updatedOrder.tipo_ordem_bot;
-    const isAbertura = tipoOrdemBot === 'ENTRADA' || tipoOrdemBot === 'ENTRADA_MARKET';
-    const isFechamento = [
-      'REDUCAO_PARCIAL',
-      'STOP_LOSS',
-      'FECHAMENTO_MANUAL',
-      'TAKE_PROFIT',
-      'TAKE_PROFIT_MARKET'
-    ].includes(tipoOrdemBot);
-
-    // Identificar maker/taker
-    let isMaker = false;
-    if (updatedOrder.hasOwnProperty('is_maker_side')) {
-      isMaker = !!updatedOrder.is_maker_side;
-    } else if (updatedOrder.dados_originais_ws) {
-      try {
-        const ws = JSON.parse(updatedOrder.dados_originais_ws);
-        if (ws.hasOwnProperty('m')) isMaker = !!ws.m;
-      } catch {}
-    }
-    const taxa = isMaker ? 0.0002 : 0.0005;
-
-    // Cálculo de comissão
-    let precisaUpdate = false;
-    let novaComissao = updatedOrder.commission;
-    let novoProfit = updatedOrder.realized_profit;
-    const quantidadeExecutada = parseFloat(updatedOrder.quantidade_executada || 0);
-    const precoExecutado = parseFloat(updatedOrder.preco_executado || 0);
-
-    // Ordem de abertura: só comissão
-    if (isAbertura && (!novaComissao || novaComissao === 0)) {
-      novaComissao = quantidadeExecutada * precoExecutado * taxa;
-      precisaUpdate = true;
-      console.log(`[ORDER] 🧮 Comissão estimada (abertura): ${novaComissao}`);
-    }
-    // Ordem de fechamento: comissão e profit
-    if (isFechamento && ((!novaComissao || novaComissao === 0) || (!novoProfit && novoProfit !== 0))) {
-      if (!novaComissao || novaComissao === 0) {
-        novaComissao = quantidadeExecutada * precoExecutado * taxa;
-        precisaUpdate = true;
-        console.log(`[ORDER] 🧮 Comissão estimada (fechamento): ${novaComissao}`);
-      }
-      if (novoProfit === null || novoProfit === undefined) {
-        // Estimar profit realizado: diferença entre preço de entrada e saída * quantidade
-        // Busca preço de entrada da posição
-        let precoEntrada = null;
-        if (updatedOrder.id_posicao) {
-          const [posRows] = await connection.query('SELECT preco FROM posicoes WHERE id = ?', [updatedOrder.id_posicao]);
-          if (posRows.length > 0) precoEntrada = parseFloat(posRows[0].preco || 0);
-        }
-        if (precoEntrada !== null) {
-          if (updatedOrder.side === 'SELL') {
-            novoProfit = (precoExecutado - precoEntrada) * quantidadeExecutada;
-          } else {
-            novoProfit = (precoEntrada - precoExecutado) * quantidadeExecutada;
-          }
-          precisaUpdate = true;
-          console.log(`[ORDER] 🧮 Profit estimado: ${novoProfit}`);
-        }
-      }
-    }
-    // Atualizar ordem se necessário
-    if (precisaUpdate) {
-      await connection.query(
-        `UPDATE ordens SET commission = ?, realized_profit = ?, last_update = NOW() WHERE id_externo = ? AND conta_id = ?`,
-        [novaComissao, novoProfit, orderId, accountId]
-      );
-      console.log(`[ORDER] ✅ Ordem ${orderId} atualizada com comissão/profit estimados.`);
-    }
-    // Atualizar posição relacionada
-    if (updatedOrder.id_posicao && (precisaUpdate || isFechamento)) {
-      // Buscar totais atuais
-      const [posRows] = await connection.query('SELECT total_commission, total_realized FROM posicoes WHERE id = ?', [updatedOrder.id_posicao]);
-      if (posRows.length > 0) {
-        const totalCommission = parseFloat(posRows[0].total_commission || 0) + (novaComissao || 0);
-        const totalRealized = parseFloat(posRows[0].total_realized || 0) + (novoProfit || 0);
-        await connection.query(
-          `UPDATE posicoes SET total_commission = ?, total_realized = ?, last_update = NOW() WHERE id = ?`,
-          [totalCommission, totalRealized, updatedOrder.id_posicao]
-        );
-        console.log(`[ORDER] ✅ Posição ${updatedOrder.id_posicao} atualizada com totais de comissão/profit.`);
-      }
-    }
   } catch (error) {
     // Retry em caso de deadlock
     if (
       error.message &&
       error.message.includes('Deadlock found when trying to get lock') &&
-      retryCount < 3
+      retryCount < 5
     ) {
-      console.warn(`[ORDER] ⚠️ Deadlock ao atualizar ordem ${orderData.i}. Tentando novamente (${retryCount + 1}/3)...`);
+      //console.warn(`[ORDER] ⚠️ Deadlock ao atualizar ordem ${orderData.i}. Tentando novamente (${retryCount + 1}/5)...`);
       await new Promise(resolve => setTimeout(resolve, 500 * (retryCount + 1)));
       return updateExistingOrder(dbConnection, orderData, accountId, existingOrder, retryCount + 1);
     }
@@ -1163,16 +777,6 @@ function determineOrderBotTypeFromExternal(orderData) {
   }
   
   return 'EXTERNA';
-}
-
-/**
- * ✅ NOVA FUNÇÃO: Verificar se deve notificar ordem externa
- */
-function shouldNotifyExternalOrder(orderBotType, orderData) {
-  const importantTypes = ['STOP_LOSS', 'TAKE_PROFIT', 'ENTRADA'];
-  const largeValue = parseFloat(orderData.q || 0) * parseFloat(orderData.p || 0) > 50; // > $50
-  
-  return importantTypes.includes(orderBotType) || largeValue;
 }
 
 /**
@@ -1391,78 +995,6 @@ function mapOrderType(binanceOrderType) {
   
   return mapping[binanceOrderType] || binanceOrderType;
 }
-
-/**
- * Determina o tipo de ordem do bot baseado nas características da ordem
- */
-function determineOrderBotType(order) {
-  const orderType = order.o; // LIMIT, MARKET, STOP_MARKET, etc.
-  const reduceOnly = order.R === true;
-  const closePosition = order.cp === true;
-  const stopPrice = parseFloat(order.sp || '0');
-  
-  // ✅ DETECTAR TIPO DE ORDEM BASEADO NAS CARACTERÍSTICAS
-  if (orderType === 'STOP_MARKET' && closePosition) {
-    return 'STOP_LOSS';
-  }
-  
-  if (orderType === 'TAKE_PROFIT_MARKET' && closePosition) {
-    return 'TAKE_PROFIT';
-  }
-  
-  if (orderType === 'LIMIT' && reduceOnly) {
-    return 'REDUCAO_PARCIAL';
-  }
-  
-  if (orderType === 'LIMIT' || orderType === 'MARKET') {
-    return 'ENTRADA';
-  }
-  
-  return 'UNKNOWN';
-}
-
-function detectTargetLevel(symbol, price, orignSig, db) {
-  // Buscar preços dos alvos no sinal original
-  const signalId = orignSig.replace('WEBHOOK_', '');
-  
-  // Retornar target baseado na proximidade do preço
-  // (implementação similar à sugerida anteriormente)
-  
-  return null; // ou número do target
-}
-
-/**
- * Extrai signal de origem do clientOrderId
- */
-function extractOriginSignal(clientOrderId) {
-  if (!clientOrderId) return null;
-  
-  // Procurar padrões como "WEBHOOK_123" ou outros identificadores
-  const webhookMatch = clientOrderId.match(/WEBHOOK_(\d+)/);
-  if (webhookMatch) {
-    return `WEBHOOK_${webhookMatch[1]}`;
-  }
-  
-  // Se começar com autoclose, é liquidação
-  if (clientOrderId.startsWith('autoclose-')) {
-    return 'LIQUIDATION';
-  }
-  
-  // Se for adl_autoclose, é ADL
-  if (clientOrderId === 'adl_autoclose') {
-    return 'ADL';
-  }
-  
-  // Se começar com settlement_autoclose, é settlement
-  if (clientOrderId.startsWith('settlement_autoclose-')) {
-    return 'SETTLEMENT';
-  }
-  
-  return null;
-}
-
-// REMOVER as funções handleAccountUpdate, handleBalanceUpdates, handlePositionUpdates
-// e manter apenas as funções relacionadas a ordens
 
 async function initializeOrderHandlers(accountId) {
   try {

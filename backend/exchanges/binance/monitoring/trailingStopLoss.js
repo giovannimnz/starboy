@@ -115,7 +115,20 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
     const tp3Price = parseFloat(signal.tp3_price || 0);
     const entryPrice = parseFloat(signal.entry_price || position.preco_entrada || 0);
     const originalSlPrice = parseFloat(signal.sl_price || 0);
-    const side = (position.side || signal.side || '').toUpperCase();
+    
+    // Determinar side corretamente - se a posição tem side 'BOTH', usar o side do sinal
+    let side = (position.side || '').toUpperCase();
+    if (side === 'BOTH' || !side || !['BUY', 'SELL', 'LONG', 'SHORT'].includes(side)) {
+      side = (signal.side || '').toUpperCase();
+      console.log(`[TRAILING] ⚠️ Side da posição era '${position.side}', usando side do sinal: '${side}'`);
+    }
+    
+    // Se ainda não temos um side válido, determinar pela quantidade da posição
+    if (!side || side === 'BOTH' || !['BUY', 'SELL', 'LONG', 'SHORT'].includes(side)) {
+      const positionQty = parseFloat(position.quantidade || 0);
+      side = positionQty > 0 ? 'BUY' : 'SELL';
+      console.log(`[TRAILING] ⚠️ Determinando side pela quantidade da posição: ${positionQty} -> ${side}`);
+    }
 
     // Verificar validade dos preços
     if (isNaN(tp1Price) || tp1Price <= 0) {
@@ -124,36 +137,62 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
     }
 
     // LOG DETALHADO
-    //console.log(`[TRAILING] 📊 Posição ${position.simbolo} (${side}) - ID: ${position.id}:`);
-    //console.log(`[TRAILING]   - Preço atual: ${currentPrice}`);
-    //console.log(`[TRAILING]   - Preço entrada: ${entryPrice}`);
-    //console.log(`[TRAILING]   - TP1: ${tp1Price}`);
-    //console.log(`[TRAILING]   - TP3: ${tp3Price || 'N/A'}`);
-    //console.log(`[TRAILING]   - SL original: ${originalSlPrice || 'N/A'}`);
-    //console.log(`[TRAILING]   - Nível trailing atual: ${position.trailing_stop_level || 'ORIGINAL'}`);
-    //console.log(`[TRAILING]   - Origin signal: ${position.orign_sig || 'N/A'}`);
+    console.log(`[TRAILING] 📊 Posição ${position.simbolo} (${side}) - ID: ${position.id}:`);
+    console.log(`[TRAILING]   - Preço atual: ${currentPrice}`);
+    console.log(`[TRAILING]   - Preço entrada: ${entryPrice}`);
+    console.log(`[TRAILING]   - TP1: ${tp1Price}`);
+    console.log(`[TRAILING]   - TP3: ${tp3Price || 'N/A'}`);
+    console.log(`[TRAILING]   - SL original: ${originalSlPrice || 'N/A'}`);
+    console.log(`[TRAILING]   - Nível trailing atual: ${position.trailing_stop_level || 'ORIGINAL'}`);
+    console.log(`[TRAILING]   - Origin signal: ${position.orign_sig || 'N/A'}`);
+    console.log(`[TRAILING]   - Side final determinado: ${side}`);
+    console.log(`[TRAILING]   - Quantidade posição: ${position.quantidade}`);
 
     // DETERMINAR SE ALVOS FORAM ATINGIDOS
     let priceHitTP1 = false;
     let priceHitTP3 = false;
     
+    // Garantir que todos os valores são números para comparação correta
+    const currentPriceNum = parseFloat(currentPrice);
+    const tp1PriceNum = parseFloat(tp1Price);
+    const tp3PriceNum = parseFloat(tp3Price || 0);
+    
+    console.log(`[TRAILING] 🔢 Debug comparação:`);
+    console.log(`[TRAILING]   - currentPrice: ${currentPrice} (${typeof currentPrice}) -> ${currentPriceNum}`);
+    console.log(`[TRAILING]   - tp1Price: ${tp1Price} (${typeof tp1Price}) -> ${tp1PriceNum}`);
+    console.log(`[TRAILING]   - side: ${side}`);
+    
     if (side === 'BUY' || side === 'COMPRA' || side === 'LONG') {
-      priceHitTP1 = currentPrice >= tp1Price;
-      priceHitTP3 = tp3Price > 0 ? currentPrice >= tp3Price : false;
+      priceHitTP1 = currentPriceNum >= tp1PriceNum;
+      priceHitTP3 = tp3PriceNum > 0 ? currentPriceNum >= tp3PriceNum : false;
+      console.log(`[TRAILING] 🔍 LONG: ${currentPriceNum} >= ${tp1PriceNum} = ${priceHitTP1}`);
     } else if (side === 'SELL' || side === 'VENDA' || side === 'SHORT') {
-      priceHitTP1 = currentPrice <= tp1Price;
-      priceHitTP3 = tp3Price > 0 ? currentPrice <= tp3Price : false;
+      priceHitTP1 = currentPriceNum <= tp1PriceNum;
+      priceHitTP3 = tp3PriceNum > 0 ? currentPriceNum <= tp3PriceNum : false;
+      console.log(`[TRAILING] 🔍 SHORT: ${currentPriceNum} <= ${tp1PriceNum} = ${priceHitTP1}`);
     }
 
-    //console.log(`[TRAILING] 🎯 Verificação de gatilhos:`);
-    //console.log(`[TRAILING]   - TP1 atingido: ${priceHitTP1}`);
-    //console.log(`[TRAILING]   - TP3 atingido: ${priceHitTP3}`);
+    console.log(`[TRAILING] 🎯 Verificação de gatilhos:`);
+    console.log(`[TRAILING]   - TP1 atingido: ${priceHitTP1}`);
+    console.log(`[TRAILING]   - TP3 atingido: ${priceHitTP3}`);
 
     // REPOSICIONAMENTO PARA BREAKEVEN (APÓS TP1)
     if (priceHitTP1 && !['TP1_BREAKEVEN', 'BREAKEVEN'].includes(currentTrailingLevel)) {
-      console.log(`[TRAILING] 🚀 TP1 atingido e nível atual não é TP1_BREAKEVEN/BREAKEVEN. Movendo SL para breakeven...`);
-      await moveStopLossToBreakeven(db, position, accountId);
+      console.log(`[TRAILING] 🚀 TP1 atingido! Condições para reposicionamento:`);
+      console.log(`[TRAILING]   - priceHitTP1: ${priceHitTP1}`);
+      console.log(`[TRAILING]   - currentTrailingLevel: '${currentTrailingLevel}'`);
+      console.log(`[TRAILING]   - Não está em ['TP1_BREAKEVEN', 'BREAKEVEN']: ${!['TP1_BREAKEVEN', 'BREAKEVEN'].includes(currentTrailingLevel)}`);
+      console.log(`[TRAILING] 🚀 Movendo SL para breakeven...`);
+      
+      const result = await moveStopLossToBreakeven(db, position, accountId);
+      if (result) {
+        console.log(`[TRAILING] ✅ SL movido para breakeven com sucesso`);
+      } else {
+        console.log(`[TRAILING] ❌ Falha ao mover SL para breakeven`);
+      }
       return;
+    } else if (priceHitTP1) {
+      console.log(`[TRAILING] ⏭️ TP1 atingido, mas trailing level já é: '${currentTrailingLevel}'`);
     }
     // REPOSICIONAMENTO PARA TP1 (APÓS TP3)
     if (tp3Price > 0 && priceHitTP3 && position.trailing_stop_level !== 'TP3_TP1') {
@@ -398,6 +437,5 @@ async function moveStopLossToBreakeven(db, position, accountId) {
 module.exports = {
   checkOrderTriggers,
   cancelAllActiveStopLosses,
-  lastTrailingCheck,
   updatePositionPricesWithTrailing
 };

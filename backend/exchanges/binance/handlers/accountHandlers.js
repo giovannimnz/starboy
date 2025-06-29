@@ -1,6 +1,7 @@
 const { getDatabaseInstance, insertPosition, formatDateForMySQL } = require('../../../core/database/conexao');
 const websockets = require('../api/websocket');
 const { sendTelegramMessage, formatBalanceMessage, formatAlertMessage } = require('../telegram/telegramBot');
+const { movePositionToHistory } = require('../services/cleanup');
 
 /**
  * Processa atualizações de conta via WebSocket (ACCOUNT_UPDATE)
@@ -155,15 +156,17 @@ async function handleBalanceUpdates(connection, balances, accountId, reason, eve
           
           console.log(`[ACCOUNT] ✅ Saldo USDT atualizado: ${walletBalance.toFixed(2)} USDT (base_calc: ${novaBaseCalculo.toFixed(2)}, change: ${balanceChange.toFixed(4)}, reason: ${reason})`);
           
-          // ✅ NOTIFICAÇÃO TELEGRAM PARA MUDANÇAS SIGNIFICATIVAS
-          if (Math.abs(balanceChange) > 5 || reason === 'FUNDING_FEE' || reason === 'REALIZED_PNL' || reason === 'ORDER') {
-            try {
-              const message = formatBalanceMessage(accountId, previousBalance, walletBalance, reason, balanceChange);
+          // ✅ NOTIFICAÇÃO TELEGRAM - A FUNÇÃO formatBalanceMessage VAI DECIDIR SE ENVIA BASEADO NO LIMITE DE 0.01
+          try {
+            const message = formatBalanceMessage(accountId, previousBalance, walletBalance, reason, balanceChange);
+            
+            // ✅ SÓ ENVIA SE A MENSAGEM NÃO FOR NULL (mudança >= 0.01)
+            if (message) {
               await sendTelegramMessage(accountId, message);
               console.log(`[ACCOUNT] 📱 Notificação de saldo enviada para mudança de ${balanceChange.toFixed(4)} USDT`);
-            } catch (telegramError) {
-              console.warn(`[ACCOUNT] ⚠️ Erro ao enviar notificação de saldo:`, telegramError.message);
             }
+          } catch (telegramError) {
+            console.warn(`[ACCOUNT] ⚠️ Erro ao enviar notificação de saldo:`, telegramError.message);
           }
           
         } catch (updateError) {
@@ -201,11 +204,13 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
       const positionSide = positionData.ps || 'BOTH';
       
       console.log(`[ACCOUNT] 📊 ${symbol}: Amount=${positionAmt}, Entry=${entryPrice}, UnrealizedPnL=${unrealizedPnl.toFixed(2)}, MarginType=${marginType}`);
+      
       // Buscar posição aberta existente
       const [existingPositions] = await connection.query(
         'SELECT * FROM posicoes WHERE simbolo = ? AND status = ? AND conta_id = ?',
         [symbol, 'OPEN', accountId]
       );
+      
       if (Math.abs(positionAmt) > 0.000001) {
         if (existingPositions.length > 0) {
           // Atualizar posição existente
@@ -271,7 +276,7 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
       } else {
         // pa == 0: fechar posição existente, nunca fazer insert
         if (existingPositions.length > 0) {
-          const positionId = existingPositions[0].id;
+          const positionId = existingPositions[0].id; // ✅ DEFINIR AQUI
           // Verificar colunas para atualização final
           const [columns] = await connection.query(`SHOW COLUMNS FROM posicoes`);
           const existingColumns = columns.map(col => col.Field);
@@ -296,8 +301,46 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
           closeValues.push(positionId);
           await connection.query(closeQuery, closeValues);
           console.log(`[ACCOUNT_UPDATE] ✅ Posição ${symbol} marcada como FECHADA com dados completos do webhook`);
-          // NOVO: mover para histórico e cancelar ordens pendentes
-          const { movePositionToHistory } = require('../services/cleanup');
+
+          // === BUSCAR E SOMAR TRADES DA POSIÇÃO FECHADA ===
+          try {
+            const [posRows] = await connection.query('SELECT * FROM posicoes WHERE id = ?', [positionId]);
+            if (posRows.length > 0) {
+              const pos = posRows[0];
+              const dataAbertura = new Date(pos.data_hora_abertura);
+              const dataFechamento = new Date(pos.data_hora_fechamento);
+              
+              if (!isNaN(dataAbertura) && !isNaN(dataFechamento)) {
+                const startTime = dataAbertura.getTime() - 2 * 60 * 1000;
+                const endTime = dataFechamento.getTime();
+                
+                const { getUserTrades } = require('../api/rest');
+                const trades = await getUserTrades(accountId, symbol, { startTime, endTime });
+                
+                let totalCommission = 0;
+                let totalRealized = 0;
+                if (Array.isArray(trades)) {
+                  for (const t of trades) {
+                    const commission = parseFloat(t.commission || '0');
+                    const realized = parseFloat(t.realizedPnl || '0');
+                    if (!isNaN(commission)) totalCommission += commission;
+                    if (!isNaN(realized)) totalRealized += realized;
+                  }
+                }
+                
+                const liquidPnl = totalRealized + totalCommission;
+                await connection.query(
+                  'UPDATE posicoes SET total_realized = ?, total_commission = ?, liquid_pnl = ? WHERE id = ?',
+                  [totalRealized, totalCommission, liquidPnl, positionId]
+                );
+                console.log(`[ACCOUNT_UPDATE] 🧮 Comissão/Realizado da posição fechada ${symbol}: realized=${totalRealized}, commission=${totalCommission}, liquid_pnl=${liquidPnl}`);
+              }
+            }
+          } catch (tradeSumError) {
+            console.error(`[ACCOUNT_UPDATE] ❌ Erro ao calcular comissão/realizado dos trades da posição fechada:`, tradeSumError.message);
+          }
+
+          // ✅ MOVER PARA HISTÓRICO COM positionId DEFINIDO
           try {
             await movePositionToHistory(connection, positionId, 'CLOSED', reason, accountId);
           } catch (moveError) {

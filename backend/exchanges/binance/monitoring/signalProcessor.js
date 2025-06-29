@@ -214,7 +214,7 @@ async function checkSignalTriggers(symbol, currentPrice, db, accountId) {
         if (side === 'BUY' || side === 'COMPRA') {
           stopLossHit = currentPrice <= slPrice;
         } else if (side === 'SELL' || side === 'VENDA') {
-          stopLossHit = currentPrice >= slPrice;
+          stopLossHit = currentPrice > slPrice;
         }
       }
 
@@ -222,7 +222,7 @@ async function checkSignalTriggers(symbol, currentPrice, db, accountId) {
       let entryTriggered = false;
       if (entryPrice > 0) {
         if (side === 'BUY' || side === 'COMPRA') {
-          entryTriggered = currentPrice >= entryPrice;
+          entryTriggered = currentPrice > entryPrice;
         } else if (side === 'SELL' || side === 'VENDA') {
           entryTriggered = currentPrice <= entryPrice;
         }
@@ -664,7 +664,7 @@ function isStopLossAlreadyHit(signal, currentPrice) {
   if (side === 'BUY' || side === 'COMPRA') {
     return currentPrice <= slPrice;
   } else if (side === 'SELL' || side === 'VENDA') {
-    return currentPrice >= slPrice;
+    return currentPrice > slPrice;
   }
   
   return false;
@@ -767,7 +767,7 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
       let entryTriggered = false;
       if (entryPrice > 0) {
         if (side === 'BUY' || side === 'COMPRA') {
-          entryTriggered = currentPrice >= entryPrice;
+          entryTriggered = currentPrice > entryPrice;
         } else if (side === 'SELL' || side === 'VENDA') {
           entryTriggered = currentPrice <= entryPrice;
         }
