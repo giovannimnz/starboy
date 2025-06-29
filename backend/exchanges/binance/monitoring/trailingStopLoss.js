@@ -120,14 +120,14 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
     let side = (position.side || '').toUpperCase();
     if (side === 'BOTH' || !side || !['BUY', 'SELL', 'LONG', 'SHORT'].includes(side)) {
       side = (signal.side || '').toUpperCase();
-      console.log(`[TRAILING] ⚠️ Side da posição era '${position.side}', usando side do sinal: '${side}'`);
+      //console.log(`[TRAILING] ⚠️ Side da posição era '${position.side}', usando side do sinal: '${side}'`);
     }
     
     // Se ainda não temos um side válido, determinar pela quantidade da posição
     if (!side || side === 'BOTH' || !['BUY', 'SELL', 'LONG', 'SHORT'].includes(side)) {
       const positionQty = parseFloat(position.quantidade || 0);
       side = positionQty > 0 ? 'BUY' : 'SELL';
-      console.log(`[TRAILING] ⚠️ Determinando side pela quantidade da posição: ${positionQty} -> ${side}`);
+      //console.log(`[TRAILING] ⚠️ Determinando side pela quantidade da posição: ${positionQty} -> ${side}`);
     }
 
     // Verificar validade dos preços
@@ -137,16 +137,16 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
     }
 
     // LOG DETALHADO
-    console.log(`[TRAILING] 📊 Posição ${position.simbolo} (${side}) - ID: ${position.id}:`);
-    console.log(`[TRAILING]   - Preço atual: ${currentPrice}`);
-    console.log(`[TRAILING]   - Preço entrada: ${entryPrice}`);
-    console.log(`[TRAILING]   - TP1: ${tp1Price}`);
-    console.log(`[TRAILING]   - TP3: ${tp3Price || 'N/A'}`);
-    console.log(`[TRAILING]   - SL original: ${originalSlPrice || 'N/A'}`);
-    console.log(`[TRAILING]   - Nível trailing atual: ${position.trailing_stop_level || 'ORIGINAL'}`);
-    console.log(`[TRAILING]   - Origin signal: ${position.orign_sig || 'N/A'}`);
-    console.log(`[TRAILING]   - Side final determinado: ${side}`);
-    console.log(`[TRAILING]   - Quantidade posição: ${position.quantidade}`);
+    //console.log(`[TRAILING] 📊 Posição ${position.simbolo} (${side}) - ID: ${position.id}:`);
+    //console.log(`[TRAILING]   - Preço atual: ${currentPrice}`);
+    //console.log(`[TRAILING]   - Preço entrada: ${entryPrice}`);
+    //console.log(`[TRAILING]   - TP1: ${tp1Price}`);
+    //console.log(`[TRAILING]   - TP3: ${tp3Price || 'N/A'}`);
+    //console.log(`[TRAILING]   - SL original: ${originalSlPrice || 'N/A'}`);
+    //console.log(`[TRAILING]   - Nível trailing atual: ${position.trailing_stop_level || 'ORIGINAL'}`);
+    //console.log(`[TRAILING]   - Origin signal: ${position.orign_sig || 'N/A'}`);
+    //console.log(`[TRAILING]   - Side final determinado: ${side}`);
+    //console.log(`[TRAILING]   - Quantidade posição: ${position.quantidade}`);
 
     // DETERMINAR SE ALVOS FORAM ATINGIDOS
     let priceHitTP1 = false;
@@ -157,24 +157,24 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
     const tp1PriceNum = parseFloat(tp1Price);
     const tp3PriceNum = parseFloat(tp3Price || 0);
     
-    console.log(`[TRAILING] 🔢 Debug comparação:`);
-    console.log(`[TRAILING]   - currentPrice: ${currentPrice} (${typeof currentPrice}) -> ${currentPriceNum}`);
-    console.log(`[TRAILING]   - tp1Price: ${tp1Price} (${typeof tp1Price}) -> ${tp1PriceNum}`);
-    console.log(`[TRAILING]   - side: ${side}`);
+    //console.log(`[TRAILING] 🔢 Debug comparação:`);
+    //console.log(`[TRAILING]   - currentPrice: ${currentPrice} (${typeof currentPrice}) -> ${currentPriceNum}`);
+    //console.log(`[TRAILING]   - tp1Price: ${tp1Price} (${typeof tp1Price}) -> ${tp1PriceNum}`);
+    //console.log(`[TRAILING]   - side: ${side}`);
     
     if (side === 'BUY' || side === 'COMPRA' || side === 'LONG') {
       priceHitTP1 = currentPriceNum >= tp1PriceNum;
       priceHitTP3 = tp3PriceNum > 0 ? currentPriceNum >= tp3PriceNum : false;
-      console.log(`[TRAILING] 🔍 LONG: ${currentPriceNum} >= ${tp1PriceNum} = ${priceHitTP1}`);
+      //console.log(`[TRAILING] 🔍 LONG: ${currentPriceNum} >= ${tp1PriceNum} = ${priceHitTP1}`);
     } else if (side === 'SELL' || side === 'VENDA' || side === 'SHORT') {
       priceHitTP1 = currentPriceNum <= tp1PriceNum;
       priceHitTP3 = tp3PriceNum > 0 ? currentPriceNum <= tp3PriceNum : false;
-      console.log(`[TRAILING] 🔍 SHORT: ${currentPriceNum} <= ${tp1PriceNum} = ${priceHitTP1}`);
+      //console.log(`[TRAILING] 🔍 SHORT: ${currentPriceNum} <= ${tp1PriceNum} = ${priceHitTP1}`);
     }
 
-    console.log(`[TRAILING] 🎯 Verificação de gatilhos:`);
-    console.log(`[TRAILING]   - TP1 atingido: ${priceHitTP1}`);
-    console.log(`[TRAILING]   - TP3 atingido: ${priceHitTP3}`);
+    //console.log(`[TRAILING] 🎯 Verificação de gatilhos:`);
+    //console.log(`[TRAILING]   - TP1 atingido: ${priceHitTP1}`);
+    //console.log(`[TRAILING]   - TP3 atingido: ${priceHitTP3}`);
 
     // REPOSICIONAMENTO PARA BREAKEVEN (APÓS TP1)
     if (priceHitTP1 && !['TP1_BREAKEVEN', 'BREAKEVEN'].includes(currentTrailingLevel)) {
