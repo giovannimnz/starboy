@@ -266,11 +266,46 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCou
 
   let connection;
   try {
+    console.log(`[ORDER_AUTO_MOVE] 🔄 Iniciando migração da ordem ${orderId} com status ${newStatus}...`);
+    
     const db = await getDatabaseInstance();
     connection = await db.getConnection();
     await connection.beginTransaction();
 
-    // 1. Buscar a ordem completa da tabela ativa
+    // 1. Verificar se a ordem já foi movida para o histórico
+    const [historyCheck] = await connection.query(
+      'SELECT id FROM ordens_fechadas WHERE id_externo = ? AND conta_id = ?',
+      [orderId, accountId]
+    );
+    
+    if (historyCheck.length > 0) {
+      console.log(`[ORDER_AUTO_MOVE] ℹ️ Ordem ${orderId} já existe no histórico - verificando se ainda está na tabela ativa...`);
+      
+      // Verificar se ainda está na tabela ativa (situação do bug)
+      const [activeCheck] = await connection.query(
+        'SELECT id FROM ordens WHERE id_externo = ? AND conta_id = ?',
+        [orderId, accountId]
+      );
+      
+      if (activeCheck.length > 0) {
+        console.log(`[ORDER_AUTO_MOVE] 🔧 CORREÇÃO: Ordem ${orderId} duplicada - removendo da tabela ativa...`);
+        
+        const [deleteResult] = await connection.query(
+          'DELETE FROM ordens WHERE id_externo = ? AND conta_id = ?',
+          [orderId, accountId]
+        );
+        
+        await connection.commit();
+        console.log(`[ORDER_AUTO_MOVE] ✅ Ordem duplicada ${orderId} removida (${deleteResult.affectedRows} linha(s))`);
+        return true;
+      } else {
+        console.log(`[ORDER_AUTO_MOVE] ✅ Ordem ${orderId} já está corretamente no histórico`);
+        await connection.rollback();
+        return true;
+      }
+    }
+
+    // 2. Buscar a ordem completa da tabela ativa
     const [orderResult] = await connection.query(
       'SELECT * FROM ordens WHERE id_externo = ? AND conta_id = ?',
       [orderId, accountId]
@@ -284,7 +319,7 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCou
     
     const orderToMove = orderResult[0];
 
-    // 2. Preparar dados para inserção na tabela de histórico
+    // 3. Preparar dados para inserção na tabela de histórico
     const closedOrderData = {
       ...orderToMove, // Copia todos os campos da ordem original
       id_original: orderToMove.id,
@@ -295,11 +330,11 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCou
     };
     delete closedOrderData.id;
 
-    // 3. Obter colunas da tabela de destino
+    // 4. Obter colunas da tabela de destino
     const [destColumnsResult] = await connection.query('SHOW COLUMNS FROM ordens_fechadas');
     const destColumns = destColumnsResult.map(col => col.Field);
 
-    // 4. Filtrar dados para inserir apenas colunas existentes
+    // 5. Filtrar dados para inserir apenas colunas existentes
     const finalDataToInsert = {};
     for (const key in closedOrderData) {
       if (destColumns.includes(key)) {
@@ -307,7 +342,7 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCou
       }
     }
 
-    // 5. Inserir na tabela de histórico
+    // 6. Inserir na tabela de histórico
     const columns = Object.keys(finalDataToInsert);
     const placeholders = columns.map(() => '?').join(', ');
     const values = Object.values(finalDataToInsert);
@@ -316,12 +351,39 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCou
       `INSERT INTO ordens_fechadas (${columns.join(', ')}) VALUES (${placeholders})`,
       values
     );
+    
+    console.log(`[ORDER_AUTO_MOVE] 📚 Ordem ${orderId} inserida no histórico com sucesso`);
 
-    // 6. Remover da tabela ativa
-    await connection.query('DELETE FROM ordens WHERE id = ?', [orderToMove.id]);
+    // 7. Remover TODAS as cópias da ordem da tabela ativa (corrigir duplicatas)
+    console.log(`[ORDER_AUTO_MOVE] 🗑️ Deletando TODAS as cópias da ordem ${orderId} da tabela ativa...`);
+    
+    const [deleteResult] = await connection.query(
+      'DELETE FROM ordens WHERE id_externo = ? AND conta_id = ?', 
+      [orderId, accountId]
+    );
+    
+    if (deleteResult.affectedRows === 0) {
+      console.error(`[ORDER_AUTO_MOVE] ❌ FALHA: Nenhuma linha foi deletada para ordem ${orderId}`);
+      await connection.rollback();
+      return false;
+    }
+    
+    console.log(`[ORDER_AUTO_MOVE] ✅ ${deleteResult.affectedRows} cópia(s) da ordem ${orderId} deletada(s) da tabela ativa`);
 
     await connection.commit();
-    console.log(`[ORDER_AUTO_MOVE] ✅ Ordem ${orderId} movida para ordens_fechadas.`);
+    
+    // 8. Verificação final: confirmar que a ordem foi realmente removida
+    const [verifyResult] = await connection.query(
+      'SELECT COUNT(*) as count FROM ordens WHERE id_externo = ? AND conta_id = ?', 
+      [orderId, accountId]
+    );
+    
+    if (verifyResult[0].count > 0) {
+      console.error(`[ORDER_AUTO_MOVE] ❌ ERRO CRÍTICO: Ainda existem ${verifyResult[0].count} cópia(s) da ordem ${orderId} na tabela ativa após deleção!`);
+      return false;
+    }
+    
+    console.log(`[ORDER_AUTO_MOVE] ✅ Ordem ${orderId} movida e deletada com sucesso - verificação final confirmada`);
     return true;
 
   } catch (error) {
@@ -481,19 +543,19 @@ async function handleOrderUpdate(messageOrAccountId, orderDataOrDb = null, db = 
       const totalValue = executedQty * avgPrice;
       
       console.log(`[ORDER] 💰 Ordem FILLED processada:`);
-      console.log(`[ORDER]   - ID: ${orderId}`);
-      console.log(`[ORDER]   - Símbolo: ${symbol}`);
-      console.log(`[ORDER]   - Quantidade: ${executedQty}`);
-      console.log(`[ORDER]   - Preço médio: ${avgPrice}`);
-      console.log(`[ORDER]   - Valor total: ${totalValue.toFixed(2)} USDT`);
+      //console.log(`[ORDER]   - ID: ${orderId}`);
+      //console.log(`[ORDER]   - Símbolo: ${symbol}`);
+      //console.log(`[ORDER]   - Quantidade: ${executedQty}`);
+      //console.log(`[ORDER]   - Preço médio: ${avgPrice}`);
+      //console.log(`[ORDER]   - Valor total: ${totalValue.toFixed(2)} USDT`);
     } else if (orderStatus === 'NEW') {
       console.log(`[ORDER] ✅ Nova ordem registrada:`);
-      console.log(`[ORDER]   - ID: ${orderId}`);
-      console.log(`[ORDER]   - Símbolo: ${symbol}`);
-      console.log(`[ORDER]   - Tipo: ${orderData.o} (${orderData.R ? 'REDUCE_ONLY' : 'NORMAL'})`);
-      console.log(`[ORDER]   - Side: ${orderData.S}`);
-      console.log(`[ORDER]   - Quantidade: ${orderData.q}`);
-      console.log(`[ORDER]   - Preço: ${orderData.p}`);
+      //console.log(`[ORDER]   - ID: ${orderId}`);
+      //console.log(`[ORDER]   - Símbolo: ${symbol}`);
+      //console.log(`[ORDER]   - Tipo: ${orderData.o} (${orderData.R ? 'REDUCE_ONLY' : 'NORMAL'})`);
+      //console.log(`[ORDER]   - Side: ${orderData.S}`);
+      //console.log(`[ORDER]   - Quantidade: ${orderData.q}`);
+      //console.log(`[ORDER]   - Preço: ${orderData.p}`);
     }
 
   } catch (error) {
@@ -792,13 +854,13 @@ function registerOrderHandlers(accountId) {
     // ✅ CRIAR HANDLER ROBUSTO QUE ACEITA MÚLTIPLOS FORMATOS
     const robustOrderHandler = async (messageOrOrder, db) => {
       try {
-        console.log(`[ORDER-HANDLERS] 📨 Mensagem recebida para conta ${accountId}:`, {
+      /*  console.log(`[ORDER-HANDLERS] 📨 Mensagem recebida para conta ${accountId}:`, {
           type: typeof messageOrOrder,
           hasE: messageOrOrder?.e,
           hasO: messageOrOrder?.o,
           hasI: messageOrOrder?.i,
           hasS: messageOrOrder?.s
-        });
+        });*/
         
         // ✅ CHAMAR FUNÇÃO UNIFICADA
         await handleOrderUpdate(messageOrOrder, accountId, db);
@@ -882,6 +944,62 @@ async function checkPositionClosureAfterOrderExecution(orderId, accountId) {
   } catch (error) {
     console.error(`[ORDER_CLOSURE] ❌ Erro ao verificar fechamento de posição:`, error.message);
     return false;
+  }
+}
+
+/**
+ * ✅ FUNÇÃO PARA LIMPAR ORDENS ÓRFÃS QUE JÁ FORAM MOVIDAS PARA O HISTÓRICO
+ * Remove ordens que existem na tabela ativa mas já estão no histórico (duplicatas)
+ */
+async function cleanupOrphanOrders(accountId) {
+  let connection;
+  try {
+    console.log(`[CLEANUP_ORDERS] 🧹 Iniciando limpeza de ordens órfãs para conta ${accountId}...`);
+    
+    const db = await getDatabaseInstance();
+    connection = await db.getConnection();
+    
+    // Buscar ordens que estão tanto na tabela ativa quanto no histórico
+    const [duplicateOrders] = await connection.query(`
+      SELECT o.id, o.id_externo, o.simbolo, o.status
+      FROM ordens o
+      INNER JOIN ordens_fechadas oh ON o.id_externo = oh.id_externo AND o.conta_id = oh.conta_id
+      WHERE o.conta_id = ?
+    `, [accountId]);
+    
+    if (duplicateOrders.length === 0) {
+      console.log(`[CLEANUP_ORDERS] ✅ Nenhuma ordem órfã encontrada para conta ${accountId}`);
+      return 0;
+    }
+    
+    console.log(`[CLEANUP_ORDERS] 🔍 Encontradas ${duplicateOrders.length} ordens órfãs para limpeza`);
+    
+    let cleanedCount = 0;
+    
+    for (const order of duplicateOrders) {
+      try {
+        const [deleteResult] = await connection.query(
+          'DELETE FROM ordens WHERE id = ?', 
+          [order.id]
+        );
+        
+        if (deleteResult.affectedRows > 0) {
+          console.log(`[CLEANUP_ORDERS] 🗑️ Ordem órfã removida: ${order.id_externo} (${order.simbolo})`);
+          cleanedCount++;
+        }
+      } catch (deleteError) {
+        console.error(`[CLEANUP_ORDERS] ❌ Erro ao remover ordem órfã ${order.id_externo}:`, deleteError.message);
+      }
+    }
+    
+    console.log(`[CLEANUP_ORDERS] ✅ Limpeza concluída: ${cleanedCount} ordens órfãs removidas`);
+    return cleanedCount;
+    
+  } catch (error) {
+    console.error(`[CLEANUP_ORDERS] ❌ Erro na limpeza de ordens órfãs:`, error.message);
+    return 0;
+  } finally {
+    if (connection) connection.release();
   }
 }
 
@@ -1034,13 +1152,13 @@ function registerOrderHandlers(accountId) {
     // ✅ CRIAR HANDLER ROBUSTO QUE ACEITA MÚLTIPLOS FORMATOS
     const robustOrderHandler = async (messageOrOrder, db) => {
       try {
-        console.log(`[ORDER-HANDLERS] 📨 Mensagem recebida para conta ${accountId}:`, {
+        /*console.log(`[ORDER-HANDLERS] 📨 Mensagem recebida para conta ${accountId}:`, {
           type: typeof messageOrOrder,
           hasE: messageOrOrder?.e,
           hasO: messageOrOrder?.o,
           hasI: messageOrOrder?.i,
           hasS: messageOrOrder?.s
-        });
+        });*/
         
         // ✅ CHAMAR FUNÇÃO UNIFICADA
         await handleOrderUpdate(messageOrOrder, accountId, db);
@@ -1109,5 +1227,6 @@ module.exports = {
   initializeOrderHandlers,
   handleTradeExecution,
   checkPositionClosureAfterOrderExecution,
-  autoMoveOrderOnCompletion
+  autoMoveOrderOnCompletion,
+  cleanupOrphanOrders
 };

@@ -311,6 +311,9 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
               const dataFechamento = new Date(pos.data_hora_fechamento);
               
               if (!isNaN(dataAbertura) && !isNaN(dataFechamento)) {
+                // Aguarda 30 segundos para garantir que todos os trades estejam disponíveis na corretora
+                console.log(`[ACCOUNT_UPDATE] ⏳ Aguardando 30 segundos antes de buscar trades para cálculo do PnL...`);
+                await new Promise(res => setTimeout(res, 30000));
                 const startTime = dataAbertura.getTime() - 2 * 60 * 1000;
                 const endTime = dataFechamento.getTime();
                 
@@ -319,6 +322,20 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
                 
                 let totalCommission = 0;
                 let totalRealized = 0;
+                // LOGAR startTime e endTime formatados
+                const startTimeStr = new Date(startTime).toISOString();
+                const endTimeStr = new Date(endTime).toISOString();
+                const consultaStr = new Date().toISOString();
+                console.log(`[ACCOUNT_UPDATE] [${accountId}] ⏱️ Intervalo de busca de trades: startTime=${startTime} (${startTimeStr}), endTime=${endTime} (${endTimeStr}), consulta=${consultaStr}`);
+                // LOGAR todos os trades retornados (completo)
+                if (Array.isArray(trades)) {
+                  console.log(`[ACCOUNT_UPDATE] [${accountId}] 🧾 Trades retornados (${trades.length}):`);
+                  trades.forEach((t, idx) => {
+                    console.log(`[ACCOUNT_UPDATE] [${accountId}]   #${idx + 1}:`, JSON.stringify(t));
+                  });
+                } else {
+                  console.log(`[ACCOUNT_UPDATE] [${accountId}] Nenhum trade retornado para o período.`);
+                }
                 if (Array.isArray(trades)) {
                   for (const t of trades) {
                     const commission = parseFloat(t.commission || '0');
@@ -327,13 +344,17 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
                     if (!isNaN(realized)) totalRealized += realized;
                   }
                 }
-                
-                const liquidPnl = totalRealized + totalCommission;
+                // LOGS DETALHADOS DO CÁLCULO
+                console.log(`[ACCOUNT_UPDATE] 🧮 Trades da posição fechada ${symbol}:`);
+                console.log(`  - totalRealized (soma realizedPnl):`, totalRealized);
+                console.log(`  - totalCommission (soma commission):`, totalCommission);
+                const liquidPnl = totalRealized - totalCommission;
+                console.log(`  - liquid_pnl (totalRealized - totalCommission):`, liquidPnl);
                 await connection.query(
                   'UPDATE posicoes SET total_realized = ?, total_commission = ?, liquid_pnl = ? WHERE id = ?',
                   [totalRealized, totalCommission, liquidPnl, positionId]
                 );
-                console.log(`[ACCOUNT_UPDATE] 🧮 Comissão/Realizado da posição fechada ${symbol}: realized=${totalRealized}, commission=${totalCommission}, liquid_pnl=${liquidPnl}`);
+                console.log(`[ACCOUNT_UPDATE] 📝 UPDATE posicoes SET total_realized = ${totalRealized}, total_commission = ${totalCommission}, liquid_pnl = ${liquidPnl} WHERE id = ${positionId}`);
               }
             }
           } catch (tradeSumError) {

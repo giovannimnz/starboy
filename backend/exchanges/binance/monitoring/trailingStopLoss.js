@@ -178,11 +178,11 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
 
     // REPOSICIONAMENTO PARA BREAKEVEN (APÓS TP1)
     if (priceHitTP1 && !['TP1_BREAKEVEN', 'BREAKEVEN'].includes(currentTrailingLevel)) {
-      console.log(`[TRAILING] 🚀 TP1 atingido! Condições para reposicionamento:`);
-      console.log(`[TRAILING]   - priceHitTP1: ${priceHitTP1}`);
-      console.log(`[TRAILING]   - currentTrailingLevel: '${currentTrailingLevel}'`);
-      console.log(`[TRAILING]   - Não está em ['TP1_BREAKEVEN', 'BREAKEVEN']: ${!['TP1_BREAKEVEN', 'BREAKEVEN'].includes(currentTrailingLevel)}`);
-      console.log(`[TRAILING] 🚀 Movendo SL para breakeven...`);
+      //console.log(`[TRAILING] 🚀 TP1 atingido! Condições para reposicionamento:`);
+      //console.log(`[TRAILING]   - priceHitTP1: ${priceHitTP1}`);
+      //console.log(`[TRAILING]   - currentTrailingLevel: '${currentTrailingLevel}'`);
+      //console.log(`[TRAILING]   - Não está em ['TP1_BREAKEVEN', 'BREAKEVEN']: ${!['TP1_BREAKEVEN', 'BREAKEVEN'].includes(currentTrailingLevel)}`);
+      //console.log(`[TRAILING] 🚀 Movendo SL para breakeven...`);
       
       const result = await moveStopLossToBreakeven(db, position, accountId);
       if (result) {
@@ -192,15 +192,24 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
       }
       return;
     } else if (priceHitTP1) {
-      console.log(`[TRAILING] ⏭️ TP1 atingido, mas trailing level já é: '${currentTrailingLevel}'`);
+      //console.log(`[TRAILING] ⏭️ TP1 atingido, mas trailing level já é: '${currentTrailingLevel}'`);
     }
     // REPOSICIONAMENTO PARA TP1 (APÓS TP3)
-    if (tp3Price > 0 && priceHitTP3 && position.trailing_stop_level !== 'TP3_TP1') {
-      // Aqui você pode implementar lógica para mover o SL para TP1, se desejar
-      // Exemplo: await moveStopLossToTP1(db, position, tp1Price, accountId);
-      console.log(`[TRAILING] 🚀 TP3 atingido e nível atual não é TP3_TP1. (Implementar lógica de trailing para TP3→TP1 se desejado)`);
-      // await moveStopLossToTP1(db, position, tp1Price, accountId);
+    if (
+      tp3Price > 0 &&
+      priceHitTP3 &&
+      !['TP3_TP1'].includes(currentTrailingLevel) // só move se ainda não está nesse nível
+    ) {
+      const result = await moveStopLossToTP1(db, position, tp1Price, accountId);
+      if (result) {
+        console.log(`[TRAILING] ✅ SL movido para TP1 com sucesso após TP3`);
+      } else {
+        console.log(`[TRAILING] ❌ Falha ao mover SL para TP1 após TP3`);
+      }
       return;
+    } else if (tp3Price > 0 && priceHitTP3) {
+      // TP3 atingido, mas já está no nível TP3_TP1
+      //console.log(`[TRAILING] ⏭️ TP3 atingido, mas trailing level já é: '${currentTrailingLevel}'`);
     }
   } catch (error) {
     const positionIdError = position && position.id ? position.id : 'desconhecida';
@@ -352,9 +361,10 @@ async function cancelStopLossOrders(db, positionId, accountId) {
 async function createBreakevenStopLoss(db, position, breakevenPrice, accountId) {
   try {
     const symbol = position.simbolo;
-    const side = position.side === 'BUY' ? 'SELL' : 'BUY';
+    // Corrigir side para o oposto, aceitando todos os aliases
+    const side = getOppositeSide(position.side);
 
-    console.log(`[TRAILING] 🎯 Criando SL breakeven: ${breakevenPrice} para ${symbol}`);
+    console.log(`[TRAILING] 🎯 Criando SL breakeven: ${breakevenPrice} para ${symbol} (side SL: ${side}, side posição: ${position.side})`);
 
     // ✅ USAR closePosition=true (RECOMENDADO)
     const response = await newStopOrder(
@@ -401,9 +411,15 @@ async function createBreakevenStopLoss(db, position, breakevenPrice, accountId) 
 async function moveStopLossToBreakeven(db, position, accountId) {
   try {
     const positionId = position.id;
-    const breakevenPrice = parseFloat(position.preco_entrada);
 
-    console.log(`[TRAILING] 🎯 Movendo SL para breakeven para ${position.simbolo} (Posição ID: ${positionId})`);
+    // Buscar entry_price do último webhook_signals relacionado à posição
+    const [signals] = await db.query(
+      `SELECT entry_price FROM webhook_signals WHERE position_id = ? ORDER BY created_at DESC LIMIT 1`,
+      [positionId]
+    );
+    const breakevenPrice = signals.length > 0 ? parseFloat(signals[0].entry_price) : parseFloat(position.preco_entrada);
+
+    console.log(`[TRAILING] 🎯 Movendo SL para breakeven para ${position.simbolo} (Posição ID: ${positionId}) usando entry_price do sinal: ${breakevenPrice}`);
 
     // ✅ 1. CANCELAR SLS EXISTENTES COM accountId CORRETO
     const canceledCount = await cancelStopLossOrders(db, positionId, accountId);
@@ -432,6 +448,66 @@ async function moveStopLossToBreakeven(db, position, accountId) {
     console.error(`[TRAILING] ❌ Erro ao mover SL para breakeven:`, error.message);
     return false;
   }
+}
+
+/**
+ * Move o Stop Loss para o TP1 após atingir o TP3
+ */
+async function moveStopLossToTP1(db, position, tp1Price, accountId) {
+  try {
+    const positionId = position.id;
+    const symbol = position.simbolo;
+    // Cancelar SLs existentes
+    const canceledCount = await cancelStopLossOrders(db, positionId, accountId);
+    if (canceledCount === 0) {
+      console.warn(`[TRAILING] ⚠️ Nenhuma ordem SL foi cancelada para TP1`);
+    }
+    // Aguarda um pouco
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    // Cria novo SL no TP1
+    const side = getOppositeSide(position.side);
+    const response = await newStopOrder(
+      accountId,
+      symbol,
+      null, // quantity = null para closePosition
+      side,
+      tp1Price,
+      null,
+      false,
+      true,
+      'STOP_MARKET'
+    );
+    const orderId = response?.orderId;
+    if (orderId) {
+      console.log(`[TRAILING] ✅ SL reposicionado para TP1: ${orderId} @ ${tp1Price}`);
+      // Atualiza nível de trailing
+      await db.query(`
+        UPDATE posicoes 
+        SET trailing_stop_level = 'TP3_TP1',
+            data_hora_ultima_atualizacao = NOW()
+        WHERE id = ?
+      `, [positionId]);
+      return true;
+    } else {
+      console.error(`[TRAILING] ❌ Falha ao criar SL no TP1:`, response);
+      return false;
+    }
+  } catch (error) {
+    console.error(`[TRAILING] ❌ Erro ao mover SL para TP1:`, error.message);
+    return false;
+  }
+}
+
+/**
+ * Utilitário para inverter o side da posição para o stop loss
+ * Aceita aliases: BUY, LONG, COMPRA → SELL | SELL, SHORT, VENDA → BUY
+ */
+function getOppositeSide(side) {
+  if (!side) return 'SELL'; // fallback seguro
+  const s = side.toUpperCase();
+  if (['BUY', 'LONG', 'COMPRA'].includes(s)) return 'SELL';
+  if (['SELL', 'SHORT', 'VENDA'].includes(s)) return 'BUY';
+  return 'SELL'; // fallback
 }
 
 module.exports = {

@@ -707,8 +707,70 @@ async function startPriceMonitoringInline(accountId) {
       }
     });
 
-    // ✅ REMOVIDO: Job de limpeza de posições CLOSED (movido para inicialização)
-    // accountJobs.cleanupClosedPositions = schedule.scheduleJob(...) - REMOVIDO
+    // ✅ JOB DE LIMPEZA AVANÇADA A CADA 2 MINUTOS
+    accountJobs.advancedCleanup = schedule.scheduleJob('*/2 * * * *', async () => {
+      try {
+        // ✅ SINCRONIZAR POSIÇÕES E ORDENS PRIMEIRO
+        await syncPositionsWithExchange(accountId);
+        await syncOrdersWithExchange(accountId);
+
+        // ✅ NOVO: LIMPEZA DE POSIÇÕES FECHADAS (movido do job agendado)
+        console.log(`[MONITOR] 📚 Verificando posições CLOSED para movimentação...`);
+        try {
+          const db = await getDatabaseInstance();
+          // ✅ Buscar posições CLOSED para mover
+          const [closedPositions] = await db.query(`
+            SELECT id, simbolo, status, data_hora_fechamento, observacoes 
+            FROM posicoes 
+            WHERE status = 'CLOSED' AND conta_id = ?
+          `, [accountId]);
+          if (closedPositions.length > 0) {
+            console.log(`[MONITOR] 📚 Movendo ${closedPositions.length} posições CLOSED para histórico...`);
+            for (const position of closedPositions) {
+              try {
+                const { movePositionToHistory } = require('../services/cleanup');
+                const moved = await movePositionToHistory(
+                  db,
+                  position.id,
+                  'CLOSED',
+                  position.observacoes || 'Auto-movida pelo agendador',
+                  accountId
+                );
+                if (moved) {
+                  console.log(`[MONITOR] ✅ Posição ${position.simbolo} movida para histórico`);
+                }
+              } catch (moveError) {
+                console.error(`[MONITOR] ❌ Erro ao mover posição ${position.simbolo}:`, moveError.message);
+              }
+            }
+          } else {
+            console.log(`[MONITOR] ℹ️ Nenhuma posição CLOSED encontrada para movimentação`);
+          }
+        } catch (cleanupClosedError) {
+          console.error(`[MONITOR] ⚠️ Erro na limpeza de posições CLOSED:`, cleanupClosedError.message);
+        }
+
+        // ✅ LIMPEZA SIMPLIFICADA DE ORDENS ÓRFÃS (Nova versão)
+        console.log(`[MONITOR] 🔍 Verificando ordens órfãs para conta ${accountId}...`);
+        const orphanResult = await cancelOrphanOrders(accountId);
+        if (orphanResult > 0) {
+          console.log(`[MONITOR] ✅ ${orphanResult} ordens órfãs processadas para conta ${accountId}`);
+        } else {
+          console.log(`[MONITOR] ✅ Nenhuma ordem órfã encontrada para conta ${accountId}`);
+        }
+        // ✅ MOVER ORDENS CANCELED PARA HISTÓRICO
+        const movedOrders = await moveOrdersToHistory(accountId);
+        if (movedOrders > 0) {
+          console.log(`[MONITOR] 📚 ${movedOrders} ordens movidas para histórico para conta ${accountId}`);
+        }
+        // ✅ LIMPEZA DE SINAIS ÓRFÃOS (mantém como estava)
+        console.log(`[MONITOR] 🗑️ Limpando sinais órfãos...`);
+        await cleanupOrphanSignals(accountId);
+        console.log(`[MONITOR] ✅ Limpeza avançada concluída para conta ${accountId}`);
+      } catch (cleanupError) {
+        console.error(`[MONITOR] ⚠️ Erro durante limpeza avançada para conta ${accountId}:`, cleanupError.message);
+      }
+    });
 
     // ✅ Job de log de status a cada 1 minuto
     accountJobs.logStatus = schedule.scheduleJob('*/1 * * * *', async () => {

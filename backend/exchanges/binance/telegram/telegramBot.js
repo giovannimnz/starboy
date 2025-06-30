@@ -11,6 +11,11 @@ async function initializeTelegramBot(accountId, forceRestart = false) {
   try {
     console.log(`[TELEGRAM] 🚀 Inicializando bot SIMPLIFICADO para conta ${accountId}...`);
     
+    accountId = Number(accountId);
+    if (!accountId || isNaN(accountId)) {
+      throw new Error('AccountId inválido');
+    }
+    
     // Validar accountId
     if (!accountId || typeof accountId !== 'number') {
       throw new Error(`AccountId inválido: ${accountId} (tipo: ${typeof accountId})`);
@@ -186,27 +191,35 @@ async function initializeTelegramBot(accountId, forceRestart = false) {
  * ✅ ENVIO DIRETO VIA API (MAIS CONFIÁVEL)
  */
 async function sendTelegramMessage(accountId, message, chatId = null) {
+  // Defesa contra inversão de argumentos
+  if ((typeof accountId !== 'number' || isNaN(accountId)) && typeof message === 'number') {
+    console.warn('[TELEGRAM][DEFESA] Argumentos invertidos detectados! Corrigindo automaticamente.');
+    const temp = accountId;
+    accountId = message;
+    message = temp;
+  }
   try {
-    console.log(`[TELEGRAM] 📤 Enviando mensagem para conta ${accountId}...`);
-    
+    console.log(`[TELEGRAM][DEBUG] 📤 Enviando mensagem para accountId=`, accountId, `(typeof: ${typeof accountId})`);
+    console.log(`[TELEGRAM][DEBUG] 📤 Mensagem a ser enviada:\n${message}`);
     // Obter configurações
     const db = await getDatabaseInstance();
+    console.log(`[TELEGRAM][DEBUG] Executando query: SELECT telegram_bot_token, telegram_chat_id FROM contas WHERE id = ? [${accountId}]`);
     const [rows] = await db.query(
       'SELECT telegram_bot_token, telegram_chat_id FROM contas WHERE id = ?',
       [accountId]
     );
-    
+    console.log(`[TELEGRAM][DEBUG] Resultado da query:`, rows);
     if (rows.length === 0) {
+      console.error(`[TELEGRAM][DEBUG] Nenhuma conta encontrada para id=`, accountId, `(typeof: ${typeof accountId})`);
       throw new Error('Conta não encontrada');
     }
-    
     const { telegram_bot_token: token, telegram_chat_id: dbChatId } = rows[0];
     const finalChatId = chatId || dbChatId;
-    
+    console.log(`[TELEGRAM][DEBUG] Token:`, token ? token.substring(0, 8) + '...' : 'NULO', `| ChatId:`, finalChatId);
     if (!token || !finalChatId) {
+      console.error(`[TELEGRAM][DEBUG] Token ou ChatId não configurado. Token:`, token, `ChatId:`, finalChatId);
       throw new Error('Token ou Chat ID não configurado');
     }
-    
     // ✅ ENVIO DIRETO VIA API (MAIS ESTÁVEL QUE VIA BOT)
     const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
       method: 'POST',
@@ -218,9 +231,7 @@ async function sendTelegramMessage(accountId, message, chatId = null) {
         disable_web_page_preview: true
       })
     });
-    
     const result = await response.json();
-    
     if (result.ok) {
       console.log(`[TELEGRAM] ✅ Mensagem enviada com sucesso`);
       return true;
@@ -228,9 +239,8 @@ async function sendTelegramMessage(accountId, message, chatId = null) {
       console.error(`[TELEGRAM] ❌ Erro da API:`, result.description);
       return false;
     }
-    
   } catch (error) {
-    console.error(`[TELEGRAM] ❌ Erro no envio:`, error.message);
+    console.error(`[TELEGRAM][DEBUG] ❌ Erro no envio:`, error.message, '| accountId:', accountId, '| typeof:', typeof accountId);
     return false;
   }
 }
