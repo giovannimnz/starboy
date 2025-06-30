@@ -510,9 +510,28 @@ def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent, si
     
     return final_leverage, sl_distance_pct
 
+WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'http://localhost:3000/webhook-sinal')
+
+def send_to_webhook(trade_data):
+    """
+    Envia os dados do sinal para um endpoint webhook via HTTP POST
+    """
+    try:
+        response = requests.post(WEBHOOK_URL, json=trade_data, timeout=10)
+        if response.status_code == 200:
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Sinal enviado via webhook com sucesso!")
+            return True
+        else:
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ❌ Erro ao enviar webhook: {response.status_code} - {response.text}")
+            return False
+    except Exception as e:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ❌ Erro ao enviar webhook: {e}")
+        return False
+
 def save_to_database(trade_data):
     """
-    Salva informações da operação no banco MySQL
+    Salva informações da operação no banco MySQL para todas as contas ativas,
+    usando o telegram_chat_id de cada conta como chat_id na tabela webhook_signals.
     """
     conn = None
     cursor = None
@@ -524,7 +543,14 @@ def save_to_database(trade_data):
             password=DB_PASSWORD,
             database=DB_NAME
         )
-        cursor = conn.cursor()
+        cursor = conn.cursor(dictionary=True)
+
+        # Buscar todas as contas ativas e seus telegram_chat_id
+        cursor.execute("SELECT id, telegram_chat_id FROM contas WHERE ativa = 1")
+        contas_ativas = cursor.fetchall()
+        if not contas_ativas:
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ⚠️ Nenhuma conta ativa encontrada. Sinal não será salvo.")
+            return None
 
         tp_prices = [None] * 5
         all_tps = trade_data.get('all_tps', [])
@@ -534,87 +560,58 @@ def save_to_database(trade_data):
         chat_id_origem = trade_data.get('chat_id_origem_sinal')
         if chat_id_origem and chat_id_origem > 0:
             chat_id_origem = -chat_id_origem
-            
-        chat_id_destino = trade_data.get('chat_id')
-        if chat_id_destino and chat_id_destino > 0:
-            chat_id_destino = -chat_id_destino
-            
+        
+        # chat_id_destino não é mais usado aqui, pois será sobrescrito pelo telegram_chat_id de cada conta
+
         sql = """
-    INSERT INTO webhook_signals
-    (symbol, side, leverage, capital_pct, entry_price, sl_price,
-     chat_id, status, timeframe, message_id, message_id_orig, chat_id_orig_sinal,
-     tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, message_source,
-     divap_confirmado, cancelado_checker, error_message, conta_id)
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-    """
+        INSERT INTO webhook_signals
+        (symbol, side, leverage, capital_pct, entry_price, sl_price,
+         chat_id, status, timeframe, message_id, message_id_orig, chat_id_orig_sinal,
+         tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, message_source,
+         divap_confirmado, cancelado_checker, error_message, conta_id)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """
 
-        values = (
-            trade_data["symbol"],
-            trade_data["side"],
-            trade_data["leverage"],
-            trade_data["capital_pct"],
-            trade_data["entry"],
-            trade_data["stop_loss"],
-            chat_id_destino,
-            trade_data.get("status", "PENDING"),
-            trade_data.get("timeframe", ""),
-            trade_data.get("message_id"),
-            trade_data.get("id_mensagem_origem_sinal"),
-            chat_id_origem,
-            tp_prices[0], tp_prices[1], tp_prices[2], tp_prices[3], tp_prices[4],
-            trade_data.get("message_source"),
-            trade_data.get("divap_confirmado", None),
-            trade_data.get("cancelado_checker", None),
-            trade_data.get("error_message", None),
-            CONTA_ID
-        )
-
-        cursor.execute(sql, values)
-        signal_id = cursor.lastrowid
+        signal_ids = []
+        for conta in contas_ativas:
+            conta_id = conta['id']
+            chat_id_destino = conta['telegram_chat_id']
+            values = (
+                trade_data["symbol"],
+                trade_data["side"],
+                trade_data["leverage"],
+                trade_data["capital_pct"],
+                trade_data["entry"],
+                trade_data["stop_loss"],
+                chat_id_destino,
+                trade_data.get("status", "PENDING"),
+                trade_data.get("timeframe", ""),
+                trade_data.get("message_id"),
+                trade_data.get("id_mensagem_origem_sinal"),
+                chat_id_origem,
+                tp_prices[0], tp_prices[1], tp_prices[2], tp_prices[3], tp_prices[4],
+                trade_data.get("message_source"),
+                trade_data.get("divap_confirmado", None),
+                trade_data.get("cancelado_checker", None),
+                trade_data.get("error_message", None),
+                conta_id
+            )
+            try:
+                cursor.execute(sql, values)
+                signal_id = cursor.lastrowid
+                signal_ids.append((conta_id, signal_id, chat_id_destino))
+                print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Operação salva [ID: {signal_id}, Conta: {conta_id}, Chat: {chat_id_destino}] [{trade_data['symbol']}]")
+            except Exception as e:
+                print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ❌ Erro ao salvar sinal para conta {conta_id}: {e}")
         conn.commit()
-
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Operação salva [ID: {signal_id}, Conta: {CONTA_ID}] [{trade_data['symbol']}]")
-        return signal_id
+        return signal_ids if signal_ids else None
 
     except mysql.connector.Error as db_err:
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ❌ Erro no banco ao salvar: {db_err}")
-        
-        if "Unknown column" in str(db_err):
-            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] Tentando fallback devido a coluna(s) desconhecida(s)...")
-            
-            try:
-                sql_fallback = """
-                    INSERT INTO webhook_signals
-                    (symbol, side, leverage, capital_pct, entry_price, tp_price, sl_price, 
-                     chat_id, status, message_id, message_id_orig, chat_id_orig_sinal, conta_id) 
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """
-                values_fallback = (
-                    trade_data["symbol"], trade_data["side"], trade_data["leverage"],
-                    trade_data["capital_pct"], trade_data["entry"], trade_data["tp"],
-                    trade_data["stop_loss"], chat_id_destino, "PENDING",
-                    trade_data.get("message_id"), trade_data.get("id_mensagem_origem_sinal"),
-                    chat_id_origem, CONTA_ID
-                )
-
-                if cursor is None and conn:
-                    cursor = conn.cursor()
-                
-                cursor.execute(sql_fallback, values_fallback)
-                signal_id_fallback = cursor.lastrowid
-                conn.commit()
-                print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Operação salva com fallback (ID: {signal_id_fallback}, Conta: {CONTA_ID})")
-                return signal_id_fallback
-
-            except Exception as e2:
-                print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ❌ Erro durante tentativa de fallback: {e2}")
-        
         return None
-
     except Exception as e_generic:
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ❌ Erro genérico ao salvar no banco: {e_generic}")
         return None
-
     finally:
         if conn and conn.is_connected():
             if cursor:
@@ -1176,7 +1173,6 @@ async def handle_new_message(event):
                     trade_info['chat_id_origem_sinal'] = incoming_chat_id
                     trade_info['chat_id'] = GRUPO_DESTINO_ID
                     trade_info['message_source'] = message_source
-                    trade_info['conta_id'] = CONTA_ID
 
                     # Enviar mensagem
                     sent_message_to_dest = await client.send_message(GRUPO_DESTINO_ID, message_text_to_send)
@@ -1188,36 +1184,32 @@ async def handle_new_message(event):
                     trade_info['cancelado_checker'] = 0
                     
                     # Salvar no banco
-                    signal_id_from_webhook_db = save_to_database(trade_info) 
-                    
-                    if signal_id_from_webhook_db:
-                        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Sinal salvo com ID: {signal_id_from_webhook_db}")
-                        
-                        # Salvar mensagens
-                        save_message_to_database( 
-                            message_id=incoming_message_id,
-                            chat_id=incoming_chat_id,
-                            text=incoming_text,
-                            is_reply=is_incoming_reply,
-                            reply_to_message_id=incoming_reply_to_id,
-                            symbol=trade_info['symbol'], 
-                            signal_id=signal_id_from_webhook_db, 
-                            created_at=incoming_created_at,
-                            message_source=message_source                        
-                        )
-                        
-                        save_message_to_database(
-                            message_id=sent_message_id_in_dest,
-                            chat_id=GRUPO_DESTINO_ID,
-                            text=message_text_to_send,
-                            is_reply=False, 
-                            reply_to_message_id=None,
-                            symbol=trade_info['symbol'], 
-                            signal_id=signal_id_from_webhook_db, 
-                            created_at=sent_message_created_at,
-                            message_source=message_source                         
-                        )
-                        
+                    signal_ids_info = save_to_database(trade_info)
+                    if signal_ids_info:
+                        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Sinal salvo com IDs: {signal_ids_info}")
+                        for conta_id, signal_id, chat_id_destino in signal_ids_info:
+                            save_message_to_database(
+                                message_id=incoming_message_id,
+                                chat_id=incoming_chat_id,
+                                text=incoming_text,
+                                is_reply=is_incoming_reply,
+                                reply_to_message_id=incoming_reply_to_id,
+                                symbol=trade_info['symbol'],
+                                signal_id=signal_id,
+                                created_at=incoming_created_at,
+                                message_source=message_source
+                            )
+                            save_message_to_database(
+                                message_id=sent_message_id_in_dest,
+                                chat_id=chat_id_destino,
+                                text=message_text_to_send,
+                                is_reply=False,
+                                reply_to_message_id=None,
+                                symbol=trade_info['symbol'],
+                                signal_id=signal_id,
+                                created_at=sent_message_created_at,
+                                message_source=message_source
+                            )
                         print(f"\n[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Processo completo - sinal enviado e salvo!\n")
                         print("="*80)
                     else:
@@ -1235,7 +1227,6 @@ async def handle_new_message(event):
                     trade_info['cancelado_checker'] = 1
                     trade_info['status'] = 'CANCELED'
                     trade_info['error_message'] = error_message
-                    trade_info['conta_id'] = CONTA_ID
                     
                     # Salvar sinal cancelado
                     save_to_database(trade_info)
@@ -1360,7 +1351,6 @@ async def verificar_integridade_telegram():
             trade_info_valido['chat_id_origem_sinal'] = grupo_teste_id
             trade_info_valido['chat_id'] = GRUPO_DESTINO_ID
             trade_info_valido['message_source'] = message_source
-            trade_info_valido['conta_id'] = CONTA_ID
             
             # Formatar mensagem como seria enviada
             message_text_formatted = format_trade_message(trade_info_valido, grupo_origem_nome)
@@ -1429,7 +1419,7 @@ async def verificar_integridade_telegram():
         print(f"   ✅ Leitura de mensagens: OK")
         print(f"   ✅ Extração de trade info: OK")
         print(f"   ✅ Formatação de mensagens: OK")
-        print(f"   ✅ Verificação DIVAP: {'OK' if ENABLE_REVERSE_VERIFICATION else 'DESABILITADA'}")
+        print(f"   ✅ Verificação DIVAP: {'OK' if ENABLE_REVERSE_VERIFICATION else 'DESATIVADA'}")
         print(f"   ✅ Capacidade de envio: OK")
         print(f"\n🚀 Sistema pronto para monitoramento em tempo real!")
         print(f"{'='*80}\n")
