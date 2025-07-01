@@ -4,7 +4,7 @@ const rest = require('../api/rest');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 const {  getRecentOrders, editOrder, roundPriceToTickSize, newMarketOrder, newLimitMakerOrder, newReduceOnlyOrder, cancelOrder, newStopOrder, getOpenOrders, getOrderStatus, getAllOpenPositions, getFuturesAccountBalanceDetails, getPrecision, getTickSize, getPrecisionCached, validateQuantity, adjustQuantityToRequirements,} = require('../api/rest');
-const { sendTelegramMessage, formatEntryMessage, formatErrorMessage, formatAlertMessage, formatEntryMessageWithPrecision } = require('../telegram/telegramBot');
+const { sendTelegramMessage, formatEntryMessage, formatErrorMessage, formatAlertMessage, formatEntryMessageWithPrecision } = require('../services/telegramHelper');
 
 // ✅ CORREÇÃO: Declarar sentOrders no escopo correto e com Map melhorado
 async function executeReverse(signal, currentPrice, accountId) {
@@ -850,8 +850,8 @@ async function executeReverse(signal, currentPrice, accountId) {
     // Verificar se entrada foi completada
     const fillRatio = totalEntrySize > 0 ? totalFilledSize / totalEntrySize : 0;
 
-    // Só considerar completa se 100% preenchido
-    const isEntryReallyComplete = fillRatio >= 1.0;
+    // Só considerar completa se 95% preenchido
+    const isEntryReallyComplete = fillRatio >= 0.95;
 
     if (isEntryReallyComplete) {
         isEntryComplete = true;
@@ -879,7 +879,7 @@ async function executeReverse(signal, currentPrice, accountId) {
 
     // ✅ BUSCAR POSIÇÃO CRIADA PELO WEBHOOK
     let positionId = null;
-    let maxRetries = 10;
+    let maxRetries = 1000;
     let retries = 0;
 
     while (!positionId && retries < maxRetries) {
@@ -900,7 +900,8 @@ async function executeReverse(signal, currentPrice, accountId) {
     }
 
     if (!positionId) {
-      console.warn(`[LIMIT_ENTRY] ⚠️ Posição não foi criada pelo webhook após ${maxRetries} tentativas. Criando SL/TP/RPs sem position_id...`);
+      console.warn(`⚠️ Posição não encontrada, mas criando ordens de proteção mesmo assim...`);
+      // Continuar criando SL/TP/RPs sem aguardar position_id
     }
 
     // ✅ CRIAR SL/TP/RPS - VERSÃO TOTALMENTE CORRIGIDA DA DEV

@@ -4,9 +4,9 @@ const { getDatabaseInstance } = require('../../../core/database/conexao');
 const { verifyAndFixEnvironmentConsistency, getFuturesAccountBalanceDetails, getSpotAccountBalanceDetails } = require('../api/rest');
 const websockets = require('../api/websocket');
 const api = require('../api/rest');
-const { initializeTelegramBot, stopAllTelegramBots } = require('../telegram/telegramBot');
+const { sendTelegramMessage } = require('../services/telegramHelper');
 const { onPriceUpdate, checkNewTrades, checkExpiredSignals, checkCanceledSignals } = require('./signalProcessor');
-const { syncPositionsWithExchange, syncOrdersWithExchange, logOpenPositionsAndOrdersVisual, syncPositionsWithAutoClose } = require('../services/positionSync');
+const { syncPositionsWithExchange, syncOrdersWithExchange, logOpenPositionsAndOrdersVisual, syncPositionsWithAutoClose, closePositionsWithoutOrders } = require('../services/positionSync');
 const orderHandlers = require('../handlers/orderHandlers');
 const accountHandlers = require('../handlers/accountHandlers');
 const { cleanupOrphanSignals, moveOrdersToHistory, movePositionToHistory, cancelOrphanOrders } = require('../services/cleanup');
@@ -214,25 +214,6 @@ try {
   }
 } catch (saldoError) {
   console.error(`[MONITOR] ❌ Erro ao atualizar saldo spot:`, saldoError.message);
-}
-    
-// === ETAPA 3.5: Inicializar Bot do Telegram ===
-console.log(`🤖 ETAPA 3.5: Inicializando bot do Telegram para conta ${accountId}...`);
-try {
-  const telegramBotInstance = await initializeTelegramBot(accountId);
-  if (telegramBotInstance) {
-    console.log(`✅ Bot do Telegram inicializado para conta ${accountId}`);
-    console.log(`📋 Detalhes do bot:`);
-    console.log(`   - Nome da conta: ${telegramBotInstance.accountName}`);
-    console.log(`   - Chat ID: ${telegramBotInstance.chatId}`);
-    console.log(`   - Token: ${telegramBotInstance.token.substring(0, 8)}...`);
-  } else {
-    console.log(`⚠️ Bot do Telegram não foi inicializado para conta ${accountId}`);
-  }
-} catch (telegramError) {
-  console.error(`❌ Erro crítico ao inicializar bot do Telegram para conta ${accountId}:`, telegramError.message);
-  // Não bloquear a inicialização por causa do Telegram
-  console.log(`⚠️ Continuando inicialização sem bot do Telegram...`);
 }
     
     // === ETAPA 4: Verificar estado da conexão ===
@@ -779,6 +760,23 @@ async function startPriceMonitoringInline(accountId) {
         await logOpenPositionsAndOrdersVisual(accountId);
       } catch (error) {
         console.error(`[MONITOR] ⚠️ Erro no log de status para conta ${accountId}:`, error.message);
+      }
+    });
+
+    // Executar imediatamente ao inicializar
+    try {
+      await closePositionsWithoutOrders(accountId);
+      console.log(`[MONITOR] ✅ closePositionsWithoutOrders executado na inicialização para conta ${accountId}`);
+    } catch (error) {
+      console.error(`[MONITOR] ⚠️ Erro ao executar closePositionsWithoutOrders na inicialização para conta ${accountId}:`, error.message);
+    }
+
+    accountJobs.closePositionsWithoutOrders = schedule.scheduleJob('*/1 * * * *', async () => {
+      if (isShuttingDown) return;
+      try {
+        await closePositionsWithoutOrders(accountId);
+      } catch (error) {
+        console.error(`[MONITOR] ⚠️ Erro ao fechar posições sem ordens para conta ${accountId}:`, error.message);
       }
     });
 

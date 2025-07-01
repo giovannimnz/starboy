@@ -1,6 +1,6 @@
 const { getDatabaseInstance, insertNewOrder, formatDateForMySQL } = require('../../../core/database/conexao');
 const { newStopOrder, cancelOrder, getOpenOrders } = require('../api/rest');
-const { sendTelegramMessage, formatAlertMessage } = require('../telegram/telegramBot');
+const { sendTelegramMessage, formatAlertMessage } = require('../services/telegramHelper');
 
 // Controle de verificações para evitar spam
 const lastTrailingCheck = {};

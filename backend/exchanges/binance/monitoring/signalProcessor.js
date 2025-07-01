@@ -2,7 +2,7 @@ const api = require('../api/rest');
 const websockets = require('../api/websocket');
 const { getDatabaseInstance } = require('../../../core/database/conexao');
 const { executeReverse } = require('../strategies/reverse');
-const { sendTelegramMessage, formatSignalRegisteredMessage } = require('../telegram/telegramBot');
+const { sendTelegramMessage } = require('../services/telegramHelper');
 
 // Set para rastrear sinais em processamento
 const processingSignals = new Set();

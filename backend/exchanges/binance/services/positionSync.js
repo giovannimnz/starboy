@@ -727,10 +727,210 @@ async function moveClosedPositionsToHistory(accountId) {
   }
 }
 
+/**
+ * Verifica posições abertas na corretora sem ordens de proteção (TP/SL) no banco e corrige criando as ordens faltantes.
+ * Envia notificação via Telegram sobre a correção.
+ * @param {number} accountId - ID da conta
+ */
+async function checkAndFixMissingProtectionOrders(accountId) {
+  const db = await getDatabaseInstance();
+  if (!db) {
+    console.error('[PROTECTION_CHECK] Falha ao obter instância do banco de dados');
+    return;
+  }
+  // Buscar todas as posições abertas na corretora
+  const exchangePositions = await getAllOpenPositions(accountId);
+  if (!exchangePositions.length) return;
+
+  // Buscar todas as ordens abertas relevantes no banco
+  const [openOrders] = await db.query(
+    `SELECT simbolo, tipo_ordem, status FROM ordens WHERE status IN ('NEW', 'PARTIALLY_FILLED') AND conta_id = ?`,
+    [accountId]
+  );
+
+  const now = Date.now();
+  for (const pos of exchangePositions) {
+    // Verifica se já passou mais de 2 minutos da abertura
+    const openedAt = new Date(pos.dataHoraAbertura || pos.data_hora_abertura).getTime();
+    if (isNaN(openedAt) || now - openedAt < 2 * 60 * 1000) continue;
+
+    // Verifica se já existem ordens de proteção abertas para o símbolo
+    const hasTP = openOrders.some(o => o.simbolo === pos.simbolo && o.tipo_ordem === 'TAKE_PROFIT_MARKET');
+    const hasSL = openOrders.some(o => o.simbolo === pos.simbolo && o.tipo_ordem === 'STOP_MARKET');
+    if (hasTP && hasSL) continue;
+
+    // Buscar o último sinal do símbolo
+    const [signals] = await db.query(
+      `SELECT * FROM webhook_signals WHERE symbol = ? AND conta_id = ? ORDER BY id DESC LIMIT 1`,
+      [pos.simbolo, accountId]
+    );
+    if (!signals.length) {
+      console.warn(`[PROTECTION_CHECK] Nenhum sinal encontrado para ${pos.simbolo} (conta ${accountId})`);
+      continue;
+    }
+    const signal = signals[0];
+
+    // Chamar função para criar ordens de TP/SL (deve existir ou ser implementada)
+    try {
+      const { createTpSlOrdersForSignal } = require('../handlers/orderHandlers');
+      await createTpSlOrdersForSignal(signal, pos, accountId);
+    } catch (err) {
+      console.error(`[PROTECTION_CHECK] Erro ao criar ordens de proteção para ${pos.simbolo}:`, err.message);
+      continue;
+    }
+
+    // Enviar mensagem de correção via Telegram
+    try {
+      const { sendTelegramMessage, formatAlertMessage } = require('../telegram/telegramBot');
+      const msg = formatAlertMessage(
+        'CORREÇÃO DE PROTEÇÃO',
+        `Posição em <b>${pos.simbolo}</b> estava aberta na corretora sem ordens de TP/SL no sistema e foi corrigida automaticamente.\nOrdens de proteção enviadas com base no último sinal registrado.`,
+        'WARNING'
+      );
+      await sendTelegramMessage(accountId, msg);
+    } catch (err) {
+      console.error(`[PROTECTION_CHECK] Falha ao notificar Telegram:`, err.message);
+    }
+  }
+}
+
+/**
+ * Corrige posições órfãs enviando ordens de proteção faltantes baseadas em sinais com ERROR.
+ * @param {number} accountId - ID da conta
+ */
+async function closePositionsWithoutOrders(accountId) {
+  const db = await getDatabaseInstance();
+  if (!db) {
+    console.error('[PROTECTION_FIX] Falha ao obter instância do banco de dados');
+    return;
+  }
+  
+  // Buscar todas as posições abertas na corretora
+  const exchangePositions = await getAllOpenPositions(accountId);
+  if (!exchangePositions.length) {
+    console.log('[PROTECTION_FIX] Nenhuma posição aberta encontrada na corretora.');
+    return;
+  }
+
+  // Buscar todas as ordens abertas relevantes no banco
+  const [openOrders] = await db.query(
+    `SELECT simbolo FROM ordens WHERE status IN ('NEW', 'PARTIALLY_FILLED') AND conta_id = ?`,
+    [accountId]
+  );
+  const symbolsWithOrders = new Set(openOrders.map(o => o.simbolo));
+
+  const now = Date.now();
+  for (const pos of exchangePositions) {
+    // Melhor tratamento da data de abertura
+    let openedAt = null;
+    let tempoAbertoMs = 0;
+    
+    try {
+      const dateField = pos.dataHoraAbertura || pos.data_hora_abertura || pos.updateTime;
+      if (dateField) {
+        openedAt = new Date(dateField).getTime();
+        if (!isNaN(openedAt)) {
+          tempoAbertoMs = now - openedAt;
+        }
+      }
+    } catch (dateError) {
+      console.warn(`[PROTECTION_FIX] Erro ao processar data para ${pos.simbolo}:`, dateError.message);
+    }
+    
+    const temOrdem = symbolsWithOrders.has(pos.simbolo);
+    const tempoAbertoSegundos = tempoAbertoMs > 0 ? Math.round(tempoAbertoMs/1000) : 'N/A';
+    
+    console.log(`[PROTECTION_FIX] Analisando posição: ${pos.simbolo} | Qtd: ${pos.quantidade} | Lado: ${pos.lado || pos.side} | Aberta há: ${tempoAbertoSegundos}s | Tem ordem aberta: ${temOrdem}`);
+    
+    // Se tem ordens abertas, não precisa corrigir
+    if (temOrdem) {
+      console.log(`[PROTECTION_FIX] Ignorando ${pos.simbolo}: já possui ordem aberta no banco.`);
+      continue;
+    }
+    
+    // Buscar último sinal para esse símbolo e conta, priorizando ERROR mas incluindo outros status problemáticos
+    const [signals] = await db.query(
+      `SELECT * FROM webhook_signals 
+       WHERE symbol = ? AND conta_id = ? 
+       AND status IN ('ERROR', 'ENTRADA_EM_PROGRESSO', 'EXECUTADO')
+       AND created_at >= DATE_SUB(NOW(), INTERVAL 2 HOUR)
+       ORDER BY id DESC LIMIT 1`,
+      [pos.simbolo, accountId]
+    );
+    
+    if (!signals.length) {
+      console.warn(`[PROTECTION_FIX] Nenhum sinal recente encontrado para ${pos.simbolo} (conta ${accountId})`);
+      continue;
+    }
+    
+    const signal = signals[0];
+    console.log(`[PROTECTION_FIX] Encontrado sinal ID ${signal.id} com status '${signal.status}' para ${pos.simbolo}`);
+    
+    // Verificar se já existe posição no banco para este símbolo
+    const [dbPositions] = await db.query(
+      `SELECT id FROM posicoes WHERE simbolo = ? AND conta_id = ? AND status = 'OPEN' LIMIT 1`,
+      [pos.simbolo, accountId]
+    );
+    
+    if (!dbPositions.length) {
+      console.warn(`[PROTECTION_FIX] Posição ${pos.simbolo} não encontrada no banco, pulando...`);
+      continue;
+    }
+    
+    const positionId = dbPositions[0].id;
+    
+    // Tentar criar apenas as ordens de proteção que faltaram
+    try {
+      console.log(`[PROTECTION_FIX] Criando ordens de proteção para posição ${pos.simbolo} (ID: ${positionId})...`);
+      
+      // Importar função para criar ordens de TP/SL
+      const { createTpSlOrdersForSignal } = require('../handlers/orderHandlers');
+      
+      // Chamar função específica para criar SL/TP/reduções com base no sinal
+      await createTpSlOrdersForSignal(signal, pos, accountId, positionId);
+      
+      // Atualizar status do sinal
+      await db.query(
+        `UPDATE webhook_signals SET status = 'PROTECAO_REENVIADA', updated_at = NOW() WHERE id = ?`, 
+        [signal.id]
+      );
+      
+      // Notificar via Telegram
+      try {
+        const { sendTelegramMessage, formatAlertMessage } = require('../telegram/telegramBot');
+        const msg = formatAlertMessage(
+          'CORREÇÃO DE PROTEÇÃO',
+          `Posição em <b>${pos.simbolo}</b> estava sem ordens de proteção. Ordens de SL/TP/reduções criadas automaticamente com base no sinal ID ${signal.id}.`,
+          'WARNING'
+        );
+        await sendTelegramMessage(accountId, msg);
+        console.log(`[PROTECTION_FIX] ✅ Ordens de proteção criadas e notificação enviada para ${pos.simbolo}`);
+      } catch (telegramErr) {
+        console.error(`[PROTECTION_FIX] Falha ao notificar Telegram:`, telegramErr.message);
+      }
+      
+    } catch (err) {
+      console.error(`[PROTECTION_FIX] Erro ao criar ordens de proteção para ${pos.simbolo}:`, err.message);
+      
+      // Se falhar, pelo menos registrar o erro no sinal
+      try {
+        await db.query(
+          `UPDATE webhook_signals SET error_message = ?, updated_at = NOW() WHERE id = ?`,
+          [`Falha ao reenviar proteção: ${err.message}`, signal.id]
+        );
+      } catch (updateErr) {
+        console.error(`[PROTECTION_FIX] Erro ao atualizar sinal com erro:`, updateErr.message);
+      }
+    }
+  }
+}
+
 module.exports = {
   syncPositionsWithExchange,
   logOpenPositionsAndOrdersVisual,
   syncPositionsWithAutoClose,
   syncOrdersWithExchange,
-  moveClosedPositionsToHistory
+  moveClosedPositionsToHistory,
+  checkAndFixMissingProtectionOrders,
+  closePositionsWithoutOrders: closePositionsWithoutOrders, // Renomeado para ser mais claro sobre a função
 };

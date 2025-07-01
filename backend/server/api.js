@@ -69,6 +69,9 @@ async function registerRoutes() {
   // Registra o plugin de contas e adiciona um prefixo /api
   await fastify.register(require('./routes/accounts'), { prefix: '/api' });
 
+  // ✅ NOVO: Registrar rotas do Telegram
+  await fastify.register(require('./routes/telegram'), { prefix: '/api/telegram/telegram' });
+
   // Rota de Health Check
   fastify.get('/api/health', {
     schema: {

@@ -1,6 +1,6 @@
 const { getDatabaseInstance, formatDateForMySQL } = require('../../../core/database/conexao');
 const api = require('../api/rest');
-const { sendTelegramMessage, formatPositionClosedMessage, formatAlertMessage } = require('../telegram/telegramBot');
+const { sendTelegramMessage, formatPositionClosedMessage, formatAlertMessage } = require('../services/telegramHelper');
 
 /**
  * Limpa sinais órfãos e inconsistências

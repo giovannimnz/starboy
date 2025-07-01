@@ -1,6 +1,6 @@
 const { getDatabaseInstance, insertPosition, insertNewOrder, formatDateForMySQL } = require('../../../core/database/conexao');
 const websockets = require('../api/websocket');
-const { sendTelegramMessage, formatOrderMessage, formatPositionClosedMessage } = require('../telegram/telegramBot');
+const { sendTelegramMessage, formatOrderMessage } = require('../services/telegramHelper');
 
 const targetCache = new Map();
 
@@ -1254,6 +1254,130 @@ function unregisterOrderHandlers(accountId) {
   }
 }
 
+/**
+ * Cria ordens de SL/TP/reduções para uma posição existente baseado no sinal original
+ * @param {Object} signal - Sinal do webhook_signals
+ * @param {Object} position - Posição da corretora
+ * @param {number} accountId - ID da conta
+ * @param {number} positionId - ID da posição no banco
+ */
+async function createTpSlOrdersForSignal(signal, position, accountId, positionId) {
+  const db = await getDatabaseInstance();
+  if (!db) {
+    throw new Error('Falha ao obter instância do banco de dados');
+  }
+
+  const { newStopOrder, getPrecision, roundPriceToTickSize } = require('../api/rest');
+  
+  try {
+    console.log(`[CREATE_PROTECTION] Criando ordens de proteção para ${signal.symbol} (sinal ID: ${signal.id})...`);
+    
+    // Obter precisão do símbolo
+    const precisionInfo = await getPrecision(signal.symbol, accountId);
+    const pricePrecision = precisionInfo.pricePrecision;
+    
+    // Determinar lado oposto para ordens de fechamento
+    const entryLadoBinance = (signal.side === 'COMPRA' || signal.side === 'BUY') ? 'BUY' : 'SELL';
+    const exitLadoBinance = entryLadoBinance === 'BUY' ? 'SELL' : 'BUY';
+    
+    const positionQty = Math.abs(parseFloat(position.quantidade));
+    
+    // 1. Criar ordem de Stop Loss
+    if (signal.sl_price && signal.sl_price > 0) {
+      const slPrice = await roundPriceToTickSize(signal.symbol, parseFloat(signal.sl_price), accountId);
+      
+      try {
+        const slResult = await newStopOrder(
+          accountId,
+          signal.symbol,
+          null, // quantidade null para closePosition
+          exitLadoBinance,
+          slPrice,
+          null, // price null para STOP_MARKET
+          false, // reduceOnly false para closePosition
+          true, // closePosition true
+          'STOP_MARKET'
+        );
+        
+        if (slResult && slResult.orderId) {
+          // Inserir no banco
+          await insertNewOrder({
+            id_externo: slResult.orderId,
+            simbolo: signal.symbol,
+            lado: exitLadoBinance,
+            tipo_ordem: 'STOP_MARKET',
+            tipo_ordem_bot: 'SL',
+            preco: slPrice,
+            quantidade: 0, // closePosition
+            status: 'NEW',
+            posicao_id: positionId,
+            orign_sig: `WEBHOOK_${signal.id}`,
+            conta_id: accountId
+          });
+          console.log(`[CREATE_PROTECTION] ✅ SL criado: ${slResult.orderId} a ${slPrice}`);
+        }
+      } catch (slError) {
+        console.error(`[CREATE_PROTECTION] Erro ao criar SL:`, slError.message);
+      }
+    }
+    
+    // 2. Criar ordens de Take Profit
+    const tpPrices = [signal.tp1_price, signal.tp2_price, signal.tp3_price, signal.tp4_price, signal.tp5_price];
+    const tpLabels = ['TP1', 'TP2', 'TP3', 'TP4', 'TP5'];
+    
+    for (let i = 0; i < tpPrices.length; i++) {
+      const tpPrice = tpPrices[i];
+      if (!tpPrice || tpPrice <= 0) continue;
+      
+      const tpPriceRounded = await roundPriceToTickSize(signal.symbol, parseFloat(tpPrice), accountId);
+      
+      // Calcular quantidade (25% da posição para cada TP)
+      const tpQty = Math.floor((positionQty * 0.25) / precisionInfo.stepSize) * precisionInfo.stepSize;
+      if (tpQty <= 0) continue;
+      
+      try {
+        const tpResult = await newStopOrder(
+          accountId,
+          signal.symbol,
+          tpQty,
+          exitLadoBinance,
+          tpPriceRounded,
+          null,
+          true, // reduceOnly
+          false, // closePosition
+          'TAKE_PROFIT_MARKET'
+        );
+        
+        if (tpResult && tpResult.orderId) {
+          // Inserir no banco
+          await insertNewOrder({
+            id_externo: tpResult.orderId,
+            simbolo: signal.symbol,
+            lado: exitLadoBinance,
+            tipo_ordem: 'TAKE_PROFIT_MARKET',
+            tipo_ordem_bot: tpLabels[i],
+            preco: tpPriceRounded,
+            quantidade: tpQty,
+            status: 'NEW',
+            posicao_id: positionId,
+            orign_sig: `WEBHOOK_${signal.id}`,
+            conta_id: accountId
+          });
+          console.log(`[CREATE_PROTECTION] ✅ ${tpLabels[i]} criado: ${tpResult.orderId} a ${tpPriceRounded}`);
+        }
+      } catch (tpError) {
+        console.error(`[CREATE_PROTECTION] Erro ao criar ${tpLabels[i]}:`, tpError.message);
+      }
+    }
+    
+    console.log(`[CREATE_PROTECTION] ✅ Ordens de proteção processadas para ${signal.symbol}`);
+    
+  } catch (error) {
+    console.error(`[CREATE_PROTECTION] Erro geral ao criar ordens de proteção:`, error.message);
+    throw error;
+  }
+}
+
 module.exports = {
   handleOrderUpdate,
   registerOrderHandlers,
@@ -1263,5 +1387,6 @@ module.exports = {
   handleTradeExecution,
   checkPositionClosureAfterOrderExecution,
   autoMoveOrderOnCompletion,
-  cleanupOrphanOrders
+  cleanupOrphanOrders,
+  createTpSlOrdersForSignal
 };

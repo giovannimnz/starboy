@@ -1,6 +1,6 @@
 const { getDatabaseInstance, insertPosition, formatDateForMySQL } = require('../../../core/database/conexao');
 const websockets = require('../api/websocket');
-const { sendTelegramMessage, formatBalanceMessage, formatAlertMessage } = require('../telegram/telegramBot');
+const { sendTelegramMessage, formatBalanceMessage } = require('../services/telegramHelper');
 const { movePositionToHistory } = require('../services/cleanup');
 
 /**
