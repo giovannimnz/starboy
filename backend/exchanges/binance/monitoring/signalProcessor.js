@@ -425,6 +425,7 @@ async function processSignal(signal, db, accountId) {
     }
     
     // 5. ENVIAR NOTIFICAÇÃO TELEGRAM
+    /*** 
     if (signal.chat_id) {
       try {
         // Use o nome do grupo se disponível, senão "Divap"
@@ -436,6 +437,7 @@ async function processSignal(signal, db, accountId) {
         console.warn(`[SIGNAL] ⚠️ Erro ao enviar notificação:`, telegramError.message);
       }
     }
+    ***/
     
     console.log(`[SIGNAL] ✅ Sinal ${signalId} registrado. Status: AGUARDANDO_ACIONAMENTO. WebSocket ativo.`);
     return { success: true, signal: signalId };

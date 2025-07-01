@@ -1711,7 +1711,7 @@ async function getOrderStatus(symbol, orderId, accountId) {
       orderId: String(orderId)
     };
     
-    const response = await makeAuthenticatedRequest(accountId, 'GET', '/v1/allOrders', params);
+    const response = await makeAuthenticatedRequest(accountId, 'GET', '/v1/order', params);
     
     if (response) {
       //console.log(`[API] ✅ Status da ordem ${orderId}: ${response.status}`);

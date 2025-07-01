@@ -257,6 +257,38 @@ async function moveOrdersToHistory(accountId) {
       let movedCount = 0;
       
       for (const order of ordersToMove) {
+        // Nova regra: Se for ENTRADA, FILLED ou CANCELED, sem id_posicao, aguarda e tenta vincular
+        if (
+          (order.status === 'FILLED' || order.status === 'CANCELED') &&
+          order.tipo_ordem_bot === 'ENTRADA' &&
+          (!order.id_posicao || order.id_posicao === 0)
+        ) {
+          console.warn(`[CLEANUP] ⏳ Ordem ENTRADA ${order.status} ${order.id_externo} sem id_posicao. Aguardando 30s para tentar vincular à posição aberta...`);
+          await new Promise(resolve => setTimeout(resolve, 30000));
+          // Buscar posição aberta para o symbol
+          const [openPositions] = await connection.query(
+            'SELECT id FROM posicoes WHERE simbolo = ? AND status = "OPEN" AND conta_id = ? LIMIT 1',
+            [order.simbolo, accountId]
+          );
+          if (openPositions.length > 0) {
+            const posId = openPositions[0].id;
+            await connection.query(
+              'UPDATE ordens SET id_posicao = ? WHERE id_externo = ? AND conta_id = ?',
+              [posId, order.id_externo, accountId]
+            );
+            order.id_posicao = posId;
+            console.log(`[CLEANUP] 🔗 Ordem ${order.id_externo} vinculada à posição ${posId}`);
+          } else {
+            console.warn(`[CLEANUP] ⚠️ Não foi encontrada posição aberta para o symbol ${order.simbolo} após aguardar. Ordem ${order.id_externo} permanecerá sem vínculo.`);
+            // Não mover para o histórico se não conseguir vincular
+            continue;
+          }
+        }
+        // Só mover se já estiver vinculada a uma posição
+        if (!order.id_posicao || order.id_posicao === 0) {
+          console.warn(`[CLEANUP] ⚠️ Ordem ${order.id_externo} ainda não vinculada a uma posição (id_posicao NULL/0). Aguardando vínculo antes de mover para _fechadas.`);
+          continue;
+        }
         // Atualizar posição relacionada, se houver
         if (order.id_posicao) {
           // Buscar posição atual
@@ -519,8 +551,8 @@ async function movePositionToHistory(positionId, accountId, force = false) {
     console.log(`[HISTORICO] Posição ${positionId} movida para histórico com sucesso`);
     
     // Enviar mensagem para o Telegram
-    const message = formatPositionClosedMessage(position);
-    sendTelegramMessage(message);
+   // const message = formatPositionClosedMessage(position);
+   // sendTelegramMessage(message);
     
     return 1;
     
@@ -710,7 +742,7 @@ async function movePositionToHistory(db, positionId, status = 'CLOSED', reason =
         if (positions.length > 0) {
           const pos = positions[0];
           const newTotalCommission = (parseFloat(pos.total_commission) || 0) + (parseFloat(order.commission) || 0);
-          const newTotalRealized = (parseFloat(pos.total_realized) || 0) + (parseFloat(order.realized_profit) || 0);
+          const newTotalRealized = (parseFloat(pos.total_realizado) || 0) + (parseFloat(order.realized_profit) || 0);
 
           // Regra para cálculo do liquid_pnl
           let newLiquidPnl;
@@ -803,10 +835,16 @@ async function movePositionToHistory(db, positionId, status = 'CLOSED', reason =
     await connection.commit();
     console.log(`[MOVE_POSITION] ✅ Posição ${symbol} (ID: ${positionId}) movida com sucesso após cancelar ordens na corretora`);
     
-    // 10. Enviar notificação ao Telegram
+    // 10. Enviar notificação ao Telegram APÓS commit e com dados atualizados
     try {
-      const message = formatPositionClosedMessage(position);
-      sendTelegramMessage(message, accountId);
+      // Recarregar a posição já atualizada (com PnL final)
+      const [updatedPositionArr] = await connection.query(
+        'SELECT * FROM posicoes_fechadas WHERE id_original = ? AND conta_id = ? ORDER BY id DESC LIMIT 1',
+        [positionId, accountId]
+      );
+      const updatedPosition = updatedPositionArr && updatedPositionArr[0] ? updatedPositionArr[0] : position;
+      //const message = formatPositionClosedMessage(updatedPosition);
+      //await sendTelegramMessage(accountId, message);
       console.log(`[MOVE_POSITION] 📱 Notificação enviada ao Telegram`);
     } catch (telegramError) {
       console.log(`[MOVE_POSITION] ⚠️ Erro ao enviar notificação: ${telegramError.message}`);

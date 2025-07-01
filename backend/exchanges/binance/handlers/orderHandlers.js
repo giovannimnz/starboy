@@ -319,6 +319,41 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCou
     
     const orderToMove = orderResult[0];
 
+    // NOVA REGRA: Se for ENTRADA, FILLED ou CANCELED, e id_posicao null/0, aguardar 2 minutos e tentar vincular
+    if (
+      (newStatus === 'FILLED' || newStatus === 'CANCELED' || newStatus === 'CANCELLED') &&
+      orderToMove.tipo_ordem_bot === 'ENTRADA' &&
+      (!orderToMove.id_posicao || orderToMove.id_posicao === 0)
+    ) {
+      console.warn(`[ORDER_AUTO_MOVE] ⏳ Ordem ENTRADA ${newStatus} ${orderId} sem id_posicao. Aguardando 2 minutos para tentar vincular à posição aberta...`);
+      // Esperar até 2 minutos para o id_posicao ser atribuído
+      const start = Date.now();
+      let posId = null;
+      while (Date.now() - start < 120000) { // timeout 2 minutos
+        // Buscar id_posicao atualizado na ordem
+        const [ordemAtualizada] = await connection.query(
+          'SELECT id_posicao FROM ordens WHERE id_externo = ? AND conta_id = ?',
+          [orderToMove.id_externo, accountId]
+        );
+        if (ordemAtualizada.length > 0 && ordemAtualizada[0].id_posicao && ordemAtualizada[0].id_posicao !== 0) {
+          posId = ordemAtualizada[0].id_posicao;
+          break;
+        }
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+      if (!posId) {
+        console.warn(`[ORDER_AUTO_MOVE] ⚠️ Timeout: id_posicao não atribuído para ordem ${orderId} após 2 minutos. Não será movida para o histórico.`);
+        await connection.rollback();
+        return false;
+      }
+      await connection.query(
+        'UPDATE ordens SET id_posicao = ? WHERE id_externo = ? AND conta_id = ?',
+        [posId, orderId, accountId]
+      );
+      orderToMove.id_posicao = posId;
+      console.log(`[ORDER_AUTO_MOVE] 🔗 Ordem ${orderId} vinculada à posição ${posId}`);
+    }
+
     // 3. Preparar dados para inserção na tabela de histórico
     const closedOrderData = {
       ...orderToMove, // Copia todos os campos da ordem original

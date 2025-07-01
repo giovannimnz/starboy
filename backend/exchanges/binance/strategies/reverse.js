@@ -4,7 +4,7 @@ const rest = require('../api/rest');
 const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 const {  getRecentOrders, editOrder, roundPriceToTickSize, newMarketOrder, newLimitMakerOrder, newReduceOnlyOrder, cancelOrder, newStopOrder, getOpenOrders, getOrderStatus, getAllOpenPositions, getFuturesAccountBalanceDetails, getPrecision, getTickSize, getPrecisionCached, validateQuantity, adjustQuantityToRequirements,} = require('../api/rest');
-const { sendTelegramMessage, formatEntryMessage, formatErrorMessage, formatAlertMessage } = require('../telegram/telegramBot');
+const { sendTelegramMessage, formatEntryMessage, formatErrorMessage, formatAlertMessage, formatEntryMessageWithPrecision } = require('../telegram/telegramBot');
 
 // ✅ CORREÇÃO: Declarar sentOrders no escopo correto e com Map melhorado
 async function executeReverse(signal, currentPrice, accountId) {
@@ -341,7 +341,7 @@ async function executeReverse(signal, currentPrice, accountId) {
         
         // DEBUG: Log apenas a cada 20 atualizações para não poluir
         if (Math.random() < 0.05) { // 5% de chance = ~1 a cada 20 mensagens
-          console.log(`[LIMIT_ENTRY_DEPTH_WS] ${signal.symbol}: Bid=${bid.toFixed(pricePrecision)}, Ask=${ask.toFixed(pricePrecision)}, Spread=${spread.toFixed(pricePrecision)}`);
+          //console.log(`[LIMIT_ENTRY_DEPTH_WS] ${signal.symbol}: Bid=${bid.toFixed(pricePrecision)}, Ask=${ask.toFixed(pricePrecision)}, Spread=${spread.toFixed(pricePrecision)}`);
         }
       } else {
         wsUpdateErrorCount++;
@@ -1087,13 +1087,26 @@ async function executeReverse(signal, currentPrice, accountId) {
     await connection.commit();
     console.log(`[LIMIT_ENTRY] ✅ Transação COMMITADA com sucesso para sinal ${signal.id}`);
 
-    // ✅ NOTIFICAÇÃO TELEGRAM DE SUCESSO
+    // ✅ NOTIFICAÇÃO TELEGRAM DE SUCESSO (apenas a mensagem detalhada, sem duplicidade)
     try {
       const totalValue = totalFilledSize * averageEntryPrice;
-      const message = formatEntryMessage(signal, totalFilledSize, averageEntryPrice, totalValue);
-      
-      const messageSent = await sendTelegramMessage(accountId, message);
-      if (messageSent) {
+      const message = await formatEntryMessageWithPrecision(signal, totalFilledSize, averageEntryPrice, totalValue, accountId);
+      // Enviar mensagem e capturar o message_id
+      const telegramResult = await sendTelegramMessage(accountId, message);
+      let messageId = null;
+      if (telegramResult && telegramResult.result && telegramResult.result.message_id) {
+        messageId = telegramResult.result.message_id;
+      } else if (telegramResult && telegramResult.message_id) {
+        messageId = telegramResult.message_id;
+      }
+      if (messageId) {
+        await connection.query(
+          `UPDATE webhook_signals SET registry_message_id = ? WHERE id = ?`,
+          [messageId, signal.id]
+        );
+        console.log(`[LIMIT_ENTRY] 📋 registry_message_id salvo: ${messageId}`);
+      }
+      if (telegramResult && (telegramResult.ok || telegramResult === true)) {
         console.log(`[LIMIT_ENTRY] 📱 Notificação de sucesso enviada via Telegram`);
       }
     } catch (telegramError) {

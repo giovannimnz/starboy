@@ -162,7 +162,7 @@ async function handleBalanceUpdates(connection, balances, accountId, reason, eve
             
             // ✅ SÓ ENVIA SE A MENSAGEM NÃO FOR NULL (mudança >= 0.01)
             if (message) {
-              await sendTelegramMessage(accountId, message);
+              await sendTelegramMessage(accountId, message, chatId);
               console.log(`[ACCOUNT] 📱 Notificação de saldo enviada para mudança de ${balanceChange.toFixed(4)} USDT`);
             }
           } catch (telegramError) {
@@ -272,11 +272,123 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
             }
           }
           console.log(`[ACCOUNT_UPDATE] ✅ Nova posição COMPLETA criada: ${symbol} (ID: ${newPositionId}) com todos os campos do webhook`);
+          
+          // Após inserir a posição, vincular o id aos sinais e ordens
+          if (newPositionId) {
+            // Atualizar o webhook_signals mais recente com o mesmo symbol, status 'EXECUTADO' e conta
+            await connection.query(
+              `UPDATE webhook_signals SET position_id = ? WHERE symbol = ? AND status = 'EXECUTADO' AND conta_id = ? ORDER BY id DESC LIMIT 1`,
+              [newPositionId, symbol, accountId]
+            );
+            // Atualizar ordens
+            await connection.query(
+              `UPDATE ordens SET id_posicao = ? WHERE simbolo = ? AND conta_id = ? AND (id_posicao IS NULL OR id_posicao = 0)`,
+              [newPositionId, symbol, accountId]
+            );
+            // Atualizar ordens_fechadas
+            await connection.query(
+              `UPDATE ordens_fechadas SET id_posicao = ? WHERE simbolo = ? AND conta_id = ? AND (id_posicao IS NULL OR id_posicao = 0)`,
+              [newPositionId, symbol, accountId]
+            );
+            console.log(`[ACCOUNT_UPDATE] 🔗 Posição ${symbol} (ID: ${newPositionId}) vinculada ao sinal e ordens/ordens_fechadas`);
+          }
         }
       } else {
         // pa == 0: fechar posição existente, nunca fazer insert
         if (existingPositions.length > 0) {
           const positionId = existingPositions[0].id; // ✅ DEFINIR AQUI
+           // === BUSCAR E SOMAR TRADES DA POSIÇÃO FECHADA ===
+          try {
+            const [posRows] = await connection.query('SELECT * FROM posicoes WHERE id = ?', [positionId]);
+            if (posRows.length > 0) {
+              const pos = posRows[0];
+              const dataAbertura = new Date(pos.data_hora_abertura);
+              const dataFechamento = new Date(pos.data_hora_fechamento);
+              
+              if (!isNaN(dataAbertura) && !isNaN(dataFechamento)) {
+                // Aguarda 15 segundos para garantir que todos os trades estejam disponíveis na corretora
+                //console.log(`[ACCOUNT_UPDATE] ⏳ Aguardando 15 segundos antes de buscar trades para cálculo do PnL...`);
+                //await new Promise(res => setTimeout(res, 15000));
+                
+                // NOVA LÓGICA: Buscar orderIds das tabelas ordens e ordens_fechadas para a posição
+                let orderIds = [];
+                try {
+                  // Buscar em ordens
+                  const [ordensRows] = await connection.query('SELECT id_externo FROM ordens WHERE id_posicao = ?', [positionId]);
+                  // Buscar em ordens_fechadas
+                  const [ordensFechadasRows] = await connection.query('SELECT id_externo FROM ordens_fechadas WHERE id_posicao = ?', [positionId]);
+                  orderIds = [
+                    ...ordensRows.map(r => r.id_externo),
+                    ...ordensFechadasRows.map(r => r.id_externo)
+                  ].filter(Boolean);
+                } catch (orderIdErr) {
+                  console.error(`[ACCOUNT_UPDATE] ❌ Erro ao buscar orderIds para posição ${positionId}:`, orderIdErr.message);
+                }
+                if (orderIds.length === 0) {
+                  console.warn(`[ACCOUNT_UPDATE] ⚠️ Nenhum orderId encontrado para a posição ${positionId}. Não será possível calcular o PnL por orderId.`);
+                }
+                let totalCommission = 0;
+                let totalRealized = 0;
+                const { getUserTrades } = require('../api/rest');
+                for (const orderId of orderIds) {
+                  try {
+                    // Consultar trades por orderId
+                    const trades = await getUserTrades(accountId, symbol, { orderId, recvWindow: 10000 });
+                    if (Array.isArray(trades)) {
+                      trades.forEach((t, idx) => {
+                        const commission = parseFloat(t.commission || '0');
+                        const realized = parseFloat(t.realizedPnl || '0');
+                        if (!isNaN(commission)) totalCommission += commission;
+                        if (!isNaN(realized)) totalRealized += realized;
+                        // Log detalhado
+                        console.log(`[ACCOUNT_UPDATE] [${accountId}] Trade #${idx + 1} para orderId ${orderId}:`, JSON.stringify(t));
+                      });
+                    } else {
+                      console.log(`[ACCOUNT_UPDATE] [${accountId}] Nenhum trade retornado para orderId ${orderId}.`);
+                    }
+                  } catch (tradeErr) {
+                    console.error(`[ACCOUNT_UPDATE] ❌ Erro ao buscar trades para orderId ${orderId}:`, tradeErr.message);
+                  }
+                }
+                // LOGS DETALHADOS DO CÁLCULO
+                console.log(`[ACCOUNT_UPDATE] 🧮 Trades da posição fechada ${symbol} (por orderId):`);
+                console.log(`  - totalRealized (soma realizedPnl):`, totalRealized);
+                console.log(`  - totalCommission (soma commission):`, totalCommission);
+                const liquidPnl = totalRealized - totalCommission;
+                console.log(`  - liquid_pnl (totalRealized - totalCommission):`, liquidPnl);
+                await connection.query(
+                  'UPDATE posicoes SET total_realized = ?, total_commission = ?, liquid_pnl = ? WHERE id = ?',
+                  [totalRealized, totalCommission, liquidPnl, positionId]
+                );
+                console.log(`[ACCOUNT_UPDATE] 📝 UPDATE posicoes SET total_realized = ${totalRealized}, total_commission = ${totalCommission}, liquid_pnl = ${liquidPnl} WHERE id = ${positionId}`);
+
+                // === ENVIAR MENSAGEM TELEGRAM APÓS ATUALIZAÇÃO DO PnL ===
+                try {
+                  // Buscar posição atualizada
+                  const [updatedRows] = await connection.query('SELECT * FROM posicoes WHERE id = ?', [positionId]);
+                  if (updatedRows.length > 0) {
+                    const updatedPos = updatedRows[0];
+                    // Buscar chatId da conta
+                    const [contaRows] = await connection.query('SELECT telegram_chat_id FROM contas WHERE id = ?', [accountId]);
+                    const chatId = contaRows.length > 0 ? contaRows[0].telegram_chat_id : null;
+                    if (chatId) {
+                      const { sendTelegramMessage, formatPositionClosedMessage } = require('../telegram/telegramBot');
+                      const msg = await formatPositionClosedMessage(updatedPos, null, null, null, null, null, accountId);
+                      await sendTelegramMessage(accountId, msg, chatId);
+                      console.log(`[ACCOUNT_UPDATE] 📤 Mensagem de posição fechada enviada para Telegram (conta ${accountId}, chatId ${chatId})`);
+                    } else {
+                      console.warn(`[ACCOUNT_UPDATE] ⚠️ ChatId do Telegram não encontrado para conta ${accountId}`);
+                    }
+                  }
+                } catch (telegramError) {
+                  console.error(`[ACCOUNT_UPDATE] ❌ Erro ao enviar mensagem de posição fechada para o Telegram:`, telegramError.message);
+                }
+              }
+            }
+          } catch (tradeSumError) {
+            console.error(`[ACCOUNT_UPDATE] ❌ Erro ao calcular comissão/realizado dos trades da posição fechada:`, tradeSumError.message);
+          }
+
           // Verificar colunas para atualização final
           const [columns] = await connection.query(`SHOW COLUMNS FROM posicoes`);
           const existingColumns = columns.map(col => col.Field);
@@ -301,65 +413,6 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
           closeValues.push(positionId);
           await connection.query(closeQuery, closeValues);
           console.log(`[ACCOUNT_UPDATE] ✅ Posição ${symbol} marcada como FECHADA com dados completos do webhook`);
-
-          // === BUSCAR E SOMAR TRADES DA POSIÇÃO FECHADA ===
-          try {
-            const [posRows] = await connection.query('SELECT * FROM posicoes WHERE id = ?', [positionId]);
-            if (posRows.length > 0) {
-              const pos = posRows[0];
-              const dataAbertura = new Date(pos.data_hora_abertura);
-              const dataFechamento = new Date(pos.data_hora_fechamento);
-              
-              if (!isNaN(dataAbertura) && !isNaN(dataFechamento)) {
-                // Aguarda 30 segundos para garantir que todos os trades estejam disponíveis na corretora
-                console.log(`[ACCOUNT_UPDATE] ⏳ Aguardando 30 segundos antes de buscar trades para cálculo do PnL...`);
-                await new Promise(res => setTimeout(res, 30000));
-                const startTime = dataAbertura.getTime() - 2 * 60 * 1000;
-                const endTime = dataFechamento.getTime();
-                
-                const { getUserTrades } = require('../api/rest');
-                const trades = await getUserTrades(accountId, symbol, { startTime, endTime });
-                
-                let totalCommission = 0;
-                let totalRealized = 0;
-                // LOGAR startTime e endTime formatados
-                const startTimeStr = new Date(startTime).toISOString();
-                const endTimeStr = new Date(endTime).toISOString();
-                const consultaStr = new Date().toISOString();
-                console.log(`[ACCOUNT_UPDATE] [${accountId}] ⏱️ Intervalo de busca de trades: startTime=${startTime} (${startTimeStr}), endTime=${endTime} (${endTimeStr}), consulta=${consultaStr}`);
-                // LOGAR todos os trades retornados (completo)
-                if (Array.isArray(trades)) {
-                  console.log(`[ACCOUNT_UPDATE] [${accountId}] 🧾 Trades retornados (${trades.length}):`);
-                  trades.forEach((t, idx) => {
-                    console.log(`[ACCOUNT_UPDATE] [${accountId}]   #${idx + 1}:`, JSON.stringify(t));
-                  });
-                } else {
-                  console.log(`[ACCOUNT_UPDATE] [${accountId}] Nenhum trade retornado para o período.`);
-                }
-                if (Array.isArray(trades)) {
-                  for (const t of trades) {
-                    const commission = parseFloat(t.commission || '0');
-                    const realized = parseFloat(t.realizedPnl || '0');
-                    if (!isNaN(commission)) totalCommission += commission;
-                    if (!isNaN(realized)) totalRealized += realized;
-                  }
-                }
-                // LOGS DETALHADOS DO CÁLCULO
-                console.log(`[ACCOUNT_UPDATE] 🧮 Trades da posição fechada ${symbol}:`);
-                console.log(`  - totalRealized (soma realizedPnl):`, totalRealized);
-                console.log(`  - totalCommission (soma commission):`, totalCommission);
-                const liquidPnl = totalRealized - totalCommission;
-                console.log(`  - liquid_pnl (totalRealized - totalCommission):`, liquidPnl);
-                await connection.query(
-                  'UPDATE posicoes SET total_realized = ?, total_commission = ?, liquid_pnl = ? WHERE id = ?',
-                  [totalRealized, totalCommission, liquidPnl, positionId]
-                );
-                console.log(`[ACCOUNT_UPDATE] 📝 UPDATE posicoes SET total_realized = ${totalRealized}, total_commission = ${totalCommission}, liquid_pnl = ${liquidPnl} WHERE id = ${positionId}`);
-              }
-            }
-          } catch (tradeSumError) {
-            console.error(`[ACCOUNT_UPDATE] ❌ Erro ao calcular comissão/realizado dos trades da posição fechada:`, tradeSumError.message);
-          }
 
           // ✅ MOVER PARA HISTÓRICO COM positionId DEFINIDO
           try {
