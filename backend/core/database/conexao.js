@@ -874,17 +874,16 @@ async function moveClosedPositionsAndOrders(db, positionId, retryCount = 0) {
     const position = positionResult[0];
     await connection.query(`
       INSERT INTO posicoes_fechadas (
-        id_original, simbolo, quantidade, quantidade_aberta, preco_medio, status,
+        id_original, simbolo, quantidade, preco_medio, status,
         data_hora_abertura, data_hora_fechamento, motivo_fechamento,
         side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente,
-        orign_sig, conta_id, trailing_stop_level, pnl_corrente, observacoes,
-        breakeven_price, accumulated_realized, unrealized_pnl, total_realized, total_commission, liquid_pnl, margin_type, isolated_wallet, position_side, event_reason, webhook_data_raw
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        orign_sig, conta_id, quantidade_aberta, trailing_stop_level, pnl_corrente, 
+        breakeven_price, accumulated_realized, unrealized_pnl, margin_type, isolated_wallet, position_side, event_reason, webhook_data_raw, observacoes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `, [
       position.id, // id_original
       position.simbolo,
       position.quantidade,
-      position.quantidade_aberta,
       position.preco_medio,
       position.status,
       formatDateForMySQL(position.data_hora_abertura),
@@ -897,20 +896,18 @@ async function moveClosedPositionsAndOrders(db, positionId, retryCount = 0) {
       position.preco_corrente,
       position.orign_sig,
       position.conta_id,
+      position.quantidade_aberta,
       position.trailing_stop_level,
       position.pnl_corrente,
-      position.observacoes,
       position.breakeven_price,
       position.accumulated_realized,
       position.unrealized_pnl,
-      position.total_realized,
-      position.total_commission,
-      position.liquid_pnl,
       position.margin_type,
       position.isolated_wallet,
       position.position_side,
       position.event_reason,
-      position.webhook_data_raw
+      position.webhook_data_raw,
+      position.observacoes
     ]);
     console.log(`Posição com id ${positionId} movida para posicoes_fechadas.`);
 
@@ -1370,3 +1367,5 @@ module.exports = {
   getCorretoraPorId,
   registrarLog
 };
+
+

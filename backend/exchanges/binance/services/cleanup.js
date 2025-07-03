@@ -1,6 +1,6 @@
 const { getDatabaseInstance, formatDateForMySQL } = require('../../../core/database/conexao');
 const api = require('../api/rest');
-const { sendTelegramMessage, formatPositionClosedMessage, formatAlertMessage } = require('../services/telegramHelper');
+//const { sendTelegramMessage, formatPositionClosedMessage, formatAlertMessage } = require('../telegram/telegramBot');
 
 /**
  * Limpa sinais órfãos e inconsistências
@@ -843,9 +843,11 @@ async function movePositionToHistory(db, positionId, status = 'CLOSED', reason =
         [positionId, accountId]
       );
       const updatedPosition = updatedPositionArr && updatedPositionArr[0] ? updatedPositionArr[0] : position;
-      //const message = formatPositionClosedMessage(updatedPosition);
-      //await sendTelegramMessage(accountId, message);
-      console.log(`[MOVE_POSITION] 📱 Notificação enviada ao Telegram`);
+      
+      // ✅ REMOVIDO: Envio de mensagem duplicada (já enviada em accountHandlers.js)
+      // const message = await formatPositionClosedMessage(updatedPosition);
+      // await sendTelegramMessage(accountId, message);
+      console.log(`[MOVE_POSITION] 📱 Notificação já enviada em accountHandlers.js - não enviando duplicada`);
     } catch (telegramError) {
       console.log(`[MOVE_POSITION] ⚠️ Erro ao enviar notificação: ${telegramError.message}`);
     }

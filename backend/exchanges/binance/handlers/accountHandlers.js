@@ -3,6 +3,20 @@ const websockets = require('../api/websocket');
 const { sendTelegramMessage, formatBalanceMessage } = require('../services/telegramHelper');
 const { movePositionToHistory } = require('../services/cleanup');
 
+// ✅ CACHE GLOBAL PARA EVITAR DUPLICIDADE DE MENSAGENS DE FECHAMENTO (COMPARTILHADO)
+// Usando uma instância global para garantir que seja único em toda a aplicação
+if (!global.telegramPositionCache) {
+  global.telegramPositionCache = {
+    recentlyClosedPositions: new Map(), // positionId -> timestamp
+    recentTelegramSents: new Map(),     // `accountId-positionId` -> timestamp
+    recentEventMessages: new Map()      // messageId -> timestamp (NOVO: evita processamento duplo de eventos)
+  };
+}
+
+const recentlyClosedPositions = global.telegramPositionCache.recentlyClosedPositions;
+const recentTelegramSents = global.telegramPositionCache.recentTelegramSents;
+const recentEventMessages = global.telegramPositionCache.recentEventMessages;
+
 /**
  * Processa atualizações de conta via WebSocket (ACCOUNT_UPDATE)
  * @param {Object} message - Mensagem completa do WebSocket
@@ -30,6 +44,30 @@ async function handleAccountUpdate(message, accountId, db = null) {
     const reason = updateData.m || 'UNKNOWN';
     const eventTime = message.E || Date.now();
     const transactionTime = message.T || Date.now();
+    
+    // ✅ LOG DETALHADO PARA RASTREAR MÚLTIPLAS INVOCAÇÕES
+    const messageId = `${eventTime}-${accountId}-${reason}`;
+    console.log(`[ACCOUNT_UPDATE_ENTRY] 🔍 ENTRADA - messageId: ${messageId}, conta: ${accountId}, evento: ${reason}, timestamp: ${new Date(eventTime).toISOString()}`);
+    
+    // ✅ CACHE DE DEDUPLICAÇÃO DE EVENTOS: Verificar se este evento já foi processado
+    const now = Date.now();
+    if (recentEventMessages.has(messageId)) {
+      const lastProcessed = recentEventMessages.get(messageId);
+      const timeDiff = now - lastProcessed;
+      console.log(`[ACCOUNT_UPDATE] 🚨 EVENTO DUPLICADO DETECTADO! messageId: ${messageId} já foi processado há ${Math.round(timeDiff/1000)}s, ignorando`);
+      console.log(`[ACCOUNT_UPDATE] 🔍 Esta é uma execução duplicada do handler que foi PREVENIDA pelo cache de eventos!`);
+      return; // ✅ SAIR IMEDIATAMENTE PARA EVITAR PROCESSAMENTO DUPLICADO
+    }
+    
+    // ✅ MARCAR EVENTO COMO PROCESSADO IMEDIATAMENTE (ATÔMICO)
+    recentEventMessages.set(messageId, now);
+    console.log(`[ACCOUNT_UPDATE] 🔒 Evento ${messageId} marcado como processado no cache`);
+    
+    // Limpar cache de eventos após 30 segundos (para evitar acúmulo excessivo)
+    setTimeout(() => {
+      recentEventMessages.delete(messageId);
+      console.log(`[ACCOUNT_UPDATE] 🧹 Cache de evento limpo para ${messageId}`);
+    }, 30 * 1000);
     
     console.log(`[ACCOUNT] ✅ Atualização de conta recebida para conta ${accountId}`);
     console.log(`[ACCOUNT] 📋 Detalhes: Motivo=${reason}, EventTime=${eventTime}, TransactionTime=${transactionTime}`);
@@ -60,15 +98,33 @@ async function handleAccountUpdate(message, accountId, db = null) {
     if (!updateData.B && !updateData.P) {
       console.log(`[ACCOUNT] ℹ️ ACCOUNT_UPDATE sem dados de saldo ou posição para conta ${accountId} (motivo: ${reason})`);
     }
-
   } catch (error) {
-    console.error(`[ACCOUNT] ❌ ERRO CRÍTICO ao processar atualização da conta ${accountId}:`, {
-      error: error.message,
-      stack: error.stack?.split('\n')?.[0],
-      messageType: message?.e,
-      reason: message?.a?.m
-    });
+    console.error(`[ACCOUNT] ❌ Erro fatal no handleAccountUpdate para conta ${accountId}:`, error);
+    // Não relançar o erro para não derrubar o listener do WebSocket
   }
+}
+
+/**
+ * ✅ NOVO: Handler principal para o evento 'accountUpdate' do Pub/Sub.
+ * Este handler é o ponto de entrada para todas as atualizações de conta vindas do WebSocket.
+ * @param {Object} eventData - Dados do evento.
+ * @param {Object} eventData.message - A mensagem completa do WebSocket.
+ * @param {number} eventData.accountId - O ID da conta associada.
+ */
+async function onAccountUpdate({ message, accountId }) {
+    // Chama a função de lógica de negócios existente.
+    // O terceiro parâmetro (db) é opcional e será tratado dentro de handleAccountUpdate.
+    await handleAccountUpdate(message, accountId);
+}
+
+/**
+ * ✅ NOVO: Registra os handlers de conta no sistema Pub/Sub do WebSocket.
+ * Deve ser chamado uma vez na inicialização do monitor.
+ */
+function registerAccountHandlers() {
+    const listenerId = 'mainAccountHandler'; // ID único para este listener
+    websockets.on('accountUpdate', onAccountUpdate, listenerId);
+    console.log(`[ACCOUNT_HANDLERS] 🎧 Handler principal de conta registrado com o ID: ${listenerId}`);
 }
 
 /**
@@ -152,7 +208,22 @@ async function handleBalanceUpdates(connection, balances, accountId, reason, eve
           updateQuery += ` WHERE id = ?`;
           updateValues.push(accountId);
           
-          await connection.query(updateQuery, updateValues);
+          // ✅ RETRY EM CASO DE DEADLOCK - ATUALIZAÇÃO DE SALDO
+          let balanceUpdateTries = 0;
+          while (balanceUpdateTries < 1000) {
+            try {
+              await connection.query(updateQuery, updateValues);
+              break;
+            } catch (error) {
+              if (error.message && error.message.includes('Deadlock found when trying to get lock') && balanceUpdateTries < 999) {
+                balanceUpdateTries++;
+                console.warn(`[ACCOUNT] ⚠️ Deadlock detectado ao atualizar saldo, tentativa ${balanceUpdateTries}/1000...`);
+                await new Promise(res => setTimeout(res, 10 + Math.random() * 50)); // 10-60ms random delay
+                continue;
+              }
+              throw error;
+            }
+          }
           
           console.log(`[ACCOUNT] ✅ Saldo USDT atualizado: ${walletBalance.toFixed(2)} USDT (base_calc: ${novaBaseCalculo.toFixed(2)}, change: ${balanceChange.toFixed(4)}, reason: ${reason})`);
           
@@ -162,7 +233,7 @@ async function handleBalanceUpdates(connection, balances, accountId, reason, eve
             
             // ✅ SÓ ENVIA SE A MENSAGEM NÃO FOR NULL (mudança >= 0.01)
             if (message) {
-              await sendTelegramMessage(accountId, message, chatId);
+            //  await sendTelegramMessage(accountId, message, chatId);
               console.log(`[ACCOUNT] 📱 Notificação de saldo enviada para mudança de ${balanceChange.toFixed(4)} USDT`);
             }
           } catch (telegramError) {
@@ -191,6 +262,15 @@ async function handleBalanceUpdates(connection, balances, accountId, reason, eve
  */
 async function handlePositionUpdates(connection, positions, accountId, reason, eventTime, transactionTime, retryCount = 0) {
   try {
+    const functionEntry = `${eventTime}-${accountId}-${reason}-${Date.now()}`;
+    console.log(`[POSITION_UPDATE_ENTRY] 🔍 ENTRADA - functionEntry: ${functionEntry}, positions: ${positions.length}, conta: ${accountId}, motivo: ${reason}`);
+    
+    // ✅ VERIFICAÇÃO ADICIONAL: Se já temos um cache de evento marcado, este processamento de posição deveria ser único
+    const eventKey = `${eventTime}-${accountId}-${reason}`;
+    if (!recentEventMessages.has(eventKey)) {
+      console.warn(`[POSITION_UPDATE_ENTRY] ⚠️ ATENÇÃO: Processando posições para evento ${eventKey} que não está no cache de eventos!`);
+    }
+    
     console.log(`[ACCOUNT] 📊 Processando ${positions.length} atualizações de posição para conta ${accountId} (motivo: ${reason})`);
     for (const positionData of positions) {
       const symbol = positionData.s;
@@ -216,7 +296,7 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
           // Atualizar posição existente
           const positionId = existingPositions[0].id;
           let updateTries = 0;
-          while (updateTries < 3) {
+          while (updateTries < 1000) {
             try {
               // Montar update completo com todos os campos relevantes
               let updateQuery = `UPDATE posicoes SET quantidade = ?, preco_medio = ?, preco_entrada = ?, preco_corrente = ?, breakeven_price = ?, accumulated_realized = ?, unrealized_pnl = ?, margin_type = ?, isolated_wallet = ?, position_side = ?, event_reason = ?, webhook_data_raw = ?, data_hora_ultima_atualizacao = NOW() WHERE id = ?`;
@@ -224,9 +304,10 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
               await connection.query(updateQuery, updateValues);
               break;
             } catch (error) {
-              if (error.message && error.message.includes('Deadlock found when trying to get lock') && updateTries < 2) {
+              if (error.message && error.message.includes('Deadlock found when trying to get lock') && updateTries < 999) {
                 updateTries++;
-                await new Promise(res => setTimeout(res, 100 * (updateTries + 1)));
+                console.warn(`[ACCOUNT] ⚠️ Deadlock detectado ao atualizar posição, tentativa ${updateTries}/1000...`);
+                await new Promise(res => setTimeout(res, 10 + Math.random() * 50));
                 continue;
               }
               throw error;
@@ -237,7 +318,7 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
           // Só faz insert se pa != 0
           let newPositionId;
           let insertTries = 0;
-          while (insertTries < 3) {
+          while (insertTries < 1000) {
             try {
               const { insertPosition } = require('../../../core/database/conexao');
               newPositionId = await insertPosition(connection, {
@@ -263,9 +344,10 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
               }, accountId);
               break;
             } catch (error) {
-              if (error.message && error.message.includes('Deadlock found when trying to get lock') && insertTries < 2) {
+              if (error.message && error.message.includes('Deadlock found when trying to get lock') && insertTries < 999) {
                 insertTries++;
-                await new Promise(res => setTimeout(res, 100 * (insertTries + 1)));
+                console.warn(`[ACCOUNT] ⚠️ Deadlock detectado ao inserir posição, tentativa ${insertTries}/1000...`);
+                await new Promise(res => setTimeout(res, 10 + Math.random() * 50));
                 continue;
               }
               throw error;
@@ -275,28 +357,196 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
           
           // Após inserir a posição, vincular o id aos sinais e ordens
           if (newPositionId) {
-            // Atualizar o webhook_signals mais recente com o mesmo symbol, status 'EXECUTADO' e conta
-            await connection.query(
-              `UPDATE webhook_signals SET position_id = ? WHERE symbol = ? AND status = 'EXECUTADO' AND conta_id = ? ORDER BY id DESC LIMIT 1`,
-              [newPositionId, symbol, accountId]
-            );
-            // Atualizar ordens
-            await connection.query(
-              `UPDATE ordens SET id_posicao = ? WHERE simbolo = ? AND conta_id = ? AND (id_posicao IS NULL OR id_posicao = 0)`,
-              [newPositionId, symbol, accountId]
-            );
-            // Atualizar ordens_fechadas
-            await connection.query(
-              `UPDATE ordens_fechadas SET id_posicao = ? WHERE simbolo = ? AND conta_id = ? AND (id_posicao IS NULL OR id_posicao = 0)`,
-              [newPositionId, symbol, accountId]
-            );
-            console.log(`[ACCOUNT_UPDATE] 🔗 Posição ${symbol} (ID: ${newPositionId}) vinculada ao sinal e ordens/ordens_fechadas`);
+            console.log(`[ACCOUNT_UPDATE] 🔗 Iniciando vinculação da posição ${newPositionId} (${symbol}) aos sinais e ordens...`);
+            
+            // ✅ PRIMEIRO: Buscar sinais candidatos para debug
+            try {
+              const [candidateSignals] = await connection.query(
+                `SELECT id, symbol, status, position_id, created_at FROM webhook_signals 
+                 WHERE symbol = ? AND conta_id = ? AND (position_id IS NULL OR position_id = 0) 
+                 ORDER BY created_at DESC LIMIT 5`,
+                [symbol, accountId]
+              );
+              
+              console.log(`[ACCOUNT_UPDATE] 🔍 Sinais candidatos encontrados para ${symbol} (conta ${accountId}):`, 
+                candidateSignals.map(s => `ID:${s.id}, Status:${s.status}, PositionId:${s.position_id}, Created:${s.created_at}`));
+            } catch (debugError) {
+              console.warn(`[ACCOUNT_UPDATE] ⚠️ Erro ao buscar sinais candidatos para debug:`, debugError.message);
+            }
+            
+            // ✅ BUSCAR E ATUALIZAR O SINAL MAIS RECENTE (prioridade EXECUTADO, fallback qualquer status)
+            let webhookUpdateTries = 0;
+            let signalUpdated = false;
+            while (webhookUpdateTries < 1000 && !signalUpdated) {
+              try {
+                let signalToUpdate = null;
+                
+                // 1️⃣ PRIMEIRO: Buscar sinal mais recente com status 'EXECUTADO' sem position_id
+                console.log(`[ACCOUNT_UPDATE] 🔍 Buscando sinal EXECUTADO para ${symbol} (conta ${accountId})...`);
+                const [executedSignals] = await connection.query(
+                  `SELECT id, status, created_at FROM webhook_signals 
+                   WHERE symbol = ? AND conta_id = ? AND status = 'EXECUTADO' AND (position_id IS NULL OR position_id = 0)
+                   ORDER BY created_at DESC LIMIT 1`,
+                  [symbol, accountId]
+                );
+                
+                if (executedSignals.length > 0) {
+                  signalToUpdate = executedSignals[0];
+                  console.log(`[ACCOUNT_UPDATE] ✅ Encontrado sinal EXECUTADO: ID ${signalToUpdate.id} (${signalToUpdate.created_at})`);
+                } else {
+                  console.log(`[ACCOUNT_UPDATE] ⚠️ Nenhum sinal EXECUTADO encontrado, buscando fallback...`);
+                  
+                  // 2️⃣ FALLBACK: Buscar sinal mais recente de qualquer status sem position_id
+                  const [anyStatusSignals] = await connection.query(
+                    `SELECT id, status, created_at FROM webhook_signals 
+                     WHERE symbol = ? AND conta_id = ? AND (position_id IS NULL OR position_id = 0)
+                     ORDER BY created_at DESC LIMIT 1`,
+                    [symbol, accountId]
+                  );
+                  
+                  if (anyStatusSignals.length > 0) {
+                    signalToUpdate = anyStatusSignals[0];
+                    console.log(`[ACCOUNT_UPDATE] 📋 Usando sinal fallback: ID ${signalToUpdate.id} (status: ${signalToUpdate.status}, ${signalToUpdate.created_at})`);
+                  }
+                }
+                
+                if (signalToUpdate) {
+                  const signalId = signalToUpdate.id;
+                  const signalStatus = signalToUpdate.status;
+                  
+                  console.log(`[ACCOUNT_UPDATE] 🎯 Vinculando posição ${newPositionId} ao sinal ${signalId} (status: ${signalStatus})`);
+                  
+                  // Atualizar o sinal específico
+                  const [updateResult] = await connection.query(
+                    `UPDATE webhook_signals SET position_id = ? WHERE id = ?`,
+                    [newPositionId, signalId]
+                  );
+                  
+                  if (updateResult.affectedRows > 0) {
+                    console.log(`[ACCOUNT_UPDATE] ✅ Sinal ${signalId} vinculado à posição ${newPositionId} com sucesso (tipo: ${signalStatus === 'EXECUTADO' ? 'prioritário' : 'fallback'})`);
+                    signalUpdated = true;
+                  } else {
+                    console.warn(`[ACCOUNT_UPDATE] ⚠️ Nenhuma linha afetada ao atualizar sinal ${signalId}`);
+                  }
+                } else {
+                  console.warn(`[ACCOUNT_UPDATE] ⚠️ Nenhum sinal encontrado para vincular à posição ${newPositionId} (${symbol}, conta ${accountId})`);
+                  signalUpdated = true; // Para parar o loop
+                }
+                
+                break;
+              } catch (error) {
+                if (error.message && error.message.includes('Deadlock found when trying to get lock') && webhookUpdateTries < 999) {
+                  webhookUpdateTries++;
+                  console.warn(`[ACCOUNT] ⚠️ Deadlock detectado ao atualizar webhook_signals, tentativa ${webhookUpdateTries}/1000...`);
+                  await new Promise(res => setTimeout(res, 10 + Math.random() * 50));
+                  continue;
+                }
+                throw error;
+              }
+            }
+            
+            // ✅ ATUALIZAR ORDENS COM LOGS DETALHADOS
+            console.log(`[ACCOUNT_UPDATE] 🔗 Vinculando ordens à posição ${newPositionId}...`);
+            
+            let ordensUpdateTries = 0;
+            while (ordensUpdateTries < 1000) {
+              try {
+                const [ordensResult] = await connection.query(
+                  `UPDATE ordens SET id_posicao = ? WHERE simbolo = ? AND conta_id = ? AND (id_posicao IS NULL OR id_posicao = 0)`,
+                  [newPositionId, symbol, accountId]
+                );
+                console.log(`[ACCOUNT_UPDATE] ✅ ${ordensResult.affectedRows} ordens vinculadas à posição ${newPositionId}`);
+                break;
+              } catch (error) {
+                if (error.message && error.message.includes('Deadlock found when trying to get lock') && ordensUpdateTries < 999) {
+                  ordensUpdateTries++;
+                  console.warn(`[ACCOUNT] ⚠️ Deadlock detectado ao atualizar ordens, tentativa ${ordensUpdateTries}/1000...`);
+                  await new Promise(res => setTimeout(res, 10 + Math.random() * 50));
+                  continue;
+                }
+                throw error;
+              }
+            }
+            
+            // ✅ ATUALIZAR ORDENS_FECHADAS COM LOGS DETALHADOS
+            let ordensFechadasUpdateTries = 0;
+            while (ordensFechadasUpdateTries < 1000) {
+              try {
+                const [ordensFechadasResult] = await connection.query(
+                  `UPDATE ordens_fechadas SET id_posicao = ? WHERE simbolo = ? AND conta_id = ? AND (id_posicao IS NULL OR id_posicao = 0)`,
+                  [newPositionId, symbol, accountId]
+                );
+                console.log(`[ACCOUNT_UPDATE] ✅ ${ordensFechadasResult.affectedRows} ordens_fechadas vinculadas à posição ${newPositionId}`);
+                break;
+              } catch (error) {
+                if (error.message && error.message.includes('Deadlock found when trying to get lock') && ordensFechadasUpdateTries < 999) {
+                  ordensFechadasUpdateTries++;
+                  console.warn(`[ACCOUNT] ⚠️ Deadlock detectado ao atualizar ordens_fechadas, tentativa ${ordensFechadasUpdateTries}/1000...`);
+                  await new Promise(res => setTimeout(res, 10 + Math.random() * 50));
+                  continue;
+                }
+                throw error;
+              }
+            }
+            
+            // ✅ LOG FINAL DE CONFIRMAÇÃO
+            try {
+              const [finalCheck] = await connection.query(
+                `SELECT id, status, position_id FROM webhook_signals 
+                 WHERE symbol = ? AND conta_id = ? AND position_id = ?`,
+                [symbol, accountId, newPositionId]
+              );
+              
+              if (finalCheck.length > 0) {
+                console.log(`[ACCOUNT_UPDATE] ✅ CONFIRMADO: Sinal ${finalCheck[0].id} vinculado à posição ${newPositionId} (status: ${finalCheck[0].status})`);
+              } else {
+                console.warn(`[ACCOUNT_UPDATE] ⚠️ ATENÇÃO: Nenhum sinal encontrado vinculado à posição ${newPositionId} após tentativa de vinculação`);
+              }
+            } catch (checkError) {
+              console.warn(`[ACCOUNT_UPDATE] ⚠️ Erro ao verificar vinculação final:`, checkError.message);
+            }
+            
+            console.log(`[ACCOUNT_UPDATE] 🔗 Posição ${symbol} (ID: ${newPositionId}) processada completamente`);
           }
         }
       } else {
         // pa == 0: fechar posição existente, nunca fazer insert
         if (existingPositions.length > 0) {
           const positionId = existingPositions[0].id; // ✅ DEFINIR AQUI
+          const wasOpen = existingPositions[0].status === 'OPEN'; // ✅ VERIFICAR SE ESTAVA ABERTA ANTES
+          
+          // ✅ SÓ PROCESSAR SE A POSIÇÃO ESTAVA REALMENTE ABERTA
+          if (!wasOpen) {
+            console.log(`[ACCOUNT_UPDATE] ⚠️ Posição ${symbol} (ID: ${positionId}) já estava fechada (status: ${existingPositions[0].status}), ignorando evento de fechamento`);
+            continue;
+          }
+          
+          // ✅ CACHE PARA EVITAR DUPLICIDADE - Verificar se já foi processada recentemente
+          const now = Date.now();
+          const positionKey = `${accountId}-${positionId}`;
+          console.log(`[DEDUP_CACHE_CHECK] 🔍 Verificando cache para ${positionKey}, cache atual:`, Array.from(recentlyClosedPositions.entries()));
+          
+          const recentlyClosed = recentlyClosedPositions.has(positionKey);
+          if (recentlyClosed) {
+            const lastProcessed = recentlyClosedPositions.get(positionKey);
+            const timeDiff = now - lastProcessed;
+            console.log(`[ACCOUNT_UPDATE] � DUPLICAÇÃO DETECTADA! Posição ${symbol} (ID: ${positionId}) já foi processada há ${Math.round(timeDiff/1000)}s, ignorando evento duplicado`);
+            console.log(`[ACCOUNT_UPDATE] 🔍 Esta é uma duplicação de evento ACCOUNT_UPDATE que foi PREVENIDA pelo cache!`);
+            continue;
+          }
+          
+          // ✅ MARCAR POSIÇÃO COMO PROCESSADA NO CACHE IMEDIATAMENTE (antes do processamento)
+          console.log(`[DEDUP_CACHE_SET] ✅ Marcando ${positionKey} como processada no cache`);
+          recentlyClosedPositions.set(positionKey, now);
+          // Remover do cache após 2 minutos (reduzido de 5 para evitar atraso em reprocessamento legítimo)
+          setTimeout(() => {
+            recentlyClosedPositions.delete(positionKey);
+            console.log(`[ACCOUNT_UPDATE] 🧹 Cache limpo para posição ${positionKey}`);
+          }, 2 * 60 * 1000);
+          
+          console.log(`[ACCOUNT_UPDATE] 🔄 Fechando posição ${symbol} (ID: ${positionId}) que estava OPEN - PROCESSAMENTO ÚNICO`);
+          console.log(`[POSITION_CLOSE_TRACKING] 🎯 Início do fechamento: positionId=${positionId}, symbol=${symbol}, conta=${accountId}, eventTime=${eventTime}`);
+          
            // === BUSCAR E SOMAR TRADES DA POSIÇÃO FECHADA ===
           try {
             const [posRows] = await connection.query('SELECT * FROM posicoes WHERE id = ?', [positionId]);
@@ -356,10 +606,27 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
                 console.log(`  - totalCommission (soma commission):`, totalCommission);
                 const liquidPnl = totalRealized - totalCommission;
                 console.log(`  - liquid_pnl (totalRealized - totalCommission):`, liquidPnl);
-                await connection.query(
-                  'UPDATE posicoes SET total_realized = ?, total_commission = ?, liquid_pnl = ? WHERE id = ?',
-                  [totalRealized, totalCommission, liquidPnl, positionId]
-                );
+                
+                // ✅ RETRY EM CASO DE DEADLOCK - ATUALIZAÇÃO DO PnL
+                let pnlUpdateTries = 0;
+                while (pnlUpdateTries < 1000) {
+                  try {
+                    await connection.query(
+                      'UPDATE posicoes SET total_realized = ?, total_commission = ?, liquid_pnl = ? WHERE id = ?',
+                      [totalRealized, totalCommission, liquidPnl, positionId]
+                    );
+                    break;
+                  } catch (error) {
+                    if (error.message && error.message.includes('Deadlock found when trying to get lock') && pnlUpdateTries < 999) {
+                      pnlUpdateTries++;
+                      console.warn(`[ACCOUNT] ⚠️ Deadlock detectado ao atualizar PnL, tentativa ${pnlUpdateTries}/1000...`);
+                      await new Promise(res => setTimeout(res, 10 + Math.random() * 50));
+                      continue;
+                    }
+                    throw error;
+                  }
+                }
+                
                 console.log(`[ACCOUNT_UPDATE] 📝 UPDATE posicoes SET total_realized = ${totalRealized}, total_commission = ${totalCommission}, liquid_pnl = ${liquidPnl} WHERE id = ${positionId}`);
 
                 // === ENVIAR MENSAGEM TELEGRAM APÓS ATUALIZAÇÃO DO PnL ===
@@ -368,16 +635,88 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
                   const [updatedRows] = await connection.query('SELECT * FROM posicoes WHERE id = ?', [positionId]);
                   if (updatedRows.length > 0) {
                     const updatedPos = updatedRows[0];
+                    
+                    // ✅ BUSCAR registry_message_id DO SINAL CORRESPONDENTE À CONTA ESPECÍFICA
+                    let replyToMessageId = null;
+                    try {
+                      const [signalRows] = await connection.query(
+                        `SELECT registry_message_id FROM webhook_signals 
+                         WHERE position_id = ? AND conta_id = ? AND registry_message_id IS NOT NULL 
+                         ORDER BY id DESC LIMIT 1`,
+                        [positionId, accountId]
+                      );
+                      
+                      if (signalRows.length > 0 && signalRows[0].registry_message_id) {
+                        replyToMessageId = signalRows[0].registry_message_id;
+                        console.log(`[ACCOUNT_UPDATE] 📱 Enviando mensagem como resposta à mensagem ${replyToMessageId} (conta ${accountId})`);
+                      } else {
+                        console.log(`[ACCOUNT_UPDATE] 📱 Nenhum registry_message_id encontrado para posição ${positionId} da conta ${accountId}`);
+                      }
+                    } catch (signalError) {
+                      console.warn(`[ACCOUNT_UPDATE] ⚠️ Erro ao buscar registry_message_id:`, signalError.message);
+                    }
+                    
                     // Buscar chatId da conta
                     const [contaRows] = await connection.query('SELECT telegram_chat_id FROM contas WHERE id = ?', [accountId]);
                     const chatId = contaRows.length > 0 ? contaRows[0].telegram_chat_id : null;
                     if (chatId) {
-                      const { sendTelegramMessage, formatPositionClosedMessage } = require('../telegram/telegramBot');
-                      const msg = await formatPositionClosedMessage(updatedPos, null, null, null, null, null, accountId);
-                      await sendTelegramMessage(accountId, msg, chatId);
-                      console.log(`[ACCOUNT_UPDATE] 📤 Mensagem de posição fechada enviada para Telegram (conta ${accountId}, chatId ${chatId})`);
+                      // ✅ SISTEMA DE DEDUPLICAÇÃO ULTRA-ROBUSTO
+                      // Combinar múltiplos identificadores para criar chave única
+                      const positionHash = `${accountId}-${positionId}-${updatedPos.simbolo}-${Math.round(updatedPos.liquid_pnl * 10000)}`;
+                      const telegramKey = `${accountId}-${positionId}`;
+                      const globalKey = `pos_closed_${positionHash}`;
+                      const now = Date.now();
+                      
+                      console.log(`[TELEGRAM_DUPLICATE_CHECK] 🔍 Verificação de duplicação para posição ${positionId}:`);
+                      console.log(`[TELEGRAM_DUPLICATE_CHECK] 📋 Hash da posição: ${positionHash}`);
+                      console.log(`[TELEGRAM_DUPLICATE_CHECK] 📋 Cache telegram atual:`, Array.from(recentTelegramSents.keys()));
+                      console.log(`[TELEGRAM_DUPLICATE_CHECK] 📋 Cache posições atual:`, Array.from(recentlyClosedPositions.keys()));
+                      
+                      // ✅ VERIFICAÇÃO 1: Cache específico do Telegram
+                      if (recentTelegramSents.has(telegramKey)) {
+                        const lastSent = recentTelegramSents.get(telegramKey);
+                        const timeDiff = now - lastSent;
+                        console.log(`[TELEGRAM_DISPATCHER] 🚨 DUPLICAÇÃO TELEGRAM DETECTADA! Posição ${positionId} já teve mensagem enviada há ${Math.round(timeDiff/1000)}s`);
+                      } else if (recentlyClosedPositions.has(globalKey)) {
+                        // ✅ VERIFICAÇÃO 2: Cache global de posições fechadas com hash
+                        const lastClosed = recentlyClosedPositions.get(globalKey);
+                        const timeDiff = now - lastClosed;
+                        console.log(`[TELEGRAM_DISPATCHER] 🚨 DUPLICAÇÃO GLOBAL DETECTADA! Hash ${positionHash} já processado há ${Math.round(timeDiff/1000)}s`);
+                      } else {
+                        // ✅ MARCAR TODAS AS PROTEÇÕES ANTES DE ENVIAR (ATÔMICO)
+                        recentTelegramSents.set(telegramKey, now);
+                        recentlyClosedPositions.set(globalKey, now);
+                        console.log(`[TELEGRAM_DISPATCHER] 🔒 Posição ${positionId} marcada em TODOS os caches antes do envio`);
+                        
+                        // ✅ LIMPEZA AUTOMÁTICA DOS CACHES (3 minutos)
+                        setTimeout(() => {
+                          recentTelegramSents.delete(telegramKey);
+                          recentlyClosedPositions.delete(globalKey);
+                          console.log(`[TELEGRAM_DISPATCHER] 🧹 Caches limpos para posição ${positionId}`);
+                        }, 3 * 60 * 1000);
+                        
+                        // ✅ PROCEDER COM O ENVIO (todas as verificações passaram)
+                        const timestamp = new Date().toLocaleString('pt-BR');
+                        console.log(`[TELEGRAM_DISPATCHER] 🕐 ${timestamp} | ARQUIVO: accountHandlers.js | AÇÃO: Disparando mensagem de POSIÇÃO FECHADA`);
+                        console.log(`[TELEGRAM_DISPATCHER] 📋 Dados: Conta=${accountId}, Symbol=${updatedPos.simbolo}, PnL=${updatedPos.liquid_pnl}, PositionID=${positionId}`);
+                        console.log(`[TELEGRAM_DISPATCHER] 🔗 ReplyTo: ${replyToMessageId || 'nenhum'}, ChatID=${chatId}`);
+                        
+                        const { formatAndSendPositionClosed } = require('../services/telegramHelper');
+                        const result = await formatAndSendPositionClosed(accountId, updatedPos, replyToMessageId);
+                        
+                        console.log(`[TELEGRAM_DISPATCHER] 📤 Resultado do envio de posição fechada:`, JSON.stringify(result, null, 2));
+                        
+                        if (result && result.success) {
+                          console.log(`[TELEGRAM_DISPATCHER] ✅ ${timestamp} | accountHandlers.js | Mensagem de posição fechada enviada com SUCESSO (conta ${accountId})`);
+                        } else {
+                          console.warn(`[TELEGRAM_DISPATCHER] ⚠️ ${timestamp} | accountHandlers.js | FALHA ao enviar mensagem de posição fechada`);
+                          console.warn(`[TELEGRAM_DISPATCHER] 🔍 Erro:`, result?.error || 'Erro desconhecido');
+                          console.warn(`[TELEGRAM_DISPATCHER] 🔍 Resposta completa:`, result);
+                        }
+                      }
                     } else {
-                      console.warn(`[ACCOUNT_UPDATE] ⚠️ ChatId do Telegram não encontrado para conta ${accountId}`);
+                      const timestamp = new Date().toLocaleString('pt-BR');
+                      console.warn(`[TELEGRAM_DISPATCHER] ⚠️ ${timestamp} | accountHandlers.js | ChatId do Telegram não encontrado para conta ${accountId}`);
                     }
                   }
                 } catch (telegramError) {
@@ -411,7 +750,24 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
           }
           closeQuery += ` WHERE id = ?`;
           closeValues.push(positionId);
-          await connection.query(closeQuery, closeValues);
+          
+          // ✅ RETRY EM CASO DE DEADLOCK - FECHAMENTO DE POSIÇÃO
+          let closeUpdateTries = 0;
+          while (closeUpdateTries < 1000) {
+            try {
+              await connection.query(closeQuery, closeValues);
+              break;
+            } catch (error) {
+              if (error.message && error.message.includes('Deadlock found when trying to get lock') && closeUpdateTries < 999) {
+                closeUpdateTries++;
+                console.warn(`[ACCOUNT] ⚠️ Deadlock detectado ao fechar posição, tentativa ${closeUpdateTries}/1000...`);
+                await new Promise(res => setTimeout(res, 10 + Math.random() * 50));
+                continue;
+              }
+              throw error;
+            }
+          }
+          
           console.log(`[ACCOUNT_UPDATE] ✅ Posição ${symbol} marcada como FECHADA com dados completos do webhook`);
 
           // ✅ MOVER PARA HISTÓRICO COM positionId DEFINIDO
@@ -531,12 +887,246 @@ async function initializeAccountHandlers(accountId) {
   }
 }
 
+/**
+ * ✅ FUNÇÃO DEBUG: Mostra status dos caches de deduplicação
+ */
+function debugCacheStatus() {
+  console.log(`[CACHE_DEBUG] 📊 Status dos caches de deduplicação:`);
+  console.log(`[CACHE_DEBUG] 🔒 Posições recentemente fechadas: ${recentlyClosedPositions.size} entradas`);
+  console.log(`[CACHE_DEBUG] 📱 Telegramas recentemente enviados: ${recentTelegramSents.size} entradas`);
+  console.log(`[CACHE_DEBUG] 🎯 Eventos recentemente processados: ${recentEventMessages.size} entradas`);
+  console.log(`[CACHE_DEBUG] 📋 Detalhes das posições:`, Array.from(recentlyClosedPositions.entries()));
+  console.log(`[CACHE_DEBUG] 📋 Detalhes dos telegramas:`, Array.from(recentTelegramSents.entries()));
+  console.log(`[CACHE_DEBUG] 📋 Detalhes dos eventos:`, Array.from(recentEventMessages.entries()));
+}
+
+/**
+ * ✅ FUNÇÃO TESTE: Simula teste de deduplicação
+ */
+function testDeduplication(accountId, positionId) {
+  const positionKey = `${accountId}-${positionId}`;
+  const telegramKey = `${accountId}-${positionId}`;
+  
+  console.log(`[DEDUP_TEST] 🧪 Testando deduplicação para posição ${positionKey}`);
+  
+  // Teste 1: Verificar se posição está no cache
+  const isInPositionCache = recentlyClosedPositions.has(positionKey);
+  console.log(`[DEDUP_TEST] 📋 Posição no cache de fechamento: ${isInPositionCache}`);
+  
+  // Teste 2: Verificar se telegram está no cache
+  const isInTelegramCache = recentTelegramSents.has(telegramKey);
+  console.log(`[DEDUP_TEST] 📱 Telegram no cache de envio: ${isInTelegramCache}`);
+  
+  return {
+    positionCached: isInPositionCache,
+    telegramCached: isInTelegramCache
+  };
+}
+
+/**
+ * ✅ FUNÇÃO UTILITÁRIA: Limpa todos os caches de deduplicação
+ */
+function clearAllCaches() {
+  const positionCount = recentlyClosedPositions.size;
+  const telegramCount = recentTelegramSents.size;
+  const eventCount = recentEventMessages.size;
+  
+  recentlyClosedPositions.clear();
+  recentTelegramSents.clear();
+  recentEventMessages.clear();
+  
+  console.log(`[CACHE_CLEAR] 🧹 Todos os caches limpos:`);
+  console.log(`[CACHE_CLEAR] 📋 Posições removidas: ${positionCount}`);
+  console.log(`[CACHE_CLEAR] 📱 Telegramas removidos: ${telegramCount}`);
+  console.log(`[CACHE_CLEAR] 🎯 Eventos removidos: ${eventCount}`);
+  
+  return {
+    positionsCleared: positionCount,
+    telegramsCleared: telegramCount,
+    eventsCleared: eventCount
+  };
+}
+
+/**
+ * ✅ FUNÇÃO UTILITÁRIA: Verifica e corrige sinais órfãos (sem position_id)
+ * Pode ser chamada periodicamente para garantir que não haja sinais perdidos
+ */
+async function fixOrphanSignals(accountId = null) {
+  try {
+    console.log(`[ACCOUNT_ORPHAN] 🔍 Iniciando verificação de sinais órfãos${accountId ? ` para conta ${accountId}` : ' para todas as contas'}...`);
+    
+    const connection = await getDatabaseInstance(accountId || 1);
+    if (!connection) {
+      console.error(`[ACCOUNT_ORPHAN] ❌ Não foi possível obter conexão com banco`);
+      return 0;
+    }
+
+    // Buscar sinais órfãos dos últimos 30 minutos
+    let orphanQuery = `
+      SELECT ws.id, ws.symbol, ws.conta_id, ws.status, ws.created_at
+      FROM webhook_signals ws
+      WHERE (ws.position_id IS NULL OR ws.position_id = 0)
+        AND ws.created_at >= DATE_SUB(NOW(), INTERVAL 30 MINUTE)
+    `;
+    let queryParams = [];
+    
+    if (accountId) {
+      orphanQuery += ` AND ws.conta_id = ?`;
+      queryParams.push(accountId);
+    }
+    
+    orphanQuery += ` ORDER BY ws.created_at DESC`;
+    
+    const [orphanSignals] = await connection.query(orphanQuery, queryParams);
+
+    if (orphanSignals.length === 0) {
+      console.log(`[ACCOUNT_ORPHAN] ✅ Nenhum sinal órfão encontrado`);
+      return 0;
+    }
+
+    console.log(`[ACCOUNT_ORPHAN] 🔍 Encontrados ${orphanSignals.length} sinais órfãos para verificação`);
+
+    let linkedCount = 0;
+
+    for (const signal of orphanSignals) {
+      try {
+        // Buscar posição OPEN mais recente para o mesmo símbolo e conta
+        const [positions] = await connection.query(`
+          SELECT id, quantidade, preco_medio, data_hora_abertura
+          FROM posicoes 
+          WHERE simbolo = ? AND conta_id = ? AND status = 'OPEN' AND ABS(quantidade) > 0
+          ORDER BY data_hora_abertura DESC, id DESC
+          LIMIT 1
+        `, [signal.symbol, signal.conta_id]);
+
+        if (positions.length > 0) {
+          const position = positions[0];
+          
+          // Verificar se a posição foi criada próximo ao horário do sinal (margem de 10 minutos)
+          const signalTime = new Date(signal.created_at);
+          const positionTime = new Date(position.data_hora_abertura);
+          const timeDiff = Math.abs(positionTime.getTime() - signalTime.getTime());
+          const tenMinutes = 10 * 60 * 1000;
+
+          if (timeDiff <= tenMinutes) {
+            // Atualizar sinal com retry robusto
+            let updateTries = 0;
+            while (updateTries < 100) {
+              try {
+                const [updateResult] = await connection.query(
+                  `UPDATE webhook_signals SET position_id = ? WHERE id = ?`,
+                  [position.id, signal.id]
+                );
+                
+                if (updateResult.affectedRows > 0) {
+                  console.log(`[ACCOUNT_ORPHAN] ✅ Sinal órfão ${signal.id} (${signal.symbol}) vinculado à posição ${position.id}`);
+                  console.log(`[ACCOUNT_ORPHAN]   - Quantidade posição: ${position.quantidade}`);
+                  console.log(`[ACCOUNT_ORPHAN]   - Preço médio: ${position.preco_medio}`);
+                  console.log(`[ACCOUNT_ORPHAN]   - Diferença temporal: ${(timeDiff / 1000).toFixed(1)}s`);
+                  
+                  linkedCount++;
+                } else {
+                  console.warn(`[ACCOUNT_ORPHAN] ⚠️ Nenhuma linha afetada ao vincular sinal órfão ${signal.id}`);
+                }
+                break;
+                
+              } catch (updateError) {
+                if (updateError.message && updateError.message.includes('Deadlock found when trying to get lock') && updateTries < 99) {
+                  updateTries++;
+                  console.warn(`[ACCOUNT_ORPHAN] ⚠️ Deadlock ao vincular sinal órfão, tentativa ${updateTries}/100...`);
+                  await new Promise(res => setTimeout(res, 10 + Math.random() * 50));
+                  continue;
+                }
+                throw updateError;
+              }
+            }
+          } else {
+            console.log(`[ACCOUNT_ORPHAN] ⏭️ Sinal ${signal.id} (${signal.symbol}): diferença temporal muito grande (${(timeDiff / 1000).toFixed(1)}s)`);
+          }
+        } else {
+          console.log(`[ACCOUNT_ORPHAN] 🔍 Sinal ${signal.id} (${signal.symbol}): nenhuma posição OPEN encontrada`);
+        }
+        
+      } catch (signalError) {
+        console.error(`[ACCOUNT_ORPHAN] ❌ Erro ao processar sinal órfão ${signal.id}:`, signalError.message);
+      }
+    }
+
+    if (linkedCount > 0) {
+      console.log(`[ACCOUNT_ORPHAN] ✅ Total de sinais órfãos corrigidos: ${linkedCount}/${orphanSignals.length}`);
+    } else {
+      console.log(`[ACCOUNT_ORPHAN] ℹ️ Nenhum sinal órfão pôde ser corrigido`);
+    }
+
+    return linkedCount;
+    
+  } catch (error) {
+    console.error(`[ACCOUNT_ORPHAN] ❌ Erro ao verificar sinais órfãos:`, error.message);
+    return 0;
+  }
+}
+
+/**
+ * ✅ FUNÇÃO DIAGNÓSTICO: Monitora e reporta atividade de deduplicação em tempo real
+ */
+function monitorDeduplication() {
+  const stats = {
+    totalEventMessages: recentEventMessages.size,
+    totalClosedPositions: recentlyClosedPositions.size,
+    totalTelegramSents: recentTelegramSents.size,
+    recentEvents: Array.from(recentEventMessages.entries()).slice(-5), // Últimos 5
+    recentPositions: Array.from(recentlyClosedPositions.entries()).slice(-5),
+    recentTelegrams: Array.from(recentTelegramSents.entries()).slice(-5),
+    timestamp: new Date().toISOString()
+  };
+  
+  console.log(`[DEDUP_MONITOR] 📊 Status da deduplicação em ${stats.timestamp}:`);
+  console.log(`[DEDUP_MONITOR] 🎯 Eventos recentes: ${stats.totalEventMessages}`);
+  console.log(`[DEDUP_MONITOR] 🔒 Posições fechadas: ${stats.totalClosedPositions}`);
+  console.log(`[DEDUP_MONITOR] 📱 Telegramas enviados: ${stats.totalTelegramSents}`);
+  
+  return stats;
+}
+
+/**
+ * ✅ FUNÇÃO ALERTA: Detecta padrões suspeitos que podem indicar duplicações
+ */
+function detectSuspiciousPatterns() {
+  const now = Date.now();
+  const suspiciousEvents = [];
+  
+  // Verificar eventos muito próximos no tempo
+  const eventTimes = Array.from(recentEventMessages.values());
+  for (let i = 1; i < eventTimes.length; i++) {
+    const timeDiff = eventTimes[i] - eventTimes[i-1];
+    if (timeDiff < 1000) { // Menos de 1 segundo
+      suspiciousEvents.push({
+        type: 'RAPID_EVENTS',
+        timeDiff,
+        message: `Eventos muito próximos detectados (${timeDiff}ms)`
+      });
+    }
+  }
+  
+  // Verificar se há muitas entradas no cache (possível memory leak)
+  if (recentEventMessages.size > 100) {
+    suspiciousEvents.push({
+      type: 'CACHE_OVERFLOW',
+      cacheSize: recentEventMessages.size,
+      message: `Cache de eventos muito grande: ${recentEventMessages.size} entradas`
+    });
+  }
+  
+  if (suspiciousEvents.length > 0) {
+    console.warn(`[DEDUP_ALERT] 🚨 Padrões suspeitos detectados:`, suspiciousEvents);
+  }
+  
+  return suspiciousEvents;
+}
+
 module.exports = {
   handleAccountUpdate,
   handleBalanceUpdates,
   handlePositionUpdates,
-  registerAccountHandlers,
-  areAccountHandlersRegistered,
-  unregisterAccountHandlers,
-  initializeAccountHandlers
+  registerAccountHandlers
 };

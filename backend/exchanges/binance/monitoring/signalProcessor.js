@@ -808,7 +808,7 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
               ['EXECUTADO', signal.id]
             );
             
-            if (signal.chat_id) {
+/*            if (signal.chat_id) {
               try {
                 const message = `✅ Entrada Executada\n\n` +
                                 `📊 ${symbol}\n` +
@@ -821,7 +821,7 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
               } catch (telegramError) {
                 console.warn(`[SIGNAL] ⚠️ Erro ao enviar notificação de execução:`, telegramError.message);
               }
-            }
+            }*/
           } else {
             console.error(`[SIGNAL] ❌ Falha na execução da entrada:`, entryResult);
             throw new Error(entryResult?.error || 'Falha na execução da entrada');

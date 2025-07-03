@@ -2,6 +2,8 @@ const { getDatabaseInstance, moveClosedPositionsAndOrders } = require('../../../
 const { getAllOpenPositions, getOpenOrders } = require('../api/rest');
 // ✅ CORREÇÃO: Importar do cleanup.js
 const { movePositionToHistory } = require('../services/cleanup');
+// ✅ IMPORTAR FUNÇÕES NECESSÁRIAS PARA CRIAR ORDENS
+const { newStopOrder, newLimitMakerOrder, newReduceOnlyOrder, validateQuantity, adjustQuantityToRequirements, getPrecision, roundPriceToTickSize } = require('../api/rest');
 
 /**
  * Sincroniza posições do banco com a corretora
@@ -304,6 +306,43 @@ async function syncPositionsWithAutoClose(accountId) {
           }
         }
       }
+    }
+
+    // ✅ NOVA FUNCIONALIDADE: DETECTAR E CORRIGIR POSIÇÕES ÓRFÃS
+    try {
+      console.log(`[SYNC_AUTO] 🔍 Verificando posições órfãs que precisam de ordens de proteção...`);
+      const orphanResults = await detectAndFixOrphanPositions(accountId);
+      
+      if (orphanResults.fixed > 0) {
+        console.log(`[SYNC_AUTO] 🔧 ${orphanResults.fixed} posições órfãs corrigidas com ordens de proteção!`);
+        syncResults.orphansFixed = orphanResults.fixed;
+      } else if (orphanResults.processed > 0) {
+        console.log(`[SYNC_AUTO] ✅ ${orphanResults.processed} posições verificadas, nenhuma órfã encontrada`);
+        syncResults.orphansChecked = orphanResults.processed;
+      }
+      
+      if (orphanResults.errors.length > 0) {
+        console.warn(`[SYNC_AUTO] ⚠️ ${orphanResults.errors.length} erros na detecção de órfãs:`, orphanResults.errors);
+        syncResults.orphanErrors = orphanResults.errors;
+      }
+    } catch (orphanDetectionError) {
+      console.error(`[SYNC_AUTO] ❌ Erro na detecção de posições órfãs:`, orphanDetectionError.message);
+      syncResults.orphanDetectionError = orphanDetectionError.message;
+    }
+
+    // ✅ NOVA FUNCIONALIDADE: VINCULAR SINAIS 'EXECUTADO' A POSIÇÕES ABERTAS
+    try {
+      console.log(`[SYNC_AUTO] 🔗 Verificando sinais para vincular a posições abertas...`);
+      const linkResults = await linkSignalsToOpenPositions(accountId);
+      if (linkResults.linked > 0) {
+        syncResults.signalsLinked = linkResults.linked;
+      }
+      if (linkResults.errors.length > 0) {
+        syncResults.signalLinkErrors = linkResults.errors;
+      }
+    } catch (linkError) {
+      console.error(`[SYNC_AUTO] ❌ Erro na vinculação de sinais:`, linkError.message);
+      syncResults.signalLinkError = linkError.message;
     }
 
     return syncResults;
@@ -728,200 +767,436 @@ async function moveClosedPositionsToHistory(accountId) {
 }
 
 /**
- * Verifica posições abertas na corretora sem ordens de proteção (TP/SL) no banco e corrige criando as ordens faltantes.
- * Envia notificação via Telegram sobre a correção.
+ * ✅ NOVA FUNÇÃO: Cria ordens SL, RPs e TP Market para posições órfãs (não criadas pelo webhook)
  * @param {number} accountId - ID da conta
+ * @param {Object} position - Posição da corretora
+ * @param {Object} latestSignal - Último sinal para o símbolo
+ * @returns {Promise<Object>} - Resultado da criação das ordens
  */
-async function checkAndFixMissingProtectionOrders(accountId) {
-  const db = await getDatabaseInstance();
-  if (!db) {
-    console.error('[PROTECTION_CHECK] Falha ao obter instância do banco de dados');
-    return;
-  }
-  // Buscar todas as posições abertas na corretora
-  const exchangePositions = await getAllOpenPositions(accountId);
-  if (!exchangePositions.length) return;
-
-  // Buscar todas as ordens abertas relevantes no banco
-  const [openOrders] = await db.query(
-    `SELECT simbolo, tipo_ordem, status FROM ordens WHERE status IN ('NEW', 'PARTIALLY_FILLED') AND conta_id = ?`,
-    [accountId]
-  );
-
-  const now = Date.now();
-  for (const pos of exchangePositions) {
-    // Verifica se já passou mais de 2 minutos da abertura
-    const openedAt = new Date(pos.dataHoraAbertura || pos.data_hora_abertura).getTime();
-    if (isNaN(openedAt) || now - openedAt < 2 * 60 * 1000) continue;
-
-    // Verifica se já existem ordens de proteção abertas para o símbolo
-    const hasTP = openOrders.some(o => o.simbolo === pos.simbolo && o.tipo_ordem === 'TAKE_PROFIT_MARKET');
-    const hasSL = openOrders.some(o => o.simbolo === pos.simbolo && o.tipo_ordem === 'STOP_MARKET');
-    if (hasTP && hasSL) continue;
-
-    // Buscar o último sinal do símbolo
-    const [signals] = await db.query(
-      `SELECT * FROM webhook_signals WHERE symbol = ? AND conta_id = ? ORDER BY id DESC LIMIT 1`,
-      [pos.simbolo, accountId]
-    );
-    if (!signals.length) {
-      console.warn(`[PROTECTION_CHECK] Nenhum sinal encontrado para ${pos.simbolo} (conta ${accountId})`);
-      continue;
+async function createMissingOrdersForPosition(accountId, position, latestSignal) {
+  console.log(`[MISSING_ORDERS] 🔧 Criando ordens SL/RPs/TP para posição órfã: ${position.simbolo} (${position.quantidade})`);
+  
+  try {
+    const db = await getDatabaseInstance();
+    const symbol = position.simbolo;
+    const positionQty = Math.abs(parseFloat(position.quantidade));
+    const positionSide = parseFloat(position.quantidade) > 0 ? 'BUY' : 'SELL';
+    const oppositeSide = positionSide === 'BUY' ? 'SELL' : 'BUY';
+    
+    // ✅ OBTER PRECISÃO DO SÍMBOLO
+    const precisionInfo = await getPrecision(symbol, accountId);
+    const quantityPrecision = precisionInfo.quantityPrecision;
+    const pricePrecision = precisionInfo.pricePrecision;
+    
+    console.log(`[MISSING_ORDERS] 📊 Posição ${symbol}: Side=${positionSide}, Qty=${positionQty.toFixed(quantityPrecision)}`);
+    console.log(`[MISSING_ORDERS] 📋 Sinal usado: ID=${latestSignal.id}, SL=${latestSignal.sl_price}, TP1=${latestSignal.tp1_price}`);
+    
+    let createdOrders = {
+      sl: null,
+      rp1: null,
+      rp2: null,
+      rp3: null,
+      rp4: null,
+      tp: null,
+      errors: []
+    };
+    
+    // ✅ 1. CRIAR STOP LOSS (se definido no sinal)
+    if (latestSignal.sl_price && parseFloat(latestSignal.sl_price) > 0) {
+      try {
+        const slPrice = parseFloat(latestSignal.sl_price);
+        const roundedSlPrice = await roundPriceToTickSize(symbol, slPrice, accountId);
+        
+        console.log(`[MISSING_ORDERS] 🛑 Criando STOP LOSS: ${positionQty.toFixed(quantityPrecision)} @ ${roundedSlPrice.toFixed(pricePrecision)}`);
+        
+        const slOrder = await newStopOrder(
+          accountId,
+          symbol,
+          positionQty,
+          oppositeSide, // Oposto à posição
+          roundedSlPrice,
+          null, // price = null para STOP_MARKET
+          true, // reduceOnly = true
+          false, // closePosition = false (usamos quantity específica)
+          'STOP_MARKET' // orderType
+        );
+        
+        if (slOrder && slOrder.orderId) {
+          createdOrders.sl = slOrder.orderId;
+          console.log(`[MISSING_ORDERS] ✅ STOP LOSS criado: ${slOrder.orderId}`);
+          
+          // ✅ SALVAR NO BANCO
+          await db.query(`
+            INSERT INTO ordens (
+              id_externo, simbolo, tipo_ordem, preco, quantidade, status, side, conta_id,
+              data_hora_criacao, tipo_ordem_bot, orign_sig, reduce_only, last_update
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?, NOW())
+          `, [
+            slOrder.orderId, symbol, 'STOP_MARKET', roundedSlPrice, positionQty,
+            'NEW', oppositeSide, accountId, 'STOP_LOSS',
+            `FALLBACK_${latestSignal.id}`, 1 // reduce_only = true
+          ]);
+        }
+      } catch (slError) {
+        console.error(`[MISSING_ORDERS] ❌ Erro ao criar STOP LOSS:`, slError.message);
+        createdOrders.errors.push(`SL: ${slError.message}`);
+      }
     }
-    const signal = signals[0];
-
-    // Chamar função para criar ordens de TP/SL (deve existir ou ser implementada)
-    try {
-      const { createTpSlOrdersForSignal } = require('../handlers/orderHandlers');
-      await createTpSlOrdersForSignal(signal, pos, accountId);
-    } catch (err) {
-      console.error(`[PROTECTION_CHECK] Erro ao criar ordens de proteção para ${pos.simbolo}:`, err.message);
-      continue;
+    
+    // ✅ 2. CRIAR TAKE PROFITS / REALIZE PROFITS
+    const tpTargets = [
+      { key: 'rp1', price: latestSignal.tp1_price, percentage: 0.25 }, // 25% da posição
+      { key: 'rp2', price: latestSignal.tp2_price, percentage: 0.25 }, // 25% da posição
+      { key: 'rp3', price: latestSignal.tp3_price, percentage: 0.25 }, // 25% da posição
+      { key: 'rp4', price: latestSignal.tp4_price, percentage: 0.15 }, // 15% da posição
+      { key: 'tp', price: latestSignal.tp5_price || latestSignal.tp_price, percentage: 0.10 } // 10% restante
+    ];
+    
+    let remainingQty = positionQty;
+    
+    for (const target of tpTargets) {
+      if (!target.price || parseFloat(target.price) <= 0) {
+        console.log(`[MISSING_ORDERS] ⏭️ ${target.key.toUpperCase()}: preço não definido, pulando...`);
+        continue;
+      }
+      
+      try {
+        const targetPrice = parseFloat(target.price);
+        const roundedPrice = await roundPriceToTickSize(symbol, targetPrice, accountId);
+        
+        // ✅ CALCULAR QUANTIDADE (percentual da posição total)
+        let targetQty = parseFloat((positionQty * target.percentage).toFixed(quantityPrecision));
+        
+        // ✅ AJUSTAR QUANTIDADE SE NECESSÁRIO
+        if (targetQty > remainingQty) {
+          targetQty = remainingQty;
+        }
+        
+        if (targetQty <= 0.000001) {
+          console.log(`[MISSING_ORDERS] ⏭️ ${target.key.toUpperCase()}: quantidade muito pequena (${targetQty}), pulando...`);
+          continue;
+        }
+        
+        console.log(`[MISSING_ORDERS] 🎯 Criando ${target.key.toUpperCase()}: ${targetQty.toFixed(quantityPrecision)} @ ${roundedPrice.toFixed(pricePrecision)} (${(target.percentage * 100).toFixed(0)}%)`);
+        
+        // ✅ VALIDAR QUANTIDADE
+        const validation = await validateQuantity(symbol, targetQty, roundedPrice, accountId, 'LIMIT');
+        let finalQty = targetQty;
+        
+        if (!validation.isValid) {
+          console.warn(`[MISSING_ORDERS] ⚠️ ${target.key.toUpperCase()}: quantidade inválida (${validation.reason}), tentando ajustar...`);
+          
+          const adjustment = await adjustQuantityToRequirements(symbol, targetQty, roundedPrice, accountId, 'LIMIT');
+          if (adjustment.success) {
+            finalQty = adjustment.adjustedQuantity;
+            console.log(`[MISSING_ORDERS] ✅ ${target.key.toUpperCase()}: quantidade ajustada para ${finalQty.toFixed(quantityPrecision)}`);
+          } else {
+            console.error(`[MISSING_ORDERS] ❌ ${target.key.toUpperCase()}: impossível ajustar quantidade - ${adjustment.error}`);
+            createdOrders.errors.push(`${target.key}: ${adjustment.error}`);
+            continue;
+          }
+        }
+        
+        // ✅ CRIAR ORDEM LIMIT MAKER REDUCE-ONLY
+        const tpOrder = await newReduceOnlyOrder(
+          accountId,
+          symbol,
+          finalQty,
+          oppositeSide, // Oposto à posição
+          roundedPrice,
+          'LIMIT' // LIMIT para melhor preço
+        );
+        
+        if (tpOrder && tpOrder.orderId) {
+          createdOrders[target.key] = tpOrder.orderId;
+          remainingQty -= finalQty;
+          console.log(`[MISSING_ORDERS] ✅ ${target.key.toUpperCase()} criado: ${tpOrder.orderId} (restante: ${remainingQty.toFixed(quantityPrecision)})`);
+          
+          // ✅ SALVAR NO BANCO
+          await db.query(`
+            INSERT INTO ordens (
+              id_externo, simbolo, tipo_ordem, preco, quantidade, status, side, conta_id,
+              data_hora_criacao, tipo_ordem_bot, orign_sig, reduce_only, last_update
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW(), ?, ?, ?, NOW())
+          `, [
+            tpOrder.orderId, symbol, 'LIMIT', roundedPrice, finalQty,
+            'NEW', oppositeSide, accountId, target.key.toUpperCase(),
+            `FALLBACK_${latestSignal.id}`, 1 // reduce_only = true
+          ]);
+        }
+        
+      } catch (tpError) {
+        console.error(`[MISSING_ORDERS] ❌ Erro ao criar ${target.key.toUpperCase()}:`, tpError.message);
+        createdOrders.errors.push(`${target.key}: ${tpError.message}`);
+      }
     }
-
-    // Enviar mensagem de correção via Telegram
-    try {
-      const { sendTelegramMessage, formatAlertMessage } = require('../telegram/telegramBot');
-      const msg = formatAlertMessage(
-        'CORREÇÃO DE PROTEÇÃO',
-        `Posição em <b>${pos.simbolo}</b> estava aberta na corretora sem ordens de TP/SL no sistema e foi corrigida automaticamente.\nOrdens de proteção enviadas com base no último sinal registrado.`,
-        'WARNING'
-      );
-      await sendTelegramMessage(accountId, msg);
-    } catch (err) {
-      console.error(`[PROTECTION_CHECK] Falha ao notificar Telegram:`, err.message);
+    
+    // ✅ RELATÓRIO FINAL
+    const successCount = Object.values(createdOrders).filter(v => v && typeof v === 'string').length;
+    console.log(`[MISSING_ORDERS] 📊 Resultado para ${symbol}:`);
+    console.log(`[MISSING_ORDERS]   ✅ Ordens criadas: ${successCount}`);
+    console.log(`[MISSING_ORDERS]   ❌ Erros: ${createdOrders.errors.length}`);
+    
+    if (createdOrders.errors.length > 0) {
+      console.log(`[MISSING_ORDERS]   📋 Detalhes dos erros:`, createdOrders.errors);
     }
+    
+    return {
+      success: successCount > 0,
+      created: successCount,
+      errors: createdOrders.errors.length,
+      details: createdOrders
+    };
+    
+  } catch (error) {
+    console.error(`[MISSING_ORDERS] ❌ Erro crítico ao criar ordens para ${position.simbolo}:`, error.message);
+    return {
+      success: false,
+      created: 0,
+      errors: 1,
+      details: { errors: [error.message] }
+    };
   }
 }
 
 /**
- * Corrige posições órfãs enviando ordens de proteção faltantes baseadas em sinais com ERROR.
+ * ✅ NOVA FUNÇÃO: Detecta posições órfãs e cria ordens SL/RPs/TP automaticamente
  * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Resultado da detecção e criação
  */
-async function closePositionsWithoutOrders(accountId) {
-  const db = await getDatabaseInstance();
-  if (!db) {
-    console.error('[PROTECTION_FIX] Falha ao obter instância do banco de dados');
-    return;
-  }
+async function detectAndFixOrphanPositions(accountId) {
+  console.log(`[ORPHAN_DETECTION] 🔍 Detectando posições órfãs para conta ${accountId}...`);
   
-  // Buscar todas as posições abertas na corretora
-  const exchangePositions = await getAllOpenPositions(accountId);
-  if (!exchangePositions.length) {
-    console.log('[PROTECTION_FIX] Nenhuma posição aberta encontrada na corretora.');
-    return;
-  }
-
-  // Buscar todas as ordens abertas relevantes no banco
-  const [openOrders] = await db.query(
-    `SELECT simbolo FROM ordens WHERE status IN ('NEW', 'PARTIALLY_FILLED') AND conta_id = ?`,
-    [accountId]
-  );
-  const symbolsWithOrders = new Set(openOrders.map(o => o.simbolo));
-
-  const now = Date.now();
-  for (const pos of exchangePositions) {
-    // Melhor tratamento da data de abertura
-    let openedAt = null;
-    let tempoAbertoMs = 0;
+  try {
+    const db = await getDatabaseInstance();
     
-    try {
-      const dateField = pos.dataHoraAbertura || pos.data_hora_abertura || pos.updateTime;
-      if (dateField) {
-        openedAt = new Date(dateField).getTime();
-        if (!isNaN(openedAt)) {
-          tempoAbertoMs = now - openedAt;
+    // ✅ OBTER POSIÇÕES DA CORRETORA
+    const exchangePositions = await getAllOpenPositions(accountId);
+    
+    if (exchangePositions.length === 0) {
+      console.log(`[ORPHAN_DETECTION] ℹ️ Nenhuma posição encontrada na corretora para conta ${accountId}`);
+      return { processed: 0, fixed: 0, errors: [] };
+    }
+    
+    console.log(`[ORPHAN_DETECTION] 📊 Encontradas ${exchangePositions.length} posições na corretora`);
+    
+    let results = {
+      processed: 0,
+      fixed: 0,
+      errors: []
+    };
+    
+    for (const position of exchangePositions) {
+      try {
+        const symbol = position.simbolo;
+        const positionAge = position.tempoAbertura ? Date.now() - position.tempoAbertura : 0;
+        const ageMinutes = Math.floor(positionAge / (1000 * 60));
+        
+        console.log(`[ORPHAN_DETECTION] 🔍 Verificando ${symbol} (idade: ${ageMinutes} min)...`);
+        
+        results.processed++;
+        
+        // ✅ CRITÉRIO 1: Posição deve ter mais de 4 minutos
+        if (ageMinutes < 4) {
+          console.log(`[ORPHAN_DETECTION] ⏳ ${symbol}: muito nova (${ageMinutes} min), pulando...`);
+          continue;
         }
+        
+        // ✅ CRITÉRIO 2: Verificar se tem ordens abertas (se tiver, não é órfã)
+        const openOrders = await getOpenOrders(accountId, symbol);
+        if (openOrders.length > 0) {
+          console.log(`[ORPHAN_DETECTION] 📋 ${symbol}: tem ${openOrders.length} ordens abertas, não é órfã`);
+          continue;
+        }
+        
+        // ✅ CRITÉRIO 3: Verificar se existe posição correspondente no banco
+        const [dbPositions] = await db.query(`
+          SELECT id, simbolo FROM posicoes 
+          WHERE simbolo = ? AND conta_id = ? AND status = 'OPEN'
+        `, [symbol, accountId]);
+        
+        if (dbPositions.length === 0) {
+          console.log(`[ORPHAN_DETECTION] ⚠️ ${symbol}: não encontrada no banco, posição órfã detectada!`);
+        } else {
+          console.log(`[ORPHAN_DETECTION] ✅ ${symbol}: encontrada no banco (ID: ${dbPositions[0].id}), verificando ordens...`);
+          
+          // ✅ VERIFICAR SE TEM ORDENS DE PROTEÇÃO (SL/TP) NO BANCO
+          const [protectionOrders] = await db.query(`
+            SELECT COUNT(*) as count FROM ordens 
+            WHERE simbolo = ? AND conta_id = ? AND status IN ('NEW', 'PARTIALLY_FILLED')
+              AND tipo_ordem_bot IN ('STOP_LOSS', 'RP1', 'RP2', 'RP3', 'RP4', 'TP')
+          `, [symbol, accountId]);
+          
+          if (protectionOrders[0].count > 0) {
+            console.log(`[ORPHAN_DETECTION] ✅ ${symbol}: tem ${protectionOrders[0].count} ordens de proteção, tudo ok`);
+            continue;
+          } else {
+            console.log(`[ORPHAN_DETECTION] ⚠️ ${symbol}: posição existe no banco mas SEM ordens de proteção, tratando como órfã!`);
+          }
+        }
+        
+        // ✅ BUSCAR ÚLTIMO SINAL PARA O SÍMBOLO
+        const [latestSignals] = await db.query(`
+          SELECT id, symbol, side, sl_price, tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, tp_price, created_at
+          FROM webhook_signals 
+          WHERE symbol = ? AND conta_id = ? 
+          ORDER BY created_at DESC 
+          LIMIT 1
+        `, [symbol, accountId]);
+        
+        if (latestSignals.length === 0) {
+          console.warn(`[ORPHAN_DETECTION] ⚠️ ${symbol}: nenhum sinal encontrado para criar ordens de proteção`);
+          results.errors.push(`${symbol}: sem sinal de referência`);
+          continue;
+        }
+        
+        const latestSignal = latestSignals[0];
+        const signalAge = Date.now() - new Date(latestSignal.created_at).getTime();
+        const signalAgeMinutes = Math.floor(signalAge / (1000 * 60));
+        
+        console.log(`[ORPHAN_DETECTION] 📋 ${symbol}: usando sinal ID=${latestSignal.id} (idade: ${signalAgeMinutes} min)`);
+        
+        // ✅ VERIFICAR SE O SINAL TEM PREÇOS DE SL/TP DEFINIDOS
+        const hasSlPrice = latestSignal.sl_price && parseFloat(latestSignal.sl_price) > 0;
+        const hasTpPrices = [latestSignal.tp1_price, latestSignal.tp2_price, latestSignal.tp3_price, latestSignal.tp4_price, latestSignal.tp5_price, latestSignal.tp_price].some(price => price && parseFloat(price) > 0);
+        
+        if (!hasSlPrice && !hasTpPrices) {
+          console.warn(`[ORPHAN_DETECTION] ⚠️ ${symbol}: sinal não tem preços de SL/TP definidos`);
+          results.errors.push(`${symbol}: sinal sem preços de SL/TP`);
+          continue;
+        }
+        
+        // ✅ CRIAR ORDENS SL/RPs/TP PARA A POSIÇÃO ÓRFÃ
+        console.log(`[ORPHAN_DETECTION] 🔧 ${symbol}: criando ordens de proteção para posição órfã...`);
+        
+        const orderCreationResult = await createMissingOrdersForPosition(accountId, position, latestSignal);
+        
+        if (orderCreationResult.success) {
+          results.fixed++;
+          console.log(`[ORPHAN_DETECTION] ✅ ${symbol}: ${orderCreationResult.created} ordens de proteção criadas com sucesso!`);
+        } else {
+          results.errors.push(`${symbol}: falha ao criar ordens - ${orderCreationResult.details.errors.join(', ')}`);
+          console.error(`[ORPHAN_DETECTION] ❌ ${symbol}: falha ao criar ordens de proteção`);
+        }
+        
+      } catch (positionError) {
+        console.error(`[ORPHAN_DETECTION] ❌ Erro ao processar posição ${position.simbolo}:`, positionError.message);
+        results.errors.push(`${position.simbolo}: ${positionError.message}`);
       }
-    } catch (dateError) {
-      console.warn(`[PROTECTION_FIX] Erro ao processar data para ${pos.simbolo}:`, dateError.message);
     }
     
-    const temOrdem = symbolsWithOrders.has(pos.simbolo);
-    const tempoAbertoSegundos = tempoAbertoMs > 0 ? Math.round(tempoAbertoMs/1000) : 'N/A';
+    // ✅ RELATÓRIO FINAL
+    console.log(`[ORPHAN_DETECTION] 📊 Relatório final para conta ${accountId}:`);
+    console.log(`[ORPHAN_DETECTION]   🔍 Posições processadas: ${results.processed}`);
+    console.log(`[ORPHAN_DETECTION]   🔧 Posições órfãs corrigidas: ${results.fixed}`);
+    console.log(`[ORPHAN_DETECTION]   ❌ Erros: ${results.errors.length}`);
     
-    console.log(`[PROTECTION_FIX] Analisando posição: ${pos.simbolo} | Qtd: ${pos.quantidade} | Lado: ${pos.lado || pos.side} | Aberta há: ${tempoAbertoSegundos}s | Tem ordem aberta: ${temOrdem}`);
-    
-    // Se tem ordens abertas, não precisa corrigir
-    if (temOrdem) {
-      console.log(`[PROTECTION_FIX] Ignorando ${pos.simbolo}: já possui ordem aberta no banco.`);
-      continue;
+    if (results.errors.length > 0) {
+      console.log(`[ORPHAN_DETECTION]   📋 Detalhes dos erros:`, results.errors);
     }
     
-    // Buscar último sinal para esse símbolo e conta, priorizando ERROR mas incluindo outros status problemáticos
-    const [signals] = await db.query(
-      `SELECT * FROM webhook_signals 
-       WHERE symbol = ? AND conta_id = ? 
-       AND status IN ('ERROR', 'ENTRADA_EM_PROGRESSO', 'EXECUTADO')
-       AND created_at >= DATE_SUB(NOW(), INTERVAL 2 HOUR)
-       ORDER BY id DESC LIMIT 1`,
-      [pos.simbolo, accountId]
-    );
+    return results;
     
-    if (!signals.length) {
-      console.warn(`[PROTECTION_FIX] Nenhum sinal recente encontrado para ${pos.simbolo} (conta ${accountId})`);
-      continue;
+  } catch (error) {
+    console.error(`[ORPHAN_DETECTION] ❌ Erro crítico na detecção de posições órfãs:`, error.message);
+    return { processed: 0, fixed: 0, errors: [error.message] };
+  }
+}
+
+/**
+ * ✅ NOVA FUNÇÃO: Vincula sinais com status 'EXECUTADO' a posições abertas que não têm um sinal vinculado.
+ * Isso corrige casos em que o webhook processou o sinal, mas a vinculação com a posição falhou.
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Resultado da operação de vinculação.
+ */
+async function linkSignalsToOpenPositions(accountId) {
+  //console.log(`[LINK_SIGNALS] 🔍 Verificando sinais 'EXECUTADO' sem posição vinculada para conta ${accountId}...`);
+  
+  try {
+    const db = await getDatabaseInstance();
+    
+    // 1. Encontrar sinais com status 'EXECUTADO' e sem position_id
+    const [signalsToLink] = await db.query(`
+      SELECT id, symbol
+      FROM webhook_signals
+      WHERE status = 'EXECUTADO' 
+        AND position_id IS NULL 
+        AND conta_id = ?
+      ORDER BY created_at DESC
+    `, [accountId]);
+
+    if (signalsToLink.length === 0) {
+      //console.log(`[LINK_SIGNALS] ℹ️ Nenhum sinal 'EXECUTADO' para vincular.`);
+      return { linked: 0, errors: [] };
     }
-    
-    const signal = signals[0];
-    console.log(`[PROTECTION_FIX] Encontrado sinal ID ${signal.id} com status '${signal.status}' para ${pos.simbolo}`);
-    
-    // Verificar se já existe posição no banco para este símbolo
-    const [dbPositions] = await db.query(
-      `SELECT id FROM posicoes WHERE simbolo = ? AND conta_id = ? AND status = 'OPEN' LIMIT 1`,
-      [pos.simbolo, accountId]
-    );
-    
-    if (!dbPositions.length) {
-      console.warn(`[PROTECTION_FIX] Posição ${pos.simbolo} não encontrada no banco, pulando...`);
-      continue;
-    }
-    
-    const positionId = dbPositions[0].id;
-    
-    // Tentar criar apenas as ordens de proteção que faltaram
-    try {
-      console.log(`[PROTECTION_FIX] Criando ordens de proteção para posição ${pos.simbolo} (ID: ${positionId})...`);
-      
-      // Importar função para criar ordens de TP/SL
-      const { createTpSlOrdersForSignal } = require('../handlers/orderHandlers');
-      
-      // Chamar função específica para criar SL/TP/reduções com base no sinal
-      await createTpSlOrdersForSignal(signal, pos, accountId, positionId);
-      
-      // Atualizar status do sinal
-      await db.query(
-        `UPDATE webhook_signals SET status = 'PROTECAO_REENVIADA', updated_at = NOW() WHERE id = ?`, 
-        [signal.id]
-      );
-      
-      // Notificar via Telegram
+
+    console.log(`[LINK_SIGNALS] 📊 Encontrados ${signalsToLink.length} sinais para potencial vinculação.`);
+
+    let linkedCount = 0;
+    const errors = [];
+
+    // Usar um Set para não re-processar o mesmo símbolo, já que pegamos o mais recente pela query
+    const processedSymbols = new Set();
+
+    for (const signal of signalsToLink) {
+      if (processedSymbols.has(signal.symbol)) {
+        continue; // Já processamos o sinal mais recente para este símbolo
+      }
+
       try {
-        const { sendTelegramMessage, formatAlertMessage } = require('../telegram/telegramBot');
-        const msg = formatAlertMessage(
-          'CORREÇÃO DE PROTEÇÃO',
-          `Posição em <b>${pos.simbolo}</b> estava sem ordens de proteção. Ordens de SL/TP/reduções criadas automaticamente com base no sinal ID ${signal.id}.`,
-          'WARNING'
-        );
-        await sendTelegramMessage(accountId, msg);
-        console.log(`[PROTECTION_FIX] ✅ Ordens de proteção criadas e notificação enviada para ${pos.simbolo}`);
-      } catch (telegramErr) {
-        console.error(`[PROTECTION_FIX] Falha ao notificar Telegram:`, telegramErr.message);
+        // 2. Encontrar a posição aberta correspondente para o símbolo que ainda não tem um sinal
+        const [openPositions] = await db.query(`
+          SELECT id, simbolo
+          FROM posicoes
+          WHERE simbolo = ? 
+            AND status = 'OPEN' 
+            AND conta_id = ?
+            AND signal_id IS NULL
+          LIMIT 1
+        `, [signal.symbol, accountId]);
+
+        if (openPositions.length > 0) {
+          const position = openPositions[0];
+          console.log(`[LINK_SIGNALS] 🔗 Vinculando sinal ${signal.id} (${signal.symbol}) à posição ${position.id}...`);
+
+          // 3. Atualizar o sinal com o ID da posição
+          const [signalUpdateResult] = await db.query(`
+            UPDATE webhook_signals
+            SET position_id = ?
+            WHERE id = ?
+          `, [position.id, signal.id]);
+
+          // 4. Atualizar a posição com o ID do sinal
+          const [positionUpdateResult] = await db.query(`
+            UPDATE posicoes
+            SET signal_id = ?
+            WHERE id = ?
+          `, [signal.id, position.id]);
+
+          if (signalUpdateResult.affectedRows > 0 && positionUpdateResult.affectedRows > 0) {
+            linkedCount++;
+            console.log(`[LINK_SIGNALS] ✅ Sinal ${signal.id} vinculado com sucesso à posição ${position.id}.`);
+          } else {
+             console.warn(`[LINK_SIGNALS] ⚠️ A vinculação entre o sinal ${signal.id} e a posição ${position.id} pode ter falhado (affectedRows: 0).`);
+          }
+        }
+      } catch (linkError) {
+        console.error(`[LINK_SIGNALS] ❌ Erro ao vincular sinal para ${signal.symbol}:`, linkError.message);
+        errors.push(`Símbolo ${signal.symbol}: ${linkError.message}`);
       }
       
-    } catch (err) {
-      console.error(`[PROTECTION_FIX] Erro ao criar ordens de proteção para ${pos.simbolo}:`, err.message);
-      
-      // Se falhar, pelo menos registrar o erro no sinal
-      try {
-        await db.query(
-          `UPDATE webhook_signals SET error_message = ?, updated_at = NOW() WHERE id = ?`,
-          [`Falha ao reenviar proteção: ${err.message}`, signal.id]
-        );
-      } catch (updateErr) {
-        console.error(`[PROTECTION_FIX] Erro ao atualizar sinal com erro:`, updateErr.message);
-      }
+      processedSymbols.add(signal.symbol);
     }
+
+    if (linkedCount > 0) {
+        console.log(`[LINK_SIGNALS] ✅ Processo de vinculação concluído: ${linkedCount} vinculados, ${errors.length} erros.`);
+    }
+    
+    return { linked: linkedCount, errors };
+
+  } catch (error) {
+    console.error(`[LINK_SIGNALS] ❌ Erro crítico ao vincular sinais a posições:`, error.message);
+    return { linked: 0, errors: [error.message] };
   }
 }
 
@@ -931,6 +1206,7 @@ module.exports = {
   syncPositionsWithAutoClose,
   syncOrdersWithExchange,
   moveClosedPositionsToHistory,
-  checkAndFixMissingProtectionOrders,
-  closePositionsWithoutOrders: closePositionsWithoutOrders, // Renomeado para ser mais claro sobre a função
+  createMissingOrdersForPosition,
+  detectAndFixOrphanPositions,
+  linkSignalsToOpenPositions
 };

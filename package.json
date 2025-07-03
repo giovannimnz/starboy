@@ -11,6 +11,8 @@
     "test:ordem": "jest tests/ordem.test.js",
     "test:ws": "jest tests/websockets.test.js",
     "test:integration": "jest tests/integration.test.js",
+    "test:orphans": "node backend/exchanges/binance/services/test-orphan-positions.js",
+    "test:orphans:dry": "node backend/exchanges/binance/services/test-orphan-positions.js --dry-run",
     "api": "node backend/server/api.js",
     "api:dev": "nodemon backend/server/api.js",
     "frontend": "cd frontend && npm run dev",

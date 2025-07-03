@@ -42,6 +42,89 @@ try {
 // Mapa local para WebSockets de preço por conta
 const priceWebsocketsByAccount = new Map();
 
+// ✅ NOVO: Sistema de Eventos Pub/Sub
+const eventListeners = new Map(); // Central de listeners: Map<accountId, Map<eventName, Map<listenerId, listener>>>
+
+/**
+ * ✅ NOVO: Registra um listener para um evento específico de uma conta.
+ * @param {string} eventName - O nome do evento (ex: 'orderUpdate', 'accountUpdate', 'priceUpdate').
+ * @param {Function} listener - A função de callback a ser executada.
+ * @param {number|string} accountId - O ID da conta.
+ * @param {string} [listenerId] - Um ID opcional para o listener, para fácil remoção. Se não for fornecido, a própria função será usada como chave.
+ */
+function on(eventName, listener, accountId, listenerId = null) {
+    if (!accountId) {
+        console.error('[WS-EVENTS] Tentativa de registrar listener sem accountId.');
+        return;
+    }
+    if (!eventListeners.has(accountId)) {
+        eventListeners.set(accountId, new Map());
+    }
+    const accountEvents = eventListeners.get(accountId);
+
+    if (!accountEvents.has(eventName)) {
+        accountEvents.set(eventName, new Map());
+    }
+    const eventHandlers = accountEvents.get(eventName);
+    const id = listenerId || listener;
+    
+    if (eventHandlers.has(id)) {
+        console.warn(`[WS-EVENTS] Listener com ID '${String(id)}' já registrado para o evento '${eventName}' na conta ${accountId}. Sobrescrevendo.`);
+    }
+    
+    console.log(`[WS-EVENTS] Registrando listener com ID '${String(id)}' para o evento '${eventName}' na conta ${accountId}.`);
+    eventHandlers.set(id, listener);
+}
+
+/**
+ * ✅ NOVO: Remove um listener de um evento.
+ * @param {string} eventName - O nome do evento.
+ * @param {Function|string} listenerOrId - A função de callback original ou o ID do listener a ser removido.
+ * @param {number|string} accountId - O ID da conta.
+ */
+function off(eventName, listenerOrId, accountId) {
+    if (!accountId || !eventListeners.has(accountId)) {
+        return;
+    }
+    const accountEvents = eventListeners.get(accountId);
+
+    if (!accountEvents.has(eventName)) {
+        return;
+    }
+    const eventHandlers = accountEvents.get(eventName);
+    
+    if (eventHandlers.has(listenerOrId)) {
+        console.log(`[WS-EVENTS] Removendo listener com ID '${String(listenerOrId)}' do evento '${eventName}' na conta ${accountId}.`);
+        eventHandlers.delete(listenerOrId);
+    }
+}
+
+/**
+ * ✅ NOVO: Emite um evento para todos os listeners registrados.
+ * @param {string} eventName - O nome do evento a ser emitido.
+ * @param {number|string} accountId - O ID da conta para a qual o evento se aplica.
+ * @param {...any} args - Argumentos a serem passados para os listeners.
+ */
+function emit(eventName, accountId, ...args) {
+    if (!accountId || !eventListeners.has(accountId)) {
+        return;
+    }
+    const accountEvents = eventListeners.get(accountId);
+
+    if (accountEvents.has(eventName)) {
+        const eventHandlers = accountEvents.get(eventName);
+        // console.log(`[WS-EVENTS] Emitindo evento '${eventName}' para ${eventHandlers.size} listener(s) na conta ${accountId}.`);
+        eventHandlers.forEach((listener, id) => {
+            try {
+                listener(...args);
+            } catch (error) {
+                console.error(`[WS-EVENTS] Erro ao executar listener com ID '${String(id)}' para o evento '${eventName}':`, error);
+            }
+        });
+    }
+}
+
+
 /**
  * Obtém ou cria o mapa de WebSockets de preço para uma conta
  */
@@ -538,66 +621,19 @@ async function ensurePriceWebsocketExists(symbol, accountId) {
  * Processa atualizações de preço
  */
 async function handlePriceUpdate(symbol, tickerData, accountId) {
-  try {
+  const accountState = getAccountConnectionState(accountId);
+  if (!accountState || !accountState.monitoringCallbacks) return;
 
-    const accountState = getAccountConnectionState(accountId, true);
-    let db = accountState.dbInstance;
-    
-    if (!db) {
-      try {
-        db = await getDatabaseInstance(accountId);
-        accountState.dbInstance = db;
-      } catch (dbError) {
-        console.error(`[WEBSOCKETS] Erro ao obter DB para ${symbol}:`, dbError.message);
-        return;
-      }
+  // ✅ EMITIR EVENTO DE ATUALIZAÇÃO DE PREÇO
+  emit('priceUpdate', accountId, symbol, tickerData);
+
+  // Manter a chamada antiga por retrocompatibilidade por enquanto
+  if (accountState.monitoringCallbacks.handlePriceUpdate) {
+    try {
+      await accountState.monitoringCallbacks.handlePriceUpdate(symbol, tickerData, accountId);
+    } catch (error) {
+      console.error(`[WS] Erro no callback handlePriceUpdate legado para conta ${accountId}:`, error);
     }
-
-    // ✅ CORREÇÃO CRÍTICA: Calcular preço corretamente baseado no tipo de ticker
-    let currentPrice;
-    
-    if (tickerData.e === 'ticker' || tickerData.e === '24hrTicker') {
-      // Ticker de 24h - usar preço de fechamento atual
-      currentPrice = parseFloat(tickerData.c);
-      //console.log(`[WEBSOCKET] 💰 Usando preço de ticker 24h: ${currentPrice}`);
-    } else {
-      // BookTicker ou outros - usar média de bid/ask
-      const bestBid = parseFloat(tickerData.b);
-      const bestAsk = parseFloat(tickerData.a);
-      
-      if (!isNaN(bestBid) && !isNaN(bestAsk) && bestBid > 0 && bestAsk > 0) {
-        currentPrice = (bestBid + bestAsk) / 2;
-        //console.log(`[WEBSOCKET] 💰 Usando média bid/ask: ${currentPrice} (bid: ${bestBid}, ask: ${bestAsk})`);
-      } else {
-        console.warn(`[WEBSOCKET] ⚠️ Preços inválidos para ${symbol}: bid=${bestBid}, ask=${bestAsk}`);
-        return;
-      }
-    }
-
-    // ✅ VALIDAÇÃO FINAL DO PREÇO
-    if (!currentPrice || isNaN(currentPrice) || currentPrice <= 0) {
-      console.warn(`[WEBSOCKET] ⚠️ Preço calculado inválido para ${symbol}: ${currentPrice}`);
-      return;
-    }
-
-    //console.log(`[WEBSOCKET] ✅ Preço final calculado para ${symbol}: ${currentPrice}`);
-
-    // ✅ CHAMAR CALLBACK onPriceUpdate
-    if (accountState.monitoringCallbacks && accountState.monitoringCallbacks.onPriceUpdate) {
-      //console.log(`[WEBSOCKET] 🔄 Chamando onPriceUpdate para ${symbol}...`);
-      await accountState.monitoringCallbacks.onPriceUpdate(symbol, currentPrice, db, accountId);
-      //console.log(`[WEBSOCKET] ✅ onPriceUpdate executado para ${symbol}`);
-    } else {
-      console.warn(`[WEBSOCKET] ⚠️ Callback onPriceUpdate não encontrado para conta ${accountId}`);
-      console.warn(`[WEBSOCKET] Estado dos callbacks:`, {
-        hasCallbacks: !!accountState.monitoringCallbacks,
-        hasOnPriceUpdate: !!(accountState.monitoringCallbacks?.onPriceUpdate),
-        callbackType: typeof accountState.monitoringCallbacks?.onPriceUpdate
-      });
-    }
-  } catch (error) {
-    console.error(`[WEBSOCKETS] ❌ Erro ao processar atualização de preço para ${symbol}:`, error.message);
-    console.error(`[WEBSOCKETS] Stack trace:`, error.stack);
   }
 }
 
@@ -804,32 +840,65 @@ async function startUserDataStream(db, accountId) {
  * Processa mensagens do UserDataStream
  */
 async function handleUserDataMessage(jsonData, accountId, db) {
-  try {
-    const message = JSON.parse(jsonData.toString());
-    const accountState = getAccountConnectionState(accountId);
-    
-    if (!accountState || !accountState.monitoringCallbacks) {
-      return;
-    }
+  const accountState = getAccountConnectionState(accountId);
+  if (!accountState) return;
 
-    const { handleOrderUpdate, handleAccountUpdate } = accountState.monitoringCallbacks;
+  // console.log(`[WS] Mensagem UserData recebida para conta ${accountId}:`, JSON.stringify(jsonData, null, 2));
 
-    if (message.e) {
-      switch (message.e) {
-        case 'ORDER_TRADE_UPDATE':
-          if (handleOrderUpdate) {
-            await handleOrderUpdate(message, db);
-          }
-          break;
-        case 'ACCOUNT_UPDATE':
-          if (handleAccountUpdate) {
-            await handleAccountUpdate(message, db);
-          }
-          break;
+  const eventType = jsonData.e;
+  if (!eventType) return;
+
+  // ✅ EMITIR EVENTOS USANDO O NOVO SISTEMA PUB/SUB
+  switch (eventType) {
+    case 'outboundAccountPosition':
+      emit('accountPositionUpdate', accountId, jsonData);
+      break;
+    case 'balanceUpdate':
+      emit('balanceUpdate', accountId, jsonData);
+      break;
+    case 'ORDER_TRADE_UPDATE':
+      emit('orderUpdate', accountId, jsonData);
+      break;
+    case 'ACCOUNT_UPDATE':
+      // Este evento pode conter múltiplas informações, vamos emitir eventos mais granulares
+      emit('accountUpdate', accountId, jsonData);
+      // Exemplo de como emitir sub-eventos se necessário
+      if (jsonData.a && jsonData.a.B) { // Balances
+        emit('balanceUpdateBulk', accountId, jsonData.a.B);
       }
+      if (jsonData.a && jsonData.a.P) { // Positions
+        emit('positionUpdateBulk', accountId, jsonData.a.P);
+      }
+      break;
+    default:
+      // Para outros eventos, podemos ter um evento genérico
+      emit('userData', accountId, jsonData);
+  }
+
+  // Manter a chamada antiga por retrocompatibilidade por enquanto
+  const { monitoringCallbacks } = accountState;
+  if (!monitoringCallbacks) return;
+
+  try {
+    switch (eventType) {
+      case 'outboundAccountPosition':
+        if (monitoringCallbacks.handleAccountUpdate) {
+          await monitoringCallbacks.handleAccountUpdate(jsonData, accountId, db);
+        }
+        break;
+      case 'balanceUpdate':
+        if (monitoringCallbacks.handleAccountUpdate) {
+          await monitoringCallbacks.handleAccountUpdate(jsonData, accountId, db);
+        }
+        break;
+      case 'ORDER_TRADE_UPDATE':
+        if (monitoringCallbacks.handleOrderUpdate) {
+          await monitoringCallbacks.handleOrderUpdate(jsonData, accountId, db);
+        }
+        break;
     }
   } catch (error) {
-    console.error(`[WEBSOCKET] Erro ao processar UserDataStream:`, error.message);
+    console.error(`[WS] Erro ao processar mensagem UserData com callback legado para conta ${accountId}:`, error);
   }
 }
 
@@ -838,19 +907,40 @@ async function handleUserDataMessage(jsonData, accountId, db) {
  */
 function stopUserDataStream(accountId) {
   const accountState = getAccountConnectionState(accountId);
-  if (accountState && accountState.userDataStream) {
-    accountState.userDataStream.close();
-    accountState.userDataStream = null;
+  if (accountState && accountState.listenKey) {
+    console.log(`[WS] Parando UserData Stream para a conta ${accountId}.`);
+    rest.closeUserDataStream(accountState.listenKey, accountId);
+    accountState.listenKey = null;
+    if(accountState.listenKeyInterval) {
+        clearInterval(accountState.listenKeyInterval);
+        accountState.listenKeyInterval = null;
+    }
   }
 }
 
 /**
  * Define callbacks de monitoramento
+ * @deprecated Use websockets.on(eventName, listener, accountId) em vez disso.
  */
 function setMonitoringCallbacks(callbackHandlers, accountId) {
-  const accountState = getAccountConnectionState(accountId, true);
-  accountState.monitoringCallbacks = { ...accountState.monitoringCallbacks, ...callbackHandlers };
-  return accountState.monitoringCallbacks;
+  const accountState = getAccountConnectionState(accountId);
+  if (accountState) {
+    console.warn("[DEPRECATED] setMonitoringCallbacks está em desuso. Use websockets.on() para registrar listeners.");
+
+    if (callbackHandlers.handleOrderUpdate) {
+      on('orderUpdate', callbackHandlers.handleOrderUpdate, accountId, 'legacy_order_handler');
+    }
+    if (callbackHandlers.handleAccountUpdate) {
+      on('accountUpdate', callbackHandlers.handleAccountUpdate, accountId, 'legacy_account_handler');
+    }
+    if (callbackHandlers.onPriceUpdate) {
+      on('priceUpdate', callbackHandlers.onPriceUpdate, accountId, 'legacy_price_handler');
+    }
+
+    // Manter a propriedade antiga para compatibilidade, mas não usar para emitir eventos.
+    accountState.monitoringCallbacks = { ...accountState.monitoringCallbacks, ...callbackHandlers };
+    return accountState.monitoringCallbacks;
+  }
 }
 
 /**
@@ -1006,8 +1096,6 @@ module.exports = {
   isWebSocketApiAuthenticated,
   isWebSocketApiConnected,
   ensureWebSocketApiExists,
-  
-  // Funções de callbacks e handlers
   setMonitoringCallbacks,
   getHandlers,
   getCredentials,
@@ -1020,5 +1108,9 @@ module.exports = {
   forceCleanupAccount,
   loadNobleEd25519,
   getAccountConnectionState,
-  reset
+  reset,
+  // ✅ EXPORTAR NOVAS FUNÇÕES DO SISTEMA DE EVENTOS
+  on,
+  off,
+  emit
 };

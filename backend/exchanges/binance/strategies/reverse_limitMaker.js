@@ -7,11 +7,6 @@ const {  getRecentOrders, editOrder, roundPriceToTickSize, newMarketOrder, newLi
 const { sendTelegramMessage, formatEntryMessage, formatErrorMessage, formatAlertMessage, formatEntryMessageWithPrecision } = require('../services/telegramHelper');
 
 // ✅ CORREÇÃO: Declarar sentOrders no escopo correto e com Map melhorado
-// ✅ OTIMIZAÇÃO: Edição de ordens implementada para maior agilidade
-//    - Edita ordem quando possível em vez de cancelar+recriar
-//    - Economia de ~200-500ms por atualização de preço
-//    - Fallback automático para cancelar+recriar se edição falhar
-//    - Critério inteligente evita micro-edições desnecessárias
 async function executeReverse(signal, currentPrice, accountId) {
   console.log(`[LIMIT_ENTRY] 🚀 Executando entrada para sinal ${signal.id}: ${signal.symbol} ${signal.side} a ${signal.entry_price} (conta ${accountId})`);
 
@@ -21,7 +16,6 @@ async function executeReverse(signal, currentPrice, accountId) {
   
   // ✅ SISTEMA DE RASTREAMENTO MELHORADO - DECLARADO CORRETAMENTE
   const sentOrders = new Map(); // DEVE estar aqui, não no escopo global
-  const orderLocks = new Map(); // ✅ NOVO: Para evitar race conditions
   let isEntryComplete = false;
   let currentBestBid = null;
   let currentBestAsk = null;
@@ -37,19 +31,6 @@ async function executeReverse(signal, currentPrice, accountId) {
     const executionType = order.x; // NEW, CANCELED, TRADE, etc.
     const orderStatus = order.X; // NEW, FILLED, PARTIALLY_FILLED, etc.
     
-    // ✅ NOVO: Validação de timestamp para evitar execuções antigas
-    const executionTime = order.T || Date.now();
-    if (executionTime < executionStartTime) {
-      console.warn(`[ORDER_WS] Ignorando execução antiga: ${new Date(executionTime)} < ${new Date(executionStartTime)}`);
-      return;
-    }
-    
-    // ✅ NOVO: Validação de timestamp futuro (erro de clock)
-    if (executionTime > Date.now() + 60000) {
-      console.warn(`[ORDER_WS] Ignorando execução no futuro: ${new Date(executionTime)}`);
-      return;
-    }
-    
     // ATUALIZAR A ORDEM NO MAPA COM TODOS OS DETALHES NECESSÁRIOS
     if (!sentOrders.has(orderId)) {
       sentOrders.set(orderId, {
@@ -63,12 +44,12 @@ async function executeReverse(signal, currentPrice, accountId) {
         status: orderStatus,
         type: order.o,
         lastUpdateTime: Date.now(),
-        executionTime: executionTime, // ✅ MELHORADO: usar timestamp da execução
         fills: [],
         commission: parseFloat(order.n || '0'),
         commissionAsset: order.N || null,
-        realizedPnl: parseFloat(order.rp || '0'),
-        clientOrderId: order.c || null
+        realizedPnl: parseFloat(order.rp || '0'), // ADICIONADO DA DEV
+        executionTime: order.T || Date.now(), // ADICIONADO DA DEV
+        clientOrderId: order.c || null // ADICIONADO DA DEV
       });
       
       console.log(`[ORDER_WS] Nova ordem rastreada via WS: ${orderId} (${orderStatus})`);
@@ -82,46 +63,30 @@ async function executeReverse(signal, currentPrice, accountId) {
       orderInfo.executedQty = parseFloat(order.z || '0');
       orderInfo.avgPrice = parseFloat(order.ap || '0');
       orderInfo.lastUpdateTime = Date.now();
-      orderInfo.executionTime = executionTime; // ✅ MELHORADO: atualizar timestamp
       orderInfo.commission = parseFloat(order.n || '0');
       orderInfo.commissionAsset = order.N || null;
-      orderInfo.realizedPnl = parseFloat(order.rp || '0');
+      orderInfo.realizedPnl = parseFloat(order.rp || '0'); // ADICIONADO DA DEV
+      orderInfo.executionTime = order.T || Date.now(); // ADICIONADO DA DEV
       
       // SE FOI UMA EXECUÇÃO (TRADE), ADICIONAR AO HISTÓRICO DE FILLS
       if (executionType === 'TRADE') {
         const fillQty = parseFloat(order.l || '0');
         const fillPrice = parseFloat(order.L || '0');
         const fillCommission = parseFloat(order.n || '0');
-        const fillTime = executionTime;
-        const tradeId = order.t || null;
+        const fillTime = order.T || Date.now(); // ADICIONADO DA DEV
+        const tradeId = order.t || null; // ADICIONADO DA DEV
         
         if (fillQty > 0) {
-          // ✅ NOVO: Verificar se este fill já existe (evitar duplicação)
-          const fillExists = orderInfo.fills.some(fill => 
-            fill.tradeId === tradeId || 
-            (Math.abs(fill.qty - fillQty) < 0.00000001 && Math.abs(fill.price - fillPrice) < 0.00000001 && Math.abs(fill.time - fillTime) < 1000)
-          );
+          orderInfo.fills.push({
+            qty: fillQty,
+            price: fillPrice,
+            commission: fillCommission,
+            time: fillTime,
+            tradeId: tradeId,
+            realizedPnl: parseFloat(order.rp || '0') // ADICIONADO DA DEV
+          });
           
-          if (!fillExists) {
-            orderInfo.fills.push({
-              qty: fillQty,
-              price: fillPrice,
-              commission: fillCommission,
-              time: fillTime,
-              tradeId: tradeId,
-              realizedPnl: parseFloat(order.rp || '0')
-            });
-            
-            console.log(`[ORDER_WS] Fill recebido para ${orderId}: ${fillQty} @ ${fillPrice} (Trade ID: ${tradeId})`);
-            
-            // ✅ NOVO: Validar continuidade dos fills
-            const totalFilled = orderInfo.fills.reduce((sum, fill) => sum + fill.qty, 0);
-            if (Math.abs(totalFilled - orderInfo.executedQty) > 0.00000001) {
-              console.warn(`[ORDER_WS] ⚠️ Inconsistência nos fills para ${orderId}: ${totalFilled} vs ${orderInfo.executedQty}`);
-            }
-          } else {
-            console.log(`[ORDER_WS] Fill duplicado ignorado para ${orderId}: ${fillQty} @ ${fillPrice}`);
-          }
+          console.log(`[ORDER_WS] Fill recebido para ${orderId}: ${fillQty} @ ${fillPrice} (Trade ID: ${tradeId})`);
         }
       }
       
@@ -150,31 +115,48 @@ async function executeReverse(signal, currentPrice, accountId) {
   let pricePrecision;
   let numericAccountId;
 
-  // ✅ NOVO: ID único para o listener temporário desta execução
-  const temporaryListenerId = `reverse-entry-${signal.id}`;
-
   try {
-    // ✅ REGISTRAR HANDLER TEMPORÁRIO NO NOVO SISTEMA PUB/SUB
-    websockets.on('orderUpdate', orderUpdateHandler, accountId, temporaryListenerId);
-    console.log(`[LIMIT_ENTRY] ✅ Handler de WebSocket temporário registrado com ID: ${temporaryListenerId}`);
+    // ✅ REGISTRAR HANDLER PARA WEBSOCKET COM BACKUP DO ORIGINAL
+    const existingHandlers = websockets.getHandlers(accountId) || {};
+    
+    // ✅ BACKUP do handler original para restaurar depois
+    if (existingHandlers.handleOrderUpdate) {
+      existingHandlers.originalHandleOrderUpdate = existingHandlers.handleOrderUpdate;
+    }
+    
+    const updatedHandlers = {
+      ...existingHandlers,
+      handleOrderUpdate: async (msg, db) => {
+        try {
+          // Executar handler original primeiro
+          if (existingHandlers.originalHandleOrderUpdate) {
+            await existingHandlers.originalHandleOrderUpdate(msg, db);
+          }
+          // Depois executar nosso handler específico
+          orderUpdateHandler(msg);
+        } catch (handlerError) {
+          console.error(`[LIMIT_ENTRY] Erro no handler de ordem:`, handlerError.message);
+        }
+      }
+    };
+    
+    websockets.setMonitoringCallbacks(updatedHandlers, accountId);
+    console.log(`[LIMIT_ENTRY] ✅ Handler WebSocket registrado com backup para conta ${accountId}`);
 
     // ✅ CONSTANTES CORRIGIDAS PARA MAIS EFICIÊNCIA
-    const MAX_CHASE_ATTEMPTS = 500000; // Reduzido de 100
-    const CHASE_TIMEOUT_MS = 300000; // 5 minutos para WebSocket-only
+    const MAX_CHASE_ATTEMPTS = 100; // Reduzido de 100
+    const CHASE_TIMEOUT_MS = 300000; // 2 minutos em vez de 3
     const WAIT_FOR_ORDER_CONFIRMATION_MS = 10000; // Reduzido de 15s
-    const EDIT_WAIT_TIMEOUT_MS = 20000; // Reduzido de 3s
-    const MAX_DEPTH_STALENESS_MS = 15000; // ✅ AUMENTADO: 15 segundos para maior tolerância
+    const EDIT_WAIT_TIMEOUT_MS = 2000; // Reduzido de 3s
+    const MAX_DEPTH_STALENESS_MS = 2000; // Reduzido de 3s
     const ENTRY_COMPLETE_THRESHOLD_RATIO = 0.95; // 95% em vez de 98%
-    const MIN_PRICE_DIFF_FOR_EDIT = 0.00001; // ✅ NOVO: diferença mínima para justificar edição (evita micro-edições)
 
     let chaseAttempts = 0;
-    let rejectionAttempts = 0; // ✅ NOVO: contador de rejeições
     let totalEntrySize = 0;
     let executionStartTime = Date.now();
     let partialFills = [];
     let marketOrderResponseForDb = null;
     const rpTargetKeys = ['tp1', 'tp2', 'tp3', 'tp4'];
-    const MAX_REJECTION_ATTEMPTS = 5; // ✅ NOVO: limite de rejeições
 
     // VALIDAÇÃO INICIAL (mantida)
     if (!accountId || typeof accountId !== 'number') {
@@ -325,9 +307,6 @@ async function executeReverse(signal, currentPrice, accountId) {
 
     // ✅ CONFIGURAR WEBSOCKET DE PROFUNDIDADE - VERSÃO APENAS WEBSOCKET
     console.log(`[LIMIT_ENTRY] Iniciando WebSocket de profundidade para ${signal.symbol}`);
-    let wsReconnectionCount = 0;
-    let lastSuccessfulDepthUpdate = Date.now();
-    
     depthWs = websockets.bookTicker(signal.symbol, (depthData, receivedAccountId) => {
       // CORREÇÃO: Validar accountId se fornecido
       if (receivedAccountId && receivedAccountId !== accountId) {
@@ -358,7 +337,6 @@ async function executeReverse(signal, currentPrice, accountId) {
         currentBestBid = bid;
         currentBestAsk = ask;
         lastDepthUpdateTimestamp = Date.now();
-        lastSuccessfulDepthUpdate = Date.now(); // ✅ NOVO: Rastrear última atualização bem-sucedida
         wsUpdateErrorCount = 0;
         
         // DEBUG: Log apenas a cada 20 atualizações para não poluir
@@ -416,30 +394,20 @@ async function executeReverse(signal, currentPrice, accountId) {
 
       // ✅ SINCRONIZAR PREENCHIMENTOS VIA WEBSOCKET E API - VERSÃO MELHORADA
       try {
-        // ✅ NOVO: Detecção de ordens fantasma (não rastreadas)
-        await detectGhostOrders(signal.symbol, executionStartTime, numericAccountId, sentOrders);
-        
         // PRIMEIRO: Verificar ordens via WebSocket local
         let localFilledCount = 0;
         for (const [orderId, orderInfo] of sentOrders.entries()) {
-          if ((orderInfo.status === 'FILLED') &&
+          if ((orderInfo.status === 'FILLED' || orderInfo.status === 'PARTIALLY_FILLED') &&
               orderInfo.side === binanceSide &&
               orderInfo.executedQty > 0 &&
               !partialFills.some(fill => fill.orderId === orderId)) {
             
-            // ✅ NOVO: Validar timestamp da execução
-            if (orderInfo.executionTime >= executionStartTime) {
-              partialFills.push({
-                qty: orderInfo.executedQty,
-                price: orderInfo.avgPrice,
-                orderId: orderId,
-                timestamp: orderInfo.executionTime,
-                validationSource: 'websocket'
-              });
-              localFilledCount++;
-            } else {
-              console.warn(`[LIMIT_ENTRY] Ignorando fill antigo: ${orderId} (${new Date(orderInfo.executionTime)})`);
-            }
+            partialFills.push({
+              qty: orderInfo.executedQty,
+              price: orderInfo.avgPrice,
+              orderId: orderId
+            });
+            localFilledCount++;
           }
         }
         
@@ -465,13 +433,7 @@ async function executeReverse(signal, currentPrice, accountId) {
         for (const exOrder of filledExchangeOrders) {
           const qty = parseFloat(exOrder.executedQty);
           const price = parseFloat(exOrder.avgPrice || exOrder.price);
-          partialFills.push({ 
-            qty, 
-            price, 
-            orderId: String(exOrder.orderId),
-            timestamp: exOrder.updateTime,
-            validationSource: 'rest_api'
-          });
+          partialFills.push({ qty, price, orderId: String(exOrder.orderId) });
           apiFilledCount++;
         }
         
@@ -494,20 +456,11 @@ async function executeReverse(signal, currentPrice, accountId) {
         break;
       }
 
-      // ✅ VERIFICAÇÃO DE DADOS DO BOOK - VERSÃO MELHORADA COM DETECÇÃO DE DESCONEXÃO
+      // ✅ VERIFICAÇÃO DE DADOS DO BOOK - MANTIDO
       const isDepthDataStale = (Date.now() - lastDepthUpdateTimestamp > MAX_DEPTH_STALENESS_MS);
-      const isWebSocketStale = (Date.now() - lastSuccessfulDepthUpdate > 30000); // 30 segundos sem dados válidos
-      
       if (!currentBestBid || !currentBestAsk || isDepthDataStale || wsUpdateErrorCount > 3) {
         const staleReason = !currentBestBid || !currentBestAsk ? "ausentes" : (isDepthDataStale ? "velhos" : `erros WS (${wsUpdateErrorCount})`);
         console.log(`[LIMIT_ENTRY] Dados do BookTicker (WebSocket) para ${signal.symbol} ${staleReason}. Tentativa ${chaseAttempts}/${MAX_CHASE_ATTEMPTS}. Última atualização WS: ${lastDepthUpdateTimestamp ? new Date(lastDepthUpdateTimestamp).toISOString() : 'N/A'}`);
-        
-        // ✅ NOVO: Se WebSocket estiver desconectado há muito tempo, tentar ressincronizar
-        if (isWebSocketStale && chaseAttempts % 10 === 0) { // A cada 10 tentativas
-          console.warn(`[LIMIT_ENTRY] ⚠️ WebSocket possivelmente desconectado. Tentando ressincronização...`);
-          await resyncAfterReconnection(signal.symbol, executionStartTime, numericAccountId, sentOrders);
-          wsReconnectionCount++;
-        }
         
         await new Promise(resolve => setTimeout(resolve, 100));
         continue;
@@ -560,45 +513,26 @@ async function executeReverse(signal, currentPrice, accountId) {
 
       let orderPlacedOrEditedThisIteration = false;
 
-      // ✅ GERENCIAMENTO DE ORDENS ATIVAS - VERSÃO ROBUSTA COM VERIFICAÇÃO DE STATUS
+      // ✅ GERENCIAMENTO DE ORDENS ATIVAS - VERSÃO MELHORADA DA DEV
       if (activeOrderId) {
-        // ✅ PRIMEIRO: VERIFICAR SE A ORDEM AINDA EXISTE NA CORRETORA
-        let currentOrderStatus = null;
+        let currentOrderDataFromExchange;
         try {
-          const orderStatusResponse = await getOrderStatus(signal.symbol, activeOrderId, numericAccountId);
-          currentOrderStatus = orderStatusResponse?.status;
-          console.log(`[LIMIT_ENTRY] 🔍 Status atual da ordem ${activeOrderId}: ${currentOrderStatus}`);
-        } catch (statusError) {
-          if (statusError.message && (statusError.message.includes('Order does not exist') || statusError.message.includes('Unknown order'))) {
-            console.log(`[LIMIT_ENTRY] ❌ Ordem ${activeOrderId} não existe mais na corretora. Resetando activeOrderId.`);
-            sentOrders.delete(activeOrderId);
+          currentOrderDataFromExchange = await getOrderStatus(signal.symbol, activeOrderId, numericAccountId);
+        } catch (e) {
+          if (e.message && (e.message.includes('Order does not exist') || e.message.includes('Unknown order'))) {
+            console.log(`[LIMIT_ENTRY] Ordem ${activeOrderId} não encontrada/cancelada na corretora. Resetando activeOrderId.`);
             activeOrderId = null;
-            currentOrderStatus = 'NOT_FOUND';
+            currentOrderDataFromExchange = null;
           } else {
-            console.error(`[LIMIT_ENTRY] Erro ao verificar status da ordem ${activeOrderId}:`, statusError.message);
-            // Continuar com dados do WebSocket como fallback
+            console.error(`[LIMIT_ENTRY] Erro ao verificar status da ordem ${activeOrderId}:`, e.message);
+            currentOrderDataFromExchange = null;
           }
         }
 
-        // ✅ SE A ORDEM FOI CANCELADA OU NÃO EXISTE, RESETAR E CONTINUAR
-        if (currentOrderStatus === 'CANCELED' || currentOrderStatus === 'NOT_FOUND' || currentOrderStatus === 'EXPIRED') {
-          console.log(`[LIMIT_ENTRY] 🗑️ Ordem ${activeOrderId} com status ${currentOrderStatus}. Removendo do controle e criando nova ordem.`);
-          sentOrders.delete(activeOrderId);
-          activeOrderId = null;
-        } else if (activeOrderId) {
-          // ✅ USAR DADOS DO WEBSOCKET LOCAL COMBINADO COM STATUS DA API
-          const wsOrderData = sentOrders.get(activeOrderId);
-          
-          if (!wsOrderData) {
-            console.log(`[LIMIT_ENTRY] Ordem ${activeOrderId} não encontrada no mapa WebSocket. Resetando activeOrderId.`);
-            activeOrderId = null;
-          } else {
-            const { status: wsStatus, executedQty, avgPrice, price: orderPriceFromWs, quantity } = wsOrderData;
-            const wsFilledQty = parseFloat(executedQty || '0');
-            const orderPriceOnExchange = parseFloat(orderPriceFromWs || '0');
-            
-            // ✅ USAR STATUS MAIS CONFIÁVEL (API TEM PRIORIDADE SOBRE WEBSOCKET)
-            const effectiveStatus = currentOrderStatus || wsStatus;
+        if (currentOrderDataFromExchange) {
+          const { status, executedQty, avgPrice, price: orderPriceOnExchangeStr, origQty } = currentOrderDataFromExchange;
+          const apiFilledQty = parseFloat(executedQty || '0');
+          const orderPriceOnExchange = parseFloat(orderPriceOnExchangeStr || '0');
           
           // VERIFICAR FILLS AINDA NÃO CONTABILIZADOS
           let alreadyAccountedForThisOrder = 0;
@@ -606,7 +540,7 @@ async function executeReverse(signal, currentPrice, accountId) {
             if (pf.orderId === activeOrderId) alreadyAccountedForThisOrder += pf.qty;
           });
           
-          const netFilledSinceLastCheck = wsFilledQty - alreadyAccountedForThisOrder;
+          const netFilledSinceLastCheck = apiFilledQty - alreadyAccountedForThisOrder;
 
           if (netFilledSinceLastCheck > 0) {
             const fillPrice = parseFloat(avgPrice || orderPriceOnExchange);
@@ -618,126 +552,105 @@ async function executeReverse(signal, currentPrice, accountId) {
             });
             totalFilledSize = partialFills.reduce((sum, pf) => sum + pf.qty, 0);
             console.log(`[LIMIT_ENTRY] 💰 Preenchimento detectado ${activeOrderId}: ${netFilledSinceLastCheck.toFixed(quantityPrecision)} @ ${fillPrice.toFixed(pricePrecision)}. Total: ${totalFilledSize.toFixed(quantityPrecision)}`);
-          }            if (effectiveStatus === 'FILLED') {
-              console.log(`[LIMIT_ENTRY] ✅ Ordem ${activeOrderId} totalmente preenchida.`);
-              sentOrders.delete(activeOrderId);
-              activeOrderId = null;
-              if (totalFilledSize >= totalEntrySize) {
-                console.log(`[LIMIT_ENTRY] 🎯 Quantidade total atingida após FILLED.`);
-                break;
-              }
-            } else if (effectiveStatus === 'PARTIALLY_FILLED') {              const priceDifference = Math.abs(orderPriceOnExchange - currentLocalMakerPrice);
-              const shouldEditOrder = priceDifference >= tickSize || orderPriceOnExchange !== currentLocalMakerPrice;
+          }
+
+          if (status === 'FILLED') {
+            console.log(`[LIMIT_ENTRY] ✅ Ordem ${activeOrderId} totalmente preenchida.`);
+            activeOrderId = null;
+            if (totalFilledSize >= totalEntrySize) {
+              console.log(`[LIMIT_ENTRY] 🎯 Quantidade total atingida após FILLED.`);
+              break;
+            }
+          } else if (status === 'PARTIALLY_FILLED') {
+            const priceDifference = Math.abs(orderPriceOnExchange - currentLocalMakerPrice);
+            const shouldEditOrder = priceDifference >= tickSize || orderPriceOnExchange !== currentLocalMakerPrice;
+            
+            if (shouldEditOrder) {
+              console.log(`[LIMIT_ENTRY] ⚡ Ordem ${activeOrderId} parcialmente preenchida, mas preço mudou significativamente (${priceDifference.toFixed(pricePrecision)} > ${tickSize}). Cancelando e recriando...`);
               
-              if (shouldEditOrder) {
-                console.log(`[LIMIT_ENTRY] ⚡ Ordem ${activeOrderId} parcialmente preenchida, mas preço mudou significativamente (${priceDifference.toFixed(pricePrecision)} > ${tickSize}). Cancelando e recriando...`);
+              try {
+                await cancelOrder(signal.symbol, activeOrderId, numericAccountId);
+                console.log(`[LIMIT_ENTRY] ✅ Ordem parcial ${activeOrderId} cancelada.`);
                 
-                try {
-                  await cancelOrder(signal.symbol, activeOrderId, numericAccountId);
-                  console.log(`[LIMIT_ENTRY] ✅ Ordem parcial ${activeOrderId} cancelada.`);
-                  
-                  // REMOVER DO MAPA WEBSOCKET
-                  sentOrders.delete(activeOrderId);
-                  
-                  // AGUARDAR UM POUCO PARA EVITAR CONFLITOS
-                  await new Promise(resolve => setTimeout(resolve, 500));
-                  activeOrderId = null;
-                } catch (cancelError) {
-                  console.error(`[LIMIT_ENTRY] ❌ Erro ao cancelar ordem parcial ${activeOrderId}:`, cancelError.message);
-                  // Se não conseguir cancelar, resetar mesmo assim para evitar loop
-                  sentOrders.delete(activeOrderId);
-                  activeOrderId = null;
-                }
-              } else {
-                console.log(`[LIMIT_ENTRY] ⏸️ Ordem ${activeOrderId} parcialmente preenchida, mas preço ainda adequado (diferença: ${priceDifference.toFixed(pricePrecision)}). Mantendo ordem.`);
-              }
-            } else if (effectiveStatus === 'NEW') {
-              const priceDifference = Math.abs(orderPriceOnExchange - currentLocalMakerPrice);
-              const shouldEditOrder = priceDifference >= tickSize || orderPriceOnExchange !== currentLocalMakerPrice;
-              
-              if (shouldEditOrder) {
-                console.log(`[LIMIT_ENTRY] ✏️ Editando ordem ${activeOrderId}: ${orderPriceOnExchange.toFixed(pricePrecision)} → ${currentLocalMakerPrice.toFixed(pricePrecision)} (diferença: ${priceDifference.toFixed(pricePrecision)})`);
-                
-                try {
-                  const remainingQtyToOrder = parseFloat((totalEntrySize - totalFilledSize).toFixed(quantityPrecision));
-                  
-                  const editResponse = await editOrder(
-                    numericAccountId,
-                    signal.symbol,
-                    activeOrderId, 
-                    currentLocalMakerPrice,
-                    binanceSide,
-                    remainingQtyToOrder
-                  );
-                  
-                  if (editResponse && (editResponse.orderId || editResponse.data?.orderId)) {
-                    const newOrderId = editResponse.orderId || editResponse.data?.orderId;
-                    if (String(newOrderId) !== String(activeOrderId)) {
-                      console.log(`[LIMIT_ENTRY] 🔄 Ordem recriada: ${activeOrderId} → ${newOrderId}`);
-                      
-                      // ATUALIZAR sentOrders MAP
-                      if (sentOrders.has(activeOrderId)) {
-                        const oldOrderInfo = sentOrders.get(activeOrderId);
-                        sentOrders.delete(activeOrderId);
-                        oldOrderInfo.orderId = String(newOrderId);
-                        oldOrderInfo.price = currentLocalMakerPrice;
-                        oldOrderInfo.lastUpdateTime = Date.now();
-                        sentOrders.set(String(newOrderId), oldOrderInfo);
-                      }
-                      
-                      activeOrderId = String(newOrderId);
-                    } else {
-                      // ATUALIZAR PREÇO NA ORDEM EXISTENTE
-                      if (sentOrders.has(activeOrderId)) {
-                        const orderInfo = sentOrders.get(activeOrderId);
-                        orderInfo.price = currentLocalMakerPrice;
-                        orderInfo.lastUpdateTime = Date.now();
-                        sentOrders.set(activeOrderId, orderInfo);
-                      }
-                    }
-                    
-                    orderPlacedOrEditedThisIteration = true;
-                    console.log(`[LIMIT_ENTRY] ✅ Ordem editada com sucesso: ${activeOrderId}`);
-                  } else {
-                    console.warn(`[LIMIT_ENTRY] ⚠️ Resposta inválida ao editar ordem:`, editResponse);
-                  }
-                } catch (editError) {
-                  console.error(`[LIMIT_ENTRY] ❌ Erro ao editar ordem ${activeOrderId}:`, editError.message);
-                  
-                  // SE FALHOU AO EDITAR, CANCELAR E RECRIAR NA PRÓXIMA ITERAÇÃO
-                  try {
-                    await cancelOrder(signal.symbol, activeOrderId, numericAccountId);
-                    sentOrders.delete(activeOrderId);
-                    activeOrderId = null;
-                    console.log(`[LIMIT_ENTRY] 🗑️ Ordem cancelada após erro de edição.`);
-                  } catch (cancelError) {
-                    console.error(`[LIMIT_ENTRY] ❌ Erro ao cancelar ordem após falha de edição:`, cancelError.message);
-                    // Resetar mesmo com erro para evitar loop infinito
-                    sentOrders.delete(activeOrderId);
-                    activeOrderId = null;
-                  }
-                }
-              } else {
-                console.log(`[LIMIT_ENTRY] ✅ Ordem ${activeOrderId} já no preço adequado (${orderPriceOnExchange.toFixed(pricePrecision)}). Diferença: ${priceDifference.toFixed(pricePrecision)}`);
+                // AGUARDAR UM POUCO PARA EVITAR CONFLITOS
+                await new Promise(resolve => setTimeout(resolve, 500));
+                activeOrderId = null;
+              } catch (cancelError) {
+                console.error(`[LIMIT_ENTRY] ❌ Erro ao cancelar ordem parcial ${activeOrderId}:`, cancelError.message);
               }
             } else {
-              console.log(`[LIMIT_ENTRY] ℹ️ Ordem ${activeOrderId} em status: ${effectiveStatus}`);
+              console.log(`[LIMIT_ENTRY] ⏸️ Ordem ${activeOrderId} parcialmente preenchida, mas preço ainda adequado (diferença: ${priceDifference.toFixed(pricePrecision)}). Mantendo ordem.`);
             }
+          } else if (status === 'NEW') {
+            const priceDifference = Math.abs(orderPriceOnExchange - currentLocalMakerPrice);
+            const shouldEditOrder = priceDifference >= tickSize || orderPriceOnExchange !== currentLocalMakerPrice;
+            
+            if (shouldEditOrder) {
+              console.log(`[LIMIT_ENTRY] ✏️ Editando ordem ${activeOrderId}: ${orderPriceOnExchange.toFixed(pricePrecision)} → ${currentLocalMakerPrice.toFixed(pricePrecision)} (diferença: ${priceDifference.toFixed(pricePrecision)})`);
+              
+              try {
+                const remainingQtyToOrder = parseFloat((totalEntrySize - totalFilledSize).toFixed(quantityPrecision));
+                
+                const editResponse = await editOrder(
+                  numericAccountId,
+                  signal.symbol,
+                  activeOrderId, 
+                  currentLocalMakerPrice,
+                  binanceSide,
+                  remainingQtyToOrder
+                );
+                
+                if (editResponse && (editResponse.orderId || editResponse.data?.orderId)) {
+                  const newOrderId = editResponse.orderId || editResponse.data?.orderId;
+                  if (String(newOrderId) !== String(activeOrderId)) {
+                    console.log(`[LIMIT_ENTRY] 🔄 Ordem recriada: ${activeOrderId} → ${newOrderId}`);
+                    
+                    // ATUALIZAR sentOrders MAP
+                    if (sentOrders.has(activeOrderId)) {
+                      const oldOrderInfo = sentOrders.get(activeOrderId);
+                      sentOrders.delete(activeOrderId);
+                      oldOrderInfo.orderId = String(newOrderId);
+                      sentOrders.set(String(newOrderId), oldOrderInfo);
+                    }
+                    
+                    activeOrderId = String(newOrderId);
+                  }
+                  
+                  orderPlacedOrEditedThisIteration = true;
+                  console.log(`[LIMIT_ENTRY] ✅ Ordem editada com sucesso: ${activeOrderId}`);
+                } else {
+                  console.warn(`[LIMIT_ENTRY] ⚠️ Resposta inválida ao editar ordem:`, editResponse);
+                }
+              } catch (editError) {
+                console.error(`[LIMIT_ENTRY] ❌ Erro ao editar ordem ${activeOrderId}:`, editError.message);
+                
+                // SE FALHOU AO EDITAR, CANCELAR E RECRIAR NA PRÓXIMA ITERAÇÃO
+                try {
+                  await cancelOrder(signal.symbol, activeOrderId, numericAccountId);
+                  activeOrderId = null;
+                  console.log(`[LIMIT_ENTRY] 🗑️ Ordem ${activeOrderId} cancelada após erro de edição.`);
+                } catch (cancelError) {
+                  console.error(`[LIMIT_ENTRY] ❌ Erro ao cancelar ordem após falha de edição:`, cancelError.message);
+                }
+              }
+            } else {
+              console.log(`[LIMIT_ENTRY] ✅ Ordem ${activeOrderId} já no preço adequado (${orderPriceOnExchange.toFixed(pricePrecision)}). Diferença: ${priceDifference.toFixed(pricePrecision)}`);
+            }
+          } else {
+            console.log(`[LIMIT_ENTRY] ℹ️ Ordem ${activeOrderId} em status: ${status}`);
           }
         }
       }
       
-      // ✅ CRIAR NOVA ORDEM - VERSÃO SIMPLIFICADA (sem validação dupla pois sempre será maker)
+      // ✅ CRIAR NOVA ORDEM - MANTIDO
       if (!activeOrderId && totalFilledSize < totalEntrySize) { 
         const newOrderQty = parseFloat((totalEntrySize - totalFilledSize).toFixed(quantityPrecision));
         if (newOrderQty <= 0) { 
           console.log("[LIMIT_ENTRY] Quantidade para nova ordem é zero ou negativa. Saindo do loop de chasing."); 
           break; 
         }
-        
         try {
-          console.log(`[LIMIT_ENTRY] Enviando NOVA LIMIT ${signal.symbol}: ${binanceSide} ${newOrderQty.toFixed(quantityPrecision)} @ ${currentLocalMakerPrice.toFixed(pricePrecision)} (MAKER GARANTIDO - ${binanceSide === 'BUY' ? 'bestBid-1tick' : 'bestAsk+1tick'})`);
-          console.log(`[LIMIT_ENTRY] 📊 Book atual: Bid=${bestBid.toFixed(pricePrecision)}, Ask=${bestAsk.toFixed(pricePrecision)}, Spread=${spread.toFixed(pricePrecision)}`);
+          console.log(`[LIMIT_ENTRY] Enviando NOVA LIMIT ${signal.symbol}: ${binanceSide} ${newOrderQty.toFixed(quantityPrecision)} @ ${currentLocalMakerPrice.toFixed(pricePrecision)}`);
           
           const orderResponse = await newLimitMakerOrder(
             numericAccountId,
@@ -748,27 +661,19 @@ async function executeReverse(signal, currentPrice, accountId) {
           );
           
           if (orderResponse.status === 'REJECTED_POST_ONLY' || 
-              (orderResponse.info && orderResponse.info.msg === 'Filter failure: PRICE_FILTER') ||
-              (orderResponse.msg && orderResponse.msg.includes('Post Only order will be rejected'))) {
+              (orderResponse.info && orderResponse.info.msg === 'Filter failure: PRICE_FILTER')) {
+            console.log(`[LIMIT_ENTRY] Ordem rejeitada (${orderResponse.status || orderResponse.info?.msg}). Ajustando preço...`);
             
-            rejectionAttempts++;
-            console.log(`[LIMIT_ENTRY] ⚠️ Ordem rejeitada como maker (${rejectionAttempts}/${MAX_REJECTION_ATTEMPTS}): ${orderResponse.status || orderResponse.info?.msg || orderResponse.msg}`);
-            console.log(`[LIMIT_ENTRY] ❌ ERRO CRÍTICO: A lógica MAKER GARANTIDA deveria SEMPRE ser aceita como maker!`);
-            console.log(`[LIMIT_ENTRY] 📊 Debug - BestBid: ${bestBid.toFixed(pricePrecision)}, BestAsk: ${bestAsk.toFixed(pricePrecision)}, Preço enviado: ${currentLocalMakerPrice.toFixed(pricePrecision)}, Side: ${binanceSide}`);
-            
-            if (rejectionAttempts >= MAX_REJECTION_ATTEMPTS) {
-              console.log(`[LIMIT_ENTRY] ❌ Muitas rejeições (${rejectionAttempts}). Algo está errado com a lógica MAKER GARANTIDA para sinal ${signal.id}`);
-              throw new Error(`Lógica MAKER GARANTIDA falhando: ${rejectionAttempts} rejeições consecutivas`);
+            if (binanceSide === 'BUY') {
+              currentLocalMakerPrice = bestBid - tickSize;
+            } else {
+              currentLocalMakerPrice = bestAsk + tickSize;
             }
             
-            // ✅ SEM FALLBACK - aguardar próxima iteração com dados atualizados
-            console.log(`[LIMIT_ENTRY] 🔄 Aguardando próxima iteração com dados frescos do WebSocket...`);
-            await new Promise(resolve => setTimeout(resolve, 1000));
+            currentLocalMakerPrice = await roundPriceToTickSize(signal.symbol, currentLocalMakerPrice, numericAccountId);
+            console.log(`[LIMIT_ENTRY] Novo preço ajustado: ${currentLocalMakerPrice.toFixed(pricePrecision)}`);
             continue;
           }
-          
-          // ✅ RESETAR contador de rejeições em caso de sucesso
-          rejectionAttempts = 0;
           
           if (!orderResponse.orderId) {
             throw new Error(`Resposta inválida da ordem: ${JSON.stringify(orderResponse)}`);
@@ -840,8 +745,7 @@ async function executeReverse(signal, currentPrice, accountId) {
         break; 
       }
       
-      // ✅ DELAY ULTRA REDUZIDO PARA RESPOSTA INSTANTÂNEA  
-      await new Promise(resolve => setTimeout(resolve, 50));
+      await new Promise(resolve => setTimeout(resolve, 200));
     } 
 
     // ✅ SEÇÃO DE MARKET ORDER FALLBACK - VERSÃO MELHORADA DA DEV
@@ -973,30 +877,161 @@ async function executeReverse(signal, currentPrice, accountId) {
     console.log(`[LIMIT_ENTRY] ⏳ Aguardando ${WAIT_FOR_WEBHOOK_MS}ms para webhook processar ordens de entrada...`);
     await new Promise(resolve => setTimeout(resolve, WAIT_FOR_WEBHOOK_MS));
 
-    // ✅ BUSCAR POSIÇÃO CRIADA PELO WEBHOOK
+    // ✅ BUSCAR POSIÇÃO CRIADA PELO WEBHOOK COM FALLBACK PARA CORRETORA
     let positionId = null;
-    let maxRetries = 1000;
+    let maxRetries = 30; // Aumentado para 30 tentativas (30 segundos)
     let retries = 0;
 
+    console.log(`[LIMIT_ENTRY] 🔍 Buscando posição criada para ${signal.symbol} na conta ${accountId}...`);
+
     while (!positionId && retries < maxRetries) {
+      // Primeiro: verificar no banco (posição criada via webhook) - query mais flexível
       const [webhookPosition] = await connection.query(
-        `SELECT id FROM posicoes WHERE simbolo = ? AND status = 'OPEN' AND conta_id = ? ORDER BY id DESC LIMIT 1`,
+        `SELECT id, quantidade, preco_entrada, status, created_at FROM posicoes 
+         WHERE simbolo = ? AND conta_id = ? AND status IN ('OPEN', 'ACTIVE') 
+         AND ABS(quantidade) > 0
+         AND created_at >= DATE_SUB(NOW(), INTERVAL 5 MINUTE)
+         ORDER BY id DESC LIMIT 1`,
         [signal.symbol, accountId]
       );
       
       if (webhookPosition.length > 0) {
-        positionId = webhookPosition[0].id;
-        console.log(`[LIMIT_ENTRY] ✅ Posição encontrada no banco (criada via webhook): ID ${positionId}`);
-        break;
+        const position = webhookPosition[0];
+        const positionQty = Math.abs(parseFloat(position.quantidade));
+        const expectedQty = parseFloat(totalFilledSize);
+        const qtyDifference = Math.abs(positionQty - expectedQty);
+        const qtyTolerance = expectedQty * 0.05; // 5% de tolerância
+        
+        // Verificar se a quantidade é compatível (dentro da tolerância)
+        if (qtyDifference <= qtyTolerance || qtyDifference <= 0.001) {
+          positionId = position.id;
+          console.log(`[LIMIT_ENTRY] ✅ Posição encontrada no banco (criada via webhook):`);
+          console.log(`  - ID: ${positionId}`);
+          console.log(`  - Quantidade: ${position.quantidade} (esperado: ${expectedQty.toFixed(quantityPrecision)})`);
+          console.log(`  - Preço entrada: ${position.preco_entrada}`);
+          console.log(`  - Status: ${position.status}`);
+          console.log(`  - Created: ${position.created_at}`);
+          break;
+        } else {
+          console.log(`[LIMIT_ENTRY] ⚠️ Posição encontrada mas quantidade não confere: DB=${positionQty}, Esperado=${expectedQty}, Diferença=${qtyDifference.toFixed(quantityPrecision)}`);
+        }
       }
       
       retries++;
       console.log(`[LIMIT_ENTRY] ⏳ Aguardando posição ser criada via webhook... tentativa ${retries}/${maxRetries}`);
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+
+    // ✅ FALLBACK 1: Consultar posições abertas gerais na corretora
+    if (!positionId) {
+      console.log(`[LIMIT_ENTRY] 📡 Posição não encontrada no banco, consultando todas as posições na corretora...`);
+      
+      try {
+        const exchangePositions = await getAllOpenPositions(numericAccountId);
+        const exchangePosition = exchangePositions.find(p => 
+          p.simbolo === signal.symbol && Math.abs(parseFloat(p.quantidade)) > 0
+        );
+        
+        if (exchangePosition) {
+          console.log(`[LIMIT_ENTRY] ✅ Posição encontrada na corretora (posições gerais):`);
+          console.log(`  - Símbolo: ${exchangePosition.simbolo}`);
+          console.log(`  - Quantidade: ${exchangePosition.quantidade}`);
+          console.log(`  - Preço entrada: ${exchangePosition.preco_entrada}`);
+          console.log(`  - PnL: ${exchangePosition.liquid_pnl}`);
+          
+          // Aguardar webhook processar e verificar novamente no banco
+          console.log(`[LIMIT_ENTRY] ⏳ Aguardando 3s para webhook processar posição da corretora...`);
+          await new Promise(resolve => setTimeout(resolve, 3000));
+          
+          const [delayedPosition] = await connection.query(
+            `SELECT id FROM posicoes 
+             WHERE simbolo = ? AND conta_id = ? AND status IN ('OPEN', 'ACTIVE') 
+             AND ABS(quantidade) > 0
+             ORDER BY id DESC LIMIT 1`,
+            [signal.symbol, accountId]
+          );
+          
+          if (delayedPosition.length > 0) {
+            positionId = delayedPosition[0].id;
+            console.log(`[LIMIT_ENTRY] ✅ Posição encontrada no banco após aguardar webhook: ID ${positionId}`);
+          } else {
+            console.log(`[LIMIT_ENTRY] ⚠️ Posição existe na corretora mas ainda não foi inserida no banco`);
+          }
+        }
+      } catch (exchangeError) {
+        console.error(`[LIMIT_ENTRY] ❌ Erro ao consultar posições gerais na corretora:`, exchangeError.message);
+      }
+    }
+
+    // ✅ FALLBACK 2: Consultar positionRisk específico do símbolo na corretora
+    if (!positionId) {
+      console.log(`[LIMIT_ENTRY] 📡 Consultando positionRisk específico para ${signal.symbol}...`);
+      
+      try {
+        // Usar a função específica para obter informações de posição de um símbolo
+        const symbolPositionInfo = await rest.getSymbolPositionRisk(signal.symbol, numericAccountId);
+        
+        if (symbolPositionInfo && Math.abs(parseFloat(symbolPositionInfo.positionAmt)) > 0) {
+          console.log(`[LIMIT_ENTRY] ✅ Posição encontrada via positionRisk específico:`);
+          console.log(`  - Símbolo: ${symbolPositionInfo.symbol}`);
+          console.log(`  - Quantidade: ${symbolPositionInfo.positionAmt}`);
+          console.log(`  - Preço entrada: ${symbolPositionInfo.entryPrice}`);
+          console.log(`  - PnL: ${symbolPositionInfo.unRealizedProfit}`);
+          
+          // Aguardar mais tempo para webhook processar
+          console.log(`[LIMIT_ENTRY] ⏳ Aguardando 5s para webhook processar positionRisk...`);
+          await new Promise(resolve => setTimeout(resolve, 5000));
+          
+          const [finalCheck] = await connection.query(
+            `SELECT id FROM posicoes 
+             WHERE simbolo = ? AND conta_id = ? AND status IN ('OPEN', 'ACTIVE') 
+             AND ABS(quantidade) > 0
+             ORDER BY id DESC LIMIT 1`,
+            [signal.symbol, accountId]
+          );
+          
+          if (finalCheck.length > 0) {
+            positionId = finalCheck[0].id;
+            console.log(`[LIMIT_ENTRY] ✅ Posição finalmente encontrada no banco: ID ${positionId}`);
+          } else {
+            console.warn(`[LIMIT_ENTRY] ⚠️ Posição confirmada na corretora via positionRisk mas webhook não processou ainda`);
+            
+            // Como último recurso, tentar inserir a posição manualmente no banco
+            try {
+              console.log(`[LIMIT_ENTRY] 🔧 Tentando inserir posição manualmente no banco...`);
+              
+              const insertResult = await connection.query(
+                `INSERT INTO posicoes (simbolo, quantidade, preco_entrada, preco_corrente, liquid_pnl, conta_id, status, side, created_at, updated_at) 
+                 VALUES (?, ?, ?, ?, ?, ?, 'OPEN', ?, NOW(), NOW())`,
+                [
+                  signal.symbol,
+                  symbolPositionInfo.positionAmt,
+                  symbolPositionInfo.entryPrice,
+                  symbolPositionInfo.markPrice || symbolPositionInfo.entryPrice,
+                  symbolPositionInfo.unRealizedProfit || 0,
+                  accountId,
+                  parseFloat(symbolPositionInfo.positionAmt) > 0 ? 'BUY' : 'SELL'
+                ]
+              );
+              
+              if (insertResult.insertId) {
+                positionId = insertResult.insertId;
+                console.log(`[LIMIT_ENTRY] ✅ Posição inserida manualmente no banco: ID ${positionId}`);
+              }
+            } catch (insertError) {
+              console.error(`[LIMIT_ENTRY] ❌ Erro ao inserir posição manualmente:`, insertError.message);
+            }
+          }
+        } else {
+          console.warn(`[LIMIT_ENTRY] ❌ Nenhuma posição ativa encontrada via positionRisk para ${signal.symbol}`);
+        }
+      } catch (positionRiskError) {
+        console.error(`[LIMIT_ENTRY] ❌ Erro ao consultar positionRisk:`, positionRiskError.message);
+      }
     }
 
     if (!positionId) {
-      console.warn(`⚠️ Posição não encontrada, mas criando ordens de proteção mesmo assim...`);
+      console.warn(`[LIMIT_ENTRY] ⚠️ Posição não encontrada após todas as tentativas, mas criando ordens de proteção mesmo assim...`);
       // Continuar criando SL/TP/RPs sem aguardar position_id
     }
 
@@ -1184,50 +1219,30 @@ async function executeReverse(signal, currentPrice, accountId) {
     await connection.commit();
     console.log(`[LIMIT_ENTRY] ✅ Transação COMMITADA com sucesso para sinal ${signal.id}`);
 
-    // ✅ NOTIFICAÇÃO TELEGRAM DE ENTRADA EXECUTADA
+    // ✅ NOTIFICAÇÃO TELEGRAM DE SUCESSO (apenas a mensagem detalhada, sem duplicidade)
     try {
       const totalValue = totalFilledSize * averageEntryPrice;
-      const timestamp = new Date().toLocaleString('pt-BR');
-      
-      console.log(`[TELEGRAM_DISPATCHER] � ${timestamp} | ARQUIVO: reverse.js | AÇÃO: Disparando mensagem de ENTRADA EXECUTADA`);
-      console.log(`[TELEGRAM_DISPATCHER] 📋 Dados: Conta=${accountId}, Symbol=${signal.symbol}, Qtd=${totalFilledSize}, Preço=${averageEntryPrice}, Valor=${totalValue.toFixed(2)}`);
-      console.log(`[TELEGRAM_DISPATCHER] 🎯 Signal ID: ${signal.id}, Position ID: ${positionId || 'ainda não definido'}`);
-      
-      const telegramResult = await formatEntryMessageWithPrecision(signal, totalFilledSize, averageEntryPrice, totalValue, accountId);
-      
-      console.log(`[TELEGRAM_DISPATCHER] 📤 Resultado do envio:`, JSON.stringify(telegramResult, null, 2));
-      
-      if (telegramResult && telegramResult.success) {
-        console.log(`[TELEGRAM_DISPATCHER] ✅ ${timestamp} | reverse.js | Mensagem de entrada enviada com SUCESSO para conta ${accountId}`);
-        
-        // Salvar messageId se disponível
-        let messageId = null;
-        if (telegramResult.messageId) {
-          messageId = telegramResult.messageId;
-          console.log(`[TELEGRAM_DISPATCHER] 📨 Message ID (direto): ${messageId}`);
-        } else if (telegramResult.result && telegramResult.result.message_id) {
-          messageId = telegramResult.result.message_id;
-          console.log(`[TELEGRAM_DISPATCHER] 📨 Message ID (result.message_id): ${messageId}`);
-        } else {
-          console.warn(`[TELEGRAM_DISPATCHER] ⚠️ Nenhum messageId encontrado na resposta`);
-        }
-        
-        if (messageId) {
-          await connection.query(
-            `UPDATE webhook_signals SET registry_message_id = ? WHERE id = ?`,
-            [messageId, signal.id]
-          );
-          console.log(`[TELEGRAM_DISPATCHER] 📋 Message ID salvo no banco: ${messageId} para sinal ${signal.id}`);
-        }
-      } else {
-        console.warn(`[TELEGRAM_DISPATCHER] ⚠️ ${timestamp} | reverse.js | FALHA ao enviar mensagem de entrada`);
-        console.warn(`[TELEGRAM_DISPATCHER] 🔍 Erro:`, telegramResult?.error || 'Erro desconhecido');
-        console.warn(`[TELEGRAM_DISPATCHER] 🔍 Resposta completa:`, telegramResult);
+      const message = await formatEntryMessageWithPrecision(signal, totalFilledSize, averageEntryPrice, totalValue, accountId);
+      // Enviar mensagem e capturar o message_id
+      const telegramResult = await sendTelegramMessage(accountId, message);
+      let messageId = null;
+      if (telegramResult && telegramResult.result && telegramResult.result.message_id) {
+        messageId = telegramResult.result.message_id;
+      } else if (telegramResult && telegramResult.message_id) {
+        messageId = telegramResult.message_id;
+      }
+      if (messageId) {
+        await connection.query(
+          `UPDATE webhook_signals SET registry_message_id = ? WHERE id = ?`,
+          [messageId, signal.id]
+        );
+        console.log(`[LIMIT_ENTRY] 📋 registry_message_id salvo: ${messageId}`);
+      }
+      if (telegramResult && (telegramResult.ok || telegramResult === true)) {
+        console.log(`[LIMIT_ENTRY] 📱 Notificação de sucesso enviada via Telegram`);
       }
     } catch (telegramError) {
-      const timestamp = new Date().toLocaleString('pt-BR');
-      console.error(`[TELEGRAM_DISPATCHER] ❌ ${timestamp} | reverse.js | ERRO CRÍTICO ao enviar notificação de entrada:`, telegramError.message);
-      console.error(`[TELEGRAM_DISPATCHER] 📋 Stack trace:`, telegramError.stack);
+      console.warn(`[LIMIT_ENTRY] ⚠️ Erro ao enviar notificação de sucesso:`, telegramError.message);
     }
 
     // Aguarde 3 segundos para garantir que as ordens e posição foram inseridas via WebSocket
@@ -1276,23 +1291,11 @@ async function executeReverse(signal, currentPrice, accountId) {
 
     // ✅ NOTIFICAÇÃO TELEGRAM DE ERRO
     try {
-      const timestamp = new Date().toLocaleString('pt-BR');
-      console.log(`[TELEGRAM_DISPATCHER] 🕐 ${timestamp} | ARQUIVO: reverse.js | AÇÃO: Disparando mensagem de ERRO`);
-      console.log(`[TELEGRAM_DISPATCHER] 📋 Dados: Conta=${accountId}, Signal=${signal.id}, Erro=${originalErrorMessage}`);
-      
-      const errorMessage = await formatErrorMessage(signal, originalErrorMessage);
-      const result = await sendTelegramMessage(accountId, errorMessage);
-      
-      console.log(`[TELEGRAM_DISPATCHER] � Resultado do envio de erro:`, JSON.stringify(result, null, 2));
-      
-      if (result && result.success) {
-        console.log(`[TELEGRAM_DISPATCHER] ✅ ${timestamp} | reverse.js | Mensagem de erro enviada com SUCESSO via Telegram`);
-      } else {
-        console.warn(`[TELEGRAM_DISPATCHER] ⚠️ ${timestamp} | reverse.js | FALHA ao enviar mensagem de erro:`, result?.error || 'Erro desconhecido');
-      }
+      const errorMessage = formatErrorMessage(signal, originalErrorMessage);
+      await sendTelegramMessage(accountId, errorMessage);
+      console.log(`[LIMIT_ENTRY] 📱 Notificação de erro enviada via Telegram`);
     } catch (telegramError) {
-      const timestamp = new Date().toLocaleString('pt-BR');
-      console.error(`[TELEGRAM_DISPATCHER] ❌ ${timestamp} | reverse.js | ERRO CRÍTICO ao enviar notificação de erro:`, telegramError.message);
+      console.warn(`[LIMIT_ENTRY] ⚠️ Erro ao enviar notificação de erro:`, telegramError.message);
     }
 
     // CANCELAR ORDEM ATIVA SE EXISTIR USANDO rest.JS
@@ -1331,24 +1334,39 @@ async function executeReverse(signal, currentPrice, accountId) {
     return { success: false, error: originalErrorMessage };
 
   } finally {
-    // ✅ LIMPEZA FINAL - SEMPRE EXECUTADO
-    console.log(`[LIMIT_ENTRY] 🧹 Finalizando execução para sinal ${signal.id}. Iniciando limpeza...`);
-
-    // ✅ REMOVER HANDLER TEMPORÁRIO DO WEBSOCKET USANDO O NOVO SISTEMA
-    websockets.off('orderUpdate', temporaryListenerId, accountId);
-    console.log(`[LIMIT_ENTRY] ✅ Handler de WebSocket temporário removido.`);
-
-    // Parar o websocket de profundidade
-    if (depthWs && typeof depthWs.close === 'function') {
+    // ✅ CORREÇÃO CRÍTICA: Verificar se depthWs existe e é um WebSocket válido
+    if (typeof depthWs !== 'undefined' && depthWs !== null) {
+      console.log(`[LIMIT_ENTRY] Fechando WebSocket de profundidade para ${signal?.symbol || 'unknown'} no bloco finally.`);
       try {
-        depthWs.close(1000, 'Execution completed');
-        console.log(`[LIMIT_ENTRY] ✅ WebSocket de profundidade parado com sucesso.`);
+        // Verificar se é um WebSocket válido antes de tentar fechar
+        if (depthWs && typeof depthWs.close === 'function' && depthWs.readyState !== undefined) {
+          if (depthWs.readyState === 1) { // WebSocket.OPEN
+            depthWs.close(1000, 'Execution completed');
+          }
+        }
+        depthWs = null;
       } catch (wsCloseError) {
-        console.error(`[LIMIT_ENTRY] Erro ao fechar WebSocket de profundidade:`, wsCloseError.message);
+        console.error(`[LIMIT_ENTRY] Erro ao fechar WebSocket:`, wsCloseError.message);
       }
     }
     
-    // Liberar conexão com o banco de dados
+    // ✅ LIMPEZA ADICIONAL: Remover callbacks temporários e liberar conexão
+    try {
+      if (numericAccountId && signal?.symbol) {
+        console.log(`[LIMIT_ENTRY] Limpando recursos WebSocket para ${signal.symbol} (conta ${numericAccountId})`);
+        
+        // Restaurar handlers originais se necessário
+        const originalHandlers = websockets.getHandlers(numericAccountId) || {};
+        if (originalHandlers.originalHandleOrderUpdate) {
+          originalHandlers.handleOrderUpdate = originalHandlers.originalHandleOrderUpdate;
+          delete originalHandlers.originalHandleOrderUpdate;
+          websockets.setMonitoringCallbacks(originalHandlers, numericAccountId);
+        }
+      }
+    } catch (cleanupError) {
+      console.error(`[LIMIT_ENTRY] Erro na limpeza de recursos:`, cleanupError.message);
+    }
+    
     if (connection) {
       try {
         connection.release();
@@ -1404,7 +1422,7 @@ async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3000, accountI
         return orderStatus;
       }
     } catch (restError) {
-           console.log(`[WAIT_ORDER] ⚠️ Erro REST (pode ser apenas atraso): ${restError.message}`);
+      console.log(`[WAIT_ORDER] ⚠️ Erro REST (pode ser apenas atraso): ${restError.message}`);
     }
     
     // LOOP DE ESPERA COM VERIFICAÇÕES DUPLAS
@@ -1452,152 +1470,6 @@ async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3000, accountI
     console.error(`[WAIT_ORDER] ERRO:`, error.message);
     return { status: 'ERROR' };
   }
-}
-
-// ✅ NOVA FUNÇÃO: Detectar ordens fantasma (não rastreadas)
-async function detectGhostOrders(symbol, executionStartTime, accountId, sentOrdersMap) {
-  try {
-    const recentOrders = await getRecentOrders(accountId, symbol, 20);
-    const activeOrders = recentOrders.filter(order => 
-      (order.status === 'NEW' || order.status === 'PARTIALLY_FILLED') &&
-      order.updateTime >= executionStartTime
-    );
-    
-    for (const order of activeOrders) {
-      const orderId = String(order.orderId);
-      if (!sentOrdersMap.has(orderId)) {
-        console.warn(`[GHOST_ORDER] ⚠️ Ordem não rastreada encontrada: ${orderId} (${order.status})`);
-        
-        // Adicionar ao mapa para rastreamento
-        sentOrdersMap.set(orderId, {
-          orderId: orderId,
-          symbol: order.symbol,
-          side: order.side,
-          price: parseFloat(order.price || '0'),
-          quantity: parseFloat(order.origQty || '0'),
-          executedQty: parseFloat(order.executedQty || '0'),
-          avgPrice: parseFloat(order.avgPrice || order.price || '0'),
-          status: order.status,
-          type: order.type,
-          lastUpdateTime: order.updateTime,
-          executionTime: order.updateTime,
-          fills: [],
-          commission: 0,
-          commissionAsset: null,
-          realizedPnl: 0,
-          clientOrderId: order.clientOrderId || null,
-          isGhostOrder: true // Marcar como ordem fantasma
-        });
-        
-        console.log(`[GHOST_ORDER] ✅ Ordem fantasma ${orderId} adicionada ao rastreamento`);
-      }
-    }
-  } catch (error) {
-    console.error(`[GHOST_ORDER] Erro na detecção: ${error.message}`);
-  }
-}
-
-// ✅ NOVA FUNÇÃO: Ressincronizar após reconexão do WebSocket
-async function resyncAfterReconnection(symbol, executionStartTime, accountId, sentOrdersMap) {
-  console.log(`[RESYNC] Ressincronizando após reconexão do WebSocket...`);
-  
-  try {
-    const recentOrders = await getRecentOrders(accountId, symbol, 30);
-    let resyncCount = 0;
-    
-    for (const order of recentOrders) {
-      if (order.updateTime >= executionStartTime) {
-        const orderId = String(order.orderId);
-        
-        if (sentOrdersMap.has(orderId)) {
-          const localOrder = sentOrdersMap.get(orderId);
-          if (localOrder.lastUpdateTime < order.updateTime) {
-            localOrder.status = order.status;
-            localOrder.executedQty = parseFloat(order.executedQty || '0');
-            localOrder.avgPrice = parseFloat(order.avgPrice || order.price || '0');
-            localOrder.lastUpdateTime = order.updateTime;
-            localOrder.executionTime = order.updateTime;
-            sentOrdersMap.set(orderId, localOrder);
-            
-            resyncCount++;
-            console.log(`[RESYNC] Ordem ${orderId} atualizada: ${order.status} (exec: ${order.executedQty})`);
-          }
-        }
-      }
-    }
-    
-    if (resyncCount > 0) {
-      console.log(`[RESYNC] ✅ ${resyncCount} ordens ressincronizadas com sucesso`);
-    } else {
-      console.log(`[RESYNC] ℹ️ Nenhuma atualização necessária durante ressincronização`);
-    }
-  } catch (error) {
-    console.error(`[RESYNC] Erro na ressincronização: ${error.message}`);
-  }
-}
-
-// ✅ NOVA FUNÇÃO: Envolve a sincronização de uma ordem em um lock
-async function syncOrderWithLock(orderId, symbol, accountId, sentOrdersMap, executionStartTime, partialFills, binanceSide) {
-  if (orderLocks.has(orderId)) {
-    console.log(`[LOCK] Aguardando lock para ordem ${orderId}...`);
-    await orderLocks.get(orderId);
-    return null; // Retorna nulo para indicar que já estava sendo processado
-  }
-
-  const lockPromise = (async () => {
-    try {
-      return await syncAndProcessSingleOrder(orderId, symbol, accountId, sentOrdersMap, executionStartTime, partialFills, binanceSide);
-    } finally {
-      orderLocks.delete(orderId);
-      console.log(`[LOCK] Lock liberado para ordem ${orderId}`);
-    }
-  })();
-  
-  orderLocks.set(orderId, lockPromise);
-  return await lockPromise;
-}
-
-// ✅ NOVA FUNÇÃO: Lógica de sincronização segura para uma única ordem
-async function syncAndProcessSingleOrder(orderId, symbol, accountId, sentOrdersMap, executionStartTime, partialFills, binanceSide) {
-    console.log(`[SYNC_ORDER] Sincronizando ordem ${orderId}...`);
-    let filledQty = 0;
-
-    try {
-        const orderStatus = await getOrderStatus(symbol, orderId, accountId);
-
-        if (orderStatus && orderStatus.updateTime >= executionStartTime) {
-            const localOrder = sentOrdersMap.get(orderId) || {};
-            
-            // Atualizar mapa local com dados da API (fonte da verdade)
-            localOrder.status = orderStatus.status;
-            localOrder.executedQty = parseFloat(orderStatus.executedQty || '0');
-            localOrder.avgPrice = parseFloat(orderStatus.avgPrice || orderStatus.price || '0');
-            localOrder.lastUpdateTime = orderStatus.updateTime;
-            sentOrdersMap.set(orderId, { ...localOrder, ...orderStatus });
-
-            if (orderStatus.status === 'FILLED' && orderStatus.side === binanceSide) {
-                const alreadyFilled = partialFills.some(f => f.orderId === orderId);
-                if (!alreadyFilled) {
-                    filledQty = parseFloat(orderStatus.executedQty);
-                    if (filledQty > 0) {
-                        partialFills.push({
-                            qty: filledQty,
-                            price: parseFloat(orderStatus.avgPrice),
-                            orderId: orderId,
-                            timestamp: orderStatus.updateTime,
-                            validationSource: 'sync_lock'
-                        });
-                        console.log(`[SYNC_ORDER] ✅ Ordem ${orderId} confirmada como FILLED. Qtd: ${filledQty}`);
-                        return { filled: true, qty: filledQty };
-                    }
-                }
-            }
-        }
-    } catch (error) {
-        console.error(`[SYNC_ORDER] Erro ao sincronizar ordem ${orderId}: ${error.message}`);
-    }
-    
-    return { filled: false, qty: 0 };
 }
 
 // FUNÇÕES AUXILIARES (mantidas como estavam)

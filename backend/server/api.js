@@ -39,7 +39,7 @@ async function registerPlugins() {
         version: '1.0.0'
       },
       servers: [{
-        url: 'http://localhost:8001',
+        url: `http://localhost:${process.env.API_PORT || 8001}`,
         description: 'Servidor de Desenvolvimento'
       }],
     },
@@ -69,8 +69,8 @@ async function registerRoutes() {
   // Registra o plugin de contas e adiciona um prefixo /api
   await fastify.register(require('./routes/accounts'), { prefix: '/api' });
 
-  // ✅ NOVO: Registrar rotas do Telegram
-  await fastify.register(require('./routes/telegram'), { prefix: '/api/telegram/telegram' });
+  // ✅ CORREÇÃO: Caminho correto para telegram
+  await fastify.register(require('./routes/telegram/telegram'), { prefix: '/api/telegram' });
 
   // Rota de Health Check
   fastify.get('/api/health', {

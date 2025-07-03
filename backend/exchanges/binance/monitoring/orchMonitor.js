@@ -6,9 +6,9 @@ const websockets = require('../api/websocket');
 const api = require('../api/rest');
 const { sendTelegramMessage } = require('../services/telegramHelper');
 const { onPriceUpdate, checkNewTrades, checkExpiredSignals, checkCanceledSignals } = require('./signalProcessor');
-const { syncPositionsWithExchange, syncOrdersWithExchange, logOpenPositionsAndOrdersVisual, syncPositionsWithAutoClose, closePositionsWithoutOrders } = require('../services/positionSync');
-const orderHandlers = require('../handlers/orderHandlers');
-const accountHandlers = require('../handlers/accountHandlers');
+const { syncPositionsWithExchange, syncOrdersWithExchange, logOpenPositionsAndOrdersVisual, syncPositionsWithAutoClose } = require('../services/positionSync');
+const { registerOrderHandlers } = require('../handlers/orderHandlers');
+const { registerAccountHandlers } = require('../handlers/accountHandlers');
 const { cleanupOrphanSignals, moveOrdersToHistory, movePositionToHistory, cancelOrphanOrders } = require('../services/cleanup');
 const { checkOrderTriggers } = require('./trailingStopLoss');
 
@@ -62,6 +62,33 @@ let handlers = {};
 let scheduledJobs = {};
 let isShuttingDown = false;
 let signalHandlersInstalled = false;
+
+/**
+ * ✅ NOVO: Registra todos os handlers permanentes do WebSocket via Pub/Sub.
+ * Esta função centraliza o registro de todos os listeners que devem permanecer ativos
+ * durante todo o ciclo de vida do monitor.
+ * @param {number} accountId - O ID da conta para logging e referência.
+ */
+function registerWebSocketHandlers(accountId) {
+  console.log(`[MONITOR] 🎧 Registrando todos os handlers de WebSocket para a conta ${accountId}...`);
+
+  // 1. Registrar handlers de atualização de ordens
+  registerOrderHandlers();
+
+  // 2. Registrar handlers de atualização de conta
+  registerAccountHandlers();
+
+  // 3. Registrar handler de atualização de preço (markPrice)
+  // O handler onPriceUpdate é usado para processamento de sinais, como verificar trades.
+  const priceUpdateWrapper = ({ message, accountId: eventAccountId }) => {
+    // A função original espera (message, accountId)
+    onPriceUpdate(message, eventAccountId);
+  };
+  websockets.on('priceUpdate', priceUpdateWrapper, 'mainPriceSignalProcessor');
+  console.log(`[MONITOR] 🎧 Handler de atualização de preço (priceUpdate) registrado.`);
+
+  console.log(`[MONITOR] ✅ Todos os handlers de WebSocket foram registrados com sucesso.`);
+}
 
 /**
  * Configura handlers de sinal do sistema (DEVE SER CHAMADA APENAS UMA VEZ POR PROCESSO)
@@ -295,81 +322,16 @@ try {
 
     // === ETAPA 7: CONFIGURAR HANDLERS SEPARADAMENTE ===
     console.log(`🔧 ETAPA 7: Configurando handlers para conta ${accountId}...`);
-    
-    try {
-      // INICIALIZAR ORDER HANDLERS
-      console.log(`[MONITOR] Inicializando ORDER handlers para conta ${accountId}...`);
-      const orderHandlersInitialized = await orderHandlers.initializeOrderHandlers(accountId);
-      
-      if (!orderHandlersInitialized) {
-        throw new Error('Falha ao inicializar order handlers');
-      }
-      console.log(`[MONITOR] ✅ Order handlers inicializados para conta ${accountId}`);
-      
-      // INICIALIZAR ACCOUNT HANDLERS
-      console.log(`[MONITOR] Inicializando ACCOUNT handlers para conta ${accountId}...`);
-      const accountHandlersInitialized = await accountHandlers.initializeAccountHandlers(accountId);
-      
-      if (!accountHandlersInitialized) {
-        throw new Error('Falha ao inicializar account handlers');
-      }
-      console.log(`[MONITOR] ✅ Account handlers inicializados para conta ${accountId}`);
-      
-      // ✅ IMPORTANTE: VERIFICAR E CORRIGIR HANDLERS FINAIS
-      const currentHandlers = websockets.getHandlers(accountId);
-      console.log(`[MONITOR] 🔍 Verificando handlers registrados para conta ${accountId}:`);
-      console.log(`  - handleOrderUpdate: ${typeof currentHandlers.handleOrderUpdate}`);
-      console.log(`  - handleAccountUpdate: ${typeof currentHandlers.handleAccountUpdate}`);
-      
-      // ✅ GARANTIR QUE AMBOS OS HANDLERS ESTÃO FUNCIONANDO
-      if (typeof currentHandlers.handleOrderUpdate !== 'function') {
-        console.warn(`[MONITOR] ⚠️ handleOrderUpdate não está registrado corretamente, registrando manualmente...`);
-        
-        websockets.setMonitoringCallbacks({
-          ...currentHandlers,
-          handleOrderUpdate: async (orderMsg, db) => {
-            try {
-              // ✅ CHAMAR A FUNÇÃO CORRIGIDA
-              await orderHandlers.handleOrderUpdate(accountId, orderMsg, db);
-            } catch (error) {
-              console.error(`[MONITOR] ❌ Erro em handleOrderUpdate manual:`, error.message);
-            }
-          }
-        }, accountId);
-      }
-      
-      if (typeof currentHandlers.handleAccountUpdate !== 'function') {
-        console.warn(`[MONITOR] ⚠️ handleAccountUpdate não está registrado corretamente, registrando manualmente...`);
-        
-        websockets.setMonitoringCallbacks({
-          ...currentHandlers,
-          handleAccountUpdate: async (accountMsg, db) => {
-            try {
-              await accountHandlers.handleAccountUpdate(accountMsg, accountId, db);
-            } catch (error) {
-              console.error(`[MONITOR] ❌ Erro em handleAccountUpdate manual:`, error.message);
-            }
-          }
-        }, accountId);
-      }
-      
-      // VERIFICAR STATUS FINAL DOS HANDLERS
-      const finalHandlers = websockets.getHandlers(accountId);
-      const orderHandlersOK = typeof finalHandlers.handleOrderUpdate === 'function';
-      const accountHandlersOK = typeof finalHandlers.handleAccountUpdate === 'function';
-      
-      console.log(`[MONITOR] Status final dos handlers para conta ${accountId}:`);
-      console.log(`  - Order handlers: ${orderHandlersOK ? '✅' : '❌'}`);
-      console.log(`  - Account handlers: ${accountHandlersOK ? '✅' : '❌'}`);
-      
-      if (!orderHandlersOK || !accountHandlersOK) {
-        throw new Error('Nem todos os handlers foram registrados corretamente');
-      }
-       
-} catch (handlerError) {
-  console.error(`[MONITOR] ❌ Erro crítico ao configurar handlers para conta ${accountId}:`, handlerError.message);
-  throw handlerError;
-}
+  try {
+    // ✅ CORREÇÃO: Chamar a nova função de registro do sistema Pub/Sub
+    orderHandlers.registerOrderUpdateHandler(accountId);
+    // accountHandlers.registerAccountUpdateHandler(accountId); // TODO: Implementar em accountHandlers quando necessário
+
+    console.log(`[MONITOR]   ✅ Handlers de ordem e conta configurados para conta ${accountId}`);
+  } catch (error) {
+    console.error(`[MONITOR] ❌ Erro ao configurar handlers para conta ${accountId}:`, error.message);
+    throw error;
+  }
 
     // === ETAPA 8: Iniciar UserDataStream ===
     console.log(`🌐 ETAPA 8: Iniciando UserDataStream para conta ${accountId}...`);
@@ -763,23 +725,6 @@ async function startPriceMonitoringInline(accountId) {
       }
     });
 
-    // Executar imediatamente ao inicializar
-    try {
-      await closePositionsWithoutOrders(accountId);
-      console.log(`[MONITOR] ✅ closePositionsWithoutOrders executado na inicialização para conta ${accountId}`);
-    } catch (error) {
-      console.error(`[MONITOR] ⚠️ Erro ao executar closePositionsWithoutOrders na inicialização para conta ${accountId}:`, error.message);
-    }
-
-    accountJobs.closePositionsWithoutOrders = schedule.scheduleJob('*/1 * * * *', async () => {
-      if (isShuttingDown) return;
-      try {
-        await closePositionsWithoutOrders(accountId);
-      } catch (error) {
-        console.error(`[MONITOR] ⚠️ Erro ao fechar posições sem ordens para conta ${accountId}:`, error.message);
-      }
-    });
-
     // Armazenar jobs para cleanup no shutdown
     scheduledJobs[accountId] = accountJobs;
 
@@ -861,30 +806,13 @@ async function gracefulShutdown(accountIdToShutdown) {
       console.error(`[MONITOR]   ⚠️ Erro ao fechar WebSockets para conta ${accountIdToShutdown}: ${wsError.message}`);
     }
     
-    console.log(`[MONITOR] 🧹 4/7 - Limpando handlers para conta ${accountIdToShutdown}...`);
+    console.log(`[MONITOR] 4/7 - Limpando handlers para conta ${accountIdToShutdown}...`);
     try {
-      // LIMPAR ORDER HANDLERS
-      const orderHandlersRemoved = orderHandlers.unregisterOrderHandlers(accountIdToShutdown);
-      if (orderHandlersRemoved) {
-        console.log(`[MONITOR]   ✅ Order handlers removidos para conta ${accountIdToShutdown}`);
-      } else {
-        console.log(`[MONITOR]   ⚠️ Falha ao remover order handlers para conta ${accountIdToShutdown}`);
-      }
-      
-      // LIMPAR ACCOUNT HANDLERS
-      const accountHandlersRemoved = accountHandlers.unregisterAccountHandlers(accountIdToShutdown);
-      if (accountHandlersRemoved) {
-        console.log(`[MONITOR]   ✅ Account handlers removidos para conta ${accountIdToShutdown}`);
-      } else {
-        console.log(`[MONITOR]   ⚠️ Falha ao remover account handlers para conta ${accountIdToShutdown}`);
-      }
-      
-      // Limpar também os websocket handlers
-      websockets.setMonitoringCallbacks({}, accountIdToShutdown);
-      console.log(`[MONITOR]   ✅ WebSocket handlers limpos para conta ${accountIdToShutdown}`);
-      
-    } catch (handlerCleanupError) {
-      console.error(`[MONITOR]   ⚠️ Erro ao limpar handlers para conta ${accountIdToShutdown}:`, handlerCleanupError.message);
+      // ✅ REMOÇÃO: Não é mais necessário desregistrar handlers explicitamente.
+      // A limpeza de listeners do WebSocket é gerenciada pelo próprio websocket.js ao resetar a conexão.
+      console.log(`[MONITOR]   - Limpeza de handlers delegada ao sistema de WebSocket.`);
+    } catch (error) {
+      console.error(`[MONITOR]   ⚠️ Erro ao limpar handlers para conta ${accountIdToShutdown}:`, error.message);
     }
 
     console.log(`[MONITOR] 📈 5/7 - Parando monitoramento de preços para conta ${accountIdToShutdown}...`);

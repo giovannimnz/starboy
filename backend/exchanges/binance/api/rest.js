@@ -329,14 +329,22 @@ async function getPrice(symbol, accountId) {
 
 const RECV_WINDOW = 10000; // 10 segundos (mais flexível)
 
-async function getAllOpenPositions(accountId) {
+async function getAllOpenPositions(accountId, symbol = null) {
   try {
-    //console.log(`[API] Obtendo posições abertas para conta ${accountId}...`);
+    const logMessage = symbol 
+      ? `[API] Obtendo posição para símbolo ${symbol} na conta ${accountId}...`
+      : `[API] Obtendo posições abertas para conta ${accountId}...`;
+    //console.log(logMessage);
     
     // ✅ ADICIONAR recvWindow aos parâmetros
-    const response = await makeAuthenticatedRequest(accountId, 'GET', '/v2/positionRisk', {
-      recvWindow: RECV_WINDOW
-    });
+    const requestParams = { recvWindow: RECV_WINDOW };
+    
+    // Se símbolo específico for fornecido, adicionar aos parâmetros
+    if (symbol) {
+      requestParams.symbol = symbol;
+    }
+    
+    const response = await makeAuthenticatedRequest(accountId, 'GET', '/v2/positionRisk', requestParams);
     
     if (!Array.isArray(response)) {
       console.error(`[API] Resposta inválida ao obter posições para conta ${accountId}:`, response);
@@ -357,7 +365,11 @@ async function getAllOpenPositions(accountId) {
         tipo: pos.marginType === 'isolated' ? 'ISOLATED' : 'CROSS'
       }));
 
-    //console.log(`[API] ✅ ${openPositions.length} posições abertas encontradas para conta ${accountId}`);
+    const resultMessage = symbol 
+      ? `[API] ✅ ${openPositions.length > 0 ? 'Posição encontrada' : 'Nenhuma posição encontrada'} para ${symbol} na conta ${accountId}`
+      : `[API] ✅ ${openPositions.length} posições abertas encontradas para conta ${accountId}`;
+    //console.log(resultMessage);
+    
     return openPositions;
     
   } catch (error) {

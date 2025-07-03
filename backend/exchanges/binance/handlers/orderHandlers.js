@@ -5,48 +5,35 @@ const { sendTelegramMessage, formatOrderMessage } = require('../services/telegra
 const targetCache = new Map();
 
 /**
+ * ✅ FUNÇÃO DE REGISTRO: Inscreve o handler de ordens no sistema de eventos WebSocket.
+ * @param {number|string} accountId - O ID da conta para a qual o handler será registrado.
+ */
+function registerOrderUpdateHandler(accountId) {
+    if (!accountId) {
+        console.error('[ORDER-HANDLER] Tentativa de registrar handler sem accountId.');
+        return;
+    }
+
+    // O listener recebe o payload da ordem diretamente do evento emitido
+    const listener = (orderUpdatePayload) => {
+        // O accountId é capturado do escopo externo (closure)
+        // O terceiro argumento (db) é nulo, pois a função obterá a conexão, se necessário
+        handleOrderUpdate(accountId, orderUpdatePayload, null);
+    };
+
+    // Registra o listener com um ID único para evitar duplicatas e permitir remoção
+    websockets.on('orderUpdate', listener, accountId, 'mainOrderHandler');
+
+    console.log(`[ORDER-HANDLER] Handler principal de atualização de ordens registrado para a conta ${accountId}.`);
+}
+
+/**
  * ✅ FUNÇÃO UNIFICADA: Processa atualizações de ordens via WebSocket
  * Suporta MÚLTIPLOS formatos de entrada
  */
-async function handleOrderUpdate(messageOrAccountId, orderDataOrDb = null, db = null) {
+async function handleOrderUpdate(accountId, orderUpdateData, db = null) {
   try {
-    let accountId, orderUpdateData, connection;
-    
-    // ✅ DETECTAR FORMATO DA CHAMADA
-    if (typeof messageOrAccountId === 'number') {
-      // FORMATO NOVO: handleOrderUpdate(accountId, orderUpdateData)
-      accountId = messageOrAccountId;
-      orderUpdateData = orderDataOrDb;
-      connection = db;
-    } else {
-      // FORMATO ANTIGO: handleOrderUpdate(orderMsg, accountId, db)
-      const orderMsg = messageOrAccountId;
-      accountId = orderDataOrDb;
-      connection = db;
-      
-      // ✅ VALIDAÇÃO DO FORMATO ANTIGO - CORREÇÃO AQUI
-      if (!orderMsg) {
-        console.error(`[ORDER] Mensagem de ordem inválida para conta ${accountId}`);
-        return;
-      }
-      
-      // ✅ EXTRAIR DADOS CORRETAMENTE BASEADO NO FORMATO BINANCE
-      if (orderMsg.e === 'ORDER_TRADE_UPDATE' && orderMsg.o) {
-        // Formato padrão da Binance: { e: 'ORDER_TRADE_UPDATE', o: { ... } }
-        orderUpdateData = orderMsg.o;
-      } else if (orderMsg.i && orderMsg.s) {
-        // Formato direto: { i: orderId, s: symbol, ... }
-        orderUpdateData = orderMsg;
-      } else {
-        console.error(`[ORDER] Formato de mensagem não reconhecido para conta ${accountId}:`, {
-          hasE: orderMsg.e,
-          hasO: !!orderMsg.o,
-          hasI: !!orderMsg.i,
-          hasS: !!orderMsg.s
-        });
-        return;
-      }
-    }
+    let connection;
 
     // ✅ VALIDAÇÃO UNIFICADA
     if (!accountId || typeof accountId !== 'number') {
@@ -54,8 +41,13 @@ async function handleOrderUpdate(messageOrAccountId, orderDataOrDb = null, db = 
       return;
     }
 
-    // ✅ PROCESSAR DADOS DA ORDEM - AGORA orderUpdateData JÁ ESTÁ CORRETO
-    const orderData = orderUpdateData;
+    if (!orderUpdateData || !orderUpdateData.i) {
+        console.error(`[ORDER] Dados de atualização de ordem inválidos para conta ${accountId}:`, orderUpdateData);
+        return;
+    }
+
+    // ✅ PROCESSAR DADOS DA ORDEM
+    const orderData = orderUpdateData.o || orderUpdateData; // O payload pode vir aninhado em 'o'
     
     const orderId = orderData.i?.toString();
     const symbol = orderData.s;
@@ -176,31 +168,45 @@ async function handleTradeExecution(connection, order, accountId, existingOrder)
   const tradeId = order.t || null;
   
   try {
-    // ATUALIZAR ORDEM NO BANCO
+    // ATUALIZAR ORDEM NO BANCO - com retry
     if (existingOrder) {
-      await connection.query(
-        `UPDATE ordens SET 
-         status = ?, 
-         quantidade_executada = ?,
-         preco_executado = ?,
-         commission = ?,
-         commission_asset = ?,
-         trade_id = ?,
-         dados_originais_ws = ?,
-         last_update = NOW()
-         WHERE id_externo = ? AND conta_id = ?`,
-        [
-          order.X, // status
-          executedQty,
-          avgPrice,
-          commission,
-          commissionAsset,
-          tradeId,
-          JSON.stringify(order),
-          orderId,
-          accountId
-        ]
-      );
+      let tradeUpdateTries = 0;
+      while (tradeUpdateTries < 1000) {
+        try {
+          await connection.query(
+            `UPDATE ordens SET 
+             status = ?, 
+             quantidade_executada = ?,
+             preco_executado = ?,
+             commission = ?,
+             commission_asset = ?,
+             trade_id = ?,
+             dados_originais_ws = ?,
+             last_update = NOW()
+             WHERE id_externo = ? AND conta_id = ?`,
+            [
+              order.X, // status
+              executedQty,
+              avgPrice,
+              commission,
+              commissionAsset,
+              tradeId,
+              JSON.stringify(order),
+              orderId,
+              accountId
+            ]
+          );
+          break;
+        } catch (error) {
+          if (error.message && error.message.includes('Deadlock found when trying to get lock') && tradeUpdateTries < 99) {
+            tradeUpdateTries++;
+            console.warn(`[ORDER] ⚠️ Deadlock detectado ao atualizar trade, tentativa ${tradeUpdateTries}/1000...`);
+            await new Promise(res => setTimeout(res, 10 + Math.random() * 50));
+            continue;
+          }
+          throw error;
+        }
+      }
       
       console.log(`[ORDER] ✅ Ordem ${orderId} atualizada: ${order.X}, Executado: ${executedQty} @ ${avgPrice}`);
       
@@ -238,7 +244,7 @@ async function handleTradeExecution(connection, order, accountId, existingOrder)
               'FILLED'
             );
             
-            await sendTelegramMessage(accountId, message);
+            //await sendTelegramMessage(accountId, message);
             console.log(`[ORDER] 📱 Notificação de ordem ${orderType} enviada`);
           }
         } catch (telegramError) {
@@ -272,16 +278,16 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCou
     connection = await db.getConnection();
     await connection.beginTransaction();
 
-    // 1. Verificar se a ordem já foi movida para o histórico
+    // ✅ 1. VERIFICAÇÃO PRELIMINAR: Ordem já foi movida para histórico?
     const [historyCheck] = await connection.query(
       'SELECT id FROM ordens_fechadas WHERE id_externo = ? AND conta_id = ?',
       [orderId, accountId]
     );
     
     if (historyCheck.length > 0) {
-      console.log(`[ORDER_AUTO_MOVE] ℹ️ Ordem ${orderId} já existe no histórico - verificando se ainda está na tabela ativa...`);
+      console.log(`[ORDER_AUTO_MOVE] ✅ Ordem ${orderId} já existe no histórico - verificando duplicatas na tabela ativa...`);
       
-      // Verificar se ainda está na tabela ativa (situação do bug)
+      // Verificar se ainda está na tabela ativa (situação de duplicata)
       const [activeCheck] = await connection.query(
         'SELECT id FROM ordens WHERE id_externo = ? AND conta_id = ?',
         [orderId, accountId]
@@ -305,56 +311,138 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCou
       }
     }
 
-    // 2. Buscar a ordem completa da tabela ativa
+    // ✅ 2. BUSCAR ORDEM COMPLETA DA TABELA ATIVA
     const [orderResult] = await connection.query(
       'SELECT * FROM ordens WHERE id_externo = ? AND conta_id = ?',
       [orderId, accountId]
     );
 
     if (orderResult.length === 0) {
-      console.warn(`[ORDER_AUTO_MOVE] ⚠️ Ordem ${orderId} não encontrada no banco para mover.`);
+      console.warn(`[ORDER_AUTO_MOVE] ⚠️ Ordem ${orderId} não encontrada na tabela ativa para mover.`);
       await connection.rollback();
       return false;
     }
     
     const orderToMove = orderResult[0];
 
-    // NOVA REGRA: Se for ENTRADA, FILLED ou CANCELED, e id_posicao null/0, aguardar 2 minutos e tentar vincular
-    if (
-      (newStatus === 'FILLED' || newStatus === 'CANCELED' || newStatus === 'CANCELLED') &&
-      orderToMove.tipo_ordem_bot === 'ENTRADA' &&
-      (!orderToMove.id_posicao || orderToMove.id_posicao === 0)
-    ) {
-      console.warn(`[ORDER_AUTO_MOVE] ⏳ Ordem ENTRADA ${newStatus} ${orderId} sem id_posicao. Aguardando 2 minutos para tentar vincular à posição aberta...`);
-      // Esperar até 2 minutos para o id_posicao ser atribuído
-      const start = Date.now();
+    // ✅ 3. VERIFICAÇÃO CRÍTICA: TODAS AS ORDENS PRECISAM TER id_posicao (incluindo CANCELED)
+    // Não importa o status ou tipo - TODA ordem precisa de id_posicao para ir ao histórico
+    if (!orderToMove.id_posicao || orderToMove.id_posicao === 0) {
+      console.warn(`[ORDER_AUTO_MOVE] ⏳ Ordem ${newStatus} ${orderId} sem id_posicao. Iniciando retry a cada 2s por até 5 minutos...`);
+      
+      // Retry a cada 2 segundos por até 5 minutos (150 tentativas)
+      const maxRetries = 150; // 5 minutos / 2 segundos = 150 tentativas
+      const retryInterval = 2000; // 2 segundos
       let posId = null;
-      while (Date.now() - start < 120000) { // timeout 2 minutos
-        // Buscar id_posicao atualizado na ordem
-        const [ordemAtualizada] = await connection.query(
-          'SELECT id_posicao FROM ordens WHERE id_externo = ? AND conta_id = ?',
-          [orderToMove.id_externo, accountId]
+      let retryAttempt = 0;
+      
+      while (retryAttempt < maxRetries && !posId) {
+        retryAttempt++;
+        
+        // ✅ VERIFICAÇÃO INTERMEDIÁRIA 1: Ordem já foi movida para histórico durante o retry?
+        const [intermediateMoveCheck] = await connection.query(
+          'SELECT id FROM ordens_fechadas WHERE id_externo = ? AND conta_id = ?',
+          [orderId, accountId]
         );
-        if (ordemAtualizada.length > 0 && ordemAtualizada[0].id_posicao && ordemAtualizada[0].id_posicao !== 0) {
-          posId = ordemAtualizada[0].id_posicao;
+        
+        if (intermediateMoveCheck.length > 0) {
+          console.log(`[ORDER_AUTO_MOVE] ✅ Ordem ${orderId} foi movida para histórico durante retry - interrompendo busca`);
+          await connection.rollback();
+          return true;
+        }
+        
+        // ✅ VERIFICAÇÃO INTERMEDIÁRIA 2: Ordem já tem id_posicao?
+        const [intermediatePositionCheck] = await connection.query(
+          'SELECT id_posicao FROM ordens WHERE id_externo = ? AND conta_id = ?',
+          [orderId, accountId]
+        );
+        
+        if (intermediatePositionCheck.length === 0) {
+          console.log(`[ORDER_AUTO_MOVE] ⚠️ Ordem ${orderId} não existe mais na tabela ativa - encerrando retry`);
+          await connection.rollback();
+          return false;
+        }
+        
+        if (intermediatePositionCheck[0].id_posicao && intermediatePositionCheck[0].id_posicao !== 0) {
+          posId = intermediatePositionCheck[0].id_posicao;
+          console.log(`[ORDER_AUTO_MOVE] ✅ Ordem ${orderId} agora tem id_posicao=${posId} - continuando com migração`);
           break;
         }
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        // ✅ BUSCAR POSIÇÃO CORRESPONDENTE PARA VINCULAR
+        const symbol = orderToMove.simbolo;
+        const [availablePositions] = await connection.query(
+          `SELECT id, quantidade, preco_medio, data_hora_abertura 
+           FROM posicoes 
+           WHERE simbolo = ? AND conta_id = ? AND status = 'OPEN' AND ABS(quantidade) > 0
+           ORDER BY data_hora_abertura DESC, id DESC
+           LIMIT 1`,
+          [symbol, accountId]
+        );
+        
+        if (availablePositions.length > 0) {
+          const targetPosition = availablePositions[0];
+          console.log(`[ORDER_AUTO_MOVE] 🔗 Tentativa ${retryAttempt}: Vinculando ordem ${orderId} à posição ${targetPosition.id}...`);
+          
+          // Tentar vincular posição com retry
+          let positionUpdateTries = 0;
+          while (positionUpdateTries < 100) {
+            try {
+              await connection.query(
+                'UPDATE ordens SET id_posicao = ? WHERE id_externo = ? AND conta_id = ?',
+                [targetPosition.id, orderId, accountId]
+              );
+              
+              posId = targetPosition.id;
+              console.log(`[ORDER_AUTO_MOVE] ✅ Ordem ${orderId} vinculada à posição ${posId} com sucesso`);
+              break;
+              
+            } catch (positionUpdateError) {
+              if (positionUpdateError.message && positionUpdateError.message.includes('Deadlock found when trying to get lock') && positionUpdateTries < 99) {
+                positionUpdateTries++;
+                console.warn(`[ORDER_AUTO_MOVE] ⚠️ Deadlock ao vincular posição, tentativa ${positionUpdateTries}/100...`);
+                await new Promise(res => setTimeout(res, 10 + Math.random() * 50));
+                continue;
+              }
+              throw positionUpdateError;
+            }
+          }
+        } else {
+          console.log(`[ORDER_AUTO_MOVE] 🔍 Tentativa ${retryAttempt}/${maxRetries}: Nenhuma posição OPEN encontrada para ${symbol}`);
+        }
+        
+        // Aguardar antes da próxima tentativa (se não encontrou posição)
+        if (!posId) {
+          console.log(`[ORDER_AUTO_MOVE] ⏳ Aguardando ${retryInterval/1000}s antes da próxima tentativa...`);
+          await new Promise(res => setTimeout(res, retryInterval));
+        }
       }
+      
+      // Se não conseguiu vincular após todos os retries
       if (!posId) {
-        console.warn(`[ORDER_AUTO_MOVE] ⚠️ Timeout: id_posicao não atribuído para ordem ${orderId} após 2 minutos. Não será movida para o histórico.`);
+        console.warn(`[ORDER_AUTO_MOVE] ⚠️ TIMEOUT: Ordem ${orderId} não pôde ser vinculada a uma posição após ${maxRetries * retryInterval / 1000}s`);
+        console.warn(`[ORDER_AUTO_MOVE] ❌ Ordem ${newStatus} ${orderId} será rejeitada - não pode ir ao histórico sem id_posicao`);
         await connection.rollback();
         return false;
       }
-      await connection.query(
-        'UPDATE ordens SET id_posicao = ? WHERE id_externo = ? AND conta_id = ?',
-        [posId, orderId, accountId]
-      );
+      
+      // ✅ ATUALIZAR ORDEM COM A POSIÇÃO ENCONTRADA
       orderToMove.id_posicao = posId;
-      console.log(`[ORDER_AUTO_MOVE] 🔗 Ordem ${orderId} vinculada à posição ${posId}`);
     }
 
-    // 3. Preparar dados para inserção na tabela de histórico
+    // ✅ 4. VERIFICAÇÃO FINAL: Ordem ainda não foi movida enquanto processávamos?
+    const [finalMoveCheck] = await connection.query(
+      'SELECT id FROM ordens_fechadas WHERE id_externo = ? AND conta_id = ?',
+      [orderId, accountId]
+    );
+    
+    if (finalMoveCheck.length > 0) {
+      console.log(`[ORDER_AUTO_MOVE] ✅ Ordem ${orderId} foi movida por outro processo - cancelando operação`);
+      await connection.rollback();
+      return true;
+    }
+
+    // ✅ 5. PREPARAR DADOS PARA INSERÇÃO NA TABELA DE HISTÓRICO
     const closedOrderData = {
       ...orderToMove, // Copia todos os campos da ordem original
       id_original: orderToMove.id,
@@ -365,11 +453,11 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCou
     };
     delete closedOrderData.id;
 
-    // 4. Obter colunas da tabela de destino
+    // ✅ 6. OBTER COLUNAS DA TABELA DE DESTINO
     const [destColumnsResult] = await connection.query('SHOW COLUMNS FROM ordens_fechadas');
     const destColumns = destColumnsResult.map(col => col.Field);
 
-    // 5. Filtrar dados para inserir apenas colunas existentes
+    // ✅ 7. FILTRAR DADOS PARA INSERIR APENAS COLUNAS EXISTENTES
     const finalDataToInsert = {};
     for (const key in closedOrderData) {
       if (destColumns.includes(key)) {
@@ -377,25 +465,56 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCou
       }
     }
 
-    // 6. Inserir na tabela de histórico
+    // ✅ 8. INSERIR NA TABELA DE HISTÓRICO
     const columns = Object.keys(finalDataToInsert);
     const placeholders = columns.map(() => '?').join(', ');
     const values = Object.values(finalDataToInsert);
 
-    await connection.query(
-      `INSERT INTO ordens_fechadas (${columns.join(', ')}) VALUES (${placeholders})`,
-      values
-    );
+    // ✅ RETRY EM CASO DE DEADLOCK - INSERÇÃO NO HISTÓRICO
+    let insertHistoryTries = 0;
+    while (insertHistoryTries < 1000) {
+      try {
+        await connection.query(
+          `INSERT INTO ordens_fechadas (${columns.join(', ')}) VALUES (${placeholders})`,
+          values
+        );
+        break;
+      } catch (error) {
+        if (error.message && error.message.includes('Deadlock found when trying to get lock') && insertHistoryTries < 999) {
+          insertHistoryTries++;
+          console.warn(`[ORDER_AUTO_MOVE] ⚠️ Deadlock detectado ao inserir no histórico, tentativa ${insertHistoryTries}/1000...`);
+          await new Promise(res => setTimeout(res, 10 + Math.random() * 50));
+          continue;
+        }
+        throw error;
+      }
+    }
     
     console.log(`[ORDER_AUTO_MOVE] 📚 Ordem ${orderId} inserida no histórico com sucesso`);
 
-    // 7. Remover TODAS as cópias da ordem da tabela ativa (corrigir duplicatas)
+    // ✅ 9. REMOVER TODAS AS CÓPIAS DA ORDEM DA TABELA ATIVA (CORRIGIR DUPLICATAS)
     console.log(`[ORDER_AUTO_MOVE] 🗑️ Deletando TODAS as cópias da ordem ${orderId} da tabela ativa...`);
     
-    const [deleteResult] = await connection.query(
-      'DELETE FROM ordens WHERE id_externo = ? AND conta_id = ?', 
-      [orderId, accountId]
-    );
+    // ✅ RETRY EM CASO DE DEADLOCK - DELETE DA TABELA ATIVA
+    let deleteTries = 0;
+    let deleteResult;
+    while (deleteTries < 1000) {
+      try {
+        [deleteResult] = await connection.query(
+          'DELETE FROM ordens WHERE id_externo = ? AND conta_id = ?', 
+          [orderId, accountId]
+        );
+        break;
+      } catch (error) {
+        if (error.message && error.message.includes('Deadlock found when trying to get lock') && deleteTries < 999) {
+          deleteTries++;
+          console.warn(`[ORDER_AUTO_MOVE] ⚠️ Deadlock detectado ao deletar ordem, tentativa ${deleteTries}/1000...`);
+          await new Promise(res => setTimeout(res, 10 + Math.random() * 50));
+          continue;
+        }
+        throw error;
+      }
+    }
     
     if (deleteResult.affectedRows === 0) {
       console.error(`[ORDER_AUTO_MOVE] ❌ FALHA: Nenhuma linha foi deletada para ordem ${orderId}`);
@@ -407,7 +526,7 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCou
 
     await connection.commit();
     
-    // 8. Verificação final: confirmar que a ordem foi realmente removida
+    // ✅ 10. VERIFICAÇÃO FINAL: CONFIRMAR QUE A ORDEM FOI REALMENTE REMOVIDA
     const [verifyResult] = await connection.query(
       'SELECT COUNT(*) as count FROM ordens WHERE id_externo = ? AND conta_id = ?', 
       [orderId, accountId]
@@ -428,9 +547,9 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCou
     if (
       error.message &&
       error.message.includes('Deadlock found when trying to get lock') &&
-      retryCount < 3
+      retryCount < 1000
     ) {
-      console.warn(`[ORDER_AUTO_MOVE] ⚠️ Deadlock ao mover ordem ${orderId}. Tentando novamente (${retryCount + 1}/3)...`);
+      console.warn(`[ORDER_AUTO_MOVE] ⚠️ Deadlock ao mover ordem ${orderId}. Tentando novamente (${retryCount + 1}/1000)...`);
       await new Promise(resolve => setTimeout(resolve, 500 * (retryCount + 1)));
       return autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCount + 1);
     }
@@ -446,45 +565,9 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCou
  * ✅ FUNÇÃO CORRIGIDA: Processa atualizações de ordens via WebSocket
  * Suporta MÚLTIPLOS formatos de entrada
  */
-async function handleOrderUpdate(messageOrAccountId, orderDataOrDb = null, db = null) {
+async function handleOrderUpdate(accountId, orderUpdateData, db = null) {
   try {
-    let accountId, orderUpdateData, connection;
-    
-    // ✅ DETECTAR FORMATO DA CHAMADA
-    if (typeof messageOrAccountId === 'number') {
-      // FORMATO NOVO: handleOrderUpdate(accountId, orderUpdateData)
-      accountId = messageOrAccountId;
-      orderUpdateData = orderDataOrDb;
-      connection = db;
-    } else {
-      // FORMATO ANTIGO: handleOrderUpdate(orderMsg, accountId, db)
-      const orderMsg = messageOrAccountId;
-      accountId = orderDataOrDb;
-      connection = db;
-      
-      // ✅ VALIDAÇÃO DO FORMATO ANTIGO - CORREÇÃO AQUI
-      if (!orderMsg) {
-        console.error(`[ORDER] Mensagem de ordem inválida para conta ${accountId}`);
-        return;
-      }
-      
-      // ✅ EXTRAIR DADOS CORRETAMENTE BASEADO NO FORMATO BINANCE
-      if (orderMsg.e === 'ORDER_TRADE_UPDATE' && orderMsg.o) {
-        // Formato padrão da Binance: { e: 'ORDER_TRADE_UPDATE', o: { ... } }
-        orderUpdateData = orderMsg.o;
-      } else if (orderMsg.i && orderMsg.s) {
-        // Formato direto: { i: orderId, s: symbol, ... }
-        orderUpdateData = orderMsg;
-      } else {
-        console.error(`[ORDER] Formato de mensagem não reconhecido para conta ${accountId}:`, {
-          hasE: orderMsg.e,
-          hasO: !!orderMsg.o,
-          hasI: !!orderMsg.i,
-          hasS: !!orderMsg.s
-        });
-        return;
-      }
-    }
+    let connection;
 
     // ✅ VALIDAÇÃO UNIFICADA
     if (!accountId || typeof accountId !== 'number') {
@@ -492,8 +575,13 @@ async function handleOrderUpdate(messageOrAccountId, orderDataOrDb = null, db = 
       return;
     }
 
-    // ✅ PROCESSAR DADOS DA ORDEM - AGORA orderUpdateData JÁ ESTÁ CORRETO
-    const orderData = orderUpdateData;
+    if (!orderUpdateData || !orderUpdateData.i) {
+        console.error(`[ORDER] Dados de atualização de ordem inválidos para conta ${accountId}:`, orderUpdateData);
+        return;
+    }
+
+    // ✅ PROCESSAR DADOS DA ORDEM
+    const orderData = orderUpdateData.o || orderUpdateData; // O payload pode vir aninhado em 'o'
     
     const orderId = orderData.i?.toString();
     const symbol = orderData.s;
@@ -600,7 +688,7 @@ async function handleOrderUpdate(messageOrAccountId, orderDataOrDb = null, db = 
 }
 
 /**
- * ✅ FUNÇÃO MELHORADA: Inserir ordem externa com TODOS os campos do webhook
+ * ✅ FUNÇÃO CORRIGIDA: Inserir ordem externa com TODOS os campos do webhook
  */
 async function insertExternalOrder(dbConnection, orderData, accountId) {
   try {
@@ -726,8 +814,24 @@ async function insertExternalOrder(dbConnection, orderData, accountId) {
       VALUES (${placeholders})
     `;
 
-    const [result] = await connection.query(insertQuery, values);
-    const orderDbId = result.insertId;
+    // ✅ RETRY EM CASO DE DEADLOCK - INSERÇÃO DE ORDEM EXTERNA
+    let insertTries = 0;
+    let result, orderDbId;
+    while (insertTries < 1000) {
+      try {
+        [result] = await connection.query(insertQuery, values);
+        orderDbId = result.insertId;
+        break;
+      } catch (error) {
+        if (error.message && error.message.includes('Deadlock found when trying to get lock') && insertTries < 99) {
+          insertTries++;
+          console.warn(`[ORDER] ⚠️ Deadlock detectado ao inserir ordem externa, tentativa ${insertTries}/1000...`);
+          await new Promise(res => setTimeout(res, 10 + Math.random() * 50));
+          continue;
+        }
+        throw error;
+      }
+    }
     
     console.log(`[ORDER] ✅ Ordem externa COMPLETA ${orderData.i} inserida:`);
     console.log(`[ORDER]   - ID Banco: ${orderDbId}`);
@@ -737,6 +841,16 @@ async function insertExternalOrder(dbConnection, orderData, accountId) {
     console.log(`[ORDER]   - Stop Price: ${orderData.sp || 'N/A'}`);
     console.log(`[ORDER]   - Position Side: ${orderData.ps || 'N/A'}`);
     console.log(`[ORDER]   - Campos salvos: ${columnNames.length}/${Object.keys(orderInsertData).length}`);
+
+    // ✅ NOVA LÓGICA: PROCURAR E VINCULAR POSIÇÃO APÓS INSERÇÃO (SE NÃO ESTAVA VINCULADA)
+    if (!positionId) {
+      console.log(`[ORDER] 🔍 Iniciando busca por posição para vincular ordem ${orderData.i}...`);
+      
+      // Executar busca de posição em background para não bloquear
+      setTimeout(async () => {
+        await searchAndLinkPosition(orderDbId, orderData, accountId);
+      }, 1000); // Aguardar 1 segundo antes de iniciar a busca
+    }
     
     return orderDbId;
     
@@ -783,22 +897,38 @@ async function updateExistingOrder(dbConnection, orderData, accountId, existingO
       }
     }
 
-    await connection.query(`
-      UPDATE ordens 
-      SET status = ?, 
-          quantidade_executada = ?,
-          preco_executado = ?,
-          commission = ?,
-          commission_asset = ?,
-          trade_id = ?,
-          realized_profit = ?,
-          dados_originais_ws = ?,
-          last_update = NOW()
-      WHERE id_externo = ? AND conta_id = ?
-    `, [
-      orderData.X,      quantidade_executada,      preco_executado,      commission,      commission_asset,      trade_id,      realized_profit,      JSON.stringify(orderData),      orderId,
-      accountId
-    ]);
+    // ✅ RETRY EM CASO DE DEADLOCK - ATUALIZAÇÃO DE ORDEM EXISTENTE
+    let updateTries = 0;
+    while (updateTries < 1000) {
+      try {
+        await connection.query(`
+          UPDATE ordens 
+          SET status = ?, 
+              quantidade_executada = ?,
+              preco_executado = ?,
+              commission = ?,
+              commission_asset = ?,
+              trade_id = ?,
+              realized_profit = ?,
+              dados_originais_ws = ?,
+              last_update = NOW()
+          WHERE id_externo = ? AND conta_id = ?
+        `, [
+          orderData.X,      quantidade_executada,      preco_executado,      commission,      commission_asset,      trade_id,      realized_profit,      JSON.stringify(orderData),      orderId,
+          accountId
+        ]);
+        break;
+      } catch (error) {
+        if (error.message && error.message.includes('Deadlock found when trying to get lock') && updateTries < 99) {
+          updateTries++;
+          console.warn(`[ORDER] ⚠️ Deadlock detectado ao atualizar ordem, tentativa ${updateTries}/1000...`);
+          await new Promise(res => setTimeout(res, 10 + Math.random() * 50));
+          continue;
+        }
+        throw error;
+      }
+    }
+    
     console.log(`[ORDER] ✅ Ordem ${orderId} atualizada: ${orderData.X}`);
 
   } catch (error) {
@@ -806,9 +936,9 @@ async function updateExistingOrder(dbConnection, orderData, accountId, existingO
     if (
       error.message &&
       error.message.includes('Deadlock found when trying to get lock') &&
-      retryCount < 5
+      retryCount < 1000
     ) {
-      //console.warn(`[ORDER] ⚠️ Deadlock ao atualizar ordem ${orderData.i}. Tentando novamente (${retryCount + 1}/5)...`);
+      //console.warn(`[ORDER] ⚠️ Deadlock ao atualizar ordem ${orderData.i}. Tentando novamente (${retryCount + 1}/1000)...`);
       await new Promise(resolve => setTimeout(resolve, 500 * (retryCount + 1)));
       return updateExistingOrder(dbConnection, orderData, accountId, existingOrder, retryCount + 1);
     }
@@ -1012,18 +1142,30 @@ async function cleanupOrphanOrders(accountId) {
     let cleanedCount = 0;
     
     for (const order of duplicateOrders) {
-      try {
-        const [deleteResult] = await connection.query(
-          'DELETE FROM ordens WHERE id = ?', 
-          [order.id]
-        );
-        
-        if (deleteResult.affectedRows > 0) {
-          console.log(`[CLEANUP_ORDERS] 🗑️ Ordem órfã removida: ${order.id_externo} (${order.simbolo})`);
-          cleanedCount++;
+      // ✅ RETRY EM CASO DE DEADLOCK - DELETE DE ORDENS ÓRFÃS
+      let cleanupTries = 0;
+      while (cleanupTries < 1000) {
+        try {
+          const [deleteResult] = await connection.query(
+            'DELETE FROM ordens WHERE id = ?', 
+            [order.id]
+          );
+          
+          if (deleteResult.affectedRows > 0) {
+            console.log(`[CLEANUP_ORDERS] 🗑️ Ordem órfã removida: ${order.id_externo} (${order.simbolo})`);
+            cleanedCount++;
+          }
+          break;
+        } catch (deleteError) {
+          if (deleteError.message && deleteError.message.includes('Deadlock found when trying to get lock') && cleanupTries < 99) {
+            cleanupTries++;
+            console.warn(`[CLEANUP_ORDERS] ⚠️ Deadlock detectado ao limpar ordem órfã, tentativa ${cleanupTries}/1000...`);
+            await new Promise(res => setTimeout(res, 10 + Math.random() * 50));
+            continue;
+          }
+          console.error(`[CLEANUP_ORDERS] ❌ Erro ao remover ordem órfã ${order.id_externo}:`, deleteError.message);
+          break;
         }
-      } catch (deleteError) {
-        console.error(`[CLEANUP_ORDERS] ❌ Erro ao remover ordem órfã ${order.id_externo}:`, deleteError.message);
       }
     }
     
@@ -1035,222 +1177,6 @@ async function cleanupOrphanOrders(accountId) {
     return 0;
   } finally {
     if (connection) connection.release();
-  }
-}
-
-// ✅ MELHORAR handleTradeExecution para chamar a verificação
-async function handleTradeExecution(connection, order, accountId, existingOrder) {
-  const orderId = String(order.i);
-  const symbol = order.s;
-  const executedQty = parseFloat(order.z || '0');
-  const avgPrice = parseFloat(order.ap || '0');
-  const lastFilledQty = parseFloat(order.l || '0');
-  const lastFilledPrice = parseFloat(order.L || '0');
-  const commission = parseFloat(order.n || '0');
-  const commissionAsset = order.N || null;
-  const tradeId = order.t || null;
-  
-  try {
-    // ATUALIZAR ORDEM NO BANCO (código existente)
-    if (existingOrder) {
-      await connection.query(
-        `UPDATE ordens SET 
-         status = ?, 
-         quantidade_executada = ?,
-         preco_executado = ?,
-         commission = ?,
-         commission_asset = ?,
-         trade_id = ?,
-         dados_originais_ws = ?,
-         last_update = NOW()
-         WHERE id_externo = ? AND conta_id = ?`,
-        [
-          order.X, // status
-          executedQty,
-          avgPrice,
-          commission,
-          commissionAsset,
-          tradeId,
-          JSON.stringify(order),
-          orderId,
-          accountId
-        ]
-      );
-      
-      console.log(`[ORDER] ✅ Ordem ${orderId} atualizada: ${order.X}, Executado: ${executedQty} @ ${avgPrice}`);
-      
-      // ✅ NOVA VERIFICAÇÃO: Se ordem foi totalmente executada, verificar fechamento
-      if (order.X === 'FILLED') {
-        console.log(`[ORDER] 🎯 Ordem ${orderId} totalmente executada, verificando fechamento de posição...`);
-        
-        // Executar verificação em background para não bloquear
-        setTimeout(async () => {
-          try {
-            await checkPositionClosureAfterOrderExecution(orderId, accountId);
-          } catch (checkError) {
-            console.error(`[ORDER] ⚠️ Erro na verificação de fechamento:`, checkError.message);
-          }
-        }, 2000); // Aguardar 2 segundos para garantir que tudo foi processado
-      }
-      
-      // ✅ NOTIFICAÇÃO TELEGRAM PARA ORDENS IMPORTANTES
-      if (order.X === 'FILLED' && existingOrder) {
-        try {
-          // Verificar se é ordem importante (SL, TP, ou entrada grande)
-          const orderType = existingOrder.tipo_ordem_bot;
-          const shouldNotify = orderType === 'STOP_LOSS' || 
-                             orderType === 'TAKE_PROFIT' || 
-                             orderType === 'REDUCAO_PARCIAL' ||
-                             (orderType === 'ENTRADA' && executedQty * avgPrice > 100); // Entradas > $100
-          
-          if (shouldNotify) {
-            const message = formatOrderMessage(
-              symbol, 
-              order.S, 
-              orderType, 
-              executedQty.toFixed(6), 
-              avgPrice.toFixed(4), 
-              'FILLED'
-            );
-            
-            await sendTelegramMessage(accountId, message);
-            console.log(`[ORDER] 📱 Notificação de ordem ${orderType} enviada`);
-          }
-        } catch (telegramError) {
-          console.warn(`[ORDER] ⚠️ Erro ao enviar notificação de ordem:`, telegramError.message);
-        }
-      }
-
-    } else {
-      console.warn(`[ORDER] ⚠️ Ordem ${orderId} não encontrada no banco para atualização`);
-    }
-    
-  } catch (error) {
-    console.error(`[ORDER] ❌ Erro ao processar execução da ordem ${orderId}:`, error.message);
-    throw error;
-  }
-}
-
-/**
- * Mapeia tipo de ordem da Binance para formato do banco
- */
-function mapOrderType(binanceOrderType) {
-  const mapping = {
-    'LIMIT': 'LIMIT',
-    'MARKET': 'MARKET',
-    'STOP': 'STOP',
-    'STOP_MARKET': 'STOP_MARKET',
-    'TAKE_PROFIT': 'TAKE_PROFIT',
-    'TAKE_PROFIT_MARKET': 'TAKE_PROFIT_MARKET',
-    'TRAILING_STOP_MARKET': 'TRAILING_STOP_MARKET',
-    'LIQUIDATION': 'LIQUIDATION'
-  };
-  
-  return mapping[binanceOrderType] || binanceOrderType;
-}
-
-async function initializeOrderHandlers(accountId) {
-  try {
-    console.log(`[ORDER-HANDLERS] Inicializando sistema para conta ${accountId}...`);
-    
-    const db = await getDatabaseInstance(accountId);
-    if (!db) {
-      throw new Error(`Não foi possível conectar ao banco para conta ${accountId}`);
-    }
-    
-    const registered = registerOrderHandlers(accountId);
-    if (!registered) {
-      throw new Error(`Falha ao registrar handlers para conta ${accountId}`);
-    }
-    
-    const verified = areHandlersRegistered(accountId);
-    if (!verified) {
-      throw new Error(`Handlers não foram registrados corretamente para conta ${accountId}`);
-    }
-    
-    console.log(`[ORDER-HANDLERS] ✅ Sistema inicializado com sucesso para conta ${accountId}`);
-    return true;
-    
-  } catch (error) {
-    console.error(`[ORDER-HANDLERS] ❌ Erro ao inicializar sistema para conta ${accountId}:`, error.message);
-    return false;
-  }
-}
-
-function registerOrderHandlers(accountId) {
-  try {
-    console.log(`[ORDER-HANDLERS] Registrando handlers de ordem para conta ${accountId}...`);
-    
-    // OBTER callbacks existentes
-    const existingCallbacks = websockets.getHandlers(accountId) || {};
-    
-    // ✅ CRIAR HANDLER ROBUSTO QUE ACEITA MÚLTIPLOS FORMATOS
-    const robustOrderHandler = async (messageOrOrder, db) => {
-      try {
-        /*console.log(`[ORDER-HANDLERS] 📨 Mensagem recebida para conta ${accountId}:`, {
-          type: typeof messageOrOrder,
-          hasE: messageOrOrder?.e,
-          hasO: messageOrOrder?.o,
-          hasI: messageOrOrder?.i,
-          hasS: messageOrOrder?.s
-        });*/
-        
-        // ✅ CHAMAR FUNÇÃO UNIFICADA
-        await handleOrderUpdate(messageOrOrder, accountId, db);
-        
-      } catch (handlerError) {
-        console.error(`[ORDER-HANDLERS] ❌ Erro no handler robusto para conta ${accountId}:`, handlerError.message);
-      }
-    };
-    
-    // ✅ REGISTRAR HANDLER ROBUSTO
-    const orderCallbacks = {
-      ...existingCallbacks,
-      handleOrderUpdate: robustOrderHandler
-    };
-    
-    websockets.setMonitoringCallbacks(orderCallbacks, accountId);
-    
-    console.log(`[ORDER-HANDLERS] ✅ Handler robusto registrado para conta ${accountId}`);
-    return true;
-    
-  } catch (error) {
-    console.error(`[ORDER-HANDLERS] ❌ Erro ao registrar handlers para conta ${accountId}:`, error.message);
-    return false;
-  }
-}
-
-function areHandlersRegistered(accountId) {
-  try {
-    const handlers = websockets.getHandlers(accountId);
-    const hasOrderHandler = handlers && typeof handlers.handleOrderUpdate === 'function';
-    
-    console.log(`[ORDER-HANDLERS] Status do handler de ordem para conta ${accountId}: ${hasOrderHandler ? '✅' : '❌'}`);
-    return hasOrderHandler;
-    
-  } catch (error) {
-    console.error(`[ORDER-HANDLERS] Erro ao verificar handlers de ordem para conta ${accountId}:`, error.message);
-    return false;
-  }
-}
-
-function unregisterOrderHandlers(accountId) {
-  try {
-    console.log(`[ORDER-HANDLERS] Removendo handlers para conta ${accountId}...`);
-    
-    const emptyCallbacks = {
-      handleOrderUpdate: null,
-      handleAccountUpdate: null
-    };
-    
-    websockets.setMonitoringCallbacks(emptyCallbacks, accountId);
-    
-    console.log(`[ORDER-HANDLERS] ✅ Handlers removidos para conta ${accountId}`);
-    return true;
-    
-  } catch (error) {
-    console.error(`[ORDER-HANDLERS] Erro ao remover handlers para conta ${accountId}:`, error.message);
-    return false;
   }
 }
 
@@ -1378,15 +1304,164 @@ async function createTpSlOrdersForSignal(signal, position, accountId, positionId
   }
 }
 
+/**
+ * 🔍 Busca e vincula uma posição à ordem após inserção
+ * Tenta a cada 5 segundos por até 5 minutos com verificações intermediárias
+ */
+async function searchAndLinkPosition(orderDbId, orderData, accountId) {
+  const { getDatabaseInstance } = require('../../../core/database/conexao');
+  
+  let db;
+  try {
+    db = await getDatabaseInstance(accountId);
+    if (!db) {
+      console.error(`[POSITION_LINK] ❌ Não foi possível obter conexão com banco para conta ${accountId}`);
+      return;
+    }
+  } catch (error) {
+    console.error(`[POSITION_LINK] ❌ Erro ao obter conexão com banco:`, error.message);
+    return;
+  }
+
+  const startTime = Date.now();
+  const timeout = 5 * 60 * 1000; // 5 minutos
+  const interval = 5000; // 5 segundos
+  const symbol = orderData.s;
+  
+  console.log(`[POSITION_LINK] 🔍 Iniciando busca por posição para ordem ${orderData.i} (${symbol})...`);
+  console.log(`[POSITION_LINK]   - Timeout: 5 minutos`);
+  console.log(`[POSITION_LINK]   - Intervalo: 5 segundos`);
+
+  const searchInterval = setInterval(async () => {
+    let connection;
+    try {
+      connection = await db.getConnection();
+      
+      // ✅ VERIFICAÇÃO INTERMEDIÁRIA 1: Ordem já foi movida para histórico?
+      const [historyCheck] = await connection.query(
+        'SELECT id FROM ordens_fechadas WHERE id_externo = ? AND conta_id = ?',
+        [orderData.i, accountId]
+      );
+      
+      if (historyCheck.length > 0) {
+        console.log(`[POSITION_LINK] ✅ Ordem ${orderData.i} foi movida para histórico - interrompendo busca`);
+        clearInterval(searchInterval);
+        return;
+      }
+      
+      // ✅ VERIFICAÇÃO INTERMEDIÁRIA 2: Ordem ainda existe na tabela ativa?
+      const [orderCheck] = await connection.query(
+        'SELECT id_posicao FROM ordens WHERE id = ? AND conta_id = ?',
+        [orderDbId, accountId]
+      );
+      
+      if (orderCheck.length === 0) {
+        console.log(`[POSITION_LINK] ⚠️ Ordem ${orderDbId} não encontrada no banco - foi removida ou movida`);
+        clearInterval(searchInterval);
+        return;
+      }
+      
+      // ✅ VERIFICAÇÃO INTERMEDIÁRIA 3: Ordem já tem id_posicao?
+      if (orderCheck[0].id_posicao) {
+        console.log(`[POSITION_LINK] ✅ Ordem ${orderDbId} já está vinculada à posição ${orderCheck[0].id_posicao}`);
+        clearInterval(searchInterval);
+        return;
+      }
+      
+      // ✅ BUSCAR POSIÇÃO CORRESPONDENTE
+      const [positions] = await connection.query(
+        `SELECT id, quantidade, preco_medio 
+         FROM posicoes 
+         WHERE simbolo = ? AND conta_id = ? AND ABS(quantidade) > 0
+         ORDER BY data_hora_abertura DESC, id DESC
+         LIMIT 1`,
+        [symbol, accountId]
+      );
+      
+      if (positions.length > 0) {
+        const position = positions[0];
+        
+        // ✅ ATUALIZAR ORDEM COM RETRY ROBUSTO
+        let updateTries = 0;
+        while (updateTries < 100) {
+          try {
+            // ✅ VERIFICAÇÃO FINAL ANTES DO UPDATE: Ordem ainda não foi movida?
+            const [finalCheck] = await connection.query(
+              'SELECT id_posicao FROM ordens WHERE id = ? AND conta_id = ?',
+              [orderDbId, accountId]
+            );
+            
+            if (finalCheck.length === 0) {
+              console.log(`[POSITION_LINK] ⚠️ Ordem ${orderDbId} não existe mais - foi movida durante processo`);
+              clearInterval(searchInterval);
+              return;
+            }
+            
+            if (finalCheck[0].id_posicao) {
+              console.log(`[POSITION_LINK] ✅ Ordem ${orderDbId} já foi vinculada à posição ${finalCheck[0].id_posicao} por outro processo`);
+              clearInterval(searchInterval);
+              return;
+            }
+            
+            // ✅ EXECUTAR UPDATE
+            await connection.query(
+              'UPDATE ordens SET id_posicao = ? WHERE id = ? AND conta_id = ?',
+              [position.id, orderDbId, accountId]
+            );
+            
+            console.log(`[POSITION_LINK] ✅ Ordem ${orderDbId} vinculada à posição ${position.id}`);
+            console.log(`[POSITION_LINK]   - Símbolo: ${symbol}`);
+            console.log(`[POSITION_LINK]   - Quantidade posição: ${position.quantidade}`);
+            console.log(`[POSITION_LINK]   - Preço médio: ${position.preco_medio}`);
+            console.log(`[POSITION_LINK]   - Tempo decorrido: ${((Date.now() - startTime) / 1000).toFixed(1)}s`);
+            
+            clearInterval(searchInterval);
+            return;
+            
+          } catch (updateError) {
+            if (updateError.message && updateError.message.includes('Deadlock found when trying to get lock') && updateTries < 99) {
+              updateTries++;
+              console.warn(`[POSITION_LINK] ⚠️ Deadlock ao vincular posição, tentativa ${updateTries}/100...`);
+              await new Promise(res => setTimeout(res, 10 + Math.random() * 50));
+              continue;
+            }
+            throw updateError;
+          }
+        }
+      } else {
+        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+        console.log(`[POSITION_LINK] 🔍 Posição para ${symbol} ainda não encontrada (${elapsed}s)...`);
+      }
+      
+      // ✅ VERIFICAR TIMEOUT
+      if (Date.now() - startTime >= timeout) {
+        console.warn(`[POSITION_LINK] ⏰ Timeout atingido para ordem ${orderDbId} (${symbol})`);
+        console.warn(`[POSITION_LINK]   - Posição não foi encontrada em 5 minutos`);
+        clearInterval(searchInterval);
+      }
+      
+    } catch (error) {
+      console.error(`[POSITION_LINK] ❌ Erro na busca por posição:`, error.message);
+      
+      // Em caso de erro crítico, parar a busca
+      if (!error.message.includes('Deadlock')) {
+        clearInterval(searchInterval);
+      }
+    } finally {
+      if (connection) {
+        connection.release();
+      }
+    }
+  }, interval);
+}
+
 module.exports = {
   handleOrderUpdate,
-  registerOrderHandlers,
-  areHandlersRegistered,
-  unregisterOrderHandlers,
-  initializeOrderHandlers,
-  handleTradeExecution,
-  checkPositionClosureAfterOrderExecution,
+  registerOrderUpdateHandler, // ✅ Garante que a função correta está exportada
   autoMoveOrderOnCompletion,
+  checkPositionClosureAfterOrderExecution,
+  insertExternalOrder,
   cleanupOrphanOrders,
-  createTpSlOrdersForSignal
+  createTpSlOrdersForSignal,
+  searchAndLinkPosition
 };
