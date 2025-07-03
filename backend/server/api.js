@@ -13,7 +13,7 @@ const fastify = require('fastify')({
 // PLUGINS
 async function registerPlugins() {
   await fastify.register(require('@fastify/cors'), {
-    origin: ['http://localhost:3000', 'http://127.0.0.1:3000'],
+    origin: ['http://localhost:3010', 'http://127.0.0.1:3010'],
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
     credentials: true
@@ -39,7 +39,7 @@ async function registerPlugins() {
         version: '1.0.0'
       },
       servers: [{
-        url: `http://localhost:${process.env.API_PORT || 8001}`,
+        url: `http://localhost:${process.env.API_PORT}`,
         description: 'Servidor de Desenvolvimento'
       }],
     },
