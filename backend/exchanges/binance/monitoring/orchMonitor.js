@@ -4,10 +4,10 @@ const { getDatabaseInstance } = require('../../../core/database/conexao');
 const { verifyAndFixEnvironmentConsistency, getFuturesAccountBalanceDetails, getSpotAccountBalanceDetails } = require('../api/rest');
 const websockets = require('../api/websocket');
 const api = require('../api/rest');
-const { sendTelegramMessage } = require('../services/telegramHelper');
+const orderHandlers = require('../handlers/orderHandlers');
+const accountHandlers = require('../handlers/accountHandlers');
 const { onPriceUpdate, checkNewTrades, checkExpiredSignals, checkCanceledSignals } = require('./signalProcessor');
 const { syncPositionsWithExchange, syncOrdersWithExchange, logOpenPositionsAndOrdersVisual, syncPositionsWithAutoClose } = require('../services/positionSync');
-const { registerOrderHandlers } = require('../handlers/orderHandlers');
 const { registerAccountHandlers } = require('../handlers/accountHandlers');
 const { cleanupOrphanSignals, moveOrdersToHistory, movePositionToHistory, cancelOrphanOrders } = require('../services/cleanup');
 const { checkOrderTriggers } = require('./trailingStopLoss');
@@ -73,18 +73,17 @@ function registerWebSocketHandlers(accountId) {
   console.log(`[MONITOR] 🎧 Registrando todos os handlers de WebSocket para a conta ${accountId}...`);
 
   // 1. Registrar handlers de atualização de ordens
-  registerOrderHandlers();
+  orderHandlers.registerOrderHandlers(accountId);
 
   // 2. Registrar handlers de atualização de conta
-  registerAccountHandlers();
+  accountHandlers.registerAccountHandlers(accountId);
 
   // 3. Registrar handler de atualização de preço (markPrice)
-  // O handler onPriceUpdate é usado para processamento de sinais, como verificar trades.
   const priceUpdateWrapper = ({ message, accountId: eventAccountId }) => {
-    // A função original espera (message, accountId)
     onPriceUpdate(message, eventAccountId);
   };
-  websockets.on('priceUpdate', priceUpdateWrapper, 'mainPriceSignalProcessor');
+  // ✅ CORREÇÃO: Usar um ID de listener único por conta
+  websockets.on('priceUpdate', priceUpdateWrapper, `mainPriceSignalProcessor_${accountId}`);
   console.log(`[MONITOR] 🎧 Handler de atualização de preço (priceUpdate) registrado.`);
 
   console.log(`[MONITOR] ✅ Todos os handlers de WebSocket foram registrados com sucesso.`);
@@ -292,46 +291,15 @@ try {
       console.warn('⚠️ Erro ao verificar status da sessão:', sessionError.message);
     }
 
-    // === ETAPA 6.5: Registrar callbacks de monitoramento ===
-console.log(`🔄 ETAPA 6.5: Registrando callbacks de WebSocket para conta ${accountId}...`);
-
-try {
-  const currentHandlers = websockets.getHandlers(accountId);
-  const updatedHandlers = {
-    ...currentHandlers,
-    onPriceUpdate: async (symbol, price, db, acctId) => {
-      try {
-        //console.log(`[MONITOR] 📊 Preço recebido: ${symbol} = ${price} (conta ${acctId})`);
-        await onPriceUpdate(symbol, price, db, acctId);
-      } catch (error) {
-        console.error(`[MONITOR] ❌ Erro em onPriceUpdate:`, error.message);
-      }
-    }
-  };
-
-  // Registrar os handlers atualizados
-  websockets.setMonitoringCallbacks(updatedHandlers, accountId);
-  
-  // Verificar registro
-  const finalHandlers = websockets.getHandlers(accountId);
-  console.log(`[MONITOR] 🔍 Verificação final do callback onPriceUpdate: ${typeof finalHandlers.onPriceUpdate}`);
-  
-} catch (callbackError) {
-  console.error(`[MONITOR] ❌ Erro ao registrar callbacks para conta ${accountId}:`, callbackError.message);
-}
-
-    // === ETAPA 7: CONFIGURAR HANDLERS SEPARADAMENTE ===
+    // === ETAPA 7: CONFIGURAR HANDLERS (NOVO MÉTODO CENTRALIZADO) ===
     console.log(`🔧 ETAPA 7: Configurando handlers para conta ${accountId}...`);
-  try {
-    // ✅ CORREÇÃO: Chamar a nova função de registro do sistema Pub/Sub
-    orderHandlers.registerOrderUpdateHandler(accountId);
-    // accountHandlers.registerAccountUpdateHandler(accountId); // TODO: Implementar em accountHandlers quando necessário
-
-    console.log(`[MONITOR]   ✅ Handlers de ordem e conta configurados para conta ${accountId}`);
-  } catch (error) {
-    console.error(`[MONITOR] ❌ Erro ao configurar handlers para conta ${accountId}:`, error.message);
-    throw error;
-  }
+    try {
+      // ✅ Esta chamada única substitui todo o código legado de callbacks e handlers
+      registerWebSocketHandlers(accountId);
+    } catch (error) {
+      console.error(`[MONITOR] ❌ Erro ao configurar handlers para conta ${accountId}:`, error.message);
+      throw error;
+    }
 
     // === ETAPA 8: Iniciar UserDataStream ===
     console.log(`🌐 ETAPA 8: Iniciando UserDataStream para conta ${accountId}...`);
