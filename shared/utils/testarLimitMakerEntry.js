@@ -19,7 +19,7 @@ async function testarLimitMakerEntry(accountId, symbolTest = 'BTCUSDT') {
       tp2_price: 115000, // TP2 - 15% acima
       tp3_price: 120000, // TP3 - 20% acima
       tp4_price: 125000, // TP4 - 25% acima
-      tp_price: 130100,  // TP Final - 30% acima
+      tp_price: 130000,  // TP Final - 30% acima
       entry_price: 103979.40
     };
     

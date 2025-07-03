@@ -145,7 +145,7 @@ async function executeReverse(signal, currentPrice, accountId) {
 
     // ✅ CONSTANTES CORRIGIDAS PARA MAIS EFICIÊNCIA
     const MAX_CHASE_ATTEMPTS = 100; // Reduzido de 100
-    const CHASE_TIMEOUT_MS = 301000; // 2 minutos em vez de 3
+    const CHASE_TIMEOUT_MS = 300000; // 2 minutos em vez de 3
     const WAIT_FOR_ORDER_CONFIRMATION_MS = 10000; // Reduzido de 15s
     const EDIT_WAIT_TIMEOUT_MS = 2000; // Reduzido de 3s
     const MAX_DEPTH_STALENESS_MS = 2000; // Reduzido de 3s
@@ -941,7 +941,7 @@ async function executeReverse(signal, currentPrice, accountId) {
           
           // Aguardar webhook processar e verificar novamente no banco
           console.log(`[LIMIT_ENTRY] ⏳ Aguardando 3s para webhook processar posição da corretora...`);
-          await new Promise(resolve => setTimeout(resolve, 3010));
+          await new Promise(resolve => setTimeout(resolve, 3000));
           
           const [delayedPosition] = await connection.query(
             `SELECT id FROM posicoes 
@@ -1246,7 +1246,7 @@ async function executeReverse(signal, currentPrice, accountId) {
     }
 
     // Aguarde 3 segundos para garantir que as ordens e posição foram inseridas via WebSocket
-    await new Promise(resolve => setTimeout(resolve, 3010));
+    await new Promise(resolve => setTimeout(resolve, 3000));
 
     // Buscar a posição aberta no banco
     const [positions] = await connection.query(
@@ -1381,7 +1381,7 @@ async function executeReverse(signal, currentPrice, accountId) {
 }
 
 // ✅ FUNÇÃO waitForOrderExecution ADAPTADA DA DEV COM MELHORIAS
-async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3010, accountId, sentOrdersMap) {
+async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3000, accountId, sentOrdersMap) {
   const startTime = Date.now();
   
   try {
@@ -1549,7 +1549,7 @@ function calculateAveragePrice(fills) {
 }
 
 // ✅ CONSTANTES PARA AGUARDAR WEBHOOK
-const WAIT_FOR_WEBHOOK_MS = 3010; // 3 segundos para webhook processar
+const WAIT_FOR_WEBHOOK_MS = 3000; // 3 segundos para webhook processar
 
 module.exports = {
     executeReverse

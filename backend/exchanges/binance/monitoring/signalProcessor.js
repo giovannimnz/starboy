@@ -9,7 +9,7 @@ const processingSignals = new Set();
 
 // Cache de preços
 const priceCache = new Map();
-const PRICE_CACHE_TTL = 30100;
+const PRICE_CACHE_TTL = 30000;
 const lastPriceLogTime = new Map();
 
 /**

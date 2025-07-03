@@ -16,7 +16,7 @@ const dbConfig = {
   connectionLimit: 20,
   queueLimit: 0,
   waitForConnections: true,
-  idleTimeout: 301000,
+  idleTimeout: 300000,
   enableKeepAlive: true,
   keepAliveInitialDelay: 0,
   charset: 'utf8mb4'

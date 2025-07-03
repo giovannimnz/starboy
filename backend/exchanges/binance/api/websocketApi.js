@@ -34,7 +34,7 @@ async function placeOrderViaWebSocket(orderParams, accountId) {
     console.log(`[WS-API] Enviando ordem ${orderParams.type} via WebSocket API para conta ${accountId}: ${orderParams.symbol}, ${orderParams.side}, ${orderParams.quantity || ''} @ ${orderParams.price || ''}`);
     
     // Enviar requisição e aguardar resposta
-    const response = await websockets.sendWebSocketApiRequest(request, 30100, accountId);
+    const response = await websockets.sendWebSocketApiRequest(request, 30000, accountId);
     
     if (response.status === 200 && response.result) {
       console.log(`[WS-API] ✅ Ordem criada com sucesso para conta ${accountId}: ${response.result.orderId}`);
@@ -140,7 +140,7 @@ async function modifyOrderViaWebSocket(modifyParams, accountId) {
     
     console.log(`[WS-API] Modificando ordem ${modifyParams.orderId || modifyParams.origClientOrderId} para conta ${accountId}: novo preço ${modifyParams.price}, quantidade ${modifyParams.quantity}`);
     
-    const response = await websockets.sendWebSocketApiRequest(request, 30100, accountId);
+    const response = await websockets.sendWebSocketApiRequest(request, 30000, accountId);
     
     if (response.status === 200 && response.result) {
       console.log(`[WS-API] ✅ Ordem modificada com sucesso para conta ${accountId}`);
@@ -169,7 +169,7 @@ async function cancelOrderByIdViaWebSocket(symbol, orderId, accountId) {
     };
     
     const request = await websockets.createSignedRequest('order.cancel', cancelParams, accountId);
-    const response = await websockets.sendWebSocketApiRequest(request, 30100, accountId);
+    const response = await websockets.sendWebSocketApiRequest(request, 30000, accountId);
     
     if (response.status === 200 && response.result) {
       console.log(`[WS-API] ✅ Ordem ${orderId} cancelada com sucesso para conta ${accountId}`);

@@ -510,7 +510,7 @@ def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent, si
     
     return final_leverage, sl_distance_pct
 
-WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'http://localhost:3010/webhook-sinal')
+WEBHOOK_URL = os.getenv('WEBHOOK_URL', 'http://localhost:3000/webhook-sinal')
 
 def send_to_webhook(trade_data):
     """
