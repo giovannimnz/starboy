@@ -13,6 +13,10 @@ require('dotenv').config({ path: path.resolve(__dirname, '../../../../config/.en
 const ENABLE_SYNC_LOGS = process.env.ENABLE_SYNC_LOGS === 'true';
 const ENABLE_ORPHAN_LOGS = process.env.ENABLE_ORPHAN_LOGS === 'true';
 
+// ✅ NOVO: Controle de tempo para evitar interferência com webhook
+const MIN_DELAY_BEFORE_SYNC_MS = 5 * 60 * 1000; // 5 minutos
+const lastDetectedChanges = new Map(); // Rastreia quando foram detectadas mudanças
+
 // Funções auxiliares para logs condicionais
 const syncLog = (...args) => {
   if (ENABLE_SYNC_LOGS) {
@@ -25,6 +29,26 @@ const orphanLog = (...args) => {
     console.log(...args);
   }
 };
+
+// ✅ NOVA FUNÇÃO: Verificar se deve aguardar antes de sincronizar
+function shouldWaitBeforeSync(symbol, accountId) {
+  const key = `${accountId}_${symbol}`;
+  const lastChange = lastDetectedChanges.get(key);
+  
+  if (!lastChange) {
+    return false; // Primeira vez, pode sincronizar
+  }
+  
+  const timeSinceLastChange = Date.now() - lastChange;
+  return timeSinceLastChange < MIN_DELAY_BEFORE_SYNC_MS;
+}
+
+// ✅ NOVA FUNÇÃO: Registrar mudança detectada
+function recordChangeDetected(symbol, accountId) {
+  const key = `${accountId}_${symbol}`;
+  lastDetectedChanges.set(key, Date.now());
+  console.log(`[SYNC_DELAY] 📝 Mudança registrada para ${symbol} (conta ${accountId}). Aguardando ${MIN_DELAY_BEFORE_SYNC_MS/1000/60} minutos antes de sincronizar.`);
+}
 
 /**
  * Sincroniza posições do banco com a corretora
@@ -72,14 +96,31 @@ async function syncPositionsWithExchange(accountId) {
         missingInDb: 0,
         missingInExchange: 0,
         updated: 0,
+        skipped: 0,
         errors: []
       };
 
+      // ✅ VERIFICAR CADA POSIÇÃO ANTES DE SINCRONIZAR
       // Verificar posições que existem na corretora mas não no banco
       for (const exchangePos of exchangePositions) {
+        // ✅ VERIFICAR SE DEVE AGUARDAR ANTES DE SINCRONIZAR
+        if (shouldWaitBeforeSync(exchangePos.simbolo, accountId)) {
+          const key = `${accountId}_${exchangePos.simbolo}`;
+          const lastChange = lastDetectedChanges.get(key);
+          const remainingTime = MIN_DELAY_BEFORE_SYNC_MS - (Date.now() - lastChange);
+          const remainingMinutes = Math.ceil(remainingTime / 1000 / 60);
+          
+          console.log(`[SYNC_DELAY] ⏳ Aguardando ${remainingMinutes} minutos antes de sincronizar ${exchangePos.simbolo} (mudança detectada recentemente)`);
+          syncResults.skipped++;
+          continue;
+        }
+        
         const dbPos = dbPositions.find(p => p.simbolo === exchangePos.simbolo);
         
         if (!dbPos) {
+          // ✅ REGISTRAR NOVA POSIÇÃO DETECTADA
+          recordChangeDetected(exchangePos.simbolo, accountId);
+          
           //console.warn(`[SYNC] Posição ${exchangePos.simbolo} existe na corretora mas não no banco (conta ${accountId})`);
           syncResults.missingInDb++;
           
@@ -127,9 +168,24 @@ async function syncPositionsWithExchange(accountId) {
 
       // Verificar posições que existem no banco mas não na corretora
       for (const dbPos of dbPositions) {
+        // ✅ VERIFICAR SE DEVE AGUARDAR ANTES DE SINCRONIZAR
+        if (shouldWaitBeforeSync(dbPos.simbolo, accountId)) {
+          const key = `${accountId}_${dbPos.simbolo}`;
+          const lastChange = lastDetectedChanges.get(key);
+          const remainingTime = MIN_DELAY_BEFORE_SYNC_MS - (Date.now() - lastChange);
+          const remainingMinutes = Math.ceil(remainingTime / 1000 / 60);
+          
+          console.log(`[SYNC_DELAY] ⏳ Aguardando ${remainingMinutes} minutos antes de sincronizar ${dbPos.simbolo} (mudança detectada recentemente)`);
+          syncResults.skipped++;
+          continue;
+        }
+        
         const exchangePos = exchangePositions.find(p => p.simbolo === dbPos.simbolo);
         
         if (!exchangePos) {
+          // ✅ REGISTRAR POSIÇÃO FECHADA DETECTADA
+          recordChangeDetected(dbPos.simbolo, accountId);
+          
           console.warn(`[SYNC] Posição ${dbPos.simbolo} existe no banco mas não na corretora (conta ${accountId})`);
           syncResults.missingInExchange++;
           
@@ -1244,5 +1300,8 @@ module.exports = {
   moveClosedPositionsToHistory,
   createMissingOrdersForPosition,
   detectAndFixOrphanPositions,
-  linkSignalsToOpenPositions
+  linkSignalsToOpenPositions,
+  // ✅ NOVAS FUNÇÕES DE CONTROLE DE DELAY
+  shouldWaitBeforeSync,
+  recordChangeDetected
 };

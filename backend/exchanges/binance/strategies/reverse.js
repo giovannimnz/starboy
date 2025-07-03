@@ -6,18 +6,155 @@ require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 const {  getRecentOrders, editOrder, roundPriceToTickSize, newMarketOrder, newLimitMakerOrder, newReduceOnlyOrder, cancelOrder, newStopOrder, getOpenOrders, getOrderStatus, getAllOpenPositions, getFuturesAccountBalanceDetails, getPrecision, getTickSize, getPrecisionCached, validateQuantity, adjustQuantityToRequirements,} = require('../api/rest');
 const { sendTelegramMessage, formatEntryMessage, formatErrorMessage, formatAlertMessage, formatEntryMessageWithPrecision } = require('../services/telegramHelper');
 
+// ✅ NOVOS BUFFERS PARA CONTROLE DE INSERÇÃO NO BANCO
+const positionBuffer = new Map(); // Armazena posições a serem inseridas
+const orderBuffer = new Map(); // Armazena ordens a serem inseridas (key: exchange order ID)
+const insertionQueue = new Map(); // Controla a fila de inserção por signal ID
+
 // ✅ CORREÇÃO: Declarar sentOrders no escopo correto e com Map melhorado
 // ✅ OTIMIZAÇÃO: Edição de ordens implementada para maior agilidade
 //    - Edita ordem quando possível em vez de cancelar+recriar
 //    - Economia de ~200-500ms por atualização de preço
 //    - Fallback automático para cancelar+recriar se edição falhar
 //    - Critério inteligente evita micro-edições desnecessárias
+
+// ✅ NOVA FUNÇÃO: Buffer de dados para inserção no banco
+function createPositionBuffer(signal, totalSize, averagePrice, accountId) {
+  const positionData = {
+    id: `signal_${signal.id}`,
+    simbolo: signal.symbol,
+    quantidade: totalSize,
+    preco_entrada: averagePrice,
+    preco_medio: averagePrice,
+    preco_corrente: averagePrice,
+    side: signal.side,
+    status: 'OPEN',
+    conta_id: accountId,
+    leverage: signal.leverage,
+    data_hora_abertura: new Date(),
+    data_hora_ultima_atualizacao: new Date(),
+    orign_sig: `WEBHOOK_${signal.id}`,
+    signal_id: signal.id
+  };
+  
+  positionBuffer.set(signal.id, positionData);
+  console.log(`[BUFFER] Posição adicionada ao buffer: ${signal.symbol} (${totalSize.toFixed(8)})`);
+  return positionData;
+}
+
+// ✅ NOVA FUNÇÃO: Adicionar ordem ao buffer
+function addOrderToBuffer(orderData, signalId) {
+  const bufferedOrder = {
+    id_externo: String(orderData.orderId),
+    simbolo: orderData.symbol,
+    tipo_ordem: orderData.type || 'LIMIT',
+    tipo_ordem_bot: orderData.orderType || 'ENTRADA',
+    side: orderData.side,
+    quantidade: parseFloat(orderData.quantity || orderData.origQty || 0),
+    preco: parseFloat(orderData.price || 0),
+    status: orderData.status || 'NEW',
+    preco_stop: orderData.stopPrice ? parseFloat(orderData.stopPrice) : null,
+    data_hora_criacao: new Date(),
+    data_hora_ultima_atualizacao: new Date(),
+    orign_sig: `WEBHOOK_${signalId}`,
+    conta_id: orderData.accountId,
+    quantidade_executada: parseFloat(orderData.executedQty || 0),
+    preco_medio: parseFloat(orderData.avgPrice || orderData.price || 0),
+    reduce_only: orderData.reduceOnly || false,
+    close_position: orderData.closePosition || false,
+    target: orderData.target || null,
+    signal_id: signalId
+  };
+  
+  orderBuffer.set(String(orderData.orderId), bufferedOrder);
+  console.log(`[BUFFER] Ordem adicionada ao buffer: ${orderData.orderId} (${orderData.type})`);
+  return bufferedOrder;
+}
+
+// ✅ NOVA FUNÇÃO: Atualizar ordem no buffer
+function updateOrderInBuffer(orderData) {
+  const orderId = String(orderData.orderId || orderData.i);
+  const bufferedOrder = orderBuffer.get(orderId);
+  
+  if (bufferedOrder) {
+    bufferedOrder.status = orderData.status || orderData.X || bufferedOrder.status;
+    bufferedOrder.quantidade_executada = parseFloat(orderData.executedQty || orderData.z || bufferedOrder.quantidade_executada);
+    bufferedOrder.preco_medio = parseFloat(orderData.avgPrice || orderData.ap || bufferedOrder.preco_medio);
+    bufferedOrder.data_hora_ultima_atualizacao = new Date();
+    
+    console.log(`[BUFFER] Ordem atualizada no buffer: ${orderId} (${bufferedOrder.status})`);
+    return bufferedOrder;
+  }
+  
+  return null;
+}
+
+// ✅ NOVA FUNÇÃO: Inserir dados do buffer no banco
+async function insertBufferedDataToDB(signalId, accountId, connection) {
+  try {
+    console.log(`[BUFFER] 📤 Iniciando inserção no banco para signal ${signalId}...`);
+    
+    // 1. Inserir posição primeiro
+    const positionData = positionBuffer.get(signalId);
+    let positionId = null;
+    
+    if (positionData) {
+      console.log(`[BUFFER] 📊 Inserindo posição: ${positionData.simbolo}`);
+      
+      // Vincular o sinal à posição antes de inserir
+      await connection.query(
+        `UPDATE webhook_signals SET status = 'EXECUTADO', position_id = ? WHERE id = ?`,
+        [positionData.id, signalId]
+      );
+      
+      const insertPositionResult = await insertPosition(positionData, accountId);
+      positionId = insertPositionResult.insertId;
+      
+      console.log(`[BUFFER] ✅ Posição inserida com ID: ${positionId}`);
+      
+      // Limpar buffer da posição
+      positionBuffer.delete(signalId);
+    }
+    
+    // 2. Inserir todas as ordens vinculadas ao signal
+    const signalOrders = Array.from(orderBuffer.entries())
+      .filter(([_, order]) => order.signal_id === signalId);
+    
+    console.log(`[BUFFER] 📋 Inserindo ${signalOrders.length} ordens...`);
+    
+    for (const [orderId, orderData] of signalOrders) {
+      try {
+        // Vincular ordem à posição se houver
+        if (positionId) {
+          orderData.id_posicao = positionId;
+        }
+        
+        await insertNewOrder(orderData, accountId);
+        console.log(`[BUFFER] ✅ Ordem inserida: ${orderId} (${orderData.tipo_ordem_bot})`);
+        
+        // Remover do buffer após inserção
+        orderBuffer.delete(orderId);
+      } catch (orderError) {
+        console.error(`[BUFFER] ❌ Erro ao inserir ordem ${orderId}:`, orderError.message);
+      }
+    }
+    
+    console.log(`[BUFFER] 🎉 Inserção completa para signal ${signalId}`);
+    return { success: true, positionId };
+    
+  } catch (error) {
+    console.error(`[BUFFER] ❌ Erro na inserção do buffer:`, error.message);
+    throw error;
+  }
+}
+
 async function executeReverse(signal, currentPrice, accountId) {
   console.log(`[LIMIT_ENTRY] 🚀 Executando entrada para sinal ${signal.id}: ${signal.symbol} ${signal.side} a ${signal.entry_price} (conta ${accountId})`);
 
   // ✅ VARIÁVEIS DE CONTROLE PARA EVITAR DUPLICAÇÃO
   let slTpRpsAlreadyCreated = false;
   let entryProcessingComplete = false;
+  let allOrdersSent = false; // Nova variável para controlar quando todas as ordens foram enviadas
   
   // ✅ SISTEMA DE RASTREAMENTO MELHORADO - DECLARADO CORRETAMENTE
   const sentOrders = new Map(); // DEVE estar aqui, não no escopo global
@@ -48,6 +185,20 @@ async function executeReverse(signal, currentPrice, accountId) {
     if (executionTime > Date.now() + 60000) {
       console.warn(`[ORDER_WS] Ignorando execução no futuro: ${new Date(executionTime)}`);
       return;
+    }
+    
+    // ✅ ATUALIZAR ORDEM NO BUFFER SE AINDA NÃO FOI INSERIDA NO BANCO
+    if (!allOrdersSent) {
+      updateOrderInBuffer({
+        orderId: orderId,
+        status: orderStatus,
+        executedQty: order.z,
+        avgPrice: order.ap,
+        X: orderStatus,
+        z: order.z,
+        ap: order.ap,
+        i: orderId
+      });
     }
     
     // ATUALIZAR A ORDEM NO MAPA COM TODOS OS DETALHES NECESSÁRIOS
@@ -793,6 +944,19 @@ async function executeReverse(signal, currentPrice, accountId) {
             fills: []
           });
           
+          // ✅ ADICIONAR ORDEM DE ENTRADA AO BUFFER
+          addOrderToBuffer({
+            orderId: activeOrderId,
+            symbol: signal.symbol,
+            side: binanceSide,
+            quantity: newOrderQty,
+            price: currentLocalMakerPrice,
+            type: 'LIMIT',
+            orderType: 'ENTRADA',
+            status: 'NEW',
+            accountId: accountId
+          }, signal.id);
+          
         } catch (newOrderError) {
           console.error(`[LIMIT_ENTRY] Erro ao criar NOVA LIMIT:`, newOrderError.message);
           await new Promise(resolve => setTimeout(resolve, 1000)); 
@@ -917,17 +1081,51 @@ async function executeReverse(signal, currentPrice, accountId) {
               }
             } else {
               console.warn(`[LIMIT_ENTRY] ⚠️ Ordem MARKET não foi totalmente executada: ${marketWaitResult?.status || 'UNKNOWN'}`);
+            }              
+              // ✅ ADICIONAR ORDEM MARKET AO BUFFER
+              addOrderToBuffer({
+                orderId: String(marketOrderResponseForDb.orderId),
+                symbol: signal.symbol,
+                side: binanceSide,
+                quantity: finalMarketQty,
+                price: currentPriceTrigger,
+                type: 'MARKET',
+                orderType: 'ENTRADA',
+                status: 'NEW',
+                accountId: accountId
+              }, signal.id);
+              
+            } else {
+              console.error(`[LIMIT_ENTRY] ❌ Falha ao criar ordem MARKET. Resposta: ${JSON.stringify(marketOrderResponseForDb)}`);
             }
-          } else {
-            console.error(`[LIMIT_ENTRY] ❌ Falha ao criar ordem MARKET. Resposta: ${JSON.stringify(marketOrderResponseForDb)}`);
+          } catch (marketError) {
+            console.error(`[LIMIT_ENTRY] ❌ Erro na ordem MARKET:`, marketError.response?.data || marketError.message);
           }
-        } catch (marketError) {
-          console.error(`[LIMIT_ENTRY] ❌ Erro na ordem MARKET:`, marketError.response?.data || marketError.message);
+        } else {
+          console.log(`[LIMIT_ENTRY] ⏭️ Quantidade restante (${remainingToFillMarket.toFixed(quantityPrecision)}) muito pequena para MARKET. Prosseguindo...`);
         }
-      } else {
-        console.log(`[LIMIT_ENTRY] ⏭️ Quantidade restante (${remainingToFillMarket.toFixed(quantityPrecision)}) muito pequena para MARKET. Prosseguindo...`);
       }
+
+    // ✅ APÓS TODAS AS ORDENS DE ENTRADA, CRIAR POSIÇÃO NO BUFFER
+    if (partialFills.length > 0) {
+      averageEntryPrice = calculateAveragePrice(partialFills);
+      
+      // ✅ CRIAR POSIÇÃO NO BUFFER
+      createPositionBuffer(signal, totalFilledSize, averageEntryPrice, accountId);
+      
+      console.log(`[LIMIT_ENTRY] 📊 Posição criada no buffer: ${signal.symbol} (${totalFilledSize.toFixed(quantityPrecision)} @ ${averageEntryPrice.toFixed(pricePrecision)})`);
+    } else if (totalFilledSize > 0 && (!averageEntryPrice || averageEntryPrice === 0)) { 
+      averageEntryPrice = currentPriceTrigger;
+      
+      // ✅ CRIAR POSIÇÃO NO BUFFER COM PREÇO FALLBACK
+      createPositionBuffer(signal, totalFilledSize, averageEntryPrice, accountId);
+      
+      console.warn(`[LIMIT_ENTRY] averageEntryPrice não pôde ser calculado a partir de partialFills (total preenchido: ${totalFilledSize}), usando currentPriceTrigger como fallback: ${averageEntryPrice}`);
     }
+
+    // ✅ MARCAR QUE TODAS AS ORDENS DE ENTRADA FORAM ENVIADAS
+    allOrdersSent = true;
+    console.log(`[LIMIT_ENTRY] 🚀 Todas as ordens de entrada foram enviadas. Iniciando criação de SL/TP/RPs...`);
 
     // Calcular preço médio final
     if (partialFills.length > 0) {
@@ -961,44 +1159,13 @@ async function executeReverse(signal, currentPrice, accountId) {
     partialFills.forEach((fill, index) => {
       console.log(`[LIMIT_ENTRY]   Fill ${index + 1}: ${fill.qty.toFixed(quantityPrecision)} @ ${fill.price.toFixed(pricePrecision)} (ID: ${fill.orderId})`);
     });
-    console.log(`[LIMIT_ENTRY] 📡 Aguardando confirmação das ordens via webhook para inserir no banco...`);
+    console.log(`[LIMIT_ENTRY] � Dados armazenados no buffer, aguardando inserção no banco...`);
 
     // ✅ ATUALIZAR APENAS O STATUS DO SINAL
     await connection.query(
       `UPDATE webhook_signals SET status = 'EXECUTADO' WHERE id = ?`,
-      [averageEntryPrice, signal.id]
+      [signal.id]
     );
-
-    // ✅ AGUARDAR UM POUCO PARA O WEBHOOK PROCESSAR AS ORDENS DE ENTRADA
-    console.log(`[LIMIT_ENTRY] ⏳ Aguardando ${WAIT_FOR_WEBHOOK_MS}ms para webhook processar ordens de entrada...`);
-    await new Promise(resolve => setTimeout(resolve, WAIT_FOR_WEBHOOK_MS));
-
-    // ✅ BUSCAR POSIÇÃO CRIADA PELO WEBHOOK
-    let positionId = null;
-    let maxRetries = 1000;
-    let retries = 0;
-
-    while (!positionId && retries < maxRetries) {
-      const [webhookPosition] = await connection.query(
-        `SELECT id FROM posicoes WHERE simbolo = ? AND status = 'OPEN' AND conta_id = ? ORDER BY id DESC LIMIT 1`,
-        [signal.symbol, accountId]
-      );
-      
-      if (webhookPosition.length > 0) {
-        positionId = webhookPosition[0].id;
-        console.log(`[LIMIT_ENTRY] ✅ Posição encontrada no banco (criada via webhook): ID ${positionId}`);
-        break;
-      }
-      
-      retries++;
-      console.log(`[LIMIT_ENTRY] ⏳ Aguardando posição ser criada via webhook... tentativa ${retries}/${maxRetries}`);
-      await new Promise(resolve => setTimeout(resolve, 100));
-    }
-
-    if (!positionId) {
-      console.warn(`⚠️ Posição não encontrada, mas criando ordens de proteção mesmo assim...`);
-      // Continuar criando SL/TP/RPs sem aguardar position_id
-    }
 
     // ✅ CRIAR SL/TP/RPS - VERSÃO TOTALMENTE CORRIGIDA DA DEV
     let slTpRpsCreated = false;
@@ -1058,7 +1225,22 @@ async function executeReverse(signal, currentPrice, accountId) {
             if (slResponse && (slResponse.data?.orderId || slResponse.orderId)) {
               const slOrderId = slResponse.data?.orderId || slResponse.orderId;
               console.log(`[LIMIT_ENTRY] ✅ SL enviado para corretora: ${slOrderId} @ stopPrice=${slPriceVal}`);
-              console.log(`[LIMIT_ENTRY] 📡 Aguardando confirmação via webhook para inserir no banco...`);
+              
+              // ✅ ADICIONAR SL AO BUFFER
+              addOrderToBuffer({
+                orderId: slOrderId,
+                symbol: signal.symbol,
+                side: binanceOppositeSide,
+                quantity: null, // closePosition
+                price: slPriceVal,
+                stopPrice: slPriceVal,
+                type: 'STOP_MARKET',
+                orderType: 'STOP_LOSS',
+                status: 'NEW',
+                accountId: accountId,
+                reduceOnly: true,
+                closePosition: true
+              }, signal.id);
               
               // ✅ APENAS ATUALIZAR O SIGNAL COM O ORDER_ID
               await connection.query(
@@ -1121,7 +1303,22 @@ async function executeReverse(signal, currentPrice, accountId) {
               if (rpResponse && (rpResponse.data?.orderId || rpResponse.orderId)) {
                 const rpOrderId = rpResponse.data?.orderId || rpResponse.orderId;
                 console.log(`[LIMIT_ENTRY] ✅ RP${i+1} enviado para corretora: ${rpOrderId} (${(rpPercentage*100)}%)`);
-                console.log(`[LIMIT_ENTRY] 📡 Aguardando confirmação via webhook para inserir no banco...`);
+                
+                // ✅ ADICIONAR RP AO BUFFER
+                addOrderToBuffer({
+                  orderId: rpOrderId,
+                  symbol: signal.symbol,
+                  side: binanceOppositeSide,
+                  quantity: rpQty,
+                  price: rpPrice,
+                  type: 'LIMIT',
+                  orderType: 'REDUCAO_PARCIAL',
+                  status: 'NEW',
+                  accountId: accountId,
+                  reduceOnly: true,
+                  closePosition: false,
+                  target: i + 1
+                }, signal.id);
               }
             } catch (rpError) {
               console.error(`[LIMIT_ENTRY] ❌ Erro ao enviar RP${i+1} para corretora:`, rpError.response?.data || rpError.message);
@@ -1163,7 +1360,23 @@ async function executeReverse(signal, currentPrice, accountId) {
             if (tp5Response && (tp5Response.data?.orderId || tp5Response.orderId)) {
               const tp5OrderId = tp5Response.data?.orderId || tp5Response.orderId;
               console.log(`[LIMIT_ENTRY] ✅ TAKE_PROFIT_MARKET TP5 enviado para corretora: ${tp5OrderId} @ ${targetPrices.tp5}`);
-              console.log(`[LIMIT_ENTRY] 📡 Aguardando confirmação via webhook para inserir no banco...`);
+              
+              // ✅ ADICIONAR TP5 AO BUFFER
+              addOrderToBuffer({
+                orderId: tp5OrderId,
+                symbol: signal.symbol,
+                side: binanceOppositeSide,
+                quantity: null, // closePosition
+                price: targetPrices.tp5,
+                stopPrice: targetPrices.tp5,
+                type: 'TAKE_PROFIT_MARKET',
+                orderType: 'TAKE_PROFIT',
+                status: 'NEW',
+                accountId: accountId,
+                reduceOnly: true,
+                closePosition: true,
+                target: 5
+              }, signal.id);
             }
           }
         } catch (tp5Error) {
@@ -1184,12 +1397,29 @@ async function executeReverse(signal, currentPrice, accountId) {
     await connection.commit();
     console.log(`[LIMIT_ENTRY] ✅ Transação COMMITADA com sucesso para sinal ${signal.id}`);
 
+    // ✅ MARCAR COMO PROCESSAMENTO COMPLETO
+    entryProcessingComplete = true;
+
+    // ✅ INSERIR TODOS OS DADOS DO BUFFER NO BANCO
+    console.log(`[LIMIT_ENTRY] 📤 Inserindo dados do buffer no banco...`);
+    const insertResult = await insertBufferedDataToDB(signal.id, accountId, connection);
+    
+    if (insertResult.success) {
+      positionId = insertResult.positionId;
+      console.log(`[LIMIT_ENTRY] ✅ Dados inseridos no banco com sucesso. Position ID: ${positionId}`);
+    } else {
+      console.error(`[LIMIT_ENTRY] ❌ Falha ao inserir dados do buffer no banco`);
+    }
+
+    await connection.commit();
+    console.log(`[LIMIT_ENTRY] ✅ Transação COMMITADA com sucesso para sinal ${signal.id}`);
+
     // ✅ NOTIFICAÇÃO TELEGRAM DE ENTRADA EXECUTADA
     try {
       const totalValue = totalFilledSize * averageEntryPrice;
       const timestamp = new Date().toLocaleString('pt-BR');
       
-      console.log(`[TELEGRAM_DISPATCHER] � ${timestamp} | ARQUIVO: reverse.js | AÇÃO: Disparando mensagem de ENTRADA EXECUTADA`);
+      console.log(`[TELEGRAM_DISPATCHER] 🕐 ${timestamp} | ARQUIVO: reverse.js | AÇÃO: Disparando mensagem de ENTRADA EXECUTADA`);
       console.log(`[TELEGRAM_DISPATCHER] 📋 Dados: Conta=${accountId}, Symbol=${signal.symbol}, Qtd=${totalFilledSize}, Preço=${averageEntryPrice}, Valor=${totalValue.toFixed(2)}`);
       console.log(`[TELEGRAM_DISPATCHER] 🎯 Signal ID: ${signal.id}, Position ID: ${positionId || 'ainda não definido'}`);
       
@@ -1230,45 +1460,11 @@ async function executeReverse(signal, currentPrice, accountId) {
       console.error(`[TELEGRAM_DISPATCHER] 📋 Stack trace:`, telegramError.stack);
     }
 
-    // Aguarde 3 segundos para garantir que as ordens e posição foram inseridas via WebSocket
-    await new Promise(resolve => setTimeout(resolve, 3000));
-
-    // Buscar a posição aberta no banco
-    const [positions] = await connection.query(
-      `SELECT id FROM posicoes WHERE simbolo = ? AND status = 'OPEN' AND conta_id = ? ORDER BY id DESC LIMIT 1`,
-      [signal.symbol, accountId]
-    );
-
-    if (positions.length > 0) {
-      positionId = positions[0].id;
-      // Atualizar o sinal com o id da posição
-      await connection.query(
-        `UPDATE webhook_signals SET position_id = ? WHERE id = ?`,
-        [positionId, signal.id]
-      );
-      console.log(`[LIMIT_ENTRY] 🔗 Sinal ${signal.id} vinculado à posição ${positionId}`);
-
-      // Atualizar ordens SL, RP1-4, TP5 com os campos corretos
-      // SL
-      await connection.query(
-        `UPDATE ordens SET id_posicao = ?, target = NULL, reduce_only = 1, close_position = 1
-         WHERE simbolo = ? AND tipo_ordem_bot = 'STOP_LOSS' AND conta_id = ? AND id_posicao IS NULL`,
-        [positionId, signal.symbol, accountId]
-      );
-      // RPs
-      for (let i = 1; i <= 4; i++) {
-        await connection.query(
-          `UPDATE ordens SET id_posicao = ?, target = ?, reduce_only = 1, close_position = 0
-           WHERE simbolo = ? AND tipo_ordem_bot = 'REDUCAO_PARCIAL' AND target IS NULL AND conta_id = ?`,
-          [positionId, i, signal.symbol, accountId]
-        );
-      }
-      // TP5
-      await connection.query(
-        `UPDATE ordens SET id_posicao = ?, target = 5, reduce_only = 1, close_position = 1
-         WHERE simbolo = ? AND tipo_ordem_bot = 'TAKE_PROFIT' AND conta_id = ? AND id_posicao IS NULL`,
-        [positionId, signal.symbol, accountId]
-      );
+    // ✅ REMOVER LÓGICA DE BUSCA DE POSIÇÃO - AGORA USAMOS O POSITION_ID DO BUFFER
+    if (positionId) {
+      console.log(`[LIMIT_ENTRY] 🔗 Sinal ${signal.id} já vinculado à posição ${positionId}`);
+    } else {
+      console.warn(`[LIMIT_ENTRY] ⚠️ Position ID não disponível para sinal ${signal.id}`);
     }
   } catch (error) { // This is the catch block for the main try
     const originalErrorMessage = error.message || String(error);
@@ -1307,6 +1503,26 @@ async function executeReverse(signal, currentPrice, accountId) {
       } catch (cancelErrOnCatch) { 
         console.error(`[LIMIT_ENTRY] (Catch Principal) Erro ao cancelar ordem ${activeOrderId}:`, cancelErrOnCatch.message); 
       }
+    }
+
+    // ✅ LIMPEZA DOS BUFFERS EM CASO DE ERRO
+    if (positionBuffer.has(signal.id)) {
+      positionBuffer.delete(signal.id);
+      console.log(`[LIMIT_ENTRY] 🧹 Buffer de posição limpo para signal ${signal.id}`);
+    }
+    
+    // Limpar ordens do buffer relacionadas a este signal
+    const signalOrderKeys = Array.from(orderBuffer.keys()).filter(key => {
+      const order = orderBuffer.get(key);
+      return order && order.signal_id === signal.id;
+    });
+    
+    signalOrderKeys.forEach(key => {
+      orderBuffer.delete(key);
+    });
+    
+    if (signalOrderKeys.length > 0) {
+      console.log(`[LIMIT_ENTRY] 🧹 ${signalOrderKeys.length} ordens removidas do buffer para signal ${signal.id}`);
     }
 
     if (connection) { 
