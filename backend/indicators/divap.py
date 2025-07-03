@@ -41,12 +41,11 @@ PREJUIZO_MAXIMO_PERCENTUAL_DO_CAPITAL_TOTAL = 4.90
 TAXA_ENTRADA = 0.02
 TAXA_SAIDA = 0.05
 
-GRUPOS_ORIGEM_IDS = [-1002444455075, -1002059628218]
-GRUPO_DESTINO_ID = -1002016807368
+GRUPOS_ORIGEM_IDS = [-4192806079]
+GRUPO_DESTINO_ID = -4118022548
 CONTA_ID = 1
 GRUPO_FONTE_MAPEAMENTO = {
-    -1002444455075: "Reverse",
-    -1002059628218: "Manual-Reverse"
+    -4192806079: "Reverse-dev"
 
 }
 
@@ -79,7 +78,7 @@ DB_CONFIG = {
 }
 
 # --- Cliente Telegram e Controles de Encerramento ---
-client = TelegramClient('divap', pers_api_id, pers_api_hash)
+client = TelegramClient('reverse-dev', pers_api_id, pers_api_hash)
 shutdown_event = threading.Event()
 divap_analyzer = None
 
