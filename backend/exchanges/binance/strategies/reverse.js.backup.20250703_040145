@@ -201,13 +201,13 @@ async function executeReverse(signal, currentPrice, accountId) {
     // ✅ NOVO: Validação de timestamp para evitar execuções antigas
     const executionTime = order.T || Date.now();
     if (executionTime < executionStartTime) {
-      reverseWarn(`[ORDER_WS] Ignorando execução antiga: ${new Date(executionTime)} < ${new Date(executionStartTime)}`);
+      console.warn(`[ORDER_WS] Ignorando execução antiga: ${new Date(executionTime)} < ${new Date(executionStartTime)}`);
       return;
     }
     
     // ✅ NOVO: Validação de timestamp futuro (erro de clock)
     if (executionTime > Date.now() + 60000) {
-      reverseWarn(`[ORDER_WS] Ignorando execução no futuro: ${new Date(executionTime)}`);
+      console.warn(`[ORDER_WS] Ignorando execução no futuro: ${new Date(executionTime)}`);
       return;
     }
     
@@ -246,7 +246,7 @@ async function executeReverse(signal, currentPrice, accountId) {
         clientOrderId: order.c || null
       });
       
-      reverseLog(`[ORDER_WS] Nova ordem rastreada via WS: ${orderId} (${orderStatus})`);
+      console.log(`[ORDER_WS] Nova ordem rastreada via WS: ${orderId} (${orderStatus})`);
     } else {
       // ATUALIZAR ORDEM EXISTENTE COM MAIS DETALHES
       const orderInfo = sentOrders.get(orderId);
@@ -287,27 +287,27 @@ async function executeReverse(signal, currentPrice, accountId) {
               realizedPnl: parseFloat(order.rp || '0')
             });
             
-            reverseLog(`[ORDER_WS] Fill recebido para ${orderId}: ${fillQty} @ ${fillPrice} (Trade ID: ${tradeId})`);
+            console.log(`[ORDER_WS] Fill recebido para ${orderId}: ${fillQty} @ ${fillPrice} (Trade ID: ${tradeId})`);
             
             // ✅ NOVO: Validar continuidade dos fills
             const totalFilled = orderInfo.fills.reduce((sum, fill) => sum + fill.qty, 0);
             if (Math.abs(totalFilled - orderInfo.executedQty) > 0.00000001) {
-              reverseWarn(`[ORDER_WS] ⚠️ Inconsistência nos fills para ${orderId}: ${totalFilled} vs ${orderInfo.executedQty}`);
+              console.warn(`[ORDER_WS] ⚠️ Inconsistência nos fills para ${orderId}: ${totalFilled} vs ${orderInfo.executedQty}`);
             }
           } else {
-            reverseLog(`[ORDER_WS] Fill duplicado ignorado para ${orderId}: ${fillQty} @ ${fillPrice}`);
+            console.log(`[ORDER_WS] Fill duplicado ignorado para ${orderId}: ${fillQty} @ ${fillPrice}`);
           }
         }
       }
       
       // LOG DE MUDANÇAS IMPORTANTES
       if (oldStatus !== orderStatus) {
-        reverseLog(`[ORDER_WS] Status mudou para ${orderId}: ${oldStatus} → ${orderStatus}`);
+        console.log(`[ORDER_WS] Status mudou para ${orderId}: ${oldStatus} → ${orderStatus}`);
       }
       
       if (oldExecutedQty !== orderInfo.executedQty) {
         const diff = orderInfo.executedQty - oldExecutedQty;
-        reverseLog(`[ORDER_WS] Execução atualizada para ${orderId}: +${diff.toFixed(8)} (Total: ${orderInfo.executedQty})`);
+        console.log(`[ORDER_WS] Execução atualizada para ${orderId}: +${diff.toFixed(8)} (Total: ${orderInfo.executedQty})`);
       }
       
       sentOrders.set(orderId, orderInfo);
@@ -331,7 +331,7 @@ async function executeReverse(signal, currentPrice, accountId) {
   try {
     // ✅ REGISTRAR HANDLER TEMPORÁRIO NO NOVO SISTEMA PUB/SUB
     websockets.on('orderUpdate', orderUpdateHandler, accountId, temporaryListenerId);
-    reverseLog(`[LIMIT_ENTRY] ✅ Handler de WebSocket temporário registrado com ID: ${temporaryListenerId}`);
+    console.log(`[LIMIT_ENTRY] ✅ Handler de WebSocket temporário registrado com ID: ${temporaryListenerId}`);
 
     // ✅ CONSTANTES CORRIGIDAS PARA MAIS EFICIÊNCIA
     const MAX_CHASE_ATTEMPTS = 500000; // Reduzido de 100
@@ -379,7 +379,7 @@ async function executeReverse(signal, currentPrice, accountId) {
     );
 
     if (positionAlreadyExists) {
-      reverseLog(`[LIMIT_ENTRY] ALERTA: Posição já existe para ${signal.symbol}. Cancelando.`);
+      console.log(`[LIMIT_ENTRY] ALERTA: Posição já existe para ${signal.symbol}. Cancelando.`);
       await connection.query(
         `UPDATE webhook_signals SET status = 'ERROR', error_message = ? WHERE id = ?`,
         ['Posição já existe na corretora (verificação inicial)', signal.id]
@@ -394,12 +394,12 @@ async function executeReverse(signal, currentPrice, accountId) {
     );
 
     if (existingOrders.length > 0) {
-      reverseLog(`[LIMIT_ENTRY] ⚠️ Já existem ${existingOrders.length} ordens ativas para este sinal. Cancelando...`);
+      console.log(`[LIMIT_ENTRY] ⚠️ Já existem ${existingOrders.length} ordens ativas para este sinal. Cancelando...`);
 
       for (const order of existingOrders) {
         try {
           await cancelOrder(signal.symbol, order.id_externo, numericAccountId);
-          reverseLog(`[LIMIT_ENTRY] Ordem ${order.id_externo} cancelada.`);
+          console.log(`[LIMIT_ENTRY] Ordem ${order.id_externo} cancelada.`);
           
           // ✅ CORREÇÃO: Atualizar status no banco após cancelamento
           await connection.query(
@@ -407,7 +407,7 @@ async function executeReverse(signal, currentPrice, accountId) {
             [order.id_externo, accountId]
           );
         } catch (cancelError) {
-          reverseError(`[LIMIT_ENTRY] Erro ao cancelar ordem ${order.id_externo}:`, cancelError.message);
+          console.error(`[LIMIT_ENTRY] Erro ao cancelar ordem ${order.id_externo}:`, cancelError.message);
         }
       }
       
@@ -433,13 +433,13 @@ async function executeReverse(signal, currentPrice, accountId) {
     let currentPriceTrigger;
     if (signal.price && signal.price > 0) {
       currentPriceTrigger = parseFloat(signal.price);
-      reverseLog(`[LIMIT_ENTRY] Usando preço do sinal: ${currentPriceTrigger}`);
+      console.log(`[LIMIT_ENTRY] Usando preço do sinal: ${currentPriceTrigger}`);
     } else if (signal.entry_price && signal.entry_price > 0) {
       currentPriceTrigger = parseFloat(signal.entry_price);
-      reverseLog(`[LIMIT_ENTRY] Usando entry_price do sinal: ${currentPriceTrigger}`);
+      console.log(`[LIMIT_ENTRY] Usando entry_price do sinal: ${currentPriceTrigger}`);
     } else {
       currentPriceTrigger = await rest.getPrice(signal.symbol, numericAccountId);
-      reverseLog(`[LIMIT_ENTRY] Preço obtido via API: ${currentPriceTrigger}`);
+      console.log(`[LIMIT_ENTRY] Preço obtido via API: ${currentPriceTrigger}`);
     }
 
     if (!currentPriceTrigger || currentPriceTrigger <= 0) {
@@ -457,20 +457,20 @@ async function executeReverse(signal, currentPrice, accountId) {
     reverseLog(`[LIMIT_ENTRY] Tamanho total calculado: ${totalEntrySize.toFixed(quantityPrecision)} ${signal.symbol}`);
 
     // ✅ VALIDAR QUANTIDADE TOTAL - MANTIDO
-    reverseLog(`[LIMIT_ENTRY] Validando quantidade total de entrada: ${totalEntrySize}`);
+    console.log(`[LIMIT_ENTRY] Validando quantidade total de entrada: ${totalEntrySize}`);
     const entryValidation = await validateQuantity(signal.symbol, totalEntrySize, currentPriceTrigger, numericAccountId, 'LIMIT');
 
     if (!entryValidation.isValid) {
-      reverseWarn(`[LIMIT_ENTRY] ⚠️ Quantidade de entrada inválida: ${entryValidation.reason}`);
+      console.warn(`[LIMIT_ENTRY] ⚠️ Quantidade de entrada inválida: ${entryValidation.reason}`);
 
       const adjustment = await adjustQuantityToRequirements(signal.symbol, totalEntrySize, currentPriceTrigger, numericAccountId, 'LIMIT');
 
       if (adjustment.success) {
-        reverseLog(`[LIMIT_ENTRY] ✅ Quantidade ajustada: ${totalEntrySize} → ${adjustment.adjustedQuantity}`);
+        console.log(`[LIMIT_ENTRY] ✅ Quantidade ajustada: ${totalEntrySize} → ${adjustment.adjustedQuantity}`);
         totalEntrySize = adjustment.adjustedQuantity;
       } else {
         const errorMsg = `Quantidade de entrada inválida para ${signal.symbol}: ${entryValidation.reason}. Ajuste impossível: ${adjustment.error}`;
-        reverseError(`[LIMIT_ENTRY] ❌ ${errorMsg}`);
+        console.error(`[LIMIT_ENTRY] ❌ ${errorMsg}`);
 
         if (connection) {
           await connection.query(
@@ -487,7 +487,7 @@ async function executeReverse(signal, currentPrice, accountId) {
         };
       }
     } else {
-      reverseLog(`[LIMIT_ENTRY] ✅ Quantidade de entrada válida: ${totalEntrySize}`);
+      console.log(`[LIMIT_ENTRY] ✅ Quantidade de entrada válida: ${totalEntrySize}`);
     }
 
     binanceSide = signal.side.toUpperCase() === 'COMPRA' || signal.side.toUpperCase() === 'BUY' ? 'BUY' : 'SELL';
@@ -499,14 +499,14 @@ async function executeReverse(signal, currentPrice, accountId) {
     );
 
     // ✅ CONFIGURAR WEBSOCKET DE PROFUNDIDADE - VERSÃO APENAS WEBSOCKET
-    reverseLog(`[LIMIT_ENTRY] Iniciando WebSocket de profundidade para ${signal.symbol}`);
+    console.log(`[LIMIT_ENTRY] Iniciando WebSocket de profundidade para ${signal.symbol}`);
     let wsReconnectionCount = 0;
     let lastSuccessfulDepthUpdate = Date.now();
     
     depthWs = websockets.bookTicker(signal.symbol, (depthData, receivedAccountId) => {
       // CORREÇÃO: Validar accountId se fornecido
       if (receivedAccountId && receivedAccountId !== accountId) {
-        priceWSLog(`[LIMIT_ENTRY_DEPTH_WS] Dados recebidos para conta diferente: esperado ${accountId}, recebido ${receivedAccountId}`);
+        console.warn(`[LIMIT_ENTRY_DEPTH_WS] Dados recebidos para conta diferente: esperado ${accountId}, recebido ${receivedAccountId}`);
         return;
       }
 
@@ -519,13 +519,13 @@ async function executeReverse(signal, currentPrice, accountId) {
         const spreadPercent = (spread / bid) * 100;
 
         if (spreadPercent > 5) {
-          priceWSLog(`[LIMIT_ENTRY_DEPTH_WS] Spread muito grande para ${signal.symbol}: ${spreadPercent.toFixed(2)}% - possível erro nos dados`);
+          console.warn(`[LIMIT_ENTRY_DEPTH_WS] Spread muito grande para ${signal.symbol}: ${spreadPercent.toFixed(2)}% - possível erro nos dados`);
           wsUpdateErrorCount++;
           return;
         }
 
         if (bid >= ask) {
-          priceWSLog(`[LIMIT_ENTRY_DEPTH_WS] Dados inválidos para ${signal.symbol}: bid (${bid}) >= ask (${ask})`);
+          console.warn(`[LIMIT_ENTRY_DEPTH_WS] Dados inválidos para ${signal.symbol}: bid (${bid}) >= ask (${ask})`);
           wsUpdateErrorCount++;
           return;
         }
@@ -538,11 +538,11 @@ async function executeReverse(signal, currentPrice, accountId) {
         
         // DEBUG: Log apenas a cada 20 atualizações para não poluir
         if (Math.random() < 0.05) { // 5% de chance = ~1 a cada 20 mensagens
-          //priceWSLog(`[LIMIT_ENTRY_DEPTH_WS] ${signal.symbol}: Bid=${bid.toFixed(pricePrecision)}, Ask=${ask.toFixed(pricePrecision)}, Spread=${spread.toFixed(pricePrecision)}`);
+          //console.log(`[LIMIT_ENTRY_DEPTH_WS] ${signal.symbol}: Bid=${bid.toFixed(pricePrecision)}, Ask=${ask.toFixed(pricePrecision)}, Spread=${spread.toFixed(pricePrecision)}`);
         }
       } else {
         wsUpdateErrorCount++;
-        priceWSLog(`[LIMIT_ENTRY_DEPTH_WS] Dados de profundidade inválidos para ${signal.symbol}:`, depthData);
+        console.warn(`[LIMIT_ENTRY_DEPTH_WS] Dados de profundidade inválidos para ${signal.symbol}:`, depthData);
       }
     }, accountId);
 
@@ -553,7 +553,7 @@ async function executeReverse(signal, currentPrice, accountId) {
     let hasValidBookData = false;
 
     // AGUARDAR DADOS VÁLIDOS DO WEBSOCKET
-    reverseLog(`[LIMIT_ENTRY] Aguardando dados do BookTicker WebSocket...`);
+    console.log(`[LIMIT_ENTRY] Aguardando dados do BookTicker WebSocket...`);
     while (wsRetryCount < MAX_RETRY_ATTEMPTS && !hasValidBookData) {
       if (currentBestBid !== null && currentBestAsk !== null &&
           !isNaN(currentBestBid) && !isNaN(currentBestAsk) &&
@@ -561,12 +561,12 @@ async function executeReverse(signal, currentPrice, accountId) {
           currentBestBid < currentBestAsk) {
 
         hasValidBookData = true;
-        reverseLog(`[LIMIT_ENTRY] ✅ Dados do BookTicker (WebSocket) válidos para ${signal.symbol} após ${wsRetryCount} tentativas. Bid=${currentBestBid}, Ask=${currentBestAsk}`);
+        console.log(`[LIMIT_ENTRY] ✅ Dados do BookTicker (WebSocket) válidos para ${signal.symbol} após ${wsRetryCount} tentativas. Bid=${currentBestBid}, Ask=${currentBestAsk}`);
         break;
       }
 
       wsRetryCount++;
-      //reverseLog(`[LIMIT_ENTRY] Aguardando WebSocket... tentativa ${wsRetryCount}/${MAX_RETRY_ATTEMPTS}`);
+      //console.log(`[LIMIT_ENTRY] Aguardando WebSocket... tentativa ${wsRetryCount}/${MAX_RETRY_ATTEMPTS}`);
       await new Promise(resolve => setTimeout(resolve, RETRY_INTERVAL_MS));
     }
 
@@ -613,14 +613,14 @@ async function executeReverse(signal, currentPrice, accountId) {
               });
               localFilledCount++;
             } else {
-              reverseWarn(`[LIMIT_ENTRY] Ignorando fill antigo: ${orderId} (${new Date(orderInfo.executionTime)})`);
+              console.warn(`[LIMIT_ENTRY] Ignorando fill antigo: ${orderId} (${new Date(orderInfo.executionTime)})`);
             }
           }
         }
         
         if (localFilledCount > 0) {
           totalFilledSize = partialFills.reduce((sum, pf) => sum + pf.qty, 0);
-          reverseLog(`[LIMIT_ENTRY] ${localFilledCount} ordens sincronizadas via WebSocket local. Total: ${totalFilledSize.toFixed(quantityPrecision)}`);
+          console.log(`[LIMIT_ENTRY] ${localFilledCount} ordens sincronizadas via WebSocket local. Total: ${totalFilledSize.toFixed(quantityPrecision)}`);
         }
 
         // SEGUNDO: Buscar ordens recentes via API como backup
@@ -652,20 +652,20 @@ async function executeReverse(signal, currentPrice, accountId) {
         
         if (apiFilledCount > 0) {
           totalFilledSize = partialFills.reduce((sum, pf) => sum + pf.qty, 0);
-          reverseLog(`[LIMIT_ENTRY] ${apiFilledCount} ordens sincronizadas via rest. Total: ${totalFilledSize.toFixed(quantityPrecision)}`);
+          console.log(`[LIMIT_ENTRY] ${apiFilledCount} ordens sincronizadas via rest. Total: ${totalFilledSize.toFixed(quantityPrecision)}`);
         }
         
         if (totalFilledSize >= totalEntrySize) {
-          reverseLog(`[LIMIT_ENTRY] (Sync) Quantidade total atingida após sincronização. Finalizando...`);
+          console.log(`[LIMIT_ENTRY] (Sync) Quantidade total atingida após sincronização. Finalizando...`);
           break;
         }
       } catch (checkError) {
-        reverseError(`[LIMIT_ENTRY] Erro ao sincronizar ordens:`, checkError.message);
+        console.error(`[LIMIT_ENTRY] Erro ao sincronizar ordens:`, checkError.message);
       }
 
       const remainingSizeCurrentLoop = parseFloat((totalEntrySize - totalFilledSize).toFixed(quantityPrecision));
       if (remainingSizeCurrentLoop <= 0) {
-        reverseLog(`[LIMIT_ENTRY] Quantidade restante (${remainingSizeCurrentLoop.toFixed(quantityPrecision)}) zerada ou negativa. Saindo do loop de chasing.`);
+        console.log(`[LIMIT_ENTRY] Quantidade restante (${remainingSizeCurrentLoop.toFixed(quantityPrecision)}) zerada ou negativa. Saindo do loop de chasing.`);
         break;
       }
 
@@ -675,11 +675,11 @@ async function executeReverse(signal, currentPrice, accountId) {
       
       if (!currentBestBid || !currentBestAsk || isDepthDataStale || wsUpdateErrorCount > 3) {
         const staleReason = !currentBestBid || !currentBestAsk ? "ausentes" : (isDepthDataStale ? "velhos" : `erros WS (${wsUpdateErrorCount})`);
-        priceWSLog(`[LIMIT_ENTRY] Dados do BookTicker (WebSocket) para ${signal.symbol} ${staleReason}. Tentativa ${chaseAttempts}/${MAX_CHASE_ATTEMPTS}. Última atualização WS: ${lastDepthUpdateTimestamp ? new Date(lastDepthUpdateTimestamp).toISOString() : 'N/A'}`);
+        console.log(`[LIMIT_ENTRY] Dados do BookTicker (WebSocket) para ${signal.symbol} ${staleReason}. Tentativa ${chaseAttempts}/${MAX_CHASE_ATTEMPTS}. Última atualização WS: ${lastDepthUpdateTimestamp ? new Date(lastDepthUpdateTimestamp).toISOString() : 'N/A'}`);
         
         // ✅ NOVO: Se WebSocket estiver desconectado há muito tempo, tentar ressincronizar
         if (isWebSocketStale && chaseAttempts % 10 === 0) { // A cada 10 tentativas
-          reverseWarn(`[LIMIT_ENTRY] ⚠️ WebSocket possivelmente desconectado. Tentando ressincronização...`);
+          console.warn(`[LIMIT_ENTRY] ⚠️ WebSocket possivelmente desconectado. Tentando ressincronização...`);
           await resyncAfterReconnection(signal.symbol, executionStartTime, numericAccountId, sentOrders);
           wsReconnectionCount++;
         }
@@ -699,15 +699,15 @@ async function executeReverse(signal, currentPrice, accountId) {
         let candidatePrice = bestBid + tickSize;
         if (candidatePrice < bestAsk) {
           currentLocalMakerPrice = candidatePrice;
-          reverseLog(`[LIMIT_ENTRY] BUY agressivo: dentro do spread a ${currentLocalMakerPrice.toFixed(pricePrecision)} (1 tick acima do bid)`);
+          console.log(`[LIMIT_ENTRY] BUY agressivo: dentro do spread a ${currentLocalMakerPrice.toFixed(pricePrecision)} (1 tick acima do bid)`);
         } else {
           // Se não couber no spread, coloca no melhor bid possível (garante maker)
           currentLocalMakerPrice = bestAsk - tickSize;
           if (currentLocalMakerPrice <= bestBid) {
             currentLocalMakerPrice = bestBid;
-            reverseLog(`[LIMIT_ENTRY] BUY: spread apertado, colocando no bestBid: ${currentLocalMakerPrice.toFixed(pricePrecision)}`);
+            console.log(`[LIMIT_ENTRY] BUY: spread apertado, colocando no bestBid: ${currentLocalMakerPrice.toFixed(pricePrecision)}`);
           } else {
-            reverseLog(`[LIMIT_ENTRY] BUY: spread apertado, ajustando para 1 tick abaixo do ask: ${currentLocalMakerPrice.toFixed(pricePrecision)}`);
+            console.log(`[LIMIT_ENTRY] BUY: spread apertado, ajustando para 1 tick abaixo do ask: ${currentLocalMakerPrice.toFixed(pricePrecision)}`);
           }
         }
       } else { // SELL
@@ -715,15 +715,15 @@ async function executeReverse(signal, currentPrice, accountId) {
         let candidatePrice = bestAsk - tickSize;
         if (candidatePrice > bestBid) {
           currentLocalMakerPrice = candidatePrice;
-          reverseLog(`[LIMIT_ENTRY] SELL agressivo: dentro do spread a ${currentLocalMakerPrice.toFixed(pricePrecision)} (1 tick abaixo do ask)`);
+          console.log(`[LIMIT_ENTRY] SELL agressivo: dentro do spread a ${currentLocalMakerPrice.toFixed(pricePrecision)} (1 tick abaixo do ask)`);
         } else {
           // Se não couber no spread, coloca no melhor ask possível (garante maker)
           currentLocalMakerPrice = bestBid + tickSize;
           if (currentLocalMakerPrice >= bestAsk) {
             currentLocalMakerPrice = bestAsk;
-            reverseLog(`[LIMIT_ENTRY] SELL: spread apertado, colocando no bestAsk: ${currentLocalMakerPrice.toFixed(pricePrecision)}`);
+            console.log(`[LIMIT_ENTRY] SELL: spread apertado, colocando no bestAsk: ${currentLocalMakerPrice.toFixed(pricePrecision)}`);
           } else {
-            reverseLog(`[LIMIT_ENTRY] SELL: spread apertado, ajustando para 1 tick acima do bid: ${currentLocalMakerPrice.toFixed(pricePrecision)}`);
+            console.log(`[LIMIT_ENTRY] SELL: spread apertado, ajustando para 1 tick acima do bid: ${currentLocalMakerPrice.toFixed(pricePrecision)}`);
           }
         }
       }
@@ -742,22 +742,22 @@ async function executeReverse(signal, currentPrice, accountId) {
         try {
           const orderStatusResponse = await getOrderStatus(signal.symbol, activeOrderId, numericAccountId);
           currentOrderStatus = orderStatusResponse?.status;
-          reverseLog(`[LIMIT_ENTRY] 🔍 Status atual da ordem ${activeOrderId}: ${currentOrderStatus}`);
+          console.log(`[LIMIT_ENTRY] 🔍 Status atual da ordem ${activeOrderId}: ${currentOrderStatus}`);
         } catch (statusError) {
           if (statusError.message && (statusError.message.includes('Order does not exist') || statusError.message.includes('Unknown order'))) {
-            reverseLog(`[LIMIT_ENTRY] ❌ Ordem ${activeOrderId} não existe mais na corretora. Resetando activeOrderId.`);
+            console.log(`[LIMIT_ENTRY] ❌ Ordem ${activeOrderId} não existe mais na corretora. Resetando activeOrderId.`);
             sentOrders.delete(activeOrderId);
             activeOrderId = null;
             currentOrderStatus = 'NOT_FOUND';
           } else {
-            reverseError(`[LIMIT_ENTRY] Erro ao verificar status da ordem ${activeOrderId}:`, statusError.message);
+            console.error(`[LIMIT_ENTRY] Erro ao verificar status da ordem ${activeOrderId}:`, statusError.message);
             // Continuar com dados do WebSocket como fallback
           }
         }
 
         // ✅ SE A ORDEM FOI CANCELADA OU NÃO EXISTE, RESETAR E CONTINUAR
         if (currentOrderStatus === 'CANCELED' || currentOrderStatus === 'NOT_FOUND' || currentOrderStatus === 'EXPIRED') {
-          reverseLog(`[LIMIT_ENTRY] 🗑️ Ordem ${activeOrderId} com status ${currentOrderStatus}. Removendo do controle e criando nova ordem.`);
+          console.log(`[LIMIT_ENTRY] 🗑️ Ordem ${activeOrderId} com status ${currentOrderStatus}. Removendo do controle e criando nova ordem.`);
           sentOrders.delete(activeOrderId);
           activeOrderId = null;
         } else if (activeOrderId) {
@@ -765,7 +765,7 @@ async function executeReverse(signal, currentPrice, accountId) {
           const wsOrderData = sentOrders.get(activeOrderId);
           
           if (!wsOrderData) {
-            reverseLog(`[LIMIT_ENTRY] Ordem ${activeOrderId} não encontrada no mapa WebSocket. Resetando activeOrderId.`);
+            console.log(`[LIMIT_ENTRY] Ordem ${activeOrderId} não encontrada no mapa WebSocket. Resetando activeOrderId.`);
             activeOrderId = null;
           } else {
             const { status: wsStatus, executedQty, avgPrice, price: orderPriceFromWs, quantity } = wsOrderData;
@@ -792,24 +792,24 @@ async function executeReverse(signal, currentPrice, accountId) {
               timestamp: Date.now() // ADICIONADO DA DEV
             });
             totalFilledSize = partialFills.reduce((sum, pf) => sum + pf.qty, 0);
-            reverseLog(`[LIMIT_ENTRY] 💰 Preenchimento detectado ${activeOrderId}: ${netFilledSinceLastCheck.toFixed(quantityPrecision)} @ ${fillPrice.toFixed(pricePrecision)}. Total: ${totalFilledSize.toFixed(quantityPrecision)}`);
+            console.log(`[LIMIT_ENTRY] 💰 Preenchimento detectado ${activeOrderId}: ${netFilledSinceLastCheck.toFixed(quantityPrecision)} @ ${fillPrice.toFixed(pricePrecision)}. Total: ${totalFilledSize.toFixed(quantityPrecision)}`);
           }            if (effectiveStatus === 'FILLED') {
-              reverseLog(`[LIMIT_ENTRY] ✅ Ordem ${activeOrderId} totalmente preenchida.`);
+              console.log(`[LIMIT_ENTRY] ✅ Ordem ${activeOrderId} totalmente preenchida.`);
               sentOrders.delete(activeOrderId);
               activeOrderId = null;
               if (totalFilledSize >= totalEntrySize) {
-                reverseLog(`[LIMIT_ENTRY] 🎯 Quantidade total atingida após FILLED.`);
+                console.log(`[LIMIT_ENTRY] 🎯 Quantidade total atingida após FILLED.`);
                 break;
               }
             } else if (effectiveStatus === 'PARTIALLY_FILLED') {              const priceDifference = Math.abs(orderPriceOnExchange - currentLocalMakerPrice);
               const shouldEditOrder = priceDifference >= tickSize || orderPriceOnExchange !== currentLocalMakerPrice;
               
               if (shouldEditOrder) {
-                reverseLog(`[LIMIT_ENTRY] ⚡ Ordem ${activeOrderId} parcialmente preenchida, mas preço mudou significativamente (${priceDifference.toFixed(pricePrecision)} > ${tickSize}). Cancelando e recriando...`);
+                console.log(`[LIMIT_ENTRY] ⚡ Ordem ${activeOrderId} parcialmente preenchida, mas preço mudou significativamente (${priceDifference.toFixed(pricePrecision)} > ${tickSize}). Cancelando e recriando...`);
                 
                 try {
                   await cancelOrder(signal.symbol, activeOrderId, numericAccountId);
-                  reverseLog(`[LIMIT_ENTRY] ✅ Ordem parcial ${activeOrderId} cancelada.`);
+                  console.log(`[LIMIT_ENTRY] ✅ Ordem parcial ${activeOrderId} cancelada.`);
                   
                   // REMOVER DO MAPA WEBSOCKET
                   sentOrders.delete(activeOrderId);
@@ -818,20 +818,20 @@ async function executeReverse(signal, currentPrice, accountId) {
                   await new Promise(resolve => setTimeout(resolve, 500));
                   activeOrderId = null;
                 } catch (cancelError) {
-                  reverseError(`[LIMIT_ENTRY] ❌ Erro ao cancelar ordem parcial ${activeOrderId}:`, cancelError.message);
+                  console.error(`[LIMIT_ENTRY] ❌ Erro ao cancelar ordem parcial ${activeOrderId}:`, cancelError.message);
                   // Se não conseguir cancelar, resetar mesmo assim para evitar loop
                   sentOrders.delete(activeOrderId);
                   activeOrderId = null;
                 }
               } else {
-                reverseLog(`[LIMIT_ENTRY] ⏸️ Ordem ${activeOrderId} parcialmente preenchida, mas preço ainda adequado (diferença: ${priceDifference.toFixed(pricePrecision)}). Mantendo ordem.`);
+                console.log(`[LIMIT_ENTRY] ⏸️ Ordem ${activeOrderId} parcialmente preenchida, mas preço ainda adequado (diferença: ${priceDifference.toFixed(pricePrecision)}). Mantendo ordem.`);
               }
             } else if (effectiveStatus === 'NEW') {
               const priceDifference = Math.abs(orderPriceOnExchange - currentLocalMakerPrice);
               const shouldEditOrder = priceDifference >= tickSize || orderPriceOnExchange !== currentLocalMakerPrice;
               
               if (shouldEditOrder) {
-                reverseLog(`[LIMIT_ENTRY] ✏️ Editando ordem ${activeOrderId}: ${orderPriceOnExchange.toFixed(pricePrecision)} → ${currentLocalMakerPrice.toFixed(pricePrecision)} (diferença: ${priceDifference.toFixed(pricePrecision)})`);
+                console.log(`[LIMIT_ENTRY] ✏️ Editando ordem ${activeOrderId}: ${orderPriceOnExchange.toFixed(pricePrecision)} → ${currentLocalMakerPrice.toFixed(pricePrecision)} (diferença: ${priceDifference.toFixed(pricePrecision)})`);
                 
                 try {
                   const remainingQtyToOrder = parseFloat((totalEntrySize - totalFilledSize).toFixed(quantityPrecision));
@@ -848,7 +848,7 @@ async function executeReverse(signal, currentPrice, accountId) {
                   if (editResponse && (editResponse.orderId || editResponse.data?.orderId)) {
                     const newOrderId = editResponse.orderId || editResponse.data?.orderId;
                     if (String(newOrderId) !== String(activeOrderId)) {
-                      reverseLog(`[LIMIT_ENTRY] 🔄 Ordem recriada: ${activeOrderId} → ${newOrderId}`);
+                      console.log(`[LIMIT_ENTRY] 🔄 Ordem recriada: ${activeOrderId} → ${newOrderId}`);
                       
                       // ATUALIZAR sentOrders MAP
                       if (sentOrders.has(activeOrderId)) {
@@ -872,31 +872,31 @@ async function executeReverse(signal, currentPrice, accountId) {
                     }
                     
                     orderPlacedOrEditedThisIteration = true;
-                    reverseLog(`[LIMIT_ENTRY] ✅ Ordem editada com sucesso: ${activeOrderId}`);
+                    console.log(`[LIMIT_ENTRY] ✅ Ordem editada com sucesso: ${activeOrderId}`);
                   } else {
-                    reverseWarn(`[LIMIT_ENTRY] ⚠️ Resposta inválida ao editar ordem:`, editResponse);
+                    console.warn(`[LIMIT_ENTRY] ⚠️ Resposta inválida ao editar ordem:`, editResponse);
                   }
                 } catch (editError) {
-                  reverseError(`[LIMIT_ENTRY] ❌ Erro ao editar ordem ${activeOrderId}:`, editError.message);
+                  console.error(`[LIMIT_ENTRY] ❌ Erro ao editar ordem ${activeOrderId}:`, editError.message);
                   
                   // SE FALHOU AO EDITAR, CANCELAR E RECRIAR NA PRÓXIMA ITERAÇÃO
                   try {
                     await cancelOrder(signal.symbol, activeOrderId, numericAccountId);
                     sentOrders.delete(activeOrderId);
                     activeOrderId = null;
-                    reverseLog(`[LIMIT_ENTRY] 🗑️ Ordem cancelada após erro de edição.`);
+                    console.log(`[LIMIT_ENTRY] 🗑️ Ordem cancelada após erro de edição.`);
                   } catch (cancelError) {
-                    reverseError(`[LIMIT_ENTRY] ❌ Erro ao cancelar ordem após falha de edição:`, cancelError.message);
+                    console.error(`[LIMIT_ENTRY] ❌ Erro ao cancelar ordem após falha de edição:`, cancelError.message);
                     // Resetar mesmo com erro para evitar loop infinito
                     sentOrders.delete(activeOrderId);
                     activeOrderId = null;
                   }
                 }
               } else {
-                reverseLog(`[LIMIT_ENTRY] ✅ Ordem ${activeOrderId} já no preço adequado (${orderPriceOnExchange.toFixed(pricePrecision)}). Diferença: ${priceDifference.toFixed(pricePrecision)}`);
+                console.log(`[LIMIT_ENTRY] ✅ Ordem ${activeOrderId} já no preço adequado (${orderPriceOnExchange.toFixed(pricePrecision)}). Diferença: ${priceDifference.toFixed(pricePrecision)}`);
               }
             } else {
-              reverseLog(`[LIMIT_ENTRY] ℹ️ Ordem ${activeOrderId} em status: ${effectiveStatus}`);
+              console.log(`[LIMIT_ENTRY] ℹ️ Ordem ${activeOrderId} em status: ${effectiveStatus}`);
             }
           }
         }
@@ -906,13 +906,13 @@ async function executeReverse(signal, currentPrice, accountId) {
       if (!activeOrderId && totalFilledSize < totalEntrySize) { 
         const newOrderQty = parseFloat((totalEntrySize - totalFilledSize).toFixed(quantityPrecision));
         if (newOrderQty <= 0) { 
-          reverseLog("[LIMIT_ENTRY] Quantidade para nova ordem é zero ou negativa. Saindo do loop de chasing."); 
+          console.log("[LIMIT_ENTRY] Quantidade para nova ordem é zero ou negativa. Saindo do loop de chasing."); 
           break; 
         }
         
         try {
-          reverseLog(`[LIMIT_ENTRY] Enviando NOVA LIMIT ${signal.symbol}: ${binanceSide} ${newOrderQty.toFixed(quantityPrecision)} @ ${currentLocalMakerPrice.toFixed(pricePrecision)} (MAKER GARANTIDO - ${binanceSide === 'BUY' ? 'bestBid-1tick' : 'bestAsk+1tick'})`);
-          reverseLog(`[LIMIT_ENTRY] 📊 Book atual: Bid=${bestBid.toFixed(pricePrecision)}, Ask=${bestAsk.toFixed(pricePrecision)}, Spread=${spread.toFixed(pricePrecision)}`);
+          console.log(`[LIMIT_ENTRY] Enviando NOVA LIMIT ${signal.symbol}: ${binanceSide} ${newOrderQty.toFixed(quantityPrecision)} @ ${currentLocalMakerPrice.toFixed(pricePrecision)} (MAKER GARANTIDO - ${binanceSide === 'BUY' ? 'bestBid-1tick' : 'bestAsk+1tick'})`);
+          console.log(`[LIMIT_ENTRY] 📊 Book atual: Bid=${bestBid.toFixed(pricePrecision)}, Ask=${bestAsk.toFixed(pricePrecision)}, Spread=${spread.toFixed(pricePrecision)}`);
           
           const orderResponse = await newLimitMakerOrder(
             numericAccountId,
@@ -927,17 +927,17 @@ async function executeReverse(signal, currentPrice, accountId) {
               (orderResponse.msg && orderResponse.msg.includes('Post Only order will be rejected'))) {
             
             rejectionAttempts++;
-            reverseLog(`[LIMIT_ENTRY] ⚠️ Ordem rejeitada como maker (${rejectionAttempts}/${MAX_REJECTION_ATTEMPTS}): ${orderResponse.status || orderResponse.info?.msg || orderResponse.msg}`);
-            reverseLog(`[LIMIT_ENTRY] ❌ ERRO CRÍTICO: A lógica MAKER GARANTIDA deveria SEMPRE ser aceita como maker!`);
-            reverseLog(`[LIMIT_ENTRY] 📊 Debug - BestBid: ${bestBid.toFixed(pricePrecision)}, BestAsk: ${bestAsk.toFixed(pricePrecision)}, Preço enviado: ${currentLocalMakerPrice.toFixed(pricePrecision)}, Side: ${binanceSide}`);
+            console.log(`[LIMIT_ENTRY] ⚠️ Ordem rejeitada como maker (${rejectionAttempts}/${MAX_REJECTION_ATTEMPTS}): ${orderResponse.status || orderResponse.info?.msg || orderResponse.msg}`);
+            console.log(`[LIMIT_ENTRY] ❌ ERRO CRÍTICO: A lógica MAKER GARANTIDA deveria SEMPRE ser aceita como maker!`);
+            console.log(`[LIMIT_ENTRY] 📊 Debug - BestBid: ${bestBid.toFixed(pricePrecision)}, BestAsk: ${bestAsk.toFixed(pricePrecision)}, Preço enviado: ${currentLocalMakerPrice.toFixed(pricePrecision)}, Side: ${binanceSide}`);
             
             if (rejectionAttempts >= MAX_REJECTION_ATTEMPTS) {
-              reverseLog(`[LIMIT_ENTRY] ❌ Muitas rejeições (${rejectionAttempts}). Algo está errado com a lógica MAKER GARANTIDA para sinal ${signal.id}`);
+              console.log(`[LIMIT_ENTRY] ❌ Muitas rejeições (${rejectionAttempts}). Algo está errado com a lógica MAKER GARANTIDA para sinal ${signal.id}`);
               throw new Error(`Lógica MAKER GARANTIDA falhando: ${rejectionAttempts} rejeições consecutivas`);
             }
             
             // ✅ SEM FALLBACK - aguardar próxima iteração com dados atualizados
-            reverseLog(`[LIMIT_ENTRY] 🔄 Aguardando próxima iteração com dados frescos do WebSocket...`);
+            console.log(`[LIMIT_ENTRY] 🔄 Aguardando próxima iteração com dados frescos do WebSocket...`);
             await new Promise(resolve => setTimeout(resolve, 1000));
             continue;
           }
@@ -982,7 +982,7 @@ async function executeReverse(signal, currentPrice, accountId) {
           }, signal.id);
           
         } catch (newOrderError) {
-          reverseError(`[LIMIT_ENTRY] Erro ao criar NOVA LIMIT:`, newOrderError.message);
+          console.error(`[LIMIT_ENTRY] Erro ao criar NOVA LIMIT:`, newOrderError.message);
           await new Promise(resolve => setTimeout(resolve, 1000)); 
           continue;
         }
@@ -990,7 +990,7 @@ async function executeReverse(signal, currentPrice, accountId) {
       
       // ✅ AGUARDAR EXECUÇÃO - VERSÃO MELHORADA
       if (orderPlacedOrEditedThisIteration && activeOrderId) {
-        reverseLog(`[LIMIT_ENTRY] Aguardando execução/status da ordem ${activeOrderId} por ${EDIT_WAIT_TIMEOUT_MS}ms...`);
+        console.log(`[LIMIT_ENTRY] Aguardando execução/status da ordem ${activeOrderId} por ${EDIT_WAIT_TIMEOUT_MS}ms...`);
         
         const orderWaitResult = await waitForOrderExecution(signal.symbol, activeOrderId, EDIT_WAIT_TIMEOUT_MS, numericAccountId, sentOrders);
         
@@ -1006,25 +1006,25 @@ async function executeReverse(signal, currentPrice, accountId) {
           const fillPrice = parseFloat(orderWaitResult.avgPrice || orderWaitResult.price);
           partialFills.push({ qty: netFilledInWait, price: fillPrice, orderId: activeOrderId });
           totalFilledSize = partialFills.reduce((sum, pf) => sum + pf.qty, 0);
-          reverseLog(`[LIMIT_ENTRY] Preenchimento (após wait) ${activeOrderId}: ${netFilledInWait.toFixed(quantityPrecision)} @ ${fillPrice.toFixed(pricePrecision)}. Total: ${totalFilledSize.toFixed(quantityPrecision)}`);
+          console.log(`[LIMIT_ENTRY] Preenchimento (após wait) ${activeOrderId}: ${netFilledInWait.toFixed(quantityPrecision)} @ ${fillPrice.toFixed(pricePrecision)}. Total: ${totalFilledSize.toFixed(quantityPrecision)}`);
         }
 
         if (orderWaitResult.status === 'FILLED') {
-          reverseLog(`[LIMIT_ENTRY] Ordem ${activeOrderId} FILLED (após wait).`);
+          console.log(`[LIMIT_ENTRY] Ordem ${activeOrderId} FILLED (após wait).`);
           activeOrderId = null; 
           if (totalFilledSize >= totalEntrySize) {
-            reverseLog(`[LIMIT_ENTRY] Quantidade total atingida após wait.`);
+            console.log(`[LIMIT_ENTRY] Quantidade total atingida após wait.`);
             break;
           }
         } else if (orderWaitResult.status === 'PARTIALLY_FILLED') {
-          reverseLog(`[LIMIT_ENTRY] Ordem ${activeOrderId} parcialmente preenchida após wait.`);
+          console.log(`[LIMIT_ENTRY] Ordem ${activeOrderId} parcialmente preenchida após wait.`);
         } else {
-          reverseLog(`[LIMIT_ENTRY] Ordem ${activeOrderId} ainda em ${orderWaitResult.status} após wait.`);
+          console.log(`[LIMIT_ENTRY] Ordem ${activeOrderId} ainda em ${orderWaitResult.status} após wait.`);
         }
       }
       
       if (totalFilledSize >= totalEntrySize) {
-        reverseLog(`[LIMIT_ENTRY] Quantidade total (${totalEntrySize.toFixed(quantityPrecision)}) alcançada.`);
+        console.log(`[LIMIT_ENTRY] Quantidade total (${totalEntrySize.toFixed(quantityPrecision)}) alcançada.`);
         break; 
       }
       
@@ -1034,8 +1034,8 @@ async function executeReverse(signal, currentPrice, accountId) {
 
     // ✅ SEÇÃO DE MARKET ORDER FALLBACK - VERSÃO MELHORADA DA DEV
     if (totalFilledSize < totalEntrySize) {
-      reverseLog(`[LIMIT_ENTRY] 📊 Chasing encerrado. Preenchido: ${totalFilledSize.toFixed(quantityPrecision)}/${totalEntrySize.toFixed(quantityPrecision)} (${((totalFilledSize/totalEntrySize)*100).toFixed(1)}%)`);
-      reverseLog(`[LIMIT_ENTRY] 📊 Motivos: Timeout: ${Date.now() - executionStartTime >= CHASE_TIMEOUT_MS}, Tentativas: ${chaseAttempts >= MAX_CHASE_ATTEMPTS}`);
+      console.log(`[LIMIT_ENTRY] 📊 Chasing encerrado. Preenchido: ${totalFilledSize.toFixed(quantityPrecision)}/${totalEntrySize.toFixed(quantityPrecision)} (${((totalFilledSize/totalEntrySize)*100).toFixed(1)}%)`);
+      console.log(`[LIMIT_ENTRY] 📊 Motivos: Timeout: ${Date.now() - executionStartTime >= CHASE_TIMEOUT_MS}, Tentativas: ${chaseAttempts >= MAX_CHASE_ATTEMPTS}`);
       
       const remainingToFillMarket = parseFloat((totalEntrySize - totalFilledSize).toFixed(quantityPrecision));
       
@@ -1043,18 +1043,18 @@ async function executeReverse(signal, currentPrice, accountId) {
       const minMarketOrderThreshold = totalEntrySize * 0.05; // 5% do total
       
       if (remainingToFillMarket > minMarketOrderThreshold) {
-        reverseLog(`[LIMIT_ENTRY] 🚀 Tentando preencher restante (${remainingToFillMarket.toFixed(quantityPrecision)}) com ordem MARKET...`);
+        console.log(`[LIMIT_ENTRY] 🚀 Tentando preencher restante (${remainingToFillMarket.toFixed(quantityPrecision)}) com ordem MARKET...`);
         
         // CANCELAR ORDEM ATIVA ANTES DE MARKET
         if (activeOrderId) {
           try {
-            reverseLog(`[LIMIT_ENTRY] 🗑️ Cancelando ordem ativa ${activeOrderId} antes da MARKET...`);
+            console.log(`[LIMIT_ENTRY] 🗑️ Cancelando ordem ativa ${activeOrderId} antes da MARKET...`);
             await cancelOrder(signal.symbol, activeOrderId, numericAccountId);
             await new Promise(resolve => setTimeout(resolve, 1000)); // Aguardar 1 segundo
             activeOrderId = null;
-            reverseLog(`[LIMIT_ENTRY] ✅ Ordem ativa cancelada com sucesso.`);
+            console.log(`[LIMIT_ENTRY] ✅ Ordem ativa cancelada com sucesso.`);
           } catch (cancelError) {
-            reverseError(`[LIMIT_ENTRY] ❌ Erro ao cancelar ordem ativa antes da MARKET:`, cancelError.message);
+            console.error(`[LIMIT_ENTRY] ❌ Erro ao cancelar ordem ativa antes da MARKET:`, cancelError.message);
           }
         }
         
@@ -1064,25 +1064,25 @@ async function executeReverse(signal, currentPrice, accountId) {
           
           let finalMarketQty = remainingToFillMarket;
           if (!marketValidation.isValid) {
-            reverseWarn(`[LIMIT_ENTRY] ⚠️ Quantidade MARKET inválida: ${marketValidation.reason}`);
+            console.warn(`[LIMIT_ENTRY] ⚠️ Quantidade MARKET inválida: ${marketValidation.reason}`);
             
             const marketAdjustment = await adjustQuantityToRequirements(signal.symbol, remainingToFillMarket, currentPriceTrigger, numericAccountId, 'MARKET');
             
             if (marketAdjustment.success) {
               finalMarketQty = marketAdjustment.adjustedQuantity;
-              reverseLog(`[LIMIT_ENTRY] ✅ Quantidade MARKET ajustada: ${remainingToFillMarket} → ${finalMarketQty}`);
+              console.log(`[LIMIT_ENTRY] ✅ Quantidade MARKET ajustada: ${remainingToFillMarket} → ${finalMarketQty}`);
             } else {
-              reverseError(`[LIMIT_ENTRY] ❌ Impossível ajustar quantidade MARKET: ${marketAdjustment.error}`);
+              console.error(`[LIMIT_ENTRY] ❌ Impossível ajustar quantidade MARKET: ${marketAdjustment.error}`);
               throw new Error(`Quantidade MARKET inválida: ${marketAdjustment.error}`);
             }
           }
           
-          reverseLog(`[LIMIT_ENTRY] 🚀 Enviando ordem MARKET: ${binanceSide} ${finalMarketQty.toFixed(quantityPrecision)} ${signal.symbol}`);
+          console.log(`[LIMIT_ENTRY] 🚀 Enviando ordem MARKET: ${binanceSide} ${finalMarketQty.toFixed(quantityPrecision)} ${signal.symbol}`);
           
           marketOrderResponseForDb = await newMarketOrder(numericAccountId, signal.symbol, finalMarketQty, binanceSide);
           
           if (marketOrderResponseForDb && marketOrderResponseForDb.orderId) {
-            reverseLog(`[LIMIT_ENTRY] ✅ Ordem MARKET criada: ${marketOrderResponseForDb.orderId}`);
+            console.log(`[LIMIT_ENTRY] ✅ Ordem MARKET criada: ${marketOrderResponseForDb.orderId}`);
             
             // AGUARDAR EXECUÇÃO DA MARKET
             const marketWaitResult = await waitForOrderExecution(signal.symbol, String(marketOrderResponseForDb.orderId), 5000, numericAccountId, sentOrders);
@@ -1101,10 +1101,10 @@ async function executeReverse(signal, currentPrice, accountId) {
                 });
                 totalFilledSize = partialFills.reduce((sum, pf) => sum + pf.qty, 0);
                 
-                reverseLog(`[LIMIT_ENTRY] 💰 MARKET executada: ${marketFilledQty.toFixed(quantityPrecision)} @ ${marketAvgPrice.toFixed(pricePrecision)}. Total final: ${totalFilledSize.toFixed(quantityPrecision)}`);
+                console.log(`[LIMIT_ENTRY] 💰 MARKET executada: ${marketFilledQty.toFixed(quantityPrecision)} @ ${marketAvgPrice.toFixed(pricePrecision)}. Total final: ${totalFilledSize.toFixed(quantityPrecision)}`);
               }
             } else {
-              reverseWarn(`[LIMIT_ENTRY] ⚠️ Ordem MARKET não foi totalmente executada: ${marketWaitResult?.status || 'UNKNOWN'}`);
+              console.warn(`[LIMIT_ENTRY] ⚠️ Ordem MARKET não foi totalmente executada: ${marketWaitResult?.status || 'UNKNOWN'}`);
             }              
               // ✅ ADICIONAR ORDEM MARKET AO BUFFER
               addOrderToBuffer({
@@ -1120,13 +1120,13 @@ async function executeReverse(signal, currentPrice, accountId) {
               }, signal.id);
               
             } else {
-              reverseError(`[LIMIT_ENTRY] ❌ Falha ao criar ordem MARKET. Resposta: ${JSON.stringify(marketOrderResponseForDb)}`);
+              console.error(`[LIMIT_ENTRY] ❌ Falha ao criar ordem MARKET. Resposta: ${JSON.stringify(marketOrderResponseForDb)}`);
             }
           } catch (marketError) {
-            reverseError(`[LIMIT_ENTRY] ❌ Erro na ordem MARKET:`, marketError.response?.data || marketError.message);
+            console.error(`[LIMIT_ENTRY] ❌ Erro na ordem MARKET:`, marketError.response?.data || marketError.message);
           }
         } else {
-          reverseLog(`[LIMIT_ENTRY] ⏭️ Quantidade restante (${remainingToFillMarket.toFixed(quantityPrecision)}) muito pequena para MARKET. Prosseguindo...`);
+          console.log(`[LIMIT_ENTRY] ⏭️ Quantidade restante (${remainingToFillMarket.toFixed(quantityPrecision)}) muito pequena para MARKET. Prosseguindo...`);
         }
       }
 
@@ -1137,26 +1137,26 @@ async function executeReverse(signal, currentPrice, accountId) {
       // ✅ CRIAR POSIÇÃO NO BUFFER
       createPositionBuffer(signal, totalFilledSize, averageEntryPrice, accountId);
       
-      reverseLog(`[LIMIT_ENTRY] 📊 Posição criada no buffer: ${signal.symbol} (${totalFilledSize.toFixed(quantityPrecision)} @ ${averageEntryPrice.toFixed(pricePrecision)})`);
+      console.log(`[LIMIT_ENTRY] 📊 Posição criada no buffer: ${signal.symbol} (${totalFilledSize.toFixed(quantityPrecision)} @ ${averageEntryPrice.toFixed(pricePrecision)})`);
     } else if (totalFilledSize > 0 && (!averageEntryPrice || averageEntryPrice === 0)) { 
       averageEntryPrice = currentPriceTrigger;
       
       // ✅ CRIAR POSIÇÃO NO BUFFER COM PREÇO FALLBACK
       createPositionBuffer(signal, totalFilledSize, averageEntryPrice, accountId);
       
-      reverseWarn(`[LIMIT_ENTRY] averageEntryPrice não pôde ser calculado a partir de partialFills (total preenchido: ${totalFilledSize}), usando currentPriceTrigger como fallback: ${averageEntryPrice}`);
+      console.warn(`[LIMIT_ENTRY] averageEntryPrice não pôde ser calculado a partir de partialFills (total preenchido: ${totalFilledSize}), usando currentPriceTrigger como fallback: ${averageEntryPrice}`);
     }
 
     // ✅ MARCAR QUE TODAS AS ORDENS DE ENTRADA FORAM ENVIADAS
     allOrdersSent = true;
-    reverseLog(`[LIMIT_ENTRY] 🚀 Todas as ordens de entrada foram enviadas. Iniciando criação de SL/TP/RPs...`);
+    console.log(`[LIMIT_ENTRY] 🚀 Todas as ordens de entrada foram enviadas. Iniciando criação de SL/TP/RPs...`);
 
     // Calcular preço médio final
     if (partialFills.length > 0) {
       averageEntryPrice = calculateAveragePrice(partialFills);
     } else if (totalFilledSize > 0 && (!averageEntryPrice || averageEntryPrice === 0)) { 
       averageEntryPrice = currentPriceTrigger; 
-      reverseWarn(`[LIMIT_ENTRY] averageEntryPrice não pôde ser calculado a partir de partialFills (total preenchido: ${totalFilledSize}), usando currentPriceTrigger como fallback: ${averageEntryPrice}`);
+      console.warn(`[LIMIT_ENTRY] averageEntryPrice não pôde ser calculado a partir de partialFills (total preenchido: ${totalFilledSize}), usando currentPriceTrigger como fallback: ${averageEntryPrice}`);
     }
 
     // ✅ VERIFICAÇÃO FINAL ANTES DE CRIAR POSIÇÃO
@@ -1168,28 +1168,22 @@ async function executeReverse(signal, currentPrice, accountId) {
     // Verificar se entrada foi completada
     const fillRatio = totalEntrySize > 0 ? totalFilledSize / totalEntrySize : 0;
 
-    // ✅ REDUZIR LIMITE PARA 50% para garantir que as ordens sejam criadas
-    const isEntryReallyComplete = fillRatio >= 0.50;
-
-    reverseLog(`[LIMIT_ENTRY] 🔍 Verificação de entrada:`);
-    reverseLog(`[LIMIT_ENTRY]   - Total esperado: ${totalEntrySize.toFixed(quantityPrecision)}`);
-    reverseLog(`[LIMIT_ENTRY]   - Total preenchido: ${totalFilledSize.toFixed(quantityPrecision)}`);
-    reverseLog(`[LIMIT_ENTRY]   - Percentual preenchido: ${(fillRatio * 100).toFixed(2)}%`);
-    reverseLog(`[LIMIT_ENTRY]   - Entrada considerada completa: ${isEntryReallyComplete ? 'SIM' : 'NÃO'}`);
+    // Só considerar completa se 95% preenchido
+    const isEntryReallyComplete = fillRatio >= 0.95;
 
     if (isEntryReallyComplete) {
         isEntryComplete = true;
     }
 
-    reverseLog(`[LIMIT_ENTRY] ✅ Entrada executada: ${totalFilledSize.toFixed(quantityPrecision)}/${totalEntrySize.toFixed(quantityPrecision)} (${(fillRatio * 100).toFixed(1)}%)`);
-    reverseLog(`[LIMIT_ENTRY] 📡 Aguardando confirmação da posição via webhook para criar SL/TP/RPs...`);
+    console.log(`[LIMIT_ENTRY] ✅ Entrada executada: ${totalFilledSize.toFixed(quantityPrecision)}/${totalEntrySize.toFixed(quantityPrecision)} (${(fillRatio * 100).toFixed(1)}%)`);
+    console.log(`[LIMIT_ENTRY] 📡 Aguardando confirmação da posição via webhook para criar SL/TP/RPs...`);
 
     // ✅ SUBSTITUIR POR LOG APENAS:
-    reverseLog(`[LIMIT_ENTRY] 📊 Ordens de entrada executadas: ${partialFills.length} fills`);
+    console.log(`[LIMIT_ENTRY] 📊 Ordens de entrada executadas: ${partialFills.length} fills`);
     partialFills.forEach((fill, index) => {
-      reverseLog(`[LIMIT_ENTRY]   Fill ${index + 1}: ${fill.qty.toFixed(quantityPrecision)} @ ${fill.price.toFixed(pricePrecision)} (ID: ${fill.orderId})`);
+      console.log(`[LIMIT_ENTRY]   Fill ${index + 1}: ${fill.qty.toFixed(quantityPrecision)} @ ${fill.price.toFixed(pricePrecision)} (ID: ${fill.orderId})`);
     });
-    reverseLog(`[LIMIT_ENTRY] � Dados armazenados no buffer, aguardando inserção no banco...`);
+    console.log(`[LIMIT_ENTRY] � Dados armazenados no buffer, aguardando inserção no banco...`);
 
     // ✅ ATUALIZAR APENAS O STATUS DO SINAL
     await connection.query(
@@ -1199,12 +1193,8 @@ async function executeReverse(signal, currentPrice, accountId) {
 
     // ✅ CRIAR SL/TP/RPS - VERSÃO TOTALMENTE CORRIGIDA DA DEV
     let slTpRpsCreated = false;
-    reverseLog(`[LIMIT_ENTRY] 🔍 Verificando criação de SL/TP/RPs...`);
-    reverseLog(`[LIMIT_ENTRY]   - isEntryReallyComplete: ${isEntryReallyComplete}`);
-    reverseLog(`[LIMIT_ENTRY]   - Vai criar ordens: ${isEntryReallyComplete ? 'SIM' : 'NÃO'}`);
-    
     if (isEntryReallyComplete) {
-      reverseLog(`[LIMIT_ENTRY] 🎯 Entrada considerada COMPLETA (${(fillRatio * 100).toFixed(1)}%). Criando SL/TP/RPs.`);
+      console.log(`[LIMIT_ENTRY] 🎯 Entrada considerada COMPLETA (${(fillRatio * 100).toFixed(1)}%). Criando SL/TP/RPs.`);
       slTpRpsCreated = true;
 
       let slPriceVal = signal.sl_price ? parseFloat(signal.sl_price) : null; // Changed to `let` for potential adjustment
@@ -1217,13 +1207,13 @@ async function executeReverse(signal, currentPrice, accountId) {
         tp5: signal.tp5_price ? parseFloat(signal.tp5_price) : (signal.tp_price ? parseFloat(signal.tp_price) : null) 
       };
 
-      reverseLog(`[LIMIT_ENTRY] 📋 Preços configurados:`);
-      reverseLog(`  - SL: ${slPriceVal || 'N/A'}`);
-      reverseLog(`  - TP1: ${targetPrices.tp1 || 'N/A'}`);
-      reverseLog(`  - TP2: ${targetPrices.tp2 || 'N/A'}`);
-      reverseLog(`  - TP3: ${targetPrices.tp3 || 'N/A'}`);
-      reverseLog(`  - TP4: ${targetPrices.tp4 || 'N/A'}`);
-      reverseLog(`  - TP5: ${targetPrices.tp5 || 'N/A'}`);
+      console.log(`[LIMIT_ENTRY] 📋 Preços configurados:`);
+      console.log(`  - SL: ${slPriceVal || 'N/A'}`);
+      console.log(`  - TP1: ${targetPrices.tp1 || 'N/A'}`);
+      console.log(`  - TP2: ${targetPrices.tp2 || 'N/A'}`);
+      console.log(`  - TP3: ${targetPrices.tp3 || 'N/A'}`);
+      console.log(`  - TP4: ${targetPrices.tp4 || 'N/A'}`);
+      console.log(`  - TP5: ${targetPrices.tp5 || 'N/A'}`);
 
       // ✅ CRIAR STOP LOSS - VERSÃO SEM INSERÇÃO NO BANCO
       if (slPriceVal && slPriceVal > 0) {
@@ -1239,9 +1229,9 @@ async function executeReverse(signal, currentPrice, accountId) {
           `, [`WEBHOOK_${signal.id}`, accountId]);
 
           if (existingSl[0]?.count > 0) {
-            reverseLog(`[LIMIT_ENTRY] ⚠️ STOP_LOSS já existe para sinal ${signal.id}. Pulando criação.`);
+            console.log(`[LIMIT_ENTRY] ⚠️ STOP_LOSS já existe para sinal ${signal.id}. Pulando criação.`);
           } else {
-            reverseLog(`[LIMIT_ENTRY] 🛡️ Enviando SL para corretora: STOP_MARKET ${binanceOppositeSide} @ stopPrice=${slPriceVal} (closePosition=true)`);
+            console.log(`[LIMIT_ENTRY] 🛡️ Enviando SL para corretora: STOP_MARKET ${binanceOppositeSide} @ stopPrice=${slPriceVal} (closePosition=true)`);
             
             // ✅ APENAS ENVIAR PARA CORRETORA - NÃO INSERIR NO BANCO
             const slResponse = await newStopOrder(
@@ -1258,7 +1248,7 @@ async function executeReverse(signal, currentPrice, accountId) {
             
             if (slResponse && (slResponse.data?.orderId || slResponse.orderId)) {
               const slOrderId = slResponse.data?.orderId || slResponse.orderId;
-              reverseLog(`[LIMIT_ENTRY] ✅ SL enviado para corretora: ${slOrderId} @ stopPrice=${slPriceVal}`);
+              console.log(`[LIMIT_ENTRY] ✅ SL enviado para corretora: ${slOrderId} @ stopPrice=${slPriceVal}`);
               
               // ✅ ADICIONAR SL AO BUFFER
               addOrderToBuffer({
@@ -1284,17 +1274,17 @@ async function executeReverse(signal, currentPrice, accountId) {
             }
           }
         } catch (slError) {
-          reverseError(`[LIMIT_ENTRY] ❌ Erro ao enviar SL para corretora:`, slError.response?.data || slError.message);
+          console.error(`[LIMIT_ENTRY] ❌ Erro ao enviar SL para corretora:`, slError.response?.data || slError.message);
         }
       } else {
-        reverseWarn(`[LIMIT_ENTRY] ⚠️ Preço de SL inválido ou não fornecido (${slPriceVal}). SL não será criado.`);
+        console.warn(`[LIMIT_ENTRY] ⚠️ Preço de SL inválido ou não fornecido (${slPriceVal}). SL não será criado.`);
       }
 
       // CRIAR REDUÇÕES PARCIAIS - VERSÃO SEM INSERÇÃO NO BANCO
       const reductionPercentages = [0.25, 0.30, 0.25, 0.10]; // 25%, 30%, 25%, 10%
       let cumulativeQtyForRps = 0;
 
-      reverseLog(`[LIMIT_ENTRY] 📊 Criando RPs com percentuais: ${reductionPercentages.map(p => (p*100)+'%').join(', ')}`);
+      console.log(`[LIMIT_ENTRY] 📊 Criando RPs com percentuais: ${reductionPercentages.map(p => (p*100)+'%').join(', ')}`);
 
       for (let i = 0; i < rpTargetKeys.length; i++) {
         const rpKey = rpTargetKeys[i];
@@ -1313,7 +1303,7 @@ async function executeReverse(signal, currentPrice, accountId) {
           `, [`WEBHOOK_${signal.id}`, i + 1, accountId]);
 
           if (existingRp[0]?.count > 0) {
-            reverseLog(`[LIMIT_ENTRY] ⚠️ RP${i+1} já existe para sinal ${signal.id}. Pulando criação.`);
+            console.log(`[LIMIT_ENTRY] ⚠️ RP${i+1} já existe para sinal ${signal.id}. Pulando criação.`);
             continue;
           }
 
@@ -1323,7 +1313,7 @@ async function executeReverse(signal, currentPrice, accountId) {
           
           if (rpQty > 0) {
             try {
-              reverseLog(`[LIMIT_ENTRY] 📊 Enviando RP${i+1} para corretora: ${(rpPercentage*100)}% de ${totalFilledSize.toFixed(quantityPrecision)} = ${rpQty.toFixed(quantityPrecision)}`);
+              console.log(`[LIMIT_ENTRY] 📊 Enviando RP${i+1} para corretora: ${(rpPercentage*100)}% de ${totalFilledSize.toFixed(quantityPrecision)} = ${rpQty.toFixed(quantityPrecision)}`);
               
               // ✅ APENAS ENVIAR PARA CORRETORA - NÃO INSERIR NO BANCO
               const rpResponse = await newReduceOnlyOrder(
@@ -1336,7 +1326,7 @@ async function executeReverse(signal, currentPrice, accountId) {
               
               if (rpResponse && (rpResponse.data?.orderId || rpResponse.orderId)) {
                 const rpOrderId = rpResponse.data?.orderId || rpResponse.orderId;
-                reverseLog(`[LIMIT_ENTRY] ✅ RP${i+1} enviado para corretora: ${rpOrderId} (${(rpPercentage*100)}%)`);
+                console.log(`[LIMIT_ENTRY] ✅ RP${i+1} enviado para corretora: ${rpOrderId} (${(rpPercentage*100)}%)`);
                 
                 // ✅ ADICIONAR RP AO BUFFER
                 addOrderToBuffer({
@@ -1355,7 +1345,7 @@ async function executeReverse(signal, currentPrice, accountId) {
                 }, signal.id);
               }
             } catch (rpError) {
-              reverseError(`[LIMIT_ENTRY] ❌ Erro ao enviar RP${i+1} para corretora:`, rpError.response?.data || rpError.message);
+              console.error(`[LIMIT_ENTRY] ❌ Erro ao enviar RP${i+1} para corretora:`, rpError.response?.data || rpError.message);
             }
           }
         }
@@ -1374,9 +1364,9 @@ async function executeReverse(signal, currentPrice, accountId) {
           `, [`WEBHOOK_${signal.id}`, accountId]);
 
           if (existingTp5[0]?.count > 0) {
-            reverseLog(`[LIMIT_ENTRY] ⚠️ TAKE_PROFIT (TP5) já existe para sinal ${signal.id}. Pulando criação.`);
+            console.log(`[LIMIT_ENTRY] ⚠️ TAKE_PROFIT (TP5) já existe para sinal ${signal.id}. Pulando criação.`);
           } else {
-            reverseLog(`[LIMIT_ENTRY] 🏁 Enviando TAKE_PROFIT_MARKET TP5 para corretora (${targetPrices.tp5})`);
+            console.log(`[LIMIT_ENTRY] 🏁 Enviando TAKE_PROFIT_MARKET TP5 para corretora (${targetPrices.tp5})`);
 
             // ✅ APENAS ENVIAR PARA CORRETORA - NÃO INSERIR NO BANCO
             const tp5Response = await rest.newStopOrder(
@@ -1393,7 +1383,7 @@ async function executeReverse(signal, currentPrice, accountId) {
 
             if (tp5Response && (tp5Response.data?.orderId || tp5Response.orderId)) {
               const tp5OrderId = tp5Response.data?.orderId || tp5Response.orderId;
-              reverseLog(`[LIMIT_ENTRY] ✅ TAKE_PROFIT_MARKET TP5 enviado para corretora: ${tp5OrderId} @ ${targetPrices.tp5}`);
+              console.log(`[LIMIT_ENTRY] ✅ TAKE_PROFIT_MARKET TP5 enviado para corretora: ${tp5OrderId} @ ${targetPrices.tp5}`);
               
               // ✅ ADICIONAR TP5 AO BUFFER
               addOrderToBuffer({
@@ -1414,68 +1404,66 @@ async function executeReverse(signal, currentPrice, accountId) {
             }
           }
         } catch (tp5Error) {
-          reverseError(`[LIMIT_ENTRY] ❌ Erro ao enviar TAKE_PROFIT_MARKET TP5 para corretora:`, tp5Error.response?.data || tp5Error.message);
+          console.error(`[LIMIT_ENTRY] ❌ Erro ao enviar TAKE_PROFIT_MARKET TP5 para corretora:`, tp5Error.response?.data || tp5Error.message);
         }
       }
       
-      reverseLog(`[LIMIT_ENTRY] ✅ Processo de criação SL/TP/RPs CONCLUÍDO para sinal ${signal.id}`);
+      console.log(`[LIMIT_ENTRY] ✅ Processo de criação SL/TP/RPs CONCLUÍDO para sinal ${signal.id}`);
     } else if (slTpRpsAlreadyCreated) {
-      reverseLog(`[LIMIT_ENTRY] ℹ️ SL/TP/RPs já existem para sinal ${signal.id}. Processo ignorado.`);
+      console.log(`[LIMIT_ENTRY] ℹ️ SL/TP/RPs já existem para sinal ${signal.id}. Processo ignorado.`);
     } else {
-      reverseLog(`[LIMIT_ENTRY] ℹ️ Entrada não suficientemente completa (${(fillRatio * 100).toFixed(1)}%) para criar SL/TP/RPs para sinal ${signal.id}`);
+      console.log(`[LIMIT_ENTRY] ℹ️ Entrada não suficientemente completa (${(fillRatio * 100).toFixed(1)}%) para criar SL/TP/RPs para sinal ${signal.id}`);
     }
 
     // ✅ MARCAR COMO PROCESSAMENTO COMPLETO
     entryProcessingComplete = true;
 
     await connection.commit();
-    reverseLog(`[LIMIT_ENTRY] ✅ Transação COMMITADA com sucesso para sinal ${signal.id}`);
+    console.log(`[LIMIT_ENTRY] ✅ Transação COMMITADA com sucesso para sinal ${signal.id}`);
 
     // ✅ MARCAR COMO PROCESSAMENTO COMPLETO
     entryProcessingComplete = true;
 
     // ✅ INSERIR TODOS OS DADOS DO BUFFER NO BANCO
-    reverseLog(`[LIMIT_ENTRY] 📤 Inserindo dados do buffer no banco...`);
+    console.log(`[LIMIT_ENTRY] 📤 Inserindo dados do buffer no banco...`);
     const insertResult = await insertBufferedDataToDB(signal.id, accountId, connection);
     
     if (insertResult.success) {
       positionId = insertResult.positionId;
-      reverseLog(`[LIMIT_ENTRY] ✅ Dados inseridos no banco com sucesso. Position ID: ${positionId}`);
+      console.log(`[LIMIT_ENTRY] ✅ Dados inseridos no banco com sucesso. Position ID: ${positionId}`);
     } else {
-      reverseError(`[LIMIT_ENTRY] ❌ Falha ao inserir dados do buffer no banco`);
+      console.error(`[LIMIT_ENTRY] ❌ Falha ao inserir dados do buffer no banco`);
     }
 
     await connection.commit();
-    reverseLog(`[LIMIT_ENTRY] ✅ Transação COMMITADA com sucesso para sinal ${signal.id}`);
+    console.log(`[LIMIT_ENTRY] ✅ Transação COMMITADA com sucesso para sinal ${signal.id}`);
 
     // ✅ NOTIFICAÇÃO TELEGRAM DE ENTRADA EXECUTADA
     try {
       const totalValue = totalFilledSize * averageEntryPrice;
       const timestamp = new Date().toLocaleString('pt-BR');
       
-      reverseLog(`[TELEGRAM_DISPATCHER] 🕐 ${timestamp} | ARQUIVO: reverse.js | AÇÃO: Disparando mensagem de ENTRADA EXECUTADA`);
-      reverseLog(`[TELEGRAM_DISPATCHER] 📋 Dados: Conta=${accountId}, Symbol=${signal.symbol}, Qtd=${totalFilledSize}, Preço=${averageEntryPrice}, Valor=${totalValue.toFixed(2)}`);
-      reverseLog(`[TELEGRAM_DISPATCHER] 🎯 Signal ID: ${signal.id}, Position ID: ${positionId || 'ainda não definido'}`);
+      console.log(`[TELEGRAM_DISPATCHER] 🕐 ${timestamp} | ARQUIVO: reverse.js | AÇÃO: Disparando mensagem de ENTRADA EXECUTADA`);
+      console.log(`[TELEGRAM_DISPATCHER] 📋 Dados: Conta=${accountId}, Symbol=${signal.symbol}, Qtd=${totalFilledSize}, Preço=${averageEntryPrice}, Valor=${totalValue.toFixed(2)}`);
+      console.log(`[TELEGRAM_DISPATCHER] 🎯 Signal ID: ${signal.id}, Position ID: ${positionId || 'ainda não definido'}`);
       
       const telegramResult = await formatEntryMessageWithPrecision(signal, totalFilledSize, averageEntryPrice, totalValue, accountId);
       
-      reverseLog(`[TELEGRAM_DISPATCHER] 📤 Resultado do envio:`, JSON.stringify(telegramResult, null, 2));
+      console.log(`[TELEGRAM_DISPATCHER] 📤 Resultado do envio:`, JSON.stringify(telegramResult, null, 2));
       
       if (telegramResult && telegramResult.success) {
-        reverseLog(`[TELEGRAM_DISPATCHER] ✅ ${timestamp} | reverse.js | Mensagem de entrada enviada com SUCESSO para conta ${accountId}`);
+        console.log(`[TELEGRAM_DISPATCHER] ✅ ${timestamp} | reverse.js | Mensagem de entrada enviada com SUCESSO para conta ${accountId}`);
         
         // Salvar messageId se disponível
         let messageId = null;
         if (telegramResult.messageId) {
-         
-         
           messageId = telegramResult.messageId;
-          reverseLog(`[TELEGRAM_DISPATCHER] 📨 Message ID (direto): ${messageId}`);
+          console.log(`[TELEGRAM_DISPATCHER] 📨 Message ID (direto): ${messageId}`);
         } else if (telegramResult.result && telegramResult.result.message_id) {
           messageId = telegramResult.result.message_id;
-          reverseLog(`[TELEGRAM_DISPATCHER] 📨 Message ID (result.message_id): ${messageId}`);
+          console.log(`[TELEGRAM_DISPATCHER] 📨 Message ID (result.message_id): ${messageId}`);
         } else {
-          reverseWarn(`[TELEGRAM_DISPATCHER] ⚠️ Nenhum messageId encontrado na resposta`);
+          console.warn(`[TELEGRAM_DISPATCHER] ⚠️ Nenhum messageId encontrado na resposta`);
         }
         
         if (messageId) {
@@ -1483,68 +1471,68 @@ async function executeReverse(signal, currentPrice, accountId) {
             `UPDATE webhook_signals SET registry_message_id = ? WHERE id = ?`,
             [messageId, signal.id]
           );
-          reverseLog(`[TELEGRAM_DISPATCHER] 📋 Message ID salvo no banco: ${messageId} para sinal ${signal.id}`);
+          console.log(`[TELEGRAM_DISPATCHER] 📋 Message ID salvo no banco: ${messageId} para sinal ${signal.id}`);
         }
       } else {
-        reverseWarn(`[TELEGRAM_DISPATCHER] ⚠️ ${timestamp} | reverse.js | FALHA ao enviar mensagem de entrada`);
-        reverseWarn(`[TELEGRAM_DISPATCHER] 🔍 Erro:`, telegramResult?.error || 'Erro desconhecido');
-        reverseWarn(`[TELEGRAM_DISPATCHER] 🔍 Resposta completa:`, telegramResult);
+        console.warn(`[TELEGRAM_DISPATCHER] ⚠️ ${timestamp} | reverse.js | FALHA ao enviar mensagem de entrada`);
+        console.warn(`[TELEGRAM_DISPATCHER] 🔍 Erro:`, telegramResult?.error || 'Erro desconhecido');
+        console.warn(`[TELEGRAM_DISPATCHER] 🔍 Resposta completa:`, telegramResult);
       }
     } catch (telegramError) {
       const timestamp = new Date().toLocaleString('pt-BR');
-      reverseError(`[TELEGRAM_DISPATCHER] ❌ ${timestamp} | reverse.js | ERRO CRÍTICO ao enviar notificação de entrada:`, telegramError.message);
-      reverseError(`[TELEGRAM_DISPATCHER] 📋 Stack trace:`, telegramError.stack);
+      console.error(`[TELEGRAM_DISPATCHER] ❌ ${timestamp} | reverse.js | ERRO CRÍTICO ao enviar notificação de entrada:`, telegramError.message);
+      console.error(`[TELEGRAM_DISPATCHER] 📋 Stack trace:`, telegramError.stack);
     }
 
     // ✅ REMOVER LÓGICA DE BUSCA DE POSIÇÃO - AGORA USAMOS O POSITION_ID DO BUFFER
     if (positionId) {
-      reverseLog(`[LIMIT_ENTRY] 🔗 Sinal ${signal.id} já vinculado à posição ${positionId}`);
+      console.log(`[LIMIT_ENTRY] 🔗 Sinal ${signal.id} já vinculado à posição ${positionId}`);
     } else {
-      reverseWarn(`[LIMIT_ENTRY] ⚠️ Position ID não disponível para sinal ${signal.id}`);
+      console.warn(`[LIMIT_ENTRY] ⚠️ Position ID não disponível para sinal ${signal.id}`);
     }
   } catch (error) { // This is the catch block for the main try
     const originalErrorMessage = error.message || String(error);
-    reverseError(`[LIMIT_ENTRY] ERRO FATAL DURANTE ENTRADA (Sinal ID ${signal.id}): ${originalErrorMessage}`, error.stack || error);
+    console.error(`[LIMIT_ENTRY] ERRO FATAL DURANTE ENTRADA (Sinal ID ${signal.id}): ${originalErrorMessage}`, error.stack || error);
 
     // ✅ NOTIFICAÇÃO TELEGRAM DE ERRO
     try {
       const timestamp = new Date().toLocaleString('pt-BR');
-      reverseLog(`[TELEGRAM_DISPATCHER] 🕐 ${timestamp} | ARQUIVO: reverse.js | AÇÃO: Disparando mensagem de ERRO`);
-      reverseLog(`[TELEGRAM_DISPATCHER] 📋 Dados: Conta=${accountId}, Signal=${signal.id}, Erro=${originalErrorMessage}`);
+      console.log(`[TELEGRAM_DISPATCHER] 🕐 ${timestamp} | ARQUIVO: reverse.js | AÇÃO: Disparando mensagem de ERRO`);
+      console.log(`[TELEGRAM_DISPATCHER] 📋 Dados: Conta=${accountId}, Signal=${signal.id}, Erro=${originalErrorMessage}`);
       
       const errorMessage = await formatErrorMessage(signal, originalErrorMessage);
       const result = await sendTelegramMessage(accountId, errorMessage);
       
-      reverseLog(`[TELEGRAM_DISPATCHER] � Resultado do envio de erro:`, JSON.stringify(result, null, 2));
+      console.log(`[TELEGRAM_DISPATCHER] � Resultado do envio de erro:`, JSON.stringify(result, null, 2));
       
       if (result && result.success) {
-        reverseLog(`[TELEGRAM_DISPATCHER] ✅ ${timestamp} | reverse.js | Mensagem de erro enviada com SUCESSO via Telegram`);
+        console.log(`[TELEGRAM_DISPATCHER] ✅ ${timestamp} | reverse.js | Mensagem de erro enviada com SUCESSO via Telegram`);
       } else {
-        reverseWarn(`[TELEGRAM_DISPATCHER] ⚠️ ${timestamp} | reverse.js | FALHA ao enviar mensagem de erro:`, result?.error || 'Erro desconhecido');
+        console.warn(`[TELEGRAM_DISPATCHER] ⚠️ ${timestamp} | reverse.js | FALHA ao enviar mensagem de erro:`, result?.error || 'Erro desconhecido');
       }
     } catch (telegramError) {
       const timestamp = new Date().toLocaleString('pt-BR');
-      reverseError(`[TELEGRAM_DISPATCHER] ❌ ${timestamp} | reverse.js | ERRO CRÍTICO ao enviar notificação de erro:`, telegramError.message);
+      console.error(`[TELEGRAM_DISPATCHER] ❌ ${timestamp} | reverse.js | ERRO CRÍTICO ao enviar notificação de erro:`, telegramError.message);
     }
 
     // CANCELAR ORDEM ATIVA SE EXISTIR USANDO rest.JS
     if (activeOrderId) {
       try {
-        reverseLog(`[LIMIT_ENTRY] (Catch Principal) Tentando cancelar ordem ativa ${activeOrderId} antes do rollback.`);
+        console.log(`[LIMIT_ENTRY] (Catch Principal) Tentando cancelar ordem ativa ${activeOrderId} antes do rollback.`);
         
         // ✅ USAR cancelOrder DO rest.JS
         await cancelOrder(signal.symbol, activeOrderId, numericAccountId); 
         
-        reverseLog(`[LIMIT_ENTRY] (Catch Principal) Ordem ${activeOrderId} cancelada com sucesso.`);
+        console.log(`[LIMIT_ENTRY] (Catch Principal) Ordem ${activeOrderId} cancelada com sucesso.`);
       } catch (cancelErrOnCatch) { 
-        reverseError(`[LIMIT_ENTRY] (Catch Principal) Erro ao cancelar ordem ${activeOrderId}:`, cancelErrOnCatch.message); 
+        console.error(`[LIMIT_ENTRY] (Catch Principal) Erro ao cancelar ordem ${activeOrderId}:`, cancelErrOnCatch.message); 
       }
     }
 
     // ✅ LIMPEZA DOS BUFFERS EM CASO DE ERRO
     if (positionBuffer.has(signal.id)) {
       positionBuffer.delete(signal.id);
-      reverseLog(`[LIMIT_ENTRY] 🧹 Buffer de posição limpo para signal ${signal.id}`);
+      console.log(`[LIMIT_ENTRY] 🧹 Buffer de posição limpo para signal ${signal.id}`);
     }
     
     // Limpar ordens do buffer relacionadas a este signal
@@ -1558,15 +1546,15 @@ async function executeReverse(signal, currentPrice, accountId) {
     });
     
     if (signalOrderKeys.length > 0) {
-      reverseLog(`[LIMIT_ENTRY] 🧹 ${signalOrderKeys.length} ordens removidas do buffer para signal ${signal.id}`);
+      console.log(`[LIMIT_ENTRY] 🧹 ${signalOrderKeys.length} ordens removidas do buffer para signal ${signal.id}`);
     }
 
     if (connection) { 
       try { 
         await connection.rollback(); 
-        reverseLog(`[LIMIT_ENTRY] (Catch Principal) ROLLBACK da transação principal efetuado para Sinal ${signal.id}.`); 
+        console.log(`[LIMIT_ENTRY] (Catch Principal) ROLLBACK da transação principal efetuado para Sinal ${signal.id}.`); 
       } catch (rbErr) { 
-        reverseError(`[LIMIT_ENTRY] (Catch Principal) Erro CRÍTICO ao efetuar ROLLBACK para Sinal ${signal.id}:`, rbErr); 
+        console.error(`[LIMIT_ENTRY] (Catch Principal) Erro CRÍTICO ao efetuar ROLLBACK para Sinal ${signal.id}:`, rbErr); 
       }
     }
 
@@ -1577,26 +1565,26 @@ async function executeReverse(signal, currentPrice, accountId) {
         [String(originalErrorMessage).substring(0, 250), signal.id]
       );
     } catch (updateError) { 
-      reverseError(`[LIMIT_ENTRY] (Catch Principal) Erro ao atualizar status do sinal para ERROR no DB:`, updateError); 
+      console.error(`[LIMIT_ENTRY] (Catch Principal) Erro ao atualizar status do sinal para ERROR no DB:`, updateError); 
     }
 
     return { success: false, error: originalErrorMessage };
 
   } finally {
     // ✅ LIMPEZA FINAL - SEMPRE EXECUTADO
-    reverseLog(`[LIMIT_ENTRY] 🧹 Finalizando execução para sinal ${signal.id}. Iniciando limpeza...`);
+    console.log(`[LIMIT_ENTRY] 🧹 Finalizando execução para sinal ${signal.id}. Iniciando limpeza...`);
 
     // ✅ REMOVER HANDLER TEMPORÁRIO DO WEBSOCKET USANDO O NOVO SISTEMA
     websockets.off('orderUpdate', temporaryListenerId, accountId);
-    reverseLog(`[LIMIT_ENTRY] ✅ Handler de WebSocket temporário removido.`);
+    console.log(`[LIMIT_ENTRY] ✅ Handler de WebSocket temporário removido.`);
 
     // Parar o websocket de profundidade
     if (depthWs && typeof depthWs.close === 'function') {
       try {
         depthWs.close(1000, 'Execution completed');
-        reverseLog(`[LIMIT_ENTRY] ✅ WebSocket de profundidade parado com sucesso.`);
+        console.log(`[LIMIT_ENTRY] ✅ WebSocket de profundidade parado com sucesso.`);
       } catch (wsCloseError) {
-        reverseError(`[LIMIT_ENTRY] Erro ao fechar WebSocket de profundidade:`, wsCloseError.message);
+        console.error(`[LIMIT_ENTRY] Erro ao fechar WebSocket de profundidade:`, wsCloseError.message);
       }
     }
     
@@ -1604,9 +1592,9 @@ async function executeReverse(signal, currentPrice, accountId) {
     if (connection) {
       try {
         connection.release();
-        reverseLog(`[LIMIT_ENTRY] Conexão de banco liberada para sinal ${signal?.id || 'unknown'}`);
+        console.log(`[LIMIT_ENTRY] Conexão de banco liberada para sinal ${signal?.id || 'unknown'}`);
       } catch (releaseError) {
-        reverseError(`[LIMIT_ENTRY] Erro ao liberar conexão:`, releaseError.message);
+        console.error(`[LIMIT_ENTRY] Erro ao liberar conexão:`, releaseError.message);
       }
     }
   }
@@ -1619,13 +1607,13 @@ async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3000, accountI
   const startTime = Date.now();
   
   try {
-    reverseLog(`[WAIT_ORDER] Aguardando execução da ordem ${orderId} por ${maxWaitMs}ms...`);
+    console.log(`[WAIT_ORDER] Aguardando execução da ordem ${orderId} por ${maxWaitMs}ms...`);
     
     // PRIMEIRA VERIFICAÇÃO: WebSocket local (mais rápido)
     if (sentOrdersMap && sentOrdersMap.has(orderId)) {
       const orderInfo = sentOrdersMap.get(orderId);
       if (orderInfo.status === 'FILLED' || orderInfo.status === 'PARTIALLY_FILLED') {
-        reverseLog(`[WAIT_ORDER] ✅ Ordem ${orderId} já confirmada via WebSocket local: ${orderInfo.status}`);
+        console.log(`[WAIT_ORDER] ✅ Ordem ${orderId} já confirmada via WebSocket local: ${orderInfo.status}`);
         return {
           status: orderInfo.status,
           executedQty: orderInfo.executedQty.toString(),
@@ -1641,7 +1629,7 @@ async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3000, accountI
     try {
       const orderStatus = await getOrderStatus(symbol, orderId, accountId);
       if (orderStatus && (orderStatus.status === 'FILLED' || orderStatus.status === 'PARTIALLY_FILLED')) {
-        reverseLog(`[WAIT_ORDER] ✅ Ordem ${orderId} confirmada via REST: ${orderStatus.status}`);
+        console.log(`[WAIT_ORDER] ✅ Ordem ${orderId} confirmada via REST: ${orderStatus.status}`);
         
         // ATUALIZAR O MAPA DE ORDENS ENVIADAS
         if (sentOrdersMap && sentOrdersMap.has(orderId)) {
@@ -1656,7 +1644,7 @@ async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3000, accountI
         return orderStatus;
       }
     } catch (restError) {
-           reverseLog(`[WAIT_ORDER] ⚠️ Erro REST (pode ser apenas atraso): ${restError.message}`);
+           console.log(`[WAIT_ORDER] ⚠️ Erro REST (pode ser apenas atraso): ${restError.message}`);
     }
     
     // LOOP DE ESPERA COM VERIFICAÇÕES DUPLAS
@@ -1672,7 +1660,7 @@ async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3000, accountI
       if (sentOrdersMap && sentOrdersMap.has(orderId)) {
         const orderInfo = sentOrdersMap.get(orderId);
         if (orderInfo.status === 'FILLED' || orderInfo.status === 'PARTIALLY_FILLED') {
-          reverseLog(`[WAIT_ORDER] ✅ Ordem ${orderId} confirmada via WebSocket durante espera: ${orderInfo.status}`);
+          console.log(`[WAIT_ORDER] ✅ Ordem ${orderId} confirmada via WebSocket durante espera: ${orderInfo.status}`);
           return {
             status: orderInfo.status,
             executedQty: orderInfo.executedQty.toString(),
@@ -1689,19 +1677,19 @@ async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3000, accountI
         try {
           const orderStatus = await getOrderStatus(symbol, orderId, accountId);
           if (orderStatus && (orderStatus.status === 'FILLED' || orderStatus.status === 'PARTIALLY_FILLED')) {
-            reverseLog(`[WAIT_ORDER] ✅ Ordem ${orderId} confirmada via REST durante espera: ${orderStatus.status}`);
+            console.log(`[WAIT_ORDER] ✅ Ordem ${orderId} confirmada via REST durante espera: ${orderStatus.status}`);
             return orderStatus;
           }
         } catch (restError) {
-          reverseLog(`[WAIT_ORDER] ⚠️ Erro REST durante espera: ${restError.message}`);
+          console.log(`[WAIT_ORDER] ⚠️ Erro REST durante espera: ${restError.message}`);
         }
       }
     }
     
-    reverseWarn(`[WAIT_ORDER] ⏰ Tempo limite atingido (${maxWaitMs}ms) para a ordem ${orderId}. Status atual pode ser: FILLED, PARTIALLY_FILLED ou ainda NEW.`);
+    console.warn(`[WAIT_ORDER] ⏰ Tempo limite atingido (${maxWaitMs}ms) para a ordem ${orderId}. Status atual pode ser: FILLED, PARTIALLY_FILLED ou ainda NEW.`);
     return { status: 'PENDING' };
   } catch (error) {
-    reverseError(`[WAIT_ORDER] ERRO:`, error.message);
+    console.error(`[WAIT_ORDER] ERRO:`, error.message);
     return { status: 'ERROR' };
   }
 }
@@ -1718,7 +1706,7 @@ async function detectGhostOrders(symbol, executionStartTime, accountId, sentOrde
     for (const order of activeOrders) {
       const orderId = String(order.orderId);
       if (!sentOrdersMap.has(orderId)) {
-        reverseWarn(`[GHOST_ORDER] ⚠️ Ordem não rastreada encontrada: ${orderId} (${order.status})`);
+        console.warn(`[GHOST_ORDER] ⚠️ Ordem não rastreada encontrada: ${orderId} (${order.status})`);
         
         // Adicionar ao mapa para rastreamento
         sentOrdersMap.set(orderId, {
@@ -1741,17 +1729,17 @@ async function detectGhostOrders(symbol, executionStartTime, accountId, sentOrde
           isGhostOrder: true // Marcar como ordem fantasma
         });
         
-        reverseLog(`[GHOST_ORDER] ✅ Ordem fantasma ${orderId} adicionada ao rastreamento`);
+        console.log(`[GHOST_ORDER] ✅ Ordem fantasma ${orderId} adicionada ao rastreamento`);
       }
     }
   } catch (error) {
-    reverseError(`[GHOST_ORDER] Erro na detecção: ${error.message}`);
+    console.error(`[GHOST_ORDER] Erro na detecção: ${error.message}`);
   }
 }
 
 // ✅ NOVA FUNÇÃO: Ressincronizar após reconexão do WebSocket
 async function resyncAfterReconnection(symbol, executionStartTime, accountId, sentOrdersMap) {
-  reverseLog(`[RESYNC] Ressincronizando após reconexão do WebSocket...`);
+  console.log(`[RESYNC] Ressincronizando após reconexão do WebSocket...`);
   
   try {
     const recentOrders = await getRecentOrders(accountId, symbol, 30);
@@ -1772,26 +1760,26 @@ async function resyncAfterReconnection(symbol, executionStartTime, accountId, se
             sentOrdersMap.set(orderId, localOrder);
             
             resyncCount++;
-            reverseLog(`[RESYNC] Ordem ${orderId} atualizada: ${order.status} (exec: ${order.executedQty})`);
+            console.log(`[RESYNC] Ordem ${orderId} atualizada: ${order.status} (exec: ${order.executedQty})`);
           }
         }
       }
     }
     
     if (resyncCount > 0) {
-      reverseLog(`[RESYNC] ✅ ${resyncCount} ordens ressincronizadas com sucesso`);
+      console.log(`[RESYNC] ✅ ${resyncCount} ordens ressincronizadas com sucesso`);
     } else {
-      reverseLog(`[RESYNC] ℹ️ Nenhuma atualização necessária durante ressincronização`);
+      console.log(`[RESYNC] ℹ️ Nenhuma atualização necessária durante ressincronização`);
     }
   } catch (error) {
-    reverseError(`[RESYNC] Erro na ressincronização: ${error.message}`);
+    console.error(`[RESYNC] Erro na ressincronização: ${error.message}`);
   }
 }
 
 // ✅ NOVA FUNÇÃO: Envolve a sincronização de uma ordem em um lock
 async function syncOrderWithLock(orderId, symbol, accountId, sentOrdersMap, executionStartTime, partialFills, binanceSide) {
   if (orderLocks.has(orderId)) {
-    reverseLog(`[LOCK] Aguardando lock para ordem ${orderId}...`);
+    console.log(`[LOCK] Aguardando lock para ordem ${orderId}...`);
     await orderLocks.get(orderId);
     return null; // Retorna nulo para indicar que já estava sendo processado
   }
@@ -1801,7 +1789,7 @@ async function syncOrderWithLock(orderId, symbol, accountId, sentOrdersMap, exec
       return await syncAndProcessSingleOrder(orderId, symbol, accountId, sentOrdersMap, executionStartTime, partialFills, binanceSide);
     } finally {
       orderLocks.delete(orderId);
-      reverseLog(`[LOCK] Lock liberado para ordem ${orderId}`);
+      console.log(`[LOCK] Lock liberado para ordem ${orderId}`);
     }
   })();
   
@@ -1811,7 +1799,7 @@ async function syncOrderWithLock(orderId, symbol, accountId, sentOrdersMap, exec
 
 // ✅ NOVA FUNÇÃO: Lógica de sincronização segura para uma única ordem
 async function syncAndProcessSingleOrder(orderId, symbol, accountId, sentOrdersMap, executionStartTime, partialFills, binanceSide) {
-    reverseLog(`[SYNC_ORDER] Sincronizando ordem ${orderId}...`);
+    console.log(`[SYNC_ORDER] Sincronizando ordem ${orderId}...`);
     let filledQty = 0;
 
     try {
@@ -1839,14 +1827,14 @@ async function syncAndProcessSingleOrder(orderId, symbol, accountId, sentOrdersM
                             timestamp: orderStatus.updateTime,
                             validationSource: 'sync_lock'
                         });
-                        reverseLog(`[SYNC_ORDER] ✅ Ordem ${orderId} confirmada como FILLED. Qtd: ${filledQty}`);
+                        console.log(`[SYNC_ORDER] ✅ Ordem ${orderId} confirmada como FILLED. Qtd: ${filledQty}`);
                         return { filled: true, qty: filledQty };
                     }
                 }
             }
         }
     } catch (error) {
-        reverseError(`[SYNC_ORDER] Erro ao sincronizar ordem ${orderId}: ${error.message}`);
+        console.error(`[SYNC_ORDER] Erro ao sincronizar ordem ${orderId}: ${error.message}`);
     }
     
     return { filled: false, qty: 0 };
@@ -1855,7 +1843,7 @@ async function syncAndProcessSingleOrder(orderId, symbol, accountId, sentOrdersM
 // FUNÇÕES AUXILIARES (mantidas como estavam)
 async function getAvailableBalance(accountId) {
     try {
-        reverseLog(`[LIMIT_ENTRY] Obtendo saldo_base_calculo para conta ${accountId}...`);
+        console.log(`[LIMIT_ENTRY] Obtendo saldo_base_calculo para conta ${accountId}...`);
 
         if (!accountId || typeof accountId !== 'number') {
             throw new Error(`AccountId inválido: ${accountId}`);
@@ -1875,11 +1863,11 @@ async function getAvailableBalance(accountId) {
 
         const saldoBaseCalculoFuturos = parseFloat(rows[0].saldo_base_calculo_futuros || 0);
         
-        reverseLog(`[LIMIT_ENTRY] ✅ saldo obtido: ${saldoBaseCalculoFuturos} USDT`);
+        console.log(`[LIMIT_ENTRY] ✅ saldo obtido: ${saldoBaseCalculoFuturos} USDT`);
         return saldoBaseCalculoFuturos;
 
     } catch (error) {
-        reverseError(`[LIMIT_ENTRY] Erro ao obter saldo_base_calculo para conta ${accountId}:`, error.message);
+        console.error(`[LIMIT_ENTRY] Erro ao obter saldo_base_calculo para conta ${accountId}:`, error.message);
     }
 }
 
@@ -1888,7 +1876,7 @@ function calculateOrderSize(availableBalance, capitalPercentage, entryPrice, lev
     const rawSize = (capital * leverage) / entryPrice;
 
     if (stepSize <= 0) {
-        reverseWarn(`[MONITOR] StepSize inválido (${stepSize}), usando precisão para cálculo.`);
+        console.warn(`[MONITOR] StepSize inválido (${stepSize}), usando precisão para cálculo.`);
         const multiplier = Math.pow(10, quantityPrecision);
         const truncatedSize = Math.floor(rawSize * multiplier) / multiplier;
         return parseFloat(truncatedSize.toFixed(quantityPrecision));
@@ -1902,9 +1890,9 @@ function calculateOrderSize(availableBalance, capitalPercentage, entryPrice, lev
     const formattedSize = parseFloat(truncatedSize.toFixed(quantityPrecision));
 
     // ✅ ATUALIZAR LOG PARA MOSTRAR QUE ESTÁ USANDO saldo_base_calculo
-    reverseLog(`[MONITOR] Cálculo baseado em saldo_base_calculo:`);
-    reverseLog(`[MONITOR]   - saldo_base_calculo: ${availableBalance.toFixed(2)} USDT`);
-    reverseLog(`[MONITOR]   - formatado: ${formattedSize}`);
+    console.log(`[MONITOR] Cálculo baseado em saldo_base_calculo:`);
+    console.log(`[MONITOR]   - saldo_base_calculo: ${availableBalance.toFixed(2)} USDT`);
+    console.log(`[MONITOR]   - formatado: ${formattedSize}`);
 
     return formattedSize;
 }
