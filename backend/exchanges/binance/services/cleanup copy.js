@@ -92,6 +92,230 @@ async function retryDatabaseOperation(operation, maxRetries = 10, delay = 1000, 
 }
 
 /**
+ * Limpa sinais órfãos e inconsistências
+ */
+async function cleanupOrphanSignals(accountId) {
+  try {
+    if (!accountId || typeof accountId !== 'number') {
+      console.error(`[CLEANUP] AccountId inválido: ${accountId}`);
+      return;
+    }
+    
+    await retryDatabaseOperation(async () => {
+      const db = await getDatabaseInstance();
+      
+      // Resetar sinais em PROCESSANDO há mais de 5 minutos
+      const [resetResult] = await db.query(`
+        UPDATE webhook_signals 
+        SET status = 'PENDING', 
+            error_message = NULL,
+            updated_at = NOW()
+        WHERE status = 'PROCESSANDO' 
+          AND conta_id = ?
+          AND updated_at < DATE_SUB(NOW(), INTERVAL 5 MINUTE)
+      `, [accountId]);
+      
+      if (resetResult.affectedRows > 0) {
+        console.log(`[CLEANUP] ${resetResult.affectedRows} sinais resetados para conta ${accountId}`);
+      }
+
+      // Limpar sinais com erro de "not defined"
+      await db.query(`
+        UPDATE webhook_signals 
+        SET status = 'ERROR', 
+            error_message = CONCAT(IFNULL(error_message, ''), ' | Limpo durante cleanup') 
+        WHERE error_message LIKE '%not defined%' 
+          AND conta_id = ?
+          AND status NOT IN ('ERROR', 'CANCELED')
+      `, [accountId]);
+      
+      return true;
+    }, 10, 1000, `Cleanup Orphan Signals (conta ${accountId})`);
+
+  } catch (error) {
+    console.error(`[CLEANUP] Erro na limpeza de sinais órfãos para conta ${accountId}:`, error.message);
+  }
+}
+
+/**
+ * Força fechamento de posições detectadas como fechadas na corretora
+ */
+async function forceCloseGhostPositions(accountId) {
+  try {
+    if (!accountId || typeof accountId !== 'number') {
+      console.error(`[CLEANUP] AccountId inválido: ${accountId}`);
+      return 0;
+    }
+    
+    return await retryDatabaseOperation(async () => {
+      const db = await getDatabaseInstance();
+      
+      // Obter posições abertas no banco
+      const [dbPositions] = await db.query(`
+        SELECT id, simbolo, quantidade FROM posicoes 
+        WHERE status = 'OPEN' AND conta_id = ?
+      `, [accountId]);
+      
+      if (dbPositions.length === 0) {
+        return 0;
+      }
+      
+      // Obter posições abertas na corretora
+      const exchangePositions = await api.getAllOpenPositions(accountId);
+      
+      let closedCount = 0;
+      
+      for (const dbPos of dbPositions) {
+        const exchangePos = exchangePositions.find(p => p.simbolo === dbPos.simbolo);
+        
+        if (!exchangePos || Math.abs(parseFloat(exchangePos.quantidade)) <= 0.000001) {
+          // Posição não existe na corretora ou tem quantidade zero
+          await db.query(`
+            UPDATE posicoes 
+            SET status = 'CLOSED', 
+                data_hora_fechamento = NOW(),
+                observacao = 'Fechada via cleanup - não encontrada na corretora'
+            WHERE id = ?
+          `, [dbPos.id]);
+          
+          console.log(`[CLEANUP] Posição fantasma ${dbPos.simbolo} fechada para conta ${accountId} (ID: ${dbPos.id})`);
+          closedCount++;
+        }
+      }
+      
+      return closedCount;
+    }, 10, 1000, `Force Close Ghost Positions (conta ${accountId})`);
+    
+  } catch (error) {
+    console.error(`[CLEANUP] Erro ao fechar posições fantasma para conta ${accountId}:`, error.message);
+    return 0;
+  }
+}
+
+/**
+ * ✅ VERSÃO SIMPLIFICADA: Verifica se ordem existe na corretora pelo id_externo
+ * Se não existir na corretora = órfã (atualizar banco)
+ */
+async function cancelOrphanOrders(accountId) {
+  try {
+    if (!accountId || typeof accountId !== 'number') {
+      console.error(`[CLEANUP] AccountId inválido: ${accountId}`);
+      return 0;
+    }
+    
+    // ✅ VERIFICAR SE SISTEMA ESTÁ EM SHUTDOWN
+    if (global.isShuttingDown || process.env.NODE_ENV === 'shutdown') {
+      console.log(`[CLEANUP] 🛑 Sistema em shutdown - cancelando verificação de órfãs para conta ${accountId}`);
+      return 0;
+    }
+   
+    return await retryDatabaseOperation(async () => {
+      const db = await getDatabaseInstance();
+      
+      // ✅ BUSCAR APENAS ORDENS ATIVAS (excluir já finalizadas)
+      const [activeOrders] = await db.query(`
+        SELECT id_externo, simbolo, tipo_ordem_bot, quantidade, preco, status, id_posicao, orign_sig
+        FROM ordens 
+        WHERE status IN ('NEW', 'PARTIALLY_FILLED', 'PENDING_CANCEL')
+          AND conta_id = ?
+      `, [accountId]);
+
+      if (activeOrders.length === 0) {
+        return 0;
+      }
+
+      //console.log(`[CLEANUP] 🔍 Verificando ${activeOrders.length} ordens ATIVAS para órfãs (conta ${accountId})...`);
+
+      let orphanCount = 0;
+      let preservedCount = 0;
+
+      for (const order of activeOrders) {
+        try {
+          // ✅ VERIFICAR SE ORDEM EXISTE NA CORRETORA
+          const orderStatus = await api.getOrderStatus(order.simbolo, order.id_externo, accountId);
+
+          if (orderStatus && orderStatus.orderId) {
+            const exchangeStatus = orderStatus.status;
+            
+            // ✅ SE STATUS MUDOU PARA FINALIZADO, MOVER IMEDIATAMENTE
+            if (['FILLED', 'CANCELED', 'CANCELLED', 'EXPIRED', 'REJECTED'].includes(exchangeStatus)) {
+              console.log(`[CLEANUP] 🎯 Ordem ${order.id_externo} finalizada na corretora (${exchangeStatus}) - movendo...`);
+              
+              // Atualizar status no banco primeiro
+              await db.query(`
+                UPDATE ordens 
+                SET status = ?, last_update = NOW()
+                WHERE id_externo = ? AND conta_id = ?
+              `, [exchangeStatus, order.id_externo, accountId]);
+              
+              // Mover automaticamente
+              const { autoMoveOrderOnCompletion } = require('../handlers/orderHandlers');
+              const moved = await autoMoveOrderOnCompletion(order.id_externo, exchangeStatus, accountId);
+              
+              if (moved) {
+                console.log(`[CLEANUP] ✅ Ordem finalizada ${order.id_externo} movida para histórico`);
+                orphanCount++; // Contar como processada
+              }
+              
+            } else if (exchangeStatus !== order.status) {
+              // ✅ SINCRONIZAR STATUS SEM MOVER
+              console.log(`[CLEANUP] 🔄 Sincronizando status: ${order.status} → ${exchangeStatus}`);
+              await db.query(`
+                UPDATE ordens 
+                SET status = ?, last_update = NOW()
+                WHERE id_externo = ? AND conta_id = ?
+              `, [exchangeStatus, order.id_externo, accountId]);
+              preservedCount++;
+            } else {
+              // ✅ ORDEM OK - PRESERVAR
+              preservedCount++;
+            }
+            
+          } else {
+            // ✅ ORDEM NÃO EXISTE = ÓRFÃ
+            console.log(`[CLEANUP] 🗑️ Ordem órfã detectada: ${order.id_externo} - marcando como CANCELED`);
+            
+            await db.query(`
+              UPDATE ordens 
+              SET status = 'CANCELED', 
+                  last_update = NOW(),
+                  observacao = CONCAT(
+                    IFNULL(observacao, ''), 
+                    ' | Órfã - não existe na corretora'
+                  )
+              WHERE id_externo = ? AND conta_id = ?
+            `, [order.id_externo, accountId]);
+            
+            // ✅ MOVER ÓRFÃ PARA HISTÓRICO IMEDIATAMENTE
+            const { autoMoveOrderOnCompletion } = require('../handlers/orderHandlers');
+            const moved = await autoMoveOrderOnCompletion(order.id_externo, 'CANCELED', accountId);
+            
+            if (moved) {
+              orphanCount++;
+              console.log(`[CLEANUP] ✅ Órfã ${order.id_externo} movida para histórico`);
+            }
+          }
+
+        } catch (orderError) {
+          console.error(`[CLEANUP] ⚠️ Erro ao verificar ordem ${order.id_externo}:`, orderError.message);
+          preservedCount++;
+        }
+      }
+
+      //console.log(`[CLEANUP] 📊 Resumo para conta ${accountId}:`);
+      //console.log(`  - Ordens processadas/movidas: ${orphanCount}`);
+      //console.log(`  - Ordens preservadas (ativas): ${preservedCount}`);
+
+      return orphanCount;
+    }, 10, 1000, `Cancel Orphan Orders (conta ${accountId})`);
+
+  } catch (error) {
+    console.error(`[CLEANUP] ❌ Erro ao processar ordens para conta ${accountId}:`, error.message);
+    return 0;
+  }
+}
+
+/**
  * ✅ FUNÇÃO CORRIGIDA: Mover ordens para histórico COM TODOS OS CAMPOS
  */
 async function moveOrdersToHistory(accountId) {
@@ -751,13 +975,82 @@ async function movePositionToHistory(db, positionId, status = 'CLOSED', reason =
   }
 }
 
-
+/**
+ * ✅ FUNÇÃO PARA SINCRONIZAR E FECHAR POSIÇÕES "FANTASMA"
+ * Sincroniza posições abertas na corretora e fecha as que estão abertas no banco mas não na corretora
+ */
+async function syncAndCloseGhostPositions(accountId) {
+  try {
+    return await retryDatabaseOperation(async () => {
+      const db = await getDatabaseInstance();
+      
+      // Obter posições abertas no banco
+      const [dbPositions] = await db.query(`
+        SELECT id, simbolo, quantidade FROM posicoes 
+        WHERE status = 'OPEN' AND conta_id = ?
+      `, [accountId]);
+      
+      if (dbPositions.length === 0) {
+        return 0;
+      }
+      
+      // Obter posições abertas na corretora
+      const exchangePositions = await api.getAllOpenPositions(accountId);
+      
+      let closedCount = 0;
+      
+      for (const dbPos of dbPositions) {
+        const exchangePos = exchangePositions.find(p => p.simbolo === dbPos.simbolo);
+        
+        if (!exchangePos) {
+          // Posição não existe na corretora
+          await db.query(`
+            UPDATE posicoes 
+            SET status = 'CLOSED', 
+                data_hora_fechamento = NOW(),
+                observacao = 'Fechada via sync - não encontrada na corretora'
+            WHERE id = ?
+          `, [dbPos.id]);
+          
+          console.log(`[SYNC] Posição fantasma ${dbPos.simbolo} fechada para conta ${accountId} (ID: ${dbPos.id})`);
+          closedCount++;
+        } else {
+          // Sincronizar quantidade e status
+          const quantidadeDiff = Math.abs(parseFloat(exchangePos.quantidade)) - Math.abs(parseFloat(dbPos.quantidade));
+          
+          if (quantidadeDiff > 0.000001) {
+            await db.query(`
+              UPDATE posicoes 
+              SET quantidade = ?, 
+                  status = 'OPEN', 
+                  data_hora_fechamento = NULL,
+                  observacao = 'Sincronizada com a corretora'
+              WHERE id = ?
+            `, [exchangePos.quantidade, dbPos.id]);
+            
+            console.log(`[SYNC] Posição ${dbPos.simbolo} sincronizada (nova quantidade: ${exchangePos.quantidade})`);
+          }
+        }
+      }
+      
+      return closedCount;
+    }, 10, 1000, `Sync and Close Ghost Positions (conta ${accountId})`);
+    
+  } catch (error) {
+    console.error(`[SYNC] Erro ao sincronizar e fechar posições fantasma para conta ${accountId}:`, error.message);
+    return 0;
+  }
+}
 
 module.exports = {
+  cleanupOrphanSignals,
+  forceCloseGhostPositions,
+  cancelOrphanOrders,
   moveOrdersToHistory,
   checkOrderExistsOnExchange,
   checkSingleOrderStatus,
   movePositionToHistory,
   checkAndCloseWebsocket,
+  syncAndCloseGhostPositions,
   retryDatabaseOperation
 };
