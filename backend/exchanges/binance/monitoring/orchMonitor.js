@@ -228,37 +228,6 @@ async function initializeMonitoring(accountId) {
     if (!db) throw new Error('Banco não disponível');
     console.log(`✅ Banco de dados conectado com sucesso para conta ${accountId}\n`);
 
-    // === ETAPA 1.5: Limpeza de ordens e posições fantasmas ===
-    console.log(`[MONITOR] 🧹 Buscando e limpando ordens e posições fantasmas para conta ${accountId}...`);
-    try {
-      const { forceCloseGhostPositions, cancelOrphanOrders, movePositionToHistory } = require('../services/cleanup');
-      // 1. Forçar fechamento de posições fantasmas
-      const closedCount = await forceCloseGhostPositions(accountId);
-      if (closedCount > 0) {
-        // Buscar posições agora marcadas como CLOSED e mover para histórico
-        const [closedPositions] = await db.query('SELECT id FROM posicoes WHERE status = ? AND conta_id = ?', ['CLOSED', accountId]);
-        for (const pos of closedPositions) {
-          try {
-            await movePositionToHistory(pos.id, accountId, true);
-          } catch (moveErr) {
-            console.error(`[MONITOR] ⚠️ Erro ao mover posição fantasma ${pos.id} para histórico:`, moveErr.message);
-          }
-        }
-        console.log(`[MONITOR] ✅ ${closedCount} posições fantasmas fechadas e movidas para histórico.`);
-      } else {
-        //console.log(`[MONITOR] ✅ Nenhuma posição fantasma encontrada para conta ${accountId}.`);
-      }
-      // 2. Cancelar ordens órfãs
-      const orphanOrderCount = await cancelOrphanOrders(accountId);
-      if (orphanOrderCount > 0) {
-        console.log(`[MONITOR] ✅ ${orphanOrderCount} ordens órfãs processadas/movidas para histórico.`);
-      } else {
-        //console.log(`[MONITOR] ✅ Nenhuma ordem órfã encontrada para conta ${accountId}.`);
-      }
-    } catch (ghostError) {
-      console.error(`[MONITOR] ⚠️ Erro ao processar ordens/posições fantasmas:`, ghostError.message);
-    }
-
     // === ETAPA 2: Verificar consistência de ambiente ===
     console.log(`🔍 ETAPA 2: Verificando consistência de ambiente para conta ${accountId}...`);
     try {
