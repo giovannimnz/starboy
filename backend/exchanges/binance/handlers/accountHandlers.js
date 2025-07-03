@@ -1,7 +1,7 @@
 const { getDatabaseInstance, insertPosition, formatDateForMySQL } = require('../../../core/database/conexao');
 const websockets = require('../api/websocket');
 const { sendTelegramMessage, formatBalanceMessage } = require('../services/telegramHelper');
-const { movePositionToHistory } = require('../services/cleanup');
+const { movePositionToHistory, retryDatabaseOperation } = require('../services/cleanup');
 
 // ✅ CACHE GLOBAL PARA EVITAR DUPLICIDADE DE MENSAGENS DE FECHAMENTO (COMPARTILHADO)
 // Usando uma instância global para garantir que seja único em toda a aplicação
@@ -221,22 +221,10 @@ async function handleBalanceUpdates(connection, balances, accountId, reason, eve
           updateQuery += ` WHERE id = ?`;
           updateValues.push(accountId);
           
-          // ✅ RETRY EM CASO DE DEADLOCK - ATUALIZAÇÃO DE SALDO
-          let balanceUpdateTries = 0;
-          while (balanceUpdateTries < 1000) {
-            try {
-              await connection.query(updateQuery, updateValues);
-              break;
-            } catch (error) {
-              if (error.message && error.message.includes('Deadlock found when trying to get lock') && balanceUpdateTries < 999) {
-                balanceUpdateTries++;
-                console.warn(`[ACCOUNT] ⚠️ Deadlock detectado ao atualizar saldo, tentativa ${balanceUpdateTries}/1000...`);
-                await new Promise(res => setTimeout(res, 10 + Math.random() * 50)); // 10-60ms random delay
-                continue;
-              }
-              throw error;
-            }
-          }
+          // ✅ RETRY COM FUNÇÃO UNIFICADA - ATUALIZAÇÃO DE SALDO
+          await retryDatabaseOperation(async () => {
+            await connection.query(updateQuery, updateValues);
+          }, 10, 100, 'Atualização de Saldo da Conta');
           
           console.log(`[ACCOUNT] ✅ Saldo USDT atualizado: ${walletBalance.toFixed(2)} USDT (base_calc: ${novaBaseCalculo.toFixed(2)}, change: ${balanceChange.toFixed(4)}, reason: ${reason})`);
           
@@ -308,64 +296,45 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
         if (existingPositions.length > 0) {
           // Atualizar posição existente
           const positionId = existingPositions[0].id;
-          let updateTries = 0;
-          while (updateTries < 1000) {
-            try {
-              // Montar update completo com todos os campos relevantes
-              let updateQuery = `UPDATE posicoes SET quantidade = ?, preco_medio = ?, preco_entrada = ?, preco_corrente = ?, breakeven_price = ?, accumulated_realized = ?, unrealized_pnl = ?, margin_type = ?, isolated_wallet = ?, position_side = ?, event_reason = ?, webhook_data_raw = ?, data_hora_ultima_atualizacao = NOW() WHERE id = ?`;
-              let updateValues = [positionAmt, entryPrice, entryPrice, entryPrice, breakevenPrice, accumulatedRealized, unrealizedPnl, marginType, isolatedWallet, positionSide, reason, JSON.stringify({ ...positionData, eventTime, transactionTime, reason, action: 'POSITION_UPDATE' }), positionId];
-              await connection.query(updateQuery, updateValues);
-              break;
-            } catch (error) {
-              if (error.message && error.message.includes('Deadlock found when trying to get lock') && updateTries < 999) {
-                updateTries++;
-                console.warn(`[ACCOUNT] ⚠️ Deadlock detectado ao atualizar posição, tentativa ${updateTries}/1000...`);
-                await new Promise(res => setTimeout(res, 10 + Math.random() * 50));
-                continue;
-              }
-              throw error;
-            }
-          }
+          
+          // ✅ RETRY COM FUNÇÃO UNIFICADA - ATUALIZAÇÃO DE POSIÇÃO
+          await retryDatabaseOperation(async () => {
+            // Montar update completo com todos os campos relevantes
+            let updateQuery = `UPDATE posicoes SET quantidade = ?, preco_medio = ?, preco_entrada = ?, preco_corrente = ?, breakeven_price = ?, accumulated_realized = ?, unrealized_pnl = ?, margin_type = ?, isolated_wallet = ?, position_side = ?, event_reason = ?, webhook_data_raw = ?, data_hora_ultima_atualizacao = NOW() WHERE id = ?`;
+            let updateValues = [positionAmt, entryPrice, entryPrice, entryPrice, breakevenPrice, accumulatedRealized, unrealizedPnl, marginType, isolatedWallet, positionSide, reason, JSON.stringify({ ...positionData, eventTime, transactionTime, reason, action: 'POSITION_UPDATE' }), positionId];
+            await connection.query(updateQuery, updateValues);
+          }, 10, 100, `Atualização de Posição ${symbol}`);
+          
           console.log(`[ACCOUNT_UPDATE] ✅ Posição ${symbol} atualizada COMPLETAMENTE com todos os campos do webhook`);
         } else {
           // Só faz insert se pa != 0
           let newPositionId;
-          let insertTries = 0;
-          while (insertTries < 1000) {
-            try {
-              const { insertPosition } = require('../../../core/database/conexao');
-              newPositionId = await insertPosition(connection, {
-                simbolo: symbol,
-                quantidade: positionAmt,
-                preco_medio: entryPrice,
-                status: 'OPEN',
-                data_hora_abertura: new Date(),
-                side: positionSide,
-                leverage: 1,
-                data_hora_ultima_atualizacao: new Date(),
-                preco_entrada: entryPrice,
-                preco_corrente: entryPrice,
-                breakeven_price: breakevenPrice,
-                accumulated_realized: accumulatedRealized,
-                unrealized_pnl: unrealizedPnl,
-                margin_type: marginType,
-                isolated_wallet: isolatedWallet,
-                position_side: positionSide,
-                event_reason: reason,
-                webhook_data_raw: JSON.stringify({ ...positionData, eventTime, transactionTime, reason, action: 'POSITION_INSERT' }),
-                conta_id: accountId
-              }, accountId);
-              break;
-            } catch (error) {
-              if (error.message && error.message.includes('Deadlock found when trying to get lock') && insertTries < 999) {
-                insertTries++;
-                console.warn(`[ACCOUNT] ⚠️ Deadlock detectado ao inserir posição, tentativa ${insertTries}/1000...`);
-                await new Promise(res => setTimeout(res, 10 + Math.random() * 50));
-                continue;
-              }
-              throw error;
-            }
-          }
+          // ✅ RETRY COM FUNÇÃO UNIFICADA - INSERÇÃO DE POSIÇÃO  
+          newPositionId = await retryDatabaseOperation(async () => {
+            const { insertPosition } = require('../../../core/database/conexao');
+            return await insertPosition(connection, {
+              simbolo: symbol,
+              quantidade: positionAmt,
+              preco_medio: entryPrice,
+              status: 'OPEN',
+              data_hora_abertura: new Date(),
+              side: positionSide,
+              leverage: 1,
+              data_hora_ultima_atualizacao: new Date(),
+              preco_entrada: entryPrice,
+              preco_corrente: entryPrice,
+              breakeven_price: breakevenPrice,
+              accumulated_realized: accumulatedRealized,
+              unrealized_pnl: unrealizedPnl,
+              margin_type: marginType,
+              isolated_wallet: isolatedWallet,
+              position_side: positionSide,
+              event_reason: reason,
+              webhook_data_raw: JSON.stringify({ ...positionData, eventTime, transactionTime, reason, action: 'POSITION_INSERT' }),
+              conta_id: accountId
+            }, accountId);
+          }, 10, 100, `Inserção de Nova Posição ${symbol}`);
+          
           console.log(`[ACCOUNT_UPDATE] ✅ Nova posição COMPLETA criada: ${symbol} (ID: ${newPositionId}) com todos os campos do webhook`);
           
           // Após inserir a posição, vincular o id aos sinais e ordens
@@ -388,119 +357,87 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
             }
             
             // ✅ BUSCAR E ATUALIZAR O SINAL MAIS RECENTE (prioridade EXECUTADO, fallback qualquer status)
-            let webhookUpdateTries = 0;
             let signalUpdated = false;
-            while (webhookUpdateTries < 1000 && !signalUpdated) {
-              try {
-                let signalToUpdate = null;
+            
+            // ✅ RETRY COM FUNÇÃO UNIFICADA - ATUALIZAÇÃO DE WEBHOOK SIGNALS
+            signalUpdated = await retryDatabaseOperation(async () => {
+              let signalToUpdate = null;
+              
+              // 1️⃣ PRIMEIRO: Buscar sinal mais recente com status 'EXECUTADO' sem position_id
+              console.log(`[ACCOUNT_UPDATE] 🔍 Buscando sinal EXECUTADO para ${symbol} (conta ${accountId})...`);
+              const [executedSignals] = await connection.query(
+                `SELECT id, status, created_at FROM webhook_signals 
+                 WHERE symbol = ? AND conta_id = ? AND status = 'EXECUTADO' AND (position_id IS NULL OR position_id = 0)
+                 ORDER BY created_at DESC LIMIT 1`,
+                [symbol, accountId]
+              );
+              
+              if (executedSignals.length > 0) {
+                signalToUpdate = executedSignals[0];
+                console.log(`[ACCOUNT_UPDATE] ✅ Encontrado sinal EXECUTADO: ID ${signalToUpdate.id} (${signalToUpdate.created_at})`);
+              } else {
+                console.log(`[ACCOUNT_UPDATE] ⚠️ Nenhum sinal EXECUTADO encontrado, buscando fallback...`);
                 
-                // 1️⃣ PRIMEIRO: Buscar sinal mais recente com status 'EXECUTADO' sem position_id
-                console.log(`[ACCOUNT_UPDATE] 🔍 Buscando sinal EXECUTADO para ${symbol} (conta ${accountId})...`);
-                const [executedSignals] = await connection.query(
+                // 2️⃣ FALLBACK: Buscar sinal mais recente de qualquer status sem position_id
+                const [anyStatusSignals] = await connection.query(
                   `SELECT id, status, created_at FROM webhook_signals 
-                   WHERE symbol = ? AND conta_id = ? AND status = 'EXECUTADO' AND (position_id IS NULL OR position_id = 0)
+                   WHERE symbol = ? AND conta_id = ? AND (position_id IS NULL OR position_id = 0)
                    ORDER BY created_at DESC LIMIT 1`,
                   [symbol, accountId]
                 );
                 
-                if (executedSignals.length > 0) {
-                  signalToUpdate = executedSignals[0];
-                  console.log(`[ACCOUNT_UPDATE] ✅ Encontrado sinal EXECUTADO: ID ${signalToUpdate.id} (${signalToUpdate.created_at})`);
-                } else {
-                  console.log(`[ACCOUNT_UPDATE] ⚠️ Nenhum sinal EXECUTADO encontrado, buscando fallback...`);
-                  
-                  // 2️⃣ FALLBACK: Buscar sinal mais recente de qualquer status sem position_id
-                  const [anyStatusSignals] = await connection.query(
-                    `SELECT id, status, created_at FROM webhook_signals 
-                     WHERE symbol = ? AND conta_id = ? AND (position_id IS NULL OR position_id = 0)
-                     ORDER BY created_at DESC LIMIT 1`,
-                    [symbol, accountId]
-                  );
-                  
-                  if (anyStatusSignals.length > 0) {
-                    signalToUpdate = anyStatusSignals[0];
-                    console.log(`[ACCOUNT_UPDATE] 📋 Usando sinal fallback: ID ${signalToUpdate.id} (status: ${signalToUpdate.status}, ${signalToUpdate.created_at})`);
-                  }
+                if (anyStatusSignals.length > 0) {
+                  signalToUpdate = anyStatusSignals[0];
+                  console.log(`[ACCOUNT_UPDATE] 📋 Usando sinal fallback: ID ${signalToUpdate.id} (status: ${signalToUpdate.status}, ${signalToUpdate.created_at})`);
                 }
-                
-                if (signalToUpdate) {
-                  const signalId = signalToUpdate.id;
-                  const signalStatus = signalToUpdate.status;
-                  
-                  console.log(`[ACCOUNT_UPDATE] 🎯 Vinculando posição ${newPositionId} ao sinal ${signalId} (status: ${signalStatus})`);
-                  
-                  // Atualizar o sinal específico
-                  const [updateResult] = await connection.query(
-                    `UPDATE webhook_signals SET position_id = ? WHERE id = ?`,
-                    [newPositionId, signalId]
-                  );
-                  
-                  if (updateResult.affectedRows > 0) {
-                    console.log(`[ACCOUNT_UPDATE] ✅ Sinal ${signalId} vinculado à posição ${newPositionId} com sucesso (tipo: ${signalStatus === 'EXECUTADO' ? 'prioritário' : 'fallback'})`);
-                    signalUpdated = true;
-                  } else {
-                    console.warn(`[ACCOUNT_UPDATE] ⚠️ Nenhuma linha afetada ao atualizar sinal ${signalId}`);
-                  }
-                } else {
-                  console.warn(`[ACCOUNT_UPDATE] ⚠️ Nenhum sinal encontrado para vincular à posição ${newPositionId} (${symbol}, conta ${accountId})`);
-                  signalUpdated = true; // Para parar o loop
-                }
-                
-                break;
-              } catch (error) {
-                if (error.message && error.message.includes('Deadlock found when trying to get lock') && webhookUpdateTries < 999) {
-                  webhookUpdateTries++;
-                  console.warn(`[ACCOUNT] ⚠️ Deadlock detectado ao atualizar webhook_signals, tentativa ${webhookUpdateTries}/1000...`);
-                  await new Promise(res => setTimeout(res, 10 + Math.random() * 50));
-                  continue;
-                }
-                throw error;
               }
-            }
+              
+              if (signalToUpdate) {
+                const signalId = signalToUpdate.id;
+                const signalStatus = signalToUpdate.status;
+                
+                console.log(`[ACCOUNT_UPDATE] 🎯 Vinculando posição ${newPositionId} ao sinal ${signalId} (status: ${signalStatus})`);
+                
+                // Atualizar o sinal específico
+                const [updateResult] = await connection.query(
+                  `UPDATE webhook_signals SET position_id = ? WHERE id = ?`,
+                  [newPositionId, signalId]
+                );
+                
+                if (updateResult.affectedRows > 0) {
+                  console.log(`[ACCOUNT_UPDATE] ✅ Sinal ${signalId} vinculado à posição ${newPositionId} com sucesso (tipo: ${signalStatus === 'EXECUTADO' ? 'prioritário' : 'fallback'})`);
+                  return true;
+                } else {
+                  console.warn(`[ACCOUNT_UPDATE] ⚠️ Nenhuma linha afetada ao atualizar sinal ${signalId}`);
+                  return false;
+                }
+              } else {
+                console.warn(`[ACCOUNT_UPDATE] ⚠️ Nenhum sinal encontrado para vincular à posição ${newPositionId} (${symbol}, conta ${accountId})`);
+                return true; // Para parar o loop
+              }
+            }, 10, 100, `Atualização de Webhook Signals ${symbol}`);
             
             // ✅ ATUALIZAR ORDENS COM LOGS DETALHADOS
             console.log(`[ACCOUNT_UPDATE] 🔗 Vinculando ordens à posição ${newPositionId}...`);
             
-            let ordensUpdateTries = 0;
-            while (ordensUpdateTries < 1000) {
-              try {
-                const [ordensResult] = await connection.query(
-                  `UPDATE ordens SET id_posicao = ? WHERE simbolo = ? AND conta_id = ? AND (id_posicao IS NULL OR id_posicao = 0)`,
-                  [newPositionId, symbol, accountId]
-                );
-                console.log(`[ACCOUNT_UPDATE] ✅ ${ordensResult.affectedRows} ordens vinculadas à posição ${newPositionId}`);
-                break;
-              } catch (error) {
-                if (error.message && error.message.includes('Deadlock found when trying to get lock') && ordensUpdateTries < 999) {
-                  ordensUpdateTries++;
-                  console.warn(`[ACCOUNT] ⚠️ Deadlock detectado ao atualizar ordens, tentativa ${ordensUpdateTries}/1000...`);
-                  await new Promise(res => setTimeout(res, 10 + Math.random() * 50));
-                  continue;
-                }
-                throw error;
-              }
-            }
+            // ✅ RETRY COM FUNÇÃO UNIFICADA - ATUALIZAÇÃO DE ORDENS
+            await retryDatabaseOperation(async () => {
+              const [ordensResult] = await connection.query(
+                `UPDATE ordens SET id_posicao = ? WHERE simbolo = ? AND conta_id = ? AND (id_posicao IS NULL OR id_posicao = 0)`,
+                [newPositionId, symbol, accountId]
+              );
+              console.log(`[ACCOUNT_UPDATE] ✅ ${ordensResult.affectedRows} ordens vinculadas à posição ${newPositionId}`);
+            }, 10, 100, `Atualização de Ordens ${symbol}`);
             
             // ✅ ATUALIZAR ORDENS_FECHADAS COM LOGS DETALHADOS
-            let ordensFechadasUpdateTries = 0;
-            while (ordensFechadasUpdateTries < 1000) {
-              try {
-                const [ordensFechadasResult] = await connection.query(
-                  `UPDATE ordens_fechadas SET id_posicao = ? WHERE simbolo = ? AND conta_id = ? AND (id_posicao IS NULL OR id_posicao = 0)`,
-                  [newPositionId, symbol, accountId]
-                );
-                console.log(`[ACCOUNT_UPDATE] ✅ ${ordensFechadasResult.affectedRows} ordens_fechadas vinculadas à posição ${newPositionId}`);
-                break;
-              } catch (error) {
-                if (error.message && error.message.includes('Deadlock found when trying to get lock') && ordensFechadasUpdateTries < 999) {
-                  ordensFechadasUpdateTries++;
-                  console.warn(`[ACCOUNT] ⚠️ Deadlock detectado ao atualizar ordens_fechadas, tentativa ${ordensFechadasUpdateTries}/1000...`);
-                  await new Promise(res => setTimeout(res, 10 + Math.random() * 50));
-                  continue;
-                }
-                throw error;
-              }
-            }
+            // ✅ RETRY COM FUNÇÃO UNIFICADA - ATUALIZAÇÃO DE ORDENS FECHADAS
+            await retryDatabaseOperation(async () => {
+              const [ordensFechadasResult] = await connection.query(
+                `UPDATE ordens_fechadas SET id_posicao = ? WHERE simbolo = ? AND conta_id = ? AND (id_posicao IS NULL OR id_posicao = 0)`,
+                [newPositionId, symbol, accountId]
+              );
+              console.log(`[ACCOUNT_UPDATE] ✅ ${ordensFechadasResult.affectedRows} ordens_fechadas vinculadas à posição ${newPositionId}`);
+            }, 10, 100, `Atualização de Ordens Fechadas ${symbol}`);
             
             // ✅ LOG FINAL DE CONFIRMAÇÃO
             try {
@@ -807,15 +744,11 @@ function registerAccountHandlers(accountId) {
   try {
     console.log(`[ACCOUNT-HANDLERS] Registrando handlers de conta para conta ${accountId}...`);
     
-    // VERIFICAR SE JÁ EXISTE handleAccountUpdate nos callbacks
-    const existingCallbacks = websockets.getHandlers(accountId) || {};
+    // ✅ CORREÇÃO: Usar websockets.on() em vez de setMonitoringCallbacks deprecated
+    const handleAccountUpdateWrapper = (message, db) => handleAccountUpdate(message, accountId, db);
     
-    const accountCallbacks = {
-      ...existingCallbacks, // Manter callbacks existentes (como handleOrderUpdate)
-      handleAccountUpdate: (message, db) => handleAccountUpdate(message, accountId, db)
-    };
-    
-    websockets.setMonitoringCallbacks(accountCallbacks, accountId);
+    // Registrar usando o novo sistema de eventos
+    websockets.on('accountUpdate', handleAccountUpdateWrapper, accountId, `accountHandler_${accountId}`);
     
     console.log(`[ACCOUNT-HANDLERS] ✅ Handlers de conta registrados para conta ${accountId}`);
     return true;
@@ -831,8 +764,8 @@ function registerAccountHandlers(accountId) {
  */
 function areAccountHandlersRegistered(accountId) {
   try {
-    const handlers = websockets.getHandlers(accountId);
-    const hasAccountHandler = handlers && typeof handlers.handleAccountUpdate === 'function';
+    // ✅ CORREÇÃO: Verificar se listeners estão registrados via novo sistema
+    const hasAccountHandler = websockets.hasListener('accountUpdate', accountId, `accountHandler_${accountId}`);
     
     console.log(`[ACCOUNT-HANDLERS] Status do handler de conta para conta ${accountId}: ${hasAccountHandler ? '✅' : '❌'}`);
     return hasAccountHandler;
@@ -851,11 +784,8 @@ function unregisterAccountHandlers(accountId) {
     console.log(`[ACCOUNT-HANDLERS] Removendo handlers de conta para conta ${accountId}...`);
     
     // MANTER outros callbacks, remover apenas handleAccountUpdate
-    const existingCallbacks = websockets.getHandlers(accountId) || {};
-    const cleanedCallbacks = { ...existingCallbacks };
-    delete cleanedCallbacks.handleAccountUpdate;
-    
-    websockets.setMonitoringCallbacks(cleanedCallbacks, accountId);
+    // ✅ CORREÇÃO: Usar websockets.off() em vez de setMonitoringCallbacks deprecated
+    websockets.off('accountUpdate', accountId, `accountHandler_${accountId}`);
     
     console.log(`[ACCOUNT-HANDLERS] ✅ Handlers de conta removidos para conta ${accountId}`);
     return true;

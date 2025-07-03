@@ -1,6 +1,21 @@
 const { getDatabaseInstance, insertPosition, insertNewOrder, formatDateForMySQL } = require('../../../core/database/conexao');
+const { retryDatabaseOperation } = require('../services/cleanup');
 const websockets = require('../api/websocket');
 const { sendTelegramMessage, formatOrderMessage } = require('../services/telegramHelper');
+const path = require('path');
+
+// Carregar configurações de ambiente
+require('dotenv').config({ path: path.resolve(__dirname, '../../../../config/.env') });
+
+// Configurações de logging
+const ENABLE_ORPHAN_LOGS = process.env.ENABLE_ORPHAN_LOGS === 'true';
+
+// Função auxiliar para logs condicionais
+const orphanLog = (...args) => {
+  if (ENABLE_ORPHAN_LOGS) {
+    console.log(...args);
+  }
+};
 
 const targetCache = new Map();
 
@@ -33,13 +48,14 @@ function registerOrderUpdateHandler(accountId) {
  */
 async function handleOrderUpdate(accountId, orderUpdateData, db = null) {
   try {
-    let connection;
+    return await retryDatabaseOperation(async () => {
+      let connection;
 
-    // ✅ VALIDAÇÃO UNIFICADA
-    if (!accountId || typeof accountId !== 'number') {
-      console.error(`[ORDER] AccountId inválido: ${accountId} (tipo: ${typeof accountId})`);
-      return;
-    }
+      // ✅ VALIDAÇÃO UNIFICADA
+      if (!accountId || typeof accountId !== 'number') {
+        console.error(`[ORDER] AccountId inválido: ${accountId} (tipo: ${typeof accountId})`);
+        return;
+      }
 
     if (!orderUpdateData || !orderUpdateData.i) {
         console.error(`[ORDER] Dados de atualização de ordem inválidos para conta ${accountId}:`, orderUpdateData);
@@ -146,10 +162,14 @@ async function handleOrderUpdate(accountId, orderUpdateData, db = null) {
       console.log(`[ORDER]   - Quantidade: ${orderData.q}`);
       console.log(`[ORDER]   - Preço: ${orderData.p}`);
     }
+    
+    return true; // Indicar sucesso do processamento
+    }, 10, 1000, `Handle Order Update (ordem ${orderId || 'unknown'})`);
 
   } catch (error) {
     console.error(`[ORDER] ❌ Erro ao processar atualização da ordem:`, error.message);
     console.error(`[ORDER] Stack trace:`, error.stack);
+    return false;
   }
 }
 
@@ -270,13 +290,14 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCou
     return false;
   }
 
-  let connection;
-  try {
-    console.log(`[ORDER_AUTO_MOVE] 🔄 Iniciando migração da ordem ${orderId} com status ${newStatus}...`);
-    
-    const db = await getDatabaseInstance();
-    connection = await db.getConnection();
-    await connection.beginTransaction();
+  return await retryDatabaseOperation(async () => {
+    let connection;
+    try {
+      console.log(`[ORDER_AUTO_MOVE] 🔄 Iniciando migração da ordem ${orderId} com status ${newStatus}...`);
+      
+      const db = await getDatabaseInstance();
+      connection = await db.getConnection();
+      await connection.beginTransaction();
 
     // ✅ 1. VERIFICAÇÃO PRELIMINAR: Ordem já foi movida para histórico?
     const [historyCheck] = await connection.query(
@@ -540,25 +561,13 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCou
     console.log(`[ORDER_AUTO_MOVE] ✅ Ordem ${orderId} movida e deletada com sucesso - verificação final confirmada`);
     return true;
 
-  } catch (error) {
-    if (connection) await connection.rollback();
-
-    // Retry em caso de deadlock
-    if (
-      error.message &&
-      error.message.includes('Deadlock found when trying to get lock') &&
-      retryCount < 1000
-    ) {
-      console.warn(`[ORDER_AUTO_MOVE] ⚠️ Deadlock ao mover ordem ${orderId}. Tentando novamente (${retryCount + 1}/1000)...`);
-      await new Promise(resolve => setTimeout(resolve, 500 * (retryCount + 1)));
-      return autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCount + 1);
+    } catch (error) {
+      if (connection) await connection.rollback();
+      throw error; // Relançar para que retryDatabaseOperation possa tratar
+    } finally {
+      if (connection) connection.release();
     }
-
-    console.error(`[ORDER_AUTO_MOVE] ❌ Erro ao mover ordem ${orderId}:`, error.message);
-    return false;
-  } finally {
-    if (connection) connection.release();
-  }
+  }, 10, 1000, `Auto Move Order (ordem ${orderId})`);
 }
 
 /**
@@ -1013,9 +1022,6 @@ function registerOrderHandlers(accountId) {
   try {
     console.log(`[ORDER-HANDLERS] Registrando handlers de ordem para conta ${accountId}...`);
     
-    // OBTER callbacks existentes
-    const existingCallbacks = websockets.getHandlers(accountId) || {};
-    
     // ✅ CRIAR HANDLER ROBUSTO QUE ACEITA MÚLTIPLOS FORMATOS
     const robustOrderHandler = async (messageOrOrder, db) => {
       try {
@@ -1035,13 +1041,8 @@ function registerOrderHandlers(accountId) {
       }
     };
     
-    // ✅ REGISTRAR HANDLER ROBUSTO
-    const orderCallbacks = {
-      ...existingCallbacks,
-      handleOrderUpdate: robustOrderHandler
-    };
-    
-    websockets.setMonitoringCallbacks(orderCallbacks, accountId);
+    // ✅ CORREÇÃO: Usar websockets.on() em vez de setMonitoringCallbacks deprecated
+    websockets.on('orderUpdate', robustOrderHandler, accountId, `orderHandler_${accountId}`);
     
     console.log(`[ORDER-HANDLERS] ✅ Handler robusto registrado para conta ${accountId}`);
     return true;

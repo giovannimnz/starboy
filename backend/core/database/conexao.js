@@ -37,13 +37,13 @@ async function initPool() {
       return pool;
     }
 
-    console.log('[DB] Inicializando pool de conexões MySQL...');
-    console.log(`[DB] Conectando a: ${dbConfig.host}:3306/${dbConfig.database}`);
-    
+    //console.log('[DB] Inicializando pool de conexões MySQL...');
+    //console.log(`[DB] Conectando a: ${dbConfig.host}:3306/${dbConfig.database}`);
+
     pool = mysql.createPool(dbConfig);
     
     const connection = await pool.getConnection();
-    console.log('[DB] ✅ Pool de conexões MySQL inicializado com sucesso');
+    //console.log('[DB] ✅ Pool de conexões MySQL inicializado com sucesso');
     connection.release();
     
     return pool;

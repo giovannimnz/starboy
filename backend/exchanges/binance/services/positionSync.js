@@ -1,9 +1,30 @@
 const { getDatabaseInstance, moveClosedPositionsAndOrders } = require('../../../core/database/conexao');
 const { getAllOpenPositions, getOpenOrders } = require('../api/rest');
 // ✅ CORREÇÃO: Importar do cleanup.js
-const { movePositionToHistory } = require('../services/cleanup');
+const { movePositionToHistory, retryDatabaseOperation } = require('../services/cleanup');
 // ✅ IMPORTAR FUNÇÕES NECESSÁRIAS PARA CRIAR ORDENS
 const { newStopOrder, newLimitMakerOrder, newReduceOnlyOrder, validateQuantity, adjustQuantityToRequirements, getPrecision, roundPriceToTickSize } = require('../api/rest');
+const path = require('path');
+
+// Carregar configurações de ambiente
+require('dotenv').config({ path: path.resolve(__dirname, '../../../../config/.env') });
+
+// Configurações de logging
+const ENABLE_SYNC_LOGS = process.env.ENABLE_SYNC_LOGS === 'true';
+const ENABLE_ORPHAN_LOGS = process.env.ENABLE_ORPHAN_LOGS === 'true';
+
+// Funções auxiliares para logs condicionais
+const syncLog = (...args) => {
+  if (ENABLE_SYNC_LOGS) {
+    console.log(...args);
+  }
+};
+
+const orphanLog = (...args) => {
+  if (ENABLE_ORPHAN_LOGS) {
+    console.log(...args);
+  }
+};
 
 /**
  * Sincroniza posições do banco com a corretora
@@ -19,143 +40,145 @@ async function syncPositionsWithExchange(accountId) {
 
     //console.log(`[SYNC] Iniciando sincronização de posições para conta ${accountId}...`);
     
-    const db = await getDatabaseInstance();
-    if (!db) {
-      throw new Error(`Falha ao conectar ao banco para conta ${accountId}`);
-    }
-
-    // CORREÇÃO CRÍTICA: Log de debug antes da chamada
-    //console.log(`[SYNC] Chamando getAllOpenPositions com accountId: ${accountId} (tipo: ${typeof accountId})`);
-    
-    // CORREÇÃO CRÍTICA: Chamar getAllOpenPositions apenas com accountId (número)
-    const exchangePositions = await getAllOpenPositions(accountId);
-    
-    //console.log(`[SYNC] Obtidas ${exchangePositions.length} posições da corretora para conta ${accountId}`);
-
-    // Obter posições do banco de dados
-    const [dbPositions] = await db.query(`
-      SELECT 
-        id, simbolo, quantidade, preco_medio, side, status,
-        preco_entrada, preco_corrente, leverage
-      FROM posicoes 
-      WHERE status = 'OPEN' AND conta_id = ?
-      ORDER BY simbolo
-    `, [accountId]);
-
-    //console.log(`[SYNC] Encontradas ${dbPositions.length} posições no banco para conta ${accountId}`);
-
-    let syncResults = {
-      exchangePositions: exchangePositions.length,
-      dbPositions: dbPositions.length,
-      missingInDb: 0,
-      missingInExchange: 0,
-      updated: 0,
-      errors: []
-    };
-
-    // Verificar posições que existem na corretora mas não no banco
-    for (const exchangePos of exchangePositions) {
-      const dbPos = dbPositions.find(p => p.simbolo === exchangePos.simbolo);
-      
-      if (!dbPos) {
-        //console.warn(`[SYNC] Posição ${exchangePos.simbolo} existe na corretora mas não no banco (conta ${accountId})`);
-        syncResults.missingInDb++;
-        
-        // Opcional: Criar posição no banco automaticamente
-        try {
-          await db.query(`
-            INSERT INTO posicoes (
-              simbolo, quantidade, preco_medio, side, status, 
-              preco_entrada, preco_corrente, leverage, conta_id,
-              data_hora_abertura, data_hora_ultima_atualizacao
-            ) VALUES (?, ?, ?, ?, 'OPEN', ?, ?, ?, ?, NOW(), NOW())
-          `, [
-            exchangePos.simbolo,
-            parseFloat(exchangePos.quantidade),
-            parseFloat(exchangePos.precoEntrada),
-            exchangePos.lado,
-            parseFloat(exchangePos.precoEntrada),
-            parseFloat(exchangePos.precoAtual),
-            parseInt(exchangePos.alavancagem || 1),
-            accountId
-          ]);
-          
-          //console.log(`[SYNC] ✅ Posição ${exchangePos.simbolo} criada no banco para conta ${accountId}`);
-          syncResults.updated++;
-        } catch (createError) {
-          console.error(`[SYNC] Erro ao criar posição ${exchangePos.simbolo} no banco:`, createError.message);
-          syncResults.errors.push(`Erro ao criar ${exchangePos.simbolo}: ${createError.message}`);
-        }
-      } else {
-        // Atualizar preço corrente se a posição já existe
-        try {
-          await db.query(`
-            UPDATE posicoes 
-            SET preco_corrente = ?, data_hora_ultima_atualizacao = NOW()
-            WHERE id = ?
-          `, [parseFloat(exchangePos.precoAtual), dbPos.id]);
-          
-          syncResults.updated++;
-        } catch (updateError) {
-          console.error(`[SYNC] Erro ao atualizar posição ${dbPos.simbolo}:`, updateError.message);
-          syncResults.errors.push(`Erro ao atualizar ${dbPos.simbolo}: ${updateError.message}`);
-        }
+    return await retryDatabaseOperation(async () => {
+      const db = await getDatabaseInstance();
+      if (!db) {
+        throw new Error(`Falha ao conectar ao banco para conta ${accountId}`);
       }
-    }
 
-    // Verificar posições que existem no banco mas não na corretora
-    for (const dbPos of dbPositions) {
-      const exchangePos = exchangePositions.find(p => p.simbolo === dbPos.simbolo);
+      // CORREÇÃO CRÍTICA: Log de debug antes da chamada
+      //console.log(`[SYNC] Chamando getAllOpenPositions com accountId: ${accountId} (tipo: ${typeof accountId})`);
       
-      if (!exchangePos) {
-        console.warn(`[SYNC] Posição ${dbPos.simbolo} existe no banco mas não na corretora (conta ${accountId})`);
-        syncResults.missingInExchange++;
+      // CORREÇÃO CRÍTICA: Chamar getAllOpenPositions apenas com accountId (número)
+      const exchangePositions = await getAllOpenPositions(accountId);
+      
+      //console.log(`[SYNC] Obtidas ${exchangePositions.length} posições da corretora para conta ${accountId}`);
+
+      // Obter posições do banco de dados
+      const [dbPositions] = await db.query(`
+        SELECT 
+          id, simbolo, quantidade, preco_medio, side, status,
+          preco_entrada, preco_corrente, leverage
+        FROM posicoes 
+        WHERE status = 'OPEN' AND conta_id = ?
+        ORDER BY simbolo
+      `, [accountId]);
+
+      //console.log(`[SYNC] Encontradas ${dbPositions.length} posições no banco para conta ${accountId}`);
+
+      let syncResults = {
+        exchangePositions: exchangePositions.length,
+        dbPositions: dbPositions.length,
+        missingInDb: 0,
+        missingInExchange: 0,
+        updated: 0,
+        errors: []
+      };
+
+      // Verificar posições que existem na corretora mas não no banco
+      for (const exchangePos of exchangePositions) {
+        const dbPos = dbPositions.find(p => p.simbolo === exchangePos.simbolo);
         
-        // ✅ MARCAR COMO FECHADA E MOVER PARA HISTÓRICO
-        try {
-          await db.query(`
-            UPDATE posicoes 
-            SET status = 'CLOSED', data_hora_fechamento = NOW()
-            WHERE id = ?
-          `, [dbPos.id]);
+        if (!dbPos) {
+          //console.warn(`[SYNC] Posição ${exchangePos.simbolo} existe na corretora mas não no banco (conta ${accountId})`);
+          syncResults.missingInDb++;
           
-          // ✅ MOVER IMEDIATAMENTE PARA HISTÓRICO
-          const moved = await movePositionToHistory(
-            db, 
-            dbPos.id, 
-            'CLOSED', 
-            'Sincronização - posição não encontrada na corretora',
-            accountId
-          );
-          
-          if (moved) {
-            console.log(`[SYNC] ✅ Posição ${dbPos.simbolo} fechada e movida para histórico (conta ${accountId})`);
-          } else {
-            console.log(`[SYNC] ✅ Posição ${dbPos.simbolo} marcada como fechada no banco (conta ${accountId})`);
+          // Opcional: Criar posição no banco automaticamente
+          try {
+            await db.query(`
+              INSERT INTO posicoes (
+                simbolo, quantidade, preco_medio, side, status, 
+                preco_entrada, preco_corrente, leverage, conta_id,
+                data_hora_abertura, data_hora_ultima_atualizacao
+              ) VALUES (?, ?, ?, ?, 'OPEN', ?, ?, ?, ?, NOW(), NOW())
+            `, [
+              exchangePos.simbolo,
+              parseFloat(exchangePos.quantidade),
+              parseFloat(exchangePos.precoEntrada),
+              exchangePos.lado,
+              parseFloat(exchangePos.precoEntrada),
+              parseFloat(exchangePos.precoAtual),
+              parseInt(exchangePos.alavancagem || 1),
+              accountId
+            ]);
+            
+            //console.log(`[SYNC] ✅ Posição ${exchangePos.simbolo} criada no banco para conta ${accountId}`);
+            syncResults.updated++;
+          } catch (createError) {
+            console.error(`[SYNC] Erro ao criar posição ${exchangePos.simbolo} no banco:`, createError.message);
+            syncResults.errors.push(`Erro ao criar ${exchangePos.simbolo}: ${createError.message}`);
           }
-          
-          syncResults.updated++;
-        } catch (closeError) {
-          console.error(`[SYNC] Erro ao fechar posição ${dbPos.simbolo} no banco:`, closeError.message);
-          syncResults.errors.push(`Erro ao fechar ${dbPos.simbolo}: ${closeError.message}`);
+        } else {
+          // Atualizar preço corrente se a posição já existe
+          try {
+            await db.query(`
+              UPDATE posicoes 
+              SET preco_corrente = ?, data_hora_ultima_atualizacao = NOW()
+              WHERE id = ?
+            `, [parseFloat(exchangePos.precoAtual), dbPos.id]);
+            
+            syncResults.updated++;
+          } catch (updateError) {
+            console.error(`[SYNC] Erro ao atualizar posição ${dbPos.simbolo}:`, updateError.message);
+            syncResults.errors.push(`Erro ao atualizar ${dbPos.simbolo}: ${updateError.message}`);
+          }
         }
       }
-    }
 
-    //console.log(`[SYNC] ✅ Sincronização concluída para conta ${accountId}:`, syncResults);
-    
-    // ✅ APÓS SINCRONIZAÇÃO, VERIFICAR E MOVER POSIÇÕES CLOSED RESTANTES
-    try {
-      const moveResults = await moveClosedPositionsToHistory(accountId);
-      if (moveResults.moved > 0) {
-        console.log(`[SYNC] 📚 ${moveResults.moved} posições CLOSED adicionais movidas para histórico`);
+      // Verificar posições que existem no banco mas não na corretora
+      for (const dbPos of dbPositions) {
+        const exchangePos = exchangePositions.find(p => p.simbolo === dbPos.simbolo);
+        
+        if (!exchangePos) {
+          console.warn(`[SYNC] Posição ${dbPos.simbolo} existe no banco mas não na corretora (conta ${accountId})`);
+          syncResults.missingInExchange++;
+          
+          // ✅ MARCAR COMO FECHADA E MOVER PARA HISTÓRICO
+          try {
+            await db.query(`
+              UPDATE posicoes 
+              SET status = 'CLOSED', data_hora_fechamento = NOW()
+              WHERE id = ?
+            `, [dbPos.id]);
+            
+            // ✅ MOVER IMEDIATAMENTE PARA HISTÓRICO
+            const moved = await movePositionToHistory(
+              db, 
+              dbPos.id, 
+              'CLOSED', 
+              'Sincronização - posição não encontrada na corretora',
+              accountId
+            );
+            
+            if (moved) {
+              console.log(`[SYNC] ✅ Posição ${dbPos.simbolo} fechada e movida para histórico (conta ${accountId})`);
+            } else {
+              console.log(`[SYNC] ✅ Posição ${dbPos.simbolo} marcada como fechada no banco (conta ${accountId})`);
+            }
+            
+            syncResults.updated++;
+          } catch (closeError) {
+            console.error(`[SYNC] Erro ao fechar posição ${dbPos.simbolo} no banco:`, closeError.message);
+            syncResults.errors.push(`Erro ao fechar ${dbPos.simbolo}: ${closeError.message}`);
+          }
+        }
       }
-    } catch (moveError) {
-      console.warn(`[SYNC] ⚠️ Erro ao mover posições CLOSED restantes:`, moveError.message);
-    }
-    
-    return syncResults;
 
+      //console.log(`[SYNC] ✅ Sincronização concluída para conta ${accountId}:`, syncResults);
+      
+      // ✅ APÓS SINCRONIZAÇÃO, VERIFICAR E MOVER POSIÇÕES CLOSED RESTANTES
+      try {
+        const moveResults = await moveClosedPositionsToHistory(accountId);
+        if (moveResults.moved > 0) {
+          console.log(`[SYNC] 📚 ${moveResults.moved} posições CLOSED adicionais movidas para histórico`);
+        }
+      } catch (moveError) {
+        console.warn(`[SYNC] ⚠️ Erro ao mover posições CLOSED restantes:`, moveError.message);
+      }
+      
+      return syncResults;
+    }, 10, 1000, `Sync Positions (conta ${accountId})`);
+    
   } catch (error) {
     console.error(`[SYNC] Erro crítico ao sincronizar posições para conta ${accountId}:`, error);
     throw error;
@@ -310,14 +333,14 @@ async function syncPositionsWithAutoClose(accountId) {
 
     // ✅ NOVA FUNCIONALIDADE: DETECTAR E CORRIGIR POSIÇÕES ÓRFÃS
     try {
-      console.log(`[SYNC_AUTO] 🔍 Verificando posições órfãs que precisam de ordens de proteção...`);
+      syncLog(`[SYNC_AUTO] 🔍 Verificando posições órfãs que precisam de ordens de proteção...`);
       const orphanResults = await detectAndFixOrphanPositions(accountId);
       
       if (orphanResults.fixed > 0) {
-        console.log(`[SYNC_AUTO] 🔧 ${orphanResults.fixed} posições órfãs corrigidas com ordens de proteção!`);
+        syncLog(`[SYNC_AUTO] 🔧 ${orphanResults.fixed} posições órfãs corrigidas com ordens de proteção!`);
         syncResults.orphansFixed = orphanResults.fixed;
       } else if (orphanResults.processed > 0) {
-        console.log(`[SYNC_AUTO] ✅ ${orphanResults.processed} posições verificadas, nenhuma órfã encontrada`);
+        syncLog(`[SYNC_AUTO] ✅ ${orphanResults.processed} posições verificadas, nenhuma órfã encontrada`);
         syncResults.orphansChecked = orphanResults.processed;
       }
       
@@ -332,7 +355,7 @@ async function syncPositionsWithAutoClose(accountId) {
 
     // ✅ NOVA FUNCIONALIDADE: VINCULAR SINAIS 'EXECUTADO' A POSIÇÕES ABERTAS
     try {
-      console.log(`[SYNC_AUTO] 🔗 Verificando sinais para vincular a posições abertas...`);
+      syncLog(`[SYNC_AUTO] 🔗 Verificando sinais para vincular a posições abertas...`);
       const linkResults = await linkSignalsToOpenPositions(accountId);
       if (linkResults.linked > 0) {
         syncResults.signalsLinked = linkResults.linked;
@@ -369,12 +392,13 @@ async function syncPositionsWithAutoClose(accountId) {
  */
 async function syncOrdersWithExchange(accountId) {
   try {
-    const db = await getDatabaseInstance();
-    if (!db) {
-      throw new Error(`Falha ao conectar ao banco para conta ${accountId}`);
-    }
+    return await retryDatabaseOperation(async () => {
+      const db = await getDatabaseInstance();
+      if (!db) {
+        throw new Error(`Falha ao conectar ao banco para conta ${accountId}`);
+      }
 
-    console.log(`[SYNC_ORDERS] 🔄 Iniciando sincronização de ordens para conta ${accountId}...`);
+    //console.log(`[SYNC_ORDERS] 🔄 Iniciando sincronização de ordens para conta ${accountId}...`);
 
     // ✅ STATUS FINALIZADOS QUE DEVEM SER MOVIDOS AUTOMATICAMENTE
     const finalizedStatuses = ['FILLED', 'CANCELED', 'CANCELLED', 'EXPIRED', 'REJECTED'];
@@ -399,7 +423,7 @@ async function syncOrdersWithExchange(accountId) {
       try {
         // Buscar ordens abertas na corretora para o símbolo
         const openOrders = await getOpenOrders(accountId, symbol);
-        console.log(`[SYNC_ORDERS] 📋 ${symbol}: ${openOrders.length} ordens na corretora`);
+        syncLog(`[SYNC_ORDERS] 📋 ${symbol}: ${openOrders.length} ordens na corretora`);
 
         for (const order of openOrders) {
           syncStats.ordersChecked++;
@@ -487,7 +511,7 @@ async function syncOrdersWithExchange(accountId) {
     }
 
     // ✅ SEGUNDO: VERIFICAR TODAS AS ORDENS NO BANCO (ATIVAS + FINALIZADAS ANTIGAS)
-    console.log(`[SYNC_ORDERS] 🔍 Verificando ordens no banco de dados...`);
+    syncLog(`[SYNC_ORDERS] 🔍 Verificando ordens no banco de dados...`);
     
     const [allDbOrders] = await db.query(`
       SELECT id_externo, simbolo, status, tipo_ordem_bot, data_hora_criacao,
@@ -497,7 +521,7 @@ async function syncOrdersWithExchange(accountId) {
       ORDER BY data_hora_criacao DESC
     `, [accountId]);
 
-    console.log(`[SYNC_ORDERS] 📊 Encontradas ${allDbOrders.length} ordens no banco para verificação`);
+    syncLog(`[SYNC_ORDERS] 📊 Encontradas ${allDbOrders.length} ordens no banco para verificação`);
 
     for (const dbOrder of allDbOrders) {
       try {
@@ -600,21 +624,22 @@ async function syncOrdersWithExchange(accountId) {
     }
 
     // ✅ RELATÓRIO FINAL DETALHADO
-    console.log(`[SYNC_ORDERS] ✅ Sincronização concluída para conta ${accountId}:`);
-    console.log(`[SYNC_ORDERS]   📊 Ordens verificadas: ${syncStats.ordersChecked}`);
-    console.log(`[SYNC_ORDERS]   ➕ Ordens inseridas: ${syncStats.ordersInserted}`);
-    console.log(`[SYNC_ORDERS]   🔄 Ordens atualizadas: ${syncStats.ordersUpdated}`);
-    console.log(`[SYNC_ORDERS]   📚 Ordens movidas para histórico: ${syncStats.ordersMoved}`);
-    console.log(`[SYNC_ORDERS]   🔗 Posições vinculadas: ${syncStats.positionsLinked}`);
-    console.log(`[SYNC_ORDERS]   🗑️ Órfãs processadas: ${syncStats.orphansProcessed}`);
-    console.log(`[SYNC_ORDERS]   🎯 Total de movimentos: ${syncStats.ordersMoved + syncStats.orphansProcessed}`);
+    syncLog(`[SYNC_ORDERS] ✅ Sincronização concluída para conta ${accountId}:`);
+    syncLog(`[SYNC_ORDERS]   📊 Ordens verificadas: ${syncStats.ordersChecked}`);
+    syncLog(`[SYNC_ORDERS]   ➕ Ordens inseridas: ${syncStats.ordersInserted}`);
+    syncLog(`[SYNC_ORDERS]   🔄 Ordens atualizadas: ${syncStats.ordersUpdated}`);
+    syncLog(`[SYNC_ORDERS]   📚 Ordens movidas para histórico: ${syncStats.ordersMoved}`);
+    syncLog(`[SYNC_ORDERS]   🔗 Posições vinculadas: ${syncStats.positionsLinked}`);
+    syncLog(`[SYNC_ORDERS]   🗑️ Órfãs processadas: ${syncStats.orphansProcessed}`);
+    syncLog(`[SYNC_ORDERS]   🎯 Total de movimentos: ${syncStats.ordersMoved + syncStats.orphansProcessed}`);
 
     return {
       success: true,
       stats: syncStats,
       totalMoved: syncStats.ordersMoved + syncStats.orphansProcessed
     };
-
+    }, 10, 1000, `Sync Orders with Exchange (conta ${accountId})`);
+    
   } catch (error) {
     console.error(`[SYNC_ORDERS] ❌ Erro ao sincronizar ordens para conta ${accountId}:`, error.message);
     throw error;
@@ -707,7 +732,8 @@ async function moveClosedPositionsToHistory(accountId) {
   try {
     //console.log(`[MOVE_CLOSED] 🔄 Verificando posições CLOSED para mover ao histórico (conta ${accountId})...`);
     
-    const db = await getDatabaseInstance();
+    return await retryDatabaseOperation(async () => {
+      const db = await getDatabaseInstance();
     
     // Buscar todas as posições com status CLOSED
     const [closedPositions] = await db.query(`
@@ -759,6 +785,7 @@ async function moveClosedPositionsToHistory(accountId) {
     console.log(`[MOVE_CLOSED] ✅ Processamento concluído: ${moveResults.moved} movidas, ${moveResults.errors.length} erros`);
     
     return moveResults;
+    }, 10, 1000, `Move Closed Positions (conta ${accountId})`);
     
   } catch (error) {
     console.error(`[MOVE_CLOSED] ❌ Erro crítico ao mover posições CLOSED:`, error.message);
@@ -965,20 +992,21 @@ async function createMissingOrdersForPosition(accountId, position, latestSignal)
  * @returns {Promise<Object>} - Resultado da detecção e criação
  */
 async function detectAndFixOrphanPositions(accountId) {
-  console.log(`[ORPHAN_DETECTION] 🔍 Detectando posições órfãs para conta ${accountId}...`);
+  orphanLog(`[ORPHAN_DETECTION] 🔍 Detectando posições órfãs para conta ${accountId}...`);
   
   try {
-    const db = await getDatabaseInstance();
+    return await retryDatabaseOperation(async () => {
+      const db = await getDatabaseInstance();
     
     // ✅ OBTER POSIÇÕES DA CORRETORA
     const exchangePositions = await getAllOpenPositions(accountId);
     
     if (exchangePositions.length === 0) {
-      console.log(`[ORPHAN_DETECTION] ℹ️ Nenhuma posição encontrada na corretora para conta ${accountId}`);
+      orphanLog(`[ORPHAN_DETECTION] ℹ️ Nenhuma posição encontrada na corretora para conta ${accountId}`);
       return { processed: 0, fixed: 0, errors: [] };
     }
     
-    console.log(`[ORPHAN_DETECTION] 📊 Encontradas ${exchangePositions.length} posições na corretora`);
+    orphanLog(`[ORPHAN_DETECTION] 📊 Encontradas ${exchangePositions.length} posições na corretora`);
     
     let results = {
       processed: 0,
@@ -992,20 +1020,20 @@ async function detectAndFixOrphanPositions(accountId) {
         const positionAge = position.tempoAbertura ? Date.now() - position.tempoAbertura : 0;
         const ageMinutes = Math.floor(positionAge / (1000 * 60));
         
-        console.log(`[ORPHAN_DETECTION] 🔍 Verificando ${symbol} (idade: ${ageMinutes} min)...`);
+        orphanLog(`[ORPHAN_DETECTION] 🔍 Verificando ${symbol} (idade: ${ageMinutes} min)...`);
         
         results.processed++;
         
         // ✅ CRITÉRIO 1: Posição deve ter mais de 4 minutos
         if (ageMinutes < 4) {
-          console.log(`[ORPHAN_DETECTION] ⏳ ${symbol}: muito nova (${ageMinutes} min), pulando...`);
+          orphanLog(`[ORPHAN_DETECTION] ⏳ ${symbol}: muito nova (${ageMinutes} min), pulando...`);
           continue;
         }
         
         // ✅ CRITÉRIO 2: Verificar se tem ordens abertas (se tiver, não é órfã)
         const openOrders = await getOpenOrders(accountId, symbol);
         if (openOrders.length > 0) {
-          console.log(`[ORPHAN_DETECTION] 📋 ${symbol}: tem ${openOrders.length} ordens abertas, não é órfã`);
+          orphanLog(`[ORPHAN_DETECTION] 📋 ${symbol}: tem ${openOrders.length} ordens abertas, não é órfã`);
           continue;
         }
         
@@ -1016,7 +1044,7 @@ async function detectAndFixOrphanPositions(accountId) {
         `, [symbol, accountId]);
         
         if (dbPositions.length === 0) {
-          console.log(`[ORPHAN_DETECTION] ⚠️ ${symbol}: não encontrada no banco, posição órfã detectada!`);
+          orphanLog(`[ORPHAN_DETECTION] ⚠️ ${symbol}: não encontrada no banco, posição órfã detectada!`);
         } else {
           console.log(`[ORPHAN_DETECTION] ✅ ${symbol}: encontrada no banco (ID: ${dbPositions[0].id}), verificando ordens...`);
           
@@ -1067,13 +1095,13 @@ async function detectAndFixOrphanPositions(accountId) {
         }
         
         // ✅ CRIAR ORDENS SL/RPs/TP PARA A POSIÇÃO ÓRFÃ
-        console.log(`[ORPHAN_DETECTION] 🔧 ${symbol}: criando ordens de proteção para posição órfã...`);
+        orphanLog(`[ORPHAN_DETECTION] 🔧 ${symbol}: criando ordens de proteção para posição órfã...`);
         
         const orderCreationResult = await createMissingOrdersForPosition(accountId, position, latestSignal);
         
         if (orderCreationResult.success) {
           results.fixed++;
-          console.log(`[ORPHAN_DETECTION] ✅ ${symbol}: ${orderCreationResult.created} ordens de proteção criadas com sucesso!`);
+          orphanLog(`[ORPHAN_DETECTION] ✅ ${symbol}: ${orderCreationResult.created} ordens de proteção criadas com sucesso!`);
         } else {
           results.errors.push(`${symbol}: falha ao criar ordens - ${orderCreationResult.details.errors.join(', ')}`);
           console.error(`[ORPHAN_DETECTION] ❌ ${symbol}: falha ao criar ordens de proteção`);
@@ -1086,16 +1114,17 @@ async function detectAndFixOrphanPositions(accountId) {
     }
     
     // ✅ RELATÓRIO FINAL
-    console.log(`[ORPHAN_DETECTION] 📊 Relatório final para conta ${accountId}:`);
-    console.log(`[ORPHAN_DETECTION]   🔍 Posições processadas: ${results.processed}`);
-    console.log(`[ORPHAN_DETECTION]   🔧 Posições órfãs corrigidas: ${results.fixed}`);
-    console.log(`[ORPHAN_DETECTION]   ❌ Erros: ${results.errors.length}`);
+    orphanLog(`[ORPHAN_DETECTION] 📊 Relatório final para conta ${accountId}:`);
+    orphanLog(`[ORPHAN_DETECTION]   🔍 Posições processadas: ${results.processed}`);
+    orphanLog(`[ORPHAN_DETECTION]   🔧 Posições órfãs corrigidas: ${results.fixed}`);
+    orphanLog(`[ORPHAN_DETECTION]   ❌ Erros: ${results.errors.length}`);
     
     if (results.errors.length > 0) {
-      console.log(`[ORPHAN_DETECTION]   📋 Detalhes dos erros:`, results.errors);
+      orphanLog(`[ORPHAN_DETECTION]   📋 Detalhes dos erros:`, results.errors);
     }
     
     return results;
+    }, 10, 1000, `Detect and Fix Orphan Positions (conta ${accountId})`);
     
   } catch (error) {
     console.error(`[ORPHAN_DETECTION] ❌ Erro crítico na detecção de posições órfãs:`, error.message);
@@ -1114,7 +1143,8 @@ async function linkSignalsToOpenPositions(accountId) {
   //console.log(`[LINK_SIGNALS] 🔍 Verificando sinais 'EXECUTADO' sem posição vinculada para conta ${accountId}...`);
   
   try {
-    const db = await getDatabaseInstance();
+    return await retryDatabaseOperation(async () => {
+      const db = await getDatabaseInstance();
     
     // 1. Encontrar sinais com status 'EXECUTADO' e sem position_id
     const [signalsToLink] = await db.query(`
@@ -1131,7 +1161,7 @@ async function linkSignalsToOpenPositions(accountId) {
       return { linked: 0, errors: [] };
     }
 
-    console.log(`[LINK_SIGNALS] 📊 Encontrados ${signalsToLink.length} sinais para potencial vinculação.`);
+    syncLog(`[LINK_SIGNALS] 📊 Encontrados ${signalsToLink.length} sinais para potencial vinculação.`);
 
     let linkedCount = 0;
     const errors = [];
@@ -1165,11 +1195,11 @@ async function linkSignalsToOpenPositions(accountId) {
           `, [signal.id]);
           
           if (existingLink.length > 0) {
-            console.log(`[LINK_SIGNALS] ℹ️ Sinal ${signal.id} (${signal.symbol}) já está vinculado à posição ${existingLink[0].position_id}, pulando...`);
+            syncLog(`[LINK_SIGNALS] ℹ️ Sinal ${signal.id} (${signal.symbol}) já está vinculado à posição ${existingLink[0].position_id}, pulando...`);
             continue;
           }
           
-          console.log(`[LINK_SIGNALS] 🔗 Vinculando sinal ${signal.id} (${signal.symbol}) à posição ${position.id}...`);
+          syncLog(`[LINK_SIGNALS] 🔗 Vinculando sinal ${signal.id} (${signal.symbol}) à posição ${position.id}...`);
 
           // 4. Atualizar apenas o sinal com o ID da posição (tabela posicoes não tem coluna signal_id)
           const [signalUpdateResult] = await db.query(`
@@ -1180,7 +1210,7 @@ async function linkSignalsToOpenPositions(accountId) {
 
           if (signalUpdateResult.affectedRows > 0) {
             linkedCount++;
-            console.log(`[LINK_SIGNALS] ✅ Sinal ${signal.id} vinculado com sucesso à posição ${position.id}.`);
+            syncLog(`[LINK_SIGNALS] ✅ Sinal ${signal.id} vinculado com sucesso à posição ${position.id}.`);
           } else {
             console.warn(`[LINK_SIGNALS] ⚠️ A vinculação do sinal ${signal.id} à posição ${position.id} pode ter falhado (affectedRows: 0).`);
           }
@@ -1194,10 +1224,11 @@ async function linkSignalsToOpenPositions(accountId) {
     }
 
     if (linkedCount > 0) {
-        console.log(`[LINK_SIGNALS] ✅ Processo de vinculação concluído: ${linkedCount} vinculados, ${errors.length} erros.`);
+        syncLog(`[LINK_SIGNALS] ✅ Processo de vinculação concluído: ${linkedCount} vinculados, ${errors.length} erros.`);
     }
     
     return { linked: linkedCount, errors };
+    }, 10, 1000, `Link Signals to Open Positions (conta ${accountId})`);
 
   } catch (error) {
     console.error(`[LINK_SIGNALS] ❌ Erro crítico ao vincular sinais a posições:`, error.message);

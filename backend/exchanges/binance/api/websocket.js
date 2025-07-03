@@ -1,9 +1,28 @@
 const WebSocket = require('ws');
 const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
+const path = require('path');
 const { getDatabaseInstance } = require('../../../core/database/conexao');
 const api = require('../api/rest');
 const { getAccountConnectionState } = api;
+
+// Carregar configurações de ambiente
+require('dotenv').config({ path: path.resolve(__dirname, '../../../../config/.env') });
+
+// Configuração da WebSocket API
+const ENABLE_WS_API = process.env.ENABLE_WS_API === 'true';
+
+// Função para verificar se a WebSocket API está habilitada
+function isWebSocketApiEnabled() {
+  return ENABLE_WS_API;
+}
+
+// Função auxiliar para logs condicionais da WebSocket API
+const wsApiLog = (...args) => {
+  if (ENABLE_WS_API) {
+    console.log(...args);
+  }
+};
 
 // Variáveis para as bibliotecas Ed25519
 let nobleEd25519SignFunction = null;
@@ -16,16 +35,16 @@ async function loadNobleEd25519() {
     const nobleModule = await import('@noble/ed25519');
     if (nobleModule && typeof nobleModule.sign === 'function') {
       nobleEd25519SignFunction = nobleModule.sign;
-      console.log('[WS-API] @noble/ed25519 carregado dinamicamente com sucesso.');
+      wsApiLog('[WS-API] @noble/ed25519 carregado dinamicamente com sucesso.');
       return true;
     }
-    console.log('[WS-API] @noble/ed25519 carregado, mas a função sign não foi encontrada.');
+    wsApiLog('[WS-API] @noble/ed25519 carregado, mas a função sign não foi encontrada.');
     return false;
   } catch (e) {
     if (e.code !== 'ERR_MODULE_NOT_FOUND') {
         console.warn('[WS-API] Falha ao carregar @noble/ed25519 dinamicamente:', e.message);
     } else {
-        console.log('[WS-API] @noble/ed25519 não instalado, pulando.');
+        wsApiLog('[WS-API] @noble/ed25519 não instalado, pulando.');
     }
     return false;
   }
@@ -34,9 +53,9 @@ async function loadNobleEd25519() {
 // Carregar tweetnacl
 try {
   tweetnaclInstance = require('tweetnacl');
-  console.log('[WS-API] tweetnacl carregado com sucesso.');
+  wsApiLog('[WS-API] tweetnacl carregado com sucesso.');
 } catch (e) {
-  console.log('[WS-API] tweetnacl não disponível, será usado apenas crypto nativo ou @noble/ed25519 (se disponível).');
+  wsApiLog('[WS-API] tweetnacl não disponível, será usado apenas crypto nativo ou @noble/ed25519 (se disponível).');
 }
 
 // Mapa local para WebSockets de preço por conta
@@ -97,6 +116,27 @@ function off(eventName, listenerOrId, accountId) {
         console.log(`[WS-EVENTS] Removendo listener com ID '${String(listenerOrId)}' do evento '${eventName}' na conta ${accountId}.`);
         eventHandlers.delete(listenerOrId);
     }
+}
+
+/**
+ * ✅ NOVO: Verifica se um listener específico está registrado.
+ * @param {string} eventName - O nome do evento.
+ * @param {number|string} accountId - O ID da conta.
+ * @param {string} listenerId - O ID do listener a ser verificado.
+ * @returns {boolean} - Retorna true se o listener estiver registrado.
+ */
+function hasListener(eventName, accountId, listenerId) {
+    if (!accountId || !eventListeners.has(accountId)) {
+        return false;
+    }
+    const accountEvents = eventListeners.get(accountId);
+
+    if (!accountEvents.has(eventName)) {
+        return false;
+    }
+    const eventHandlers = accountEvents.get(eventName);
+    
+    return eventHandlers.has(listenerId);
 }
 
 /**
@@ -1112,5 +1152,6 @@ module.exports = {
   // ✅ EXPORTAR NOVAS FUNÇÕES DO SISTEMA DE EVENTOS
   on,
   off,
-  emit
+  emit,
+  hasListener
 };

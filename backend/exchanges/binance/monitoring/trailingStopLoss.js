@@ -1,4 +1,5 @@
 const { getDatabaseInstance, insertNewOrder, formatDateForMySQL } = require('../../../core/database/conexao');
+const { retryDatabaseOperation } = require('../services/cleanup');
 const { newStopOrder, cancelOrder, getOpenOrders } = require('../api/rest');
 const { sendTelegramMessage, formatAlertMessage } = require('../services/telegramHelper');
 
@@ -51,8 +52,9 @@ async function updatePositionPricesWithTrailing(db, symbol, currentPrice, accoun
  */
 async function checkOrderTriggers(db, position, currentPrice, accountId) {
   try {
-    const positionId = position.id;
-    const functionPrefix = "[TRAILING]";
+    return await retryDatabaseOperation(async () => {
+      const positionId = position.id;
+      const functionPrefix = "[TRAILING]";
 
     // ✅ CONTROLE DE INTERVALO MÍNIMO
     const now = Date.now();
@@ -211,6 +213,9 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
       // TP3 atingido, mas já está no nível TP3_TP1
       //console.log(`[TRAILING] ⏭️ TP3 atingido, mas trailing level já é: '${currentTrailingLevel}'`);
     }
+    
+    }, 10, 100, `Trailing Stop Check ${position.simbolo}`);
+    
   } catch (error) {
     const positionIdError = position && position.id ? position.id : 'desconhecida';
     console.error(`[TRAILING] ❌ Erro em checkOrderTriggers para posição ${positionIdError}:`, error.message);

@@ -20,6 +20,51 @@ const rl = readline.createInterface({
   output: process.stdout
 });
 
+// Função para limpeza de tela multiplataforma
+function clearScreenMultiplatform() {
+  try {
+    // Método 1: console.clear() - Funciona na maioria dos casos
+    console.clear();
+    
+    // Método 2: ANSI escape codes - Compatível com terminais modernos
+    process.stdout.write('\u001b[2J\u001b[0;0H');
+    
+    // Método 3: Fallback específico para plataforma
+    if (process.platform === 'win32') {
+      // Windows - Usar comando cls via spawn se necessário
+      try {
+        const { spawn } = require('child_process');
+        const cls = spawn('cmd', ['/c', 'cls'], { stdio: 'inherit' });
+        cls.on('error', () => {
+          // Silenciar erros do cmd, já usamos outros métodos
+        });
+      } catch (winError) {
+        // Silenciar erros do Windows
+      }
+    } else {
+      // Linux/Mac - Usar comando clear
+      try {
+        const { spawn } = require('child_process');
+        const clear = spawn('clear', [], { stdio: 'inherit' });
+        clear.on('error', () => {
+          // Silenciar erros do clear, já usamos outros métodos
+        });
+      } catch (nixError) {
+        // Silenciar erros do Linux/Mac
+      }
+    }
+    
+  } catch (error) {
+    console.error(`[APP] ⚠️ Não foi possível limpar a tela: ${error.message}`);
+    console.error(`[APP] 🖥️ Plataforma: ${process.platform}`);
+    console.error(`[APP] 📺 Terminal: ${process.env.TERM || 'não detectado'}`);
+    
+    // Fallback final: adicionar linhas em branco
+    console.log('\n'.repeat(50));
+    console.log(`[APP] 📄 Usando fallback de linhas em branco`);
+  }
+}
+
 // Função auxiliar para fazer perguntas
 function pergunta(texto) {
   return new Promise((resolve) => {
@@ -48,7 +93,7 @@ function formatUptime(seconds) {
 
 // Menu principal
 async function showMenu() {
-  console.clear();
+  clearScreenMultiplatform();
   console.log('===== STARBOY MULTI-CONTA =====');
   console.log('1. Iniciar todas as contas');
   console.log('2. Listar contas ativas');

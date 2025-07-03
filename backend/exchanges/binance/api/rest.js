@@ -429,15 +429,18 @@ async function checkServerTime(accountId) {
     const localTime = Date.now();
     const timeDiff = Math.abs(localTime - serverTime);
     
-    console.log(`[API] 🕐 Sincronização de tempo:`);
-    console.log(`[API]   - Tempo local: ${localTime}`);
-    console.log(`[API]   - Tempo servidor: ${serverTime}`);
-    console.log(`[API]   - Diferença: ${timeDiff}ms`);
-    console.log(`[API]   - RTT: ${roundTripTime}ms`);
+    //console.log(`[API] 🕐 Sincronização de tempo:`);
+    //console.log(`[API]   - Tempo local: ${localTime}`);
+    //console.log(`[API]   - Tempo servidor: ${serverTime}`);
+    //console.log(`[API]   - Diferença: ${timeDiff}ms`);
+    //console.log(`[API]   - RTT: ${roundTripTime}ms`);
     
-    if (timeDiff > 1000) {
-      console.warn(`[API] ⚠️ Grande diferença de tempo: ${timeDiff}ms (>1s)`);
+    // ✅ CORREÇÃO: Aumentar tolerância para 3 segundos devido à latência de rede
+    if (timeDiff > 3000) {
+      console.warn(`[API] ⚠️ Grande diferença de tempo: ${timeDiff}ms (>3s)`);
       return false;
+    } else if (timeDiff > 1500) {
+      console.warn(`[API] ⚠️ Diferença de tempo moderada: ${timeDiff}ms (>1.5s) - ainda aceitável`);
     }
     
     console.log(`[API] ✅ Sincronização de tempo OK`);

@@ -41,14 +41,6 @@ PREJUIZO_MAXIMO_PERCENTUAL_DO_CAPITAL_TOTAL = 4.90
 TAXA_ENTRADA = 0.02
 TAXA_SAIDA = 0.05
 
-GRUPOS_ORIGEM_IDS = [-4192806079]
-GRUPO_DESTINO_ID = -4118022548
-CONTA_ID = 1
-GRUPO_FONTE_MAPEAMENTO = {
-    -4192806079: "Reverse-dev"
-
-}
-
 # --- Importações e Configurações de Módulos Locais ---
 sys.path.append(str(Path(__file__).parent / 'analysis'))
 try:
@@ -67,6 +59,124 @@ DB_USER = os.getenv('DB_USER')
 DB_PASSWORD = os.getenv('DB_PASSWORD')
 DB_NAME = os.getenv('DB_NAME')
 
+# --- Configurações do Telegram via Ambiente ---
+def parse_grupos_origem():
+    """Converte a string de grupos origem do .env em lista de inteiros"""
+    grupos_str = os.getenv('GRUPOS_ORIGEM_IDS', '-4192806079')
+    grupos = []
+    
+    if not grupos_str or grupos_str.strip() == '':
+        print(f"[AVISO] GRUPOS_ORIGEM_IDS vazio no .env, usando valor padrão")
+        return [-4192806079]
+    
+    for grupo in grupos_str.split(','):
+        grupo = grupo.strip()
+        if grupo:
+            try:
+                # Garantir que seja negativo
+                grupo_id = int(grupo)
+                if grupo_id > 0:
+                    grupo_id = -grupo_id
+                grupos.append(grupo_id)
+            except ValueError:
+                print(f"[ERRO] ID de grupo inválido no .env: '{grupo}' - ignorando")
+                continue
+    
+    if not grupos:
+        print(f"[ERRO] Nenhum grupo origem válido encontrado, usando padrão")
+        return [-4192806079]
+    
+    return grupos
+
+def parse_grupo_fonte_mapeamento():
+    """Converte a string de mapeamento do .env em dicionário"""
+    mapeamento_str = os.getenv('GRUPO_FONTE_MAPEAMENTO', '-4192806079:Reverse-dev')
+    mapeamento = {}
+    
+    if not mapeamento_str or mapeamento_str.strip() == '':
+        print(f"[AVISO] GRUPO_FONTE_MAPEAMENTO vazio no .env")
+        return {}
+    
+    for item in mapeamento_str.split(','):
+        item = item.strip()
+        if ':' in item:
+            try:
+                grupo_id_str, nome = item.split(':', 1)
+                grupo_id = int(grupo_id_str.strip())
+                # Garantir que seja negativo
+                if grupo_id > 0:
+                    grupo_id = -grupo_id
+                mapeamento[grupo_id] = nome.strip()
+            except ValueError:
+                print(f"[ERRO] Mapeamento inválido no .env: '{item}' - ignorando")
+                continue
+        else:
+            print(f"[ERRO] Formato de mapeamento inválido no .env: '{item}' - deve ser 'id:nome'")
+    
+    return mapeamento
+
+GRUPOS_ORIGEM_IDS = parse_grupos_origem()
+
+# Parse do grupo destino com validação
+grupo_destino_str = os.getenv('GRUPO_DESTINO_ID', '-4118022548')
+try:
+    GRUPO_DESTINO_ID = int(grupo_destino_str)
+    # Garantir que seja negativo
+    if GRUPO_DESTINO_ID > 0:
+        GRUPO_DESTINO_ID = -GRUPO_DESTINO_ID
+except ValueError:
+    print(f"[ERRO] GRUPO_DESTINO_ID inválido no .env: '{grupo_destino_str}' - usando padrão")
+    GRUPO_DESTINO_ID = -4118022548
+
+GRUPO_FONTE_MAPEAMENTO = parse_grupo_fonte_mapeamento()
+
+# Log das configurações carregadas
+print(f"[CONFIG] Configurações do Telegram carregadas do .env:")
+print(f"[CONFIG]   Grupos origem: {GRUPOS_ORIGEM_IDS}")
+print(f"[CONFIG]   Grupo destino: {GRUPO_DESTINO_ID}")
+print(f"[CONFIG]   Mapeamento fontes: {GRUPO_FONTE_MAPEAMENTO}")
+
+# Validação das configurações
+def validate_telegram_config():
+    """Valida as configurações do Telegram carregadas do .env"""
+    errors = []
+    warnings = []
+    
+    if not GRUPOS_ORIGEM_IDS:
+        errors.append("GRUPOS_ORIGEM_IDS não configurado ou vazio no .env")
+        
+    if not GRUPO_DESTINO_ID:
+        errors.append("GRUPO_DESTINO_ID não configurado no .env")
+        
+    if not GRUPO_FONTE_MAPEAMENTO:
+        warnings.append("GRUPO_FONTE_MAPEAMENTO vazio - nomes de fonte não serão exibidos")
+    
+    # Verificar se todos os grupos origem têm mapeamento
+    grupos_sem_mapeamento = []
+    for grupo_id in GRUPOS_ORIGEM_IDS:
+        if grupo_id not in GRUPO_FONTE_MAPEAMENTO:
+            grupos_sem_mapeamento.append(grupo_id)
+    
+    if grupos_sem_mapeamento:
+        warnings.append(f"Grupos sem mapeamento de nome: {grupos_sem_mapeamento}")
+    
+    # Exibir resultados
+    if errors:
+        for error in errors:
+            print(f"[ERRO] {error}")
+        return False
+    
+    if warnings:
+        for warning in warnings:
+            print(f"[AVISO] {warning}")
+    
+    print(f"[CONFIG] ✅ Configurações do Telegram validadas com sucesso")
+    return True
+
+if not validate_telegram_config():
+    print(f"[ERRO] Falha na validação das configurações do Telegram")
+    print(f"[ERRO] Verifique o arquivo .env e corrija os erros antes de continuar")
+
 DB_CONFIG = {
     'host': DB_HOST,
     'port': DB_PORT,
@@ -81,6 +191,10 @@ DB_CONFIG = {
 client = TelegramClient('reverse-dev', pers_api_id, pers_api_hash)
 shutdown_event = threading.Event()
 divap_analyzer = None
+
+# --- Gerenciador de Conexões de Banco ---
+active_connections = set()
+connection_lock = threading.Lock()
 
 # ===== CONTROLE DE FILA E PROCESSAMENTO =====
 message_queue = Queue(maxsize=1000)  # Fila com limite para evitar overflow
@@ -135,7 +249,7 @@ async def process_message_from_queue(event_data):
             print(f"🔄 [FILA] Iniciando processamento: Chat {event_data['chat_id']} | ID {event_data['message_id']} | {timestamp}")
             
             # Processar mensagem
-            await handle_new_message_improved(event_data)
+            await handle_new_message(event_data)
             
             # Atualizar estatísticas
             queue_stats['total_processed'] += 1
@@ -266,14 +380,49 @@ def initialize_bracket_scheduler():
 
 def get_database_connection():
     """
-    Obtém conexão com o banco de dados MySQL
+    Obtém conexão com o banco de dados MySQL com rastreamento
     """
     try:
         conn = mysql.connector.connect(**DB_CONFIG)
+        
+        # Rastrear conexão ativa
+        with connection_lock:
+            active_connections.add(conn)
+        
         return conn
     except mysql.connector.Error as e:
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [DB] Erro ao conectar: {e}")
         return None
+
+def close_database_connection(conn):
+    """
+    Fecha uma conexão específica e remove do rastreamento
+    """
+    if conn and conn.is_connected():
+        try:
+            conn.close()
+            with connection_lock:
+                active_connections.discard(conn)
+        except Exception as e:
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [DB] Erro ao fechar conexão: {e}")
+
+def close_all_database_connections():
+    """
+    Fecha todas as conexões ativas rastreadas
+    """
+    with connection_lock:
+        connections_to_close = list(active_connections)
+        active_connections.clear()
+    
+    for conn in connections_to_close:
+        try:
+            if conn.is_connected():
+                conn.close()
+                print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [DB] Conexão fechada")
+        except Exception as e:
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [DB] Erro ao fechar conexão: {e}")
+    
+    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [DB] Todas as conexões foram fechadas")
 
 # --- Funções de Encerramento e Utilitários ---
 
@@ -284,21 +433,34 @@ def signal_handler_sync():
 
 async def shutdown(client_instance):
     """Encerra o cliente e outras conexões de forma elegante."""
-    #print("[INFO] Iniciando processo de encerramento...")
+    print("[INFO] Iniciando processo de encerramento...")
     try:
+        # Parar o processador de fila
+        global is_queue_running
+        is_queue_running = False
+        
+        # Limpar jobs do scheduler
         schedule.clear()
-        #print("[INFO] Jobs do scheduler limpos.")
+        print("[INFO] Jobs do scheduler limpos.")
 
+        # Fechar todas as conexões de banco rastreadas
+        close_all_database_connections()
+
+        # Fechar conexões do analisador DIVAP
         if divap_analyzer:
             divap_analyzer.close_connections()
             print("[INFO] Conexões do analisador DIVAP fechadas.")
 
+        # Desconectar cliente Telegram
         if client_instance and client_instance.is_connected():
             await client_instance.disconnect()
             print("[INFO] Cliente Telegram desconectado.")
 
+        print("[INFO] Processo de encerramento concluído.")
+
     except Exception as e:
         print(f"[ERRO] Erro durante o encerramento: {e}")
+        traceback.print_exc()
 
 def normalize_number(value):
     """Normaliza números no formato string (ex.: "1.234,56" -> "1234.56")."""
@@ -377,7 +539,7 @@ def get_leverage_brackets_from_database(symbol=None):
     finally:
         if 'conn' in locals() and conn.is_connected():
             cursor.close()
-            conn.close()
+            close_database_connection(conn)
 
 def load_leverage_brackets(symbol=None):
     """
@@ -403,7 +565,7 @@ def load_leverage_brackets(symbol=None):
 
 def get_account_base_balance():
     """
-    Obtém o saldo base de cálculo da tabela conta (com fallback para contas)
+    Obtém o saldo base de cálculo da primeira conta ativa para cálculos de alavancagem
     """
     try:
         conn = mysql.connector.connect(
@@ -415,22 +577,131 @@ def get_account_base_balance():
         )
         cursor = conn.cursor(dictionary=True)
         
-        sql = "SELECT saldo_base_calculo_futuros FROM contas WHERE ativa = 1 LIMIT 1"
+        # Buscar primeira conta ativa com saldo base configurado
+        sql = """
+        SELECT saldo_base_calculo_futuros 
+        FROM contas 
+        WHERE ativa = 1 AND saldo_base_calculo_futuros IS NOT NULL AND saldo_base_calculo_futuros > 0
+        ORDER BY id ASC 
+        LIMIT 1
+        """
         cursor.execute(sql)
         result = cursor.fetchone()
             
-        if result and 'saldo_base_calculo_futuros' in result and result['saldo_base_calculo_futuros'] is not None:
-            return float(result['saldo_base_calculo_futuros'])
+        if result and 'saldo_base_calculo_futuros' in result:
+            saldo = float(result['saldo_base_calculo_futuros'])
+            print(f"[INFO] Usando saldo base da primeira conta ativa: ${saldo:.2f}")
+            return saldo
 
+        # Fallback: buscar qualquer conta ativa
+        cursor.execute("SELECT saldo_base_calculo_futuros FROM contas WHERE ativa = 1 LIMIT 1")
+        fallback_result = cursor.fetchone()
+        
+        if fallback_result and fallback_result['saldo_base_calculo_futuros']:
+            saldo = float(fallback_result['saldo_base_calculo_futuros'])
+            print(f"[INFO] Usando saldo base (fallback): ${saldo:.2f}")
+            return saldo
+
+        print(f"[AVISO] Nenhuma conta ativa com saldo configurado encontrada. Usando valor padrão: $1000.00")
         return 1000.0
-
+        
     except Exception as e:
         print(f"[ERRO] Falha ao buscar saldo base de cálculo: {e}")
         return 1000.0
     finally:
         if 'conn' in locals() and conn.is_connected():
             cursor.close()
-            conn.close()
+            close_database_connection(conn)
+
+def get_active_accounts():
+    """
+    Obtém todas as contas ativas do sistema
+    """
+    try:
+        conn = mysql.connector.connect(
+            host=DB_HOST,
+            port=DB_PORT,
+            user=DB_USER,
+            password=DB_PASSWORD,
+            database=DB_NAME
+        )
+        cursor = conn.cursor(dictionary=True)
+        
+        sql = """
+        SELECT id, nome, telegram_chat_id, saldo_base_calculo_futuros, max_posicoes
+        FROM contas 
+        WHERE ativa = 1
+        ORDER BY id ASC
+        """
+        cursor.execute(sql)
+        contas = cursor.fetchall()
+        
+        if not contas:
+            print(f"[AVISO] Nenhuma conta ativa encontrada no sistema")
+            return []
+        
+        print(f"[INFO] Encontradas {len(contas)} conta(s) ativa(s):")
+        for conta in contas:
+            chat_id = conta.get('telegram_chat_id', 'Não configurado')
+            saldo = conta.get('saldo_base_calculo_futuros', 0)
+            max_pos = conta.get('max_posicoes', 0)
+            print(f"  - ID: {conta['id']} | Nome: {conta['nome']} | Chat: {chat_id} | Saldo: ${saldo} | Max Posições: {max_pos}")
+        
+        return contas
+        
+    except Exception as e:
+        print(f"[ERRO] Falha ao buscar contas ativas: {e}")
+        return []
+    finally:
+        if 'conn' in locals() and conn.is_connected():
+            cursor.close()
+            close_database_connection(conn)
+
+def validate_accounts_configuration():
+    """
+    Valida a configuração das contas ativas e retorna estatísticas
+    """
+    contas_ativas = get_active_accounts()
+    
+    if not contas_ativas:
+        return {
+            'total': 0,
+            'validas': 0,
+            'sem_chat': 0,
+            'sem_saldo': 0,
+            'contas_ativas': [],
+            'contas_validas': [],
+            'contas_sem_chat': [],
+            'contas_sem_saldo': []
+        }
+    
+    contas_validas = []
+    contas_sem_chat = []
+    contas_sem_saldo = []
+    
+    for conta in contas_ativas:
+        has_chat = conta.get('telegram_chat_id') is not None
+        has_saldo = conta.get('saldo_base_calculo_futuros') is not None and conta.get('saldo_base_calculo_futuros', 0) > 0
+        
+        if has_chat and has_saldo:
+            contas_validas.append(conta)
+        
+        if not has_chat:
+            contas_sem_chat.append(conta)
+            
+        if not has_saldo:
+            contas_sem_saldo.append(conta)
+    
+    return {
+        'total': len(contas_ativas),
+        'validas': len(contas_validas),
+        'sem_chat': len(contas_sem_chat),
+        'sem_saldo': len(contas_sem_saldo),
+        'contas_ativas': contas_ativas,
+        'contas_validas': contas_validas,
+        'contas_sem_chat': contas_sem_chat,
+        'contas_sem_saldo': contas_sem_saldo
+    }
 
 def calculate_ideal_leverage(symbol, entry_price, stop_loss, capital_percent, side_raw=None):
     """
@@ -529,8 +800,16 @@ def send_to_webhook(trade_data):
 
 def save_to_database(trade_data):
     """
-    Salva informações da operação no banco MySQL para todas as contas ativas,
-    usando o telegram_chat_id de cada conta como chat_id na tabela webhook_signals.
+    Salva informações da operação no banco MySQL para TODAS as contas ativas,
+    criando um registro na tabela webhook_signals para cada conta.
+    
+    Para cada conta ativa:
+    - Usa o telegram_chat_id da conta como chat_id na tabela webhook_signals
+    - Cria um signal_id único para cada conta
+    - Permite processamento independente por conta
+    
+    Returns:
+        List[Tuple]: Lista de tuplas (conta_id, signal_id, chat_id_destino) ou None se houver erro
     """
     conn = None
     cursor = None
@@ -615,7 +894,7 @@ def save_to_database(trade_data):
         if conn and conn.is_connected():
             if cursor:
                 cursor.close()
-            conn.close()
+            close_database_connection(conn)
 
 def extract_trade_info(message_text):
     """
@@ -954,7 +1233,7 @@ def save_message_to_database(message_id, chat_id, text, is_reply=False,
     finally:
         if 'conn' in locals() and conn.is_connected():
             cursor.close()
-            conn.close()
+            close_database_connection(conn)
 
 def initialize_divap_analyzer():
     """Inicializa o analisador DIVAP"""
@@ -1185,8 +1464,9 @@ async def handle_new_message(event):
                     # Salvar no banco
                     signal_ids_info = save_to_database(trade_info)
                     if signal_ids_info:
-                        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Sinal salvo com IDs: {signal_ids_info}")
+                        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Sinal salvo para {len(signal_ids_info)} conta(s):")
                         for conta_id, signal_id, chat_id_destino in signal_ids_info:
+                            print(f"    - Conta {conta_id}: Signal ID {signal_id} | Chat {chat_id_destino}")
                             save_message_to_database(
                                 message_id=incoming_message_id,
                                 chat_id=incoming_chat_id,
@@ -1209,10 +1489,10 @@ async def handle_new_message(event):
                                 created_at=sent_message_created_at,
                                 message_source=message_source
                             )
-                        print(f"\n[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Processo completo - sinal enviado e salvo!\n")
+                        print(f"\n[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Processo completo - sinal enviado e salvo para todas as contas ativas!\n")
                         print("="*80)
                     else:
-                        print(f"   ❌ Falha ao salvar sinal no banco")
+                        print(f"   ❌ Falha ao salvar sinal no banco para as contas ativas")
 
                 else:
                     print(f"\n   ❌ DIVAP não confirmado: {error_message}\n")
@@ -1227,8 +1507,10 @@ async def handle_new_message(event):
                     trade_info['status'] = 'CANCELED'
                     trade_info['error_message'] = error_message
                     
-                    # Salvar sinal cancelado
-                    save_to_database(trade_info)
+                    # Salvar sinal cancelado para todas as contas
+                    signal_ids_info = save_to_database(trade_info)
+                    if signal_ids_info:
+                        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Sinal cancelado salvo para {len(signal_ids_info)} conta(s)")
                     
                     # Registrar mensagem original
                     save_message_to_database(
@@ -1243,7 +1525,7 @@ async def handle_new_message(event):
                         message_source=message_source
                     )
                     
-                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Sinal salvo no banco com status  ❌CANCELADO ❌\n")
+                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Sinal cancelado registrado no banco ❌CANCELADO ❌\n")
                     print("="*80)
 
             else: 
@@ -1477,6 +1759,32 @@ async def main():
     print(f"\n[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🔧 Inicializando scheduler de brackets...")
     initialize_bracket_scheduler()
 
+    # 1.5. Verificar contas ativas configuradas
+    print(f"\n[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 👥 Verificando contas ativas...")
+    accounts_stats = validate_accounts_configuration()
+    
+    if accounts_stats['total'] == 0:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ❌ ERRO: Nenhuma conta ativa encontrada!")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 💡 Configure pelo menos uma conta ativa na tabela 'contas'")
+        return
+    
+    # Validações de configuração
+    if accounts_stats['sem_chat'] > 0:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ⚠️ AVISO: {accounts_stats['sem_chat']} conta(s) sem telegram_chat_id:")
+        for conta in accounts_stats['contas_sem_chat']:
+            print(f"    - ID: {conta['id']} | Nome: {conta['nome']}")
+    
+    if accounts_stats['sem_saldo'] > 0:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ⚠️ AVISO: {accounts_stats['sem_saldo']} conta(s) sem saldo configurado:")
+        for conta in accounts_stats['contas_sem_saldo']:
+            print(f"    - ID: {conta['id']} | Nome: {conta['nome']}")
+    
+    contas_ativas = accounts_stats['contas_ativas']
+    contas_validas = accounts_stats['contas_validas']
+    contas_sem_chat = accounts_stats['contas_sem_chat']
+    
+    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ {accounts_stats['validas']} conta(s) totalmente configurada(s) para receber sinais")
+
     # 2. Inicializa o analisador de padrões DIVAP
     if ENABLE_REVERSE_VERIFICATION:
         #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🔍 Inicializando analisador DIVAP...")
@@ -1549,6 +1857,12 @@ async def main():
     print(f"   📊 Brackets: Atualizados")
     print(f"   👀 Monitorando: {len(grupos_acessiveis)} grupo(s)")
     print(f"   📤 Destino: {GRUPO_DESTINO_ID}")
+    print(f"   👥 Contas totais: {accounts_stats['total']}")
+    print(f"   ✅ Contas válidas: {accounts_stats['validas']}")
+    if accounts_stats['sem_chat'] > 0:
+        print(f"   ⚠️ Sem chat ID: {accounts_stats['sem_chat']}")
+    if accounts_stats['sem_saldo'] > 0:
+        print(f"   ⚠️ Sem saldo: {accounts_stats['sem_saldo']}")
     print(f"\n{'='*80}\n")
 
     try:
@@ -1560,6 +1874,13 @@ async def main():
     finally:
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🔄 Iniciando encerramento...")
         await shutdown(client)
+        
+        # Verificação final de conexões
+        if active_connections:
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ⚠️ Ainda existem {len(active_connections)} conexões ativas")
+            close_all_database_connections()
+        else:
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Todas as conexões foram fechadas adequadamente")
 
 if __name__ == "__main__":
     # Configurar handlers de sinal
@@ -1572,5 +1893,10 @@ if __name__ == "__main__":
         print("\n🛑 Programa interrompido pelo usuário")
     except Exception as e:
         print(f"❌ Erro fatal: {e}")
+        traceback.print_exc()
     finally:
+        # Garantir que todas as conexões sejam fechadas
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🔧 Limpeza final...")
+        close_all_database_connections()
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🏁 Programa encerrado")
         sys.exit(0)

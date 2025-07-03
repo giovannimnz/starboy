@@ -1,11 +1,31 @@
+const path = require('path');
 const api = require('./api');
 const { getDatabaseInstance, formatDateForMySQL } = require('./backend/core/database/conexao');
 const websockets = require('./websockets');
+
+// Carregar configurações de ambiente
+require('dotenv').config({ path: path.resolve(__dirname, '../../../../config/.env') });
+
+// Configuração da WebSocket API
+const ENABLE_WS_API = process.env.ENABLE_WS_API === 'true';
+
+/**
+ * Verifica se a WebSocket API está habilitada
+ */
+function isWebSocketApiEnabled() {
+  return ENABLE_WS_API;
+}
 
 /**
  * Envia uma nova ordem via WebSocket API - VERSÃO CORRIGIDA
  */
 async function placeOrderViaWebSocket(orderParams, accountId) {
+  // Verificar se WebSocket API está habilitada
+  if (!isWebSocketApiEnabled()) {
+    console.log(`[WS-API] WebSocket API está desabilitada via configuração. Pulando...`);
+    throw new Error('WebSocket API está desabilitada via configuração');
+  }
+
   // CORREÇÃO CRÍTICA: Validar accountId
   if (!accountId || typeof accountId !== 'number') {
     throw new Error(`AccountId é obrigatório para placeOrderViaWebSocket: ${accountId}`);
@@ -53,6 +73,11 @@ async function placeOrderViaWebSocket(orderParams, accountId) {
  * Envia uma ordem LIMIT MAKER via WebSocket API
  */
 async function placeLimitMakerOrderViaWebSocket(symbol, quantity, side, price, accountId) {
+  if (!isWebSocketApiEnabled()) {
+    console.log(`[WS-API] WebSocket API está desabilitada. Pulando placeLimitMakerOrderViaWebSocket...`);
+    throw new Error('WebSocket API está desabilitada via configuração');
+  }
+  
   if (!accountId) {
     throw new Error('AccountId é obrigatório para placeLimitMakerOrderViaWebSocket');
   }
@@ -72,6 +97,11 @@ async function placeLimitMakerOrderViaWebSocket(symbol, quantity, side, price, a
  * Envia uma ordem STOP_MARKET via WebSocket API
  */
 async function placeStopMarketOrderViaWebSocket(symbol, quantity, side, stopPrice, closePosition = false, accountId) {
+  if (!isWebSocketApiEnabled()) {
+    console.log(`[WS-API] WebSocket API está desabilitada. Pulando placeStopMarketOrderViaWebSocket...`);
+    throw new Error('WebSocket API está desabilitada via configuração');
+  }
+  
   if (!accountId) {
     throw new Error('AccountId é obrigatório para placeStopMarketOrderViaWebSocket');
   }
@@ -98,6 +128,14 @@ async function placeStopMarketOrderViaWebSocket(symbol, quantity, side, stopPric
  * Envia uma ordem TAKE_PROFIT_MARKET via WebSocket API
  */
 async function placeTakeProfitMarketOrderViaWebSocket(symbol, quantity, side, stopPrice, closePosition = false, accountId) {
+  if (!isWebSocketApiEnabled()) {
+    console.log(`[WS-API] WebSocket API está desabilitada. Pulando placeTakeProfitMarketOrderViaWebSocket...`);
+    throw new Error('WebSocket API está desabilitada via configuração');
+  }
+  
+  if (!accountId) {
+    throw new Error('AccountId é obrigatório para placeTakeProfitMarketOrderViaWebSocket');
+  }
   if (!accountId) {
     throw new Error('AccountId é obrigatório para placeTakeProfitMarketOrderViaWebSocket');
   }
@@ -124,6 +162,11 @@ async function placeTakeProfitMarketOrderViaWebSocket(symbol, quantity, side, st
  * Modifica uma ordem existente via WebSocket API
  */
 async function modifyOrderViaWebSocket(modifyParams, accountId) {
+  if (!isWebSocketApiEnabled()) {
+    console.log(`[WS-API] WebSocket API está desabilitada. Pulando modifyOrderViaWebSocket...`);
+    throw new Error('WebSocket API está desabilitada via configuração');
+  }
+  
   if (!accountId) {
     throw new Error('AccountId é obrigatório para modifyOrderViaWebSocket');
   }
@@ -158,6 +201,11 @@ async function modifyOrderViaWebSocket(modifyParams, accountId) {
  * Cancela uma ordem via WebSocket API
  */
 async function cancelOrderByIdViaWebSocket(symbol, orderId, accountId) {
+  if (!isWebSocketApiEnabled()) {
+    console.log(`[WS-API] WebSocket API está desabilitada. Pulando cancelOrderByIdViaWebSocket...`);
+    throw new Error('WebSocket API está desabilitada via configuração');
+  }
+  
   if (!accountId) {
     throw new Error('AccountId é obrigatório para cancelOrderByIdViaWebSocket');
   }
@@ -187,6 +235,11 @@ async function cancelOrderByIdViaWebSocket(symbol, orderId, accountId) {
  * Obtém status de múltiplas ordens via WebSocket API
  */
 async function getMultipleOrderStatusViaWebSocket(symbol, orderIds, accountId) {
+  if (!isWebSocketApiEnabled()) {
+    console.log(`[WS-API] WebSocket API está desabilitada. Pulando getMultipleOrderStatusViaWebSocket...`);
+    throw new Error('WebSocket API está desabilitada via configuração');
+  }
+  
   if (!accountId) {
     throw new Error('AccountId é obrigatório para getMultipleOrderStatusViaWebSocket');
   }
@@ -221,6 +274,11 @@ async function getMultipleOrderStatusViaWebSocket(symbol, orderIds, accountId) {
  * Obtém status de uma ordem via WebSocket API (com fallback para REST)
  */
 async function getOrderStatusViaWebSocket(symbol, orderId, accountId) {
+  if (!isWebSocketApiEnabled()) {
+    console.log(`[WS-API] WebSocket API está desabilitada. Pulando getOrderStatusViaWebSocket...`);
+    throw new Error('WebSocket API está desabilitada via configuração');
+  }
+  
   if (!accountId) {
     throw new Error('AccountId é obrigatório para getOrderStatusViaWebSocket');
   }
@@ -284,6 +342,11 @@ function validateModifyOrderParams(params) {
  * Sincroniza saldo da conta via WebSocket API
  */
 async function syncAccountBalanceViaWebSocket(accountId) {
+  if (!isWebSocketApiEnabled()) {
+    console.log(`[WS-API] WebSocket API está desabilitada. Pulando syncAccountBalanceViaWebSocket...`);
+    throw new Error('WebSocket API está desabilitada via configuração');
+  }
+  
   if (!accountId) {
     throw new Error('AccountId é obrigatório para syncAccountBalanceViaWebSocket');
   }
@@ -356,6 +419,7 @@ async function syncAccountBalanceViaWebSocket(accountId) {
 }
 
 module.exports = {
+  isWebSocketApiEnabled,
   placeOrderViaWebSocket,
   placeLimitMakerOrderViaWebSocket,
   placeStopMarketOrderViaWebSocket,
