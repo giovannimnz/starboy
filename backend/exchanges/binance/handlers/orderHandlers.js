@@ -7,14 +7,12 @@ const path = require('path');
 // Carregar configurações de ambiente
 require('dotenv').config({ path: path.resolve(__dirname, '../../../../config/.env') });
 
-// Configurações de logging
-const ENABLE_ORPHAN_LOGS = process.env.ENABLE_ORPHAN_LOGS === 'true';
+// Configurações de logging - SEMPRE ATIVO
+const ENABLE_ORPHAN_LOGS = true; // Sempre true
 
-// Função auxiliar para logs condicionais
+// Função auxiliar para logs condicionais - AGORA SEMPRE ATIVA
 const orphanLog = (...args) => {
-  if (ENABLE_ORPHAN_LOGS) {
-    console.log(...args);
-  }
+  console.log(...args); // Sempre exibe
 };
 
 const targetCache = new Map();

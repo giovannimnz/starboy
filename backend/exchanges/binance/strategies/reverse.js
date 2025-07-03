@@ -173,7 +173,9 @@ async function insertBufferedDataToDB(signalId, accountId, connection) {
 }
 
 async function executeReverse(signal, currentPrice, accountId) {
-  reverseLog(`[LIMIT_ENTRY] 🚀 Executando entrada para sinal ${signal.id}: ${signal.symbol} ${signal.side} a ${signal.entry_price} (conta ${accountId})`);
+  reverseLog(`[LIMIT_ENTRY] 🚀 === INICIANDO EXECUÇÃO PARA SINAL ${signal.id} NA CONTA ${accountId} ===`);
+  reverseLog(`[LIMIT_ENTRY] 📋 Symbol: ${signal.symbol}, Side: ${signal.side}, Entry Price: ${signal.entry_price}`);
+  reverseLog(`[LIMIT_ENTRY] 🏦 Conta: ${accountId} (tipo: ${typeof accountId})`);
 
   // ✅ VARIÁVEIS DE CONTROLE PARA EVITAR DUPLICAÇÃO
   let slTpRpsAlreadyCreated = false;
@@ -1168,14 +1170,8 @@ async function executeReverse(signal, currentPrice, accountId) {
     // Verificar se entrada foi completada
     const fillRatio = totalEntrySize > 0 ? totalFilledSize / totalEntrySize : 0;
 
-    // ✅ REDUZIR LIMITE PARA 50% para garantir que as ordens sejam criadas
-    const isEntryReallyComplete = fillRatio >= 0.50;
-
-    reverseLog(`[LIMIT_ENTRY] 🔍 Verificação de entrada:`);
-    reverseLog(`[LIMIT_ENTRY]   - Total esperado: ${totalEntrySize.toFixed(quantityPrecision)}`);
-    reverseLog(`[LIMIT_ENTRY]   - Total preenchido: ${totalFilledSize.toFixed(quantityPrecision)}`);
-    reverseLog(`[LIMIT_ENTRY]   - Percentual preenchido: ${(fillRatio * 100).toFixed(2)}%`);
-    reverseLog(`[LIMIT_ENTRY]   - Entrada considerada completa: ${isEntryReallyComplete ? 'SIM' : 'NÃO'}`);
+    // Só considerar completa se 95% preenchido
+    const isEntryReallyComplete = fillRatio >= 0.95;
 
     if (isEntryReallyComplete) {
         isEntryComplete = true;
@@ -1199,12 +1195,8 @@ async function executeReverse(signal, currentPrice, accountId) {
 
     // ✅ CRIAR SL/TP/RPS - VERSÃO TOTALMENTE CORRIGIDA DA DEV
     let slTpRpsCreated = false;
-    reverseLog(`[LIMIT_ENTRY] 🔍 Verificando criação de SL/TP/RPs...`);
-    reverseLog(`[LIMIT_ENTRY]   - isEntryReallyComplete: ${isEntryReallyComplete}`);
-    reverseLog(`[LIMIT_ENTRY]   - Vai criar ordens: ${isEntryReallyComplete ? 'SIM' : 'NÃO'}`);
-    
     if (isEntryReallyComplete) {
-      reverseLog(`[LIMIT_ENTRY] 🎯 Entrada considerada COMPLETA (${(fillRatio * 100).toFixed(1)}%). Criando SL/TP/RPs.`);
+      reverseLog(`[LIMIT_ENTRY] 🎯 Entrada considerada COMPLETA (${(fillRatio * 100).toFixed(1)}%) para conta ${accountId}. Criando SL/TP/RPs.`);
       slTpRpsCreated = true;
 
       let slPriceVal = signal.sl_price ? parseFloat(signal.sl_price) : null; // Changed to `let` for potential adjustment
@@ -1228,6 +1220,8 @@ async function executeReverse(signal, currentPrice, accountId) {
       // ✅ CRIAR STOP LOSS - VERSÃO SEM INSERÇÃO NO BANCO
       if (slPriceVal && slPriceVal > 0) {
         try {
+          reverseLog(`[LIMIT_ENTRY] 🔍 Verificando se já existe SL para sinal ${signal.id} na conta ${accountId}...`);
+          
           // ✅ VERIFICAR SE JÁ EXISTE SL ATIVO PARA ESTE SINAL (sem depender de positionId)
           const [existingSl] = await connection.query(`
             SELECT COUNT(*) as count 
@@ -1238,10 +1232,12 @@ async function executeReverse(signal, currentPrice, accountId) {
               AND status IN ('NEW', 'PARTIALLY_FILLED')
           `, [`WEBHOOK_${signal.id}`, accountId]);
 
+          reverseLog(`[LIMIT_ENTRY] 📊 Resultado da verificação SL: ${existingSl[0]?.count || 0} SL(s) existente(s)`);
+
           if (existingSl[0]?.count > 0) {
-            reverseLog(`[LIMIT_ENTRY] ⚠️ STOP_LOSS já existe para sinal ${signal.id}. Pulando criação.`);
+            reverseLog(`[LIMIT_ENTRY] ⚠️ STOP_LOSS já existe para sinal ${signal.id} na conta ${accountId}. Pulando criação.`);
           } else {
-            reverseLog(`[LIMIT_ENTRY] 🛡️ Enviando SL para corretora: STOP_MARKET ${binanceOppositeSide} @ stopPrice=${slPriceVal} (closePosition=true)`);
+            reverseLog(`[LIMIT_ENTRY] 🛡️ Enviando SL para corretora (conta ${accountId}): STOP_MARKET ${binanceOppositeSide} @ stopPrice=${slPriceVal} (closePosition=true)`);
             
             // ✅ APENAS ENVIAR PARA CORRETORA - NÃO INSERIR NO BANCO
             const slResponse = await newStopOrder(
@@ -1258,7 +1254,7 @@ async function executeReverse(signal, currentPrice, accountId) {
             
             if (slResponse && (slResponse.data?.orderId || slResponse.orderId)) {
               const slOrderId = slResponse.data?.orderId || slResponse.orderId;
-              reverseLog(`[LIMIT_ENTRY] ✅ SL enviado para corretora: ${slOrderId} @ stopPrice=${slPriceVal}`);
+              reverseLog(`[LIMIT_ENTRY] ✅ SL enviado para corretora (conta ${accountId}): ${slOrderId} @ stopPrice=${slPriceVal}`);
               
               // ✅ ADICIONAR SL AO BUFFER
               addOrderToBuffer({
@@ -1281,10 +1277,12 @@ async function executeReverse(signal, currentPrice, accountId) {
                 `UPDATE webhook_signals SET sl_order_id = ? WHERE id = ?`,
                 [String(slOrderId), signal.id]
               );
+            } else {
+              reverseError(`[LIMIT_ENTRY] ❌ Resposta inválida do SL para conta ${accountId}:`, slResponse);
             }
           }
         } catch (slError) {
-          reverseError(`[LIMIT_ENTRY] ❌ Erro ao enviar SL para corretora:`, slError.response?.data || slError.message);
+          reverseError(`[LIMIT_ENTRY] ❌ Erro ao enviar SL para corretora (conta ${accountId}):`, slError.response?.data || slError.message);
         }
       } else {
         reverseWarn(`[LIMIT_ENTRY] ⚠️ Preço de SL inválido ou não fornecido (${slPriceVal}). SL não será criado.`);
@@ -1301,6 +1299,8 @@ async function executeReverse(signal, currentPrice, accountId) {
         const rpPrice = targetPrices[rpKey];
         
         if (rpPrice && rpPrice > 0 && i < reductionPercentages.length) {
+          reverseLog(`[LIMIT_ENTRY] 🔍 Verificando se já existe RP${i+1} para sinal ${signal.id} na conta ${accountId}...`);
+          
           // ✅ VERIFICAR SE JÁ EXISTE RP PARA ESTE TARGET ESPECÍFICO
           const [existingRp] = await connection.query(`
             SELECT COUNT(*) as count 
@@ -1312,8 +1312,10 @@ async function executeReverse(signal, currentPrice, accountId) {
               AND status IN ('NEW', 'PARTIALLY_FILLED')
           `, [`WEBHOOK_${signal.id}`, i + 1, accountId]);
 
+          reverseLog(`[LIMIT_ENTRY] 📊 Resultado da verificação RP${i+1}: ${existingRp[0]?.count || 0} RP(s) existente(s)`);
+
           if (existingRp[0]?.count > 0) {
-            reverseLog(`[LIMIT_ENTRY] ⚠️ RP${i+1} já existe para sinal ${signal.id}. Pulando criação.`);
+            reverseLog(`[LIMIT_ENTRY] ⚠️ RP${i+1} já existe para sinal ${signal.id} na conta ${accountId}. Pulando criação.`);
             continue;
           }
 
@@ -1323,7 +1325,7 @@ async function executeReverse(signal, currentPrice, accountId) {
           
           if (rpQty > 0) {
             try {
-              reverseLog(`[LIMIT_ENTRY] 📊 Enviando RP${i+1} para corretora: ${(rpPercentage*100)}% de ${totalFilledSize.toFixed(quantityPrecision)} = ${rpQty.toFixed(quantityPrecision)}`);
+              reverseLog(`[LIMIT_ENTRY] 📊 Enviando RP${i+1} para corretora (conta ${accountId}): ${(rpPercentage*100)}% de ${totalFilledSize.toFixed(quantityPrecision)} = ${rpQty.toFixed(quantityPrecision)}`);
               
               // ✅ APENAS ENVIAR PARA CORRETORA - NÃO INSERIR NO BANCO
               const rpResponse = await newReduceOnlyOrder(
@@ -1336,7 +1338,7 @@ async function executeReverse(signal, currentPrice, accountId) {
               
               if (rpResponse && (rpResponse.data?.orderId || rpResponse.orderId)) {
                 const rpOrderId = rpResponse.data?.orderId || rpResponse.orderId;
-                reverseLog(`[LIMIT_ENTRY] ✅ RP${i+1} enviado para corretora: ${rpOrderId} (${(rpPercentage*100)}%)`);
+                reverseLog(`[LIMIT_ENTRY] ✅ RP${i+1} enviado para corretora (conta ${accountId}): ${rpOrderId} (${(rpPercentage*100)}%)`);
                 
                 // ✅ ADICIONAR RP AO BUFFER
                 addOrderToBuffer({
@@ -1353,9 +1355,11 @@ async function executeReverse(signal, currentPrice, accountId) {
                   closePosition: false,
                   target: i + 1
                 }, signal.id);
+              } else {
+                reverseError(`[LIMIT_ENTRY] ❌ Resposta inválida do RP${i+1} para conta ${accountId}:`, rpResponse);
               }
             } catch (rpError) {
-              reverseError(`[LIMIT_ENTRY] ❌ Erro ao enviar RP${i+1} para corretora:`, rpError.response?.data || rpError.message);
+              reverseError(`[LIMIT_ENTRY] ❌ Erro ao enviar RP${i+1} para corretora (conta ${accountId}):`, rpError.response?.data || rpError.message);
             }
           }
         }
@@ -1374,9 +1378,9 @@ async function executeReverse(signal, currentPrice, accountId) {
           `, [`WEBHOOK_${signal.id}`, accountId]);
 
           if (existingTp5[0]?.count > 0) {
-            reverseLog(`[LIMIT_ENTRY] ⚠️ TAKE_PROFIT (TP5) já existe para sinal ${signal.id}. Pulando criação.`);
+            reverseLog(`[LIMIT_ENTRY] ⚠️ TAKE_PROFIT (TP5) já existe para sinal ${signal.id} na conta ${accountId}. Pulando criação.`);
           } else {
-            reverseLog(`[LIMIT_ENTRY] 🏁 Enviando TAKE_PROFIT_MARKET TP5 para corretora (${targetPrices.tp5})`);
+            reverseLog(`[LIMIT_ENTRY] 🏁 Enviando TAKE_PROFIT_MARKET TP5 para corretora (conta ${accountId}) (${targetPrices.tp5})`);
 
             // ✅ APENAS ENVIAR PARA CORRETORA - NÃO INSERIR NO BANCO
             const tp5Response = await rest.newStopOrder(
@@ -1393,7 +1397,7 @@ async function executeReverse(signal, currentPrice, accountId) {
 
             if (tp5Response && (tp5Response.data?.orderId || tp5Response.orderId)) {
               const tp5OrderId = tp5Response.data?.orderId || tp5Response.orderId;
-              reverseLog(`[LIMIT_ENTRY] ✅ TAKE_PROFIT_MARKET TP5 enviado para corretora: ${tp5OrderId} @ ${targetPrices.tp5}`);
+              reverseLog(`[LIMIT_ENTRY] ✅ TAKE_PROFIT_MARKET TP5 enviado para corretora (conta ${accountId}): ${tp5OrderId} @ ${targetPrices.tp5}`);
               
               // ✅ ADICIONAR TP5 AO BUFFER
               addOrderToBuffer({
@@ -1418,11 +1422,12 @@ async function executeReverse(signal, currentPrice, accountId) {
         }
       }
       
-      reverseLog(`[LIMIT_ENTRY] ✅ Processo de criação SL/TP/RPs CONCLUÍDO para sinal ${signal.id}`);
+      reverseLog(`[LIMIT_ENTRY] ✅ Processo de criação SL/TP/RPs CONCLUÍDO para conta ${accountId}, sinal ${signal.id}`);
     } else if (slTpRpsAlreadyCreated) {
-      reverseLog(`[LIMIT_ENTRY] ℹ️ SL/TP/RPs já existem para sinal ${signal.id}. Processo ignorado.`);
+      reverseLog(`[LIMIT_ENTRY] ℹ️ SL/TP/RPs já existem para sinal ${signal.id} na conta ${accountId}. Processo ignorado.`);
     } else {
-      reverseLog(`[LIMIT_ENTRY] ℹ️ Entrada não suficientemente completa (${(fillRatio * 100).toFixed(1)}%) para criar SL/TP/RPs para sinal ${signal.id}`);
+      reverseWarn(`[LIMIT_ENTRY] ⚠️ Entrada NÃO considerada completa (${(fillRatio * 100).toFixed(1)}% < 95%) para conta ${accountId}. SL/TP/RPs não serão criados.`);
+      reverseWarn(`[LIMIT_ENTRY] 📊 Detalhes: totalFilledSize=${totalFilledSize}, totalEntrySize=${totalEntrySize}, fillRatio=${fillRatio.toFixed(4)}, isEntryReallyComplete=${isEntryReallyComplete}`);
     }
 
     // ✅ MARCAR COMO PROCESSAMENTO COMPLETO
@@ -1435,7 +1440,17 @@ async function executeReverse(signal, currentPrice, accountId) {
     entryProcessingComplete = true;
 
     // ✅ INSERIR TODOS OS DADOS DO BUFFER NO BANCO
-    reverseLog(`[LIMIT_ENTRY] 📤 Inserindo dados do buffer no banco...`);
+    reverseLog(`[LIMIT_ENTRY] 📤 Inserindo dados do buffer no banco para conta ${accountId}...`);
+    reverseLog(`[LIMIT_ENTRY] 📊 Buffer de posições: ${positionBuffer.size} item(s)`);
+    reverseLog(`[LIMIT_ENTRY] 📊 Buffer de ordens: ${orderBuffer.size} item(s)`);
+    
+    // Mostrar detalhes das ordens no buffer
+    const signalOrders = Array.from(orderBuffer.entries()).filter(([_, order]) => order.signal_id === signal.id);
+    reverseLog(`[LIMIT_ENTRY] 📋 Ordens a serem inseridas para signal ${signal.id}:`);
+    signalOrders.forEach(([orderId, order], index) => {
+      reverseLog(`[LIMIT_ENTRY]   ${index + 1}. ${order.tipo_ordem_bot} (${order.tipo_ordem}) - ID: ${orderId}`);
+    });
+    
     const insertResult = await insertBufferedDataToDB(signal.id, accountId, connection);
     
     if (insertResult.success) {
@@ -1467,8 +1482,6 @@ async function executeReverse(signal, currentPrice, accountId) {
         // Salvar messageId se disponível
         let messageId = null;
         if (telegramResult.messageId) {
-         
-         
           messageId = telegramResult.messageId;
           reverseLog(`[TELEGRAM_DISPATCHER] 📨 Message ID (direto): ${messageId}`);
         } else if (telegramResult.result && telegramResult.result.message_id) {

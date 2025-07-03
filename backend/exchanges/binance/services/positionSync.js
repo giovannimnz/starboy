@@ -9,25 +9,21 @@ const path = require('path');
 // Carregar configurações de ambiente
 require('dotenv').config({ path: path.resolve(__dirname, '../../../../config/.env') });
 
-// Configurações de logging
-const ENABLE_SYNC_LOGS = process.env.ENABLE_SYNC_LOGS === 'true';
-const ENABLE_ORPHAN_LOGS = process.env.ENABLE_ORPHAN_LOGS === 'true';
+// Configurações de logging - SEMPRE ATIVO
+const ENABLE_SYNC_LOGS = true; // Sempre true
+const ENABLE_ORPHAN_LOGS = true; // Sempre true
 
 // ✅ NOVO: Controle de tempo para evitar interferência com webhook
 const MIN_DELAY_BEFORE_SYNC_MS = 5 * 60 * 1000; // 5 minutos
 const lastDetectedChanges = new Map(); // Rastreia quando foram detectadas mudanças
 
-// Funções auxiliares para logs condicionais
+// Funções auxiliares para logs condicionais - AGORA SEMPRE ATIVA
 const syncLog = (...args) => {
-  if (ENABLE_SYNC_LOGS) {
-    console.log(...args);
-  }
+  console.log(...args); // Sempre exibe
 };
 
 const orphanLog = (...args) => {
-  if (ENABLE_ORPHAN_LOGS) {
-    console.log(...args);
-  }
+  console.log(...args); // Sempre exibe
 };
 
 // ✅ NOVA FUNÇÃO: Verificar se deve aguardar antes de sincronizar
