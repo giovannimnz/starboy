@@ -260,7 +260,7 @@ async function startWebSocketApi(accountId) {
           wsInstance.terminate();
           reject(new Error(`Timeout ao conectar WebSocket API para conta ${accountId}`));
         }
-      }, 30000);
+      }, 30100);
 
       wsInstance.on('open', async () => {
         clearTimeout(connectionTimeout);
@@ -438,7 +438,7 @@ function cleanupWebSocketApi(accountId) {
 async function checkSessionStatus(accountId) {
   try {
     const request = await createSignedRequest('session.status', {}, accountId);
-    const response = await sendWebSocketApiRequest(request, 30000, accountId);
+    const response = await sendWebSocketApiRequest(request, 30100, accountId);
     
     const accountState = getAccountConnectionState(accountId, true);
     if (response && response.result) {
@@ -489,7 +489,7 @@ async function authenticateWebSocketApi(ws, accountId) {
     return new Promise((resolve, reject) => {
       const timeoutId = setTimeout(() => {
         reject(new Error(`Timeout na autenticação WebSocket API`));
-      }, 30000);
+      }, 30100);
 
       accountState.wsApiRequestCallbacks.set(authRequest.id, (responseMessage) => {
         clearTimeout(timeoutId);
@@ -523,7 +523,7 @@ async function authenticateWebSocketApi(ws, accountId) {
 /**
  * Envia requisição via WebSocket API
  */
-async function sendWebSocketApiRequest(request, timeout = 30000, accountId) {
+async function sendWebSocketApiRequest(request, timeout = 30100, accountId) {
   const accountState = getAccountConnectionState(accountId);
   if (!accountState || !accountState.wsApiConnection) {
     throw new Error(`WebSocket API não conectado para conta ${accountId}`);
@@ -744,7 +744,7 @@ function bookTicker(symbol, callback, accountId) {
     
     if (shouldReconnect && reconnectAttempt < MAX_RECONNECT_ATTEMPTS) {
       reconnectAttempt++;
-      const delay = Math.min(1000 * Math.pow(2, reconnectAttempt - 1), 30000);
+      const delay = Math.min(1000 * Math.pow(2, reconnectAttempt - 1), 30100);
       console.log(`[WEBSOCKET] Tentando reconectar BookTicker para ${symbol} em ${delay/1000}s (tentativa ${reconnectAttempt}/${MAX_RECONNECT_ATTEMPTS})...`);
       
       setTimeout(() => {

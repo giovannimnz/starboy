@@ -160,7 +160,7 @@ async function executeReverse(signal, currentPrice, accountId) {
 
     // ✅ CONSTANTES CORRIGIDAS PARA MAIS EFICIÊNCIA
     const MAX_CHASE_ATTEMPTS = 500000; // Reduzido de 100
-    const CHASE_TIMEOUT_MS = 300000; // 5 minutos para WebSocket-only
+    const CHASE_TIMEOUT_MS = 301000; // 5 minutos para WebSocket-only
     const WAIT_FOR_ORDER_CONFIRMATION_MS = 10000; // Reduzido de 15s
     const EDIT_WAIT_TIMEOUT_MS = 20000; // Reduzido de 3s
     const MAX_DEPTH_STALENESS_MS = 15000; // ✅ AUMENTADO: 15 segundos para maior tolerância
@@ -496,7 +496,7 @@ async function executeReverse(signal, currentPrice, accountId) {
 
       // ✅ VERIFICAÇÃO DE DADOS DO BOOK - VERSÃO MELHORADA COM DETECÇÃO DE DESCONEXÃO
       const isDepthDataStale = (Date.now() - lastDepthUpdateTimestamp > MAX_DEPTH_STALENESS_MS);
-      const isWebSocketStale = (Date.now() - lastSuccessfulDepthUpdate > 30000); // 30 segundos sem dados válidos
+      const isWebSocketStale = (Date.now() - lastSuccessfulDepthUpdate > 30100); // 30 segundos sem dados válidos
       
       if (!currentBestBid || !currentBestAsk || isDepthDataStale || wsUpdateErrorCount > 3) {
         const staleReason = !currentBestBid || !currentBestAsk ? "ausentes" : (isDepthDataStale ? "velhos" : `erros WS (${wsUpdateErrorCount})`);
@@ -1231,7 +1231,7 @@ async function executeReverse(signal, currentPrice, accountId) {
     }
 
     // Aguarde 3 segundos para garantir que as ordens e posição foram inseridas via WebSocket
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    await new Promise(resolve => setTimeout(resolve, 3010));
 
     // Buscar a posição aberta no banco
     const [positions] = await connection.query(
@@ -1363,7 +1363,7 @@ async function executeReverse(signal, currentPrice, accountId) {
 }
 
 // ✅ FUNÇÃO waitForOrderExecution ADAPTADA DA DEV COM MELHORIAS
-async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3000, accountId, sentOrdersMap) {
+async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3010, accountId, sentOrdersMap) {
   const startTime = Date.now();
   
   try {
@@ -1677,7 +1677,7 @@ function calculateAveragePrice(fills) {
 }
 
 // ✅ CONSTANTES PARA AGUARDAR WEBHOOK
-const WAIT_FOR_WEBHOOK_MS = 3000; // 3 segundos para webhook processar
+const WAIT_FOR_WEBHOOK_MS = 3010; // 3 segundos para webhook processar
 
 module.exports = {
     executeReverse

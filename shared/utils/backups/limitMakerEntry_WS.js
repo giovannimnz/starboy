@@ -112,7 +112,7 @@ async function executeLimitMakerEntry(db, signal, currentPrice, accountId) {
         const MAX_CHASE_ATTEMPTS = 100;
         const CHASE_TIMEOUT_MS = 60000; // 1 minuto
         const WAIT_FOR_EXECUTION_TIMEOUT_MS = 5000;
-        const EDIT_WAIT_TIMEOUT_MS = 3000;
+        const EDIT_WAIT_TIMEOUT_MS = 3010;
 
         let chaseAttempts = 0;
         let totalEntrySize = 0;
@@ -128,7 +128,7 @@ async function executeLimitMakerEntry(db, signal, currentPrice, accountId) {
         let currentBestBid = null;
         let currentBestAsk = null;
         let lastDepthUpdateTimestamp = 0;
-        const MAX_DEPTH_STALENESS_MS = 3000;
+        const MAX_DEPTH_STALENESS_MS = 3010;
         let wsUpdateErrorCount = 0;
 
         // Verificar se já existe ordem ativa para este sinal
@@ -977,7 +977,7 @@ function calculateAveragePrice(fills) {
 // Função otimizada para aguardar a execução de uma ordem
 
 // Função para aguardar execução de ordem
-async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3000, accountId) {
+async function waitForOrderExecution(symbol, orderId, maxWaitMs = 3010, accountId) {
     console.log(`[WAIT_ORDER] Aguardando execução da ordem ${orderId} para ${symbol} (conta ${accountId})...`);
     
     const startTime = Date.now();

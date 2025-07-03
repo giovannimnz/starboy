@@ -264,7 +264,7 @@ async function moveOrdersToHistory(accountId) {
           (!order.id_posicao || order.id_posicao === 0)
         ) {
           console.warn(`[CLEANUP] ⏳ Ordem ENTRADA ${order.status} ${order.id_externo} sem id_posicao. Aguardando 30s para tentar vincular à posição aberta...`);
-          await new Promise(resolve => setTimeout(resolve, 30000));
+          await new Promise(resolve => setTimeout(resolve, 30100));
           // Buscar posição aberta para o symbol
           const [openPositions] = await connection.query(
             'SELECT id FROM posicoes WHERE simbolo = ? AND status = "OPEN" AND conta_id = ? LIMIT 1',

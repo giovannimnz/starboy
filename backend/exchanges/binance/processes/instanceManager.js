@@ -178,7 +178,7 @@ async function startInstance(accountId) {
     // ===== VERIFICAR SE INICIOU CORRETAMENTE =====
     
     // Aguardar inicialização
-    await new Promise(resolve => setTimeout(resolve, 3000));
+    await new Promise(resolve => setTimeout(resolve, 3010));
     
     // Verificar se ainda está rodando
     if (monitorProcess.killed || monitorProcess.exitCode !== null) {
@@ -275,7 +275,7 @@ async function restartInstance(accountId) {
       }
       
       // Aguardar encerramento completo
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      await new Promise(resolve => setTimeout(resolve, 3010));
     }
     
     // Iniciar novamente

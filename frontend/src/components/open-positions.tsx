@@ -33,10 +33,10 @@ export default function OpenPositions({ currentPrice, balance }: OpenPositionsPr
             symbol: "BTC/USD",
             type: "long",
             amount: balance.btc,
-            entryPrice: 30000, // Mock entry price
+            entryPrice: 30100, // Mock entry price
             currentPrice: currentPrice,
-            pnl: (currentPrice - 30000) * balance.btc,
-            pnlPercentage: ((currentPrice - 30000) / 30000) * 100,
+            pnl: (currentPrice - 30100) * balance.btc,
+            pnlPercentage: ((currentPrice - 30100) / 30100) * 100,
           },
         ]
       : []

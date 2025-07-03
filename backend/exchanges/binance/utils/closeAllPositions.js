@@ -258,7 +258,7 @@ Exemplo:
   
   // Aguardar 3 segundos para o usuário ter chance de cancelar
   console.log(`⏳ Iniciando em 3 segundos... (Ctrl+C para cancelar)`);
-  await new Promise(resolve => setTimeout(resolve, 3000));
+  await new Promise(resolve => setTimeout(resolve, 3010));
 
   try {
     const result = await closeAllPositions(accountId, cancelOrders, notifyTelegram);
