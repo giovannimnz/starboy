@@ -119,12 +119,25 @@ async function onAccountUpdate({ message, accountId }) {
 
 /**
  * ✅ NOVO: Registra os handlers de conta no sistema Pub/Sub do WebSocket.
- * Deve ser chamado uma vez na inicialização do monitor.
+ * Deve ser chamado uma vez na inicialização do monitor para cada conta.
+ * @param {number} accountId - ID da conta para a qual registrar o handler.
  */
-function registerAccountHandlers() {
-    const listenerId = 'mainAccountHandler'; // ID único para este listener
-    websockets.on('accountUpdate', onAccountUpdate, listenerId);
-    console.log(`[ACCOUNT_HANDLERS] 🎧 Handler principal de conta registrado com o ID: ${listenerId}`);
+function registerAccountHandlers(accountId) {
+    if (!accountId) {
+        console.error('[ACCOUNT-HANDLERS] Tentativa de registrar handler sem accountId.');
+        return;
+    }
+
+    // Criar um wrapper que captura o accountId do escopo
+    const accountUpdateWrapper = (eventData) => {
+        // O eventData já vem com { message, accountId } do emit corrigido
+        onAccountUpdate(eventData);
+    };
+
+    const listenerId = `mainAccountHandler_${accountId}`; // ID único para este listener por conta
+    websockets.on('accountUpdate', accountUpdateWrapper, accountId, listenerId);
+    console.log(`[ACCOUNT-HANDLERS] Registrando handlers de conta para conta ${accountId}...`);
+    console.log(`[ACCOUNT-HANDLERS] ✅ Handlers de conta registrados para conta ${accountId}`);
 }
 
 /**

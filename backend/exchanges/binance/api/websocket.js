@@ -861,7 +861,7 @@ async function handleUserDataMessage(jsonData, accountId, db) {
       break;
     case 'ACCOUNT_UPDATE':
       // Este evento pode conter múltiplas informações, vamos emitir eventos mais granulares
-      emit('accountUpdate', accountId, jsonData);
+      emit('accountUpdate', accountId, { message: jsonData, accountId: accountId });
       // Exemplo de como emitir sub-eventos se necessário
       if (jsonData.a && jsonData.a.B) { // Balances
         emit('balanceUpdateBulk', accountId, jsonData.a.B);

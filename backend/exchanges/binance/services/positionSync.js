@@ -1104,8 +1104,9 @@ async function detectAndFixOrphanPositions(accountId) {
 }
 
 /**
- * ✅ NOVA FUNÇÃO: Vincula sinais com status 'EXECUTADO' a posições abertas que não têm um sinal vinculado.
- * Isso corrige casos em que o webhook processou o sinal, mas a vinculação com a posição falhou.
+ * ✅ NOVA FUNÇÃO: Vincula sinais com status 'EXECUTADO' a posições abertas.
+ * Esta função corrige casos em que o webhook processou o sinal, mas a vinculação com a posição falhou.
+ * Atualiza apenas a coluna position_id na tabela webhook_signals.
  * @param {number} accountId - ID da conta
  * @returns {Promise<Object>} - Resultado da operação de vinculação.
  */
@@ -1144,40 +1145,44 @@ async function linkSignalsToOpenPositions(accountId) {
       }
 
       try {
-        // 2. Encontrar a posição aberta correspondente para o símbolo que ainda não tem um sinal
+        // 2. Encontrar a posição aberta correspondente para o símbolo
         const [openPositions] = await db.query(`
           SELECT id, simbolo
           FROM posicoes
           WHERE simbolo = ? 
             AND status = 'OPEN' 
             AND conta_id = ?
-            AND signal_id IS NULL
           LIMIT 1
         `, [signal.symbol, accountId]);
 
         if (openPositions.length > 0) {
           const position = openPositions[0];
+          
+          // 3. Verificar se este sinal já não está vinculado a alguma posição
+          const [existingLink] = await db.query(`
+            SELECT position_id FROM webhook_signals 
+            WHERE id = ? AND position_id IS NOT NULL
+          `, [signal.id]);
+          
+          if (existingLink.length > 0) {
+            console.log(`[LINK_SIGNALS] ℹ️ Sinal ${signal.id} (${signal.symbol}) já está vinculado à posição ${existingLink[0].position_id}, pulando...`);
+            continue;
+          }
+          
           console.log(`[LINK_SIGNALS] 🔗 Vinculando sinal ${signal.id} (${signal.symbol}) à posição ${position.id}...`);
 
-          // 3. Atualizar o sinal com o ID da posição
+          // 4. Atualizar apenas o sinal com o ID da posição (tabela posicoes não tem coluna signal_id)
           const [signalUpdateResult] = await db.query(`
             UPDATE webhook_signals
             SET position_id = ?
-            WHERE id = ?
+            WHERE id = ? AND position_id IS NULL
           `, [position.id, signal.id]);
 
-          // 4. Atualizar a posição com o ID do sinal
-          const [positionUpdateResult] = await db.query(`
-            UPDATE posicoes
-            SET signal_id = ?
-            WHERE id = ?
-          `, [signal.id, position.id]);
-
-          if (signalUpdateResult.affectedRows > 0 && positionUpdateResult.affectedRows > 0) {
+          if (signalUpdateResult.affectedRows > 0) {
             linkedCount++;
             console.log(`[LINK_SIGNALS] ✅ Sinal ${signal.id} vinculado com sucesso à posição ${position.id}.`);
           } else {
-             console.warn(`[LINK_SIGNALS] ⚠️ A vinculação entre o sinal ${signal.id} e a posição ${position.id} pode ter falhado (affectedRows: 0).`);
+            console.warn(`[LINK_SIGNALS] ⚠️ A vinculação do sinal ${signal.id} à posição ${position.id} pode ter falhado (affectedRows: 0).`);
           }
         }
       } catch (linkError) {

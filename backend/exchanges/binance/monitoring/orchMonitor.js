@@ -6,9 +6,9 @@ const websockets = require('../api/websocket');
 const api = require('../api/rest');
 const orderHandlers = require('../handlers/orderHandlers');
 const accountHandlers = require('../handlers/accountHandlers');
+const { sendTelegramMessage } = require('../services/telegramHelper');
 const { onPriceUpdate, checkNewTrades, checkExpiredSignals, checkCanceledSignals } = require('./signalProcessor');
 const { syncPositionsWithExchange, syncOrdersWithExchange, logOpenPositionsAndOrdersVisual, syncPositionsWithAutoClose } = require('../services/positionSync');
-const { registerAccountHandlers } = require('../handlers/accountHandlers');
 const { cleanupOrphanSignals, moveOrdersToHistory, movePositionToHistory, cancelOrphanOrders } = require('../services/cleanup');
 const { checkOrderTriggers } = require('./trailingStopLoss');
 
@@ -73,17 +73,19 @@ function registerWebSocketHandlers(accountId) {
   console.log(`[MONITOR] 🎧 Registrando todos os handlers de WebSocket para a conta ${accountId}...`);
 
   // 1. Registrar handlers de atualização de ordens
-  orderHandlers.registerOrderHandlers(accountId);
+  orderHandlers.registerOrderUpdateHandler(accountId);
 
   // 2. Registrar handlers de atualização de conta
   accountHandlers.registerAccountHandlers(accountId);
 
   // 3. Registrar handler de atualização de preço (markPrice)
-  const priceUpdateWrapper = ({ message, accountId: eventAccountId }) => {
-    onPriceUpdate(message, eventAccountId);
+  const priceUpdateWrapper = (symbol, tickerData) => {
+    // tickerData contém as informações do preço, extrair o preço atual
+    const currentPrice = parseFloat(tickerData.c || tickerData.markPrice || 0);
+    onPriceUpdate(symbol, currentPrice, null, accountId);
   };
   // ✅ CORREÇÃO: Usar um ID de listener único por conta
-  websockets.on('priceUpdate', priceUpdateWrapper, `mainPriceSignalProcessor_${accountId}`);
+  websockets.on('priceUpdate', priceUpdateWrapper, accountId, `mainPriceSignalProcessor_${accountId}`);
   console.log(`[MONITOR] 🎧 Handler de atualização de preço (priceUpdate) registrado.`);
 
   console.log(`[MONITOR] ✅ Todos os handlers de WebSocket foram registrados com sucesso.`);
@@ -793,7 +795,7 @@ async function gracefulShutdown(accountIdToShutdown) {
     
     console.log(`[MONITOR] 🤖 6.5/7 - Parando bot do Telegram para conta ${accountIdToShutdown}...`);
     try {
-      const { stopTelegramBot } = require('./telegramBot');
+      const { stopTelegramBot } = require('../telegram/telegramBot');
       await stopTelegramBot(accountIdToShutdown);
       console.log(`[MONITOR]   ✅ Bot do Telegram parado para conta ${accountIdToShutdown}`);
     } catch (telegramShutdownError) {
