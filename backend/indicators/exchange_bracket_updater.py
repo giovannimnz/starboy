@@ -6,7 +6,8 @@ import hashlib
 import json
 import traceback
 import requests
-import mysql.connector
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from urllib.parse import urlencode
 from dotenv import load_dotenv
 import pathlib
@@ -27,22 +28,21 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 # Configurações do banco de dados
 DB_CONFIG = {
     'host': os.getenv('DB_HOST'),
-    'port': os.getenv('DB_PORT'),
+    'port': int(os.getenv('DB_PORT', 5432)),
     'user': os.getenv('DB_USER'),
     'password': os.getenv('DB_PASSWORD'),
-    'database': os.getenv('DB_NAME'),
-    'charset': 'utf8mb4',
-    'autocommit': True
+    'database': os.getenv('DB_NAME')
 }
 
 def get_database_connection():
     """
-    Obtém conexão com o banco de dados MySQL.
+    Obtém conexão com o banco de dados PostgreSQL.
     """
     try:
-        conn = mysql.connector.connect(**DB_CONFIG)
+        conn = psycopg2.connect(**DB_CONFIG)
+        conn.autocommit = True
         return conn
-    except mysql.connector.Error as e:
+    except psycopg2.Error as e:
         print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [DB] Erro ao conectar: {e}")
         return None
 
@@ -110,9 +110,9 @@ def update_leverage_brackets_database():
             print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [BRACKETS] ❌ Erro ao conectar ao banco de dados")
             return False
         
-        cursor = conn.cursor(dictionary=True)
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         
-        cursor.execute("SELECT symbol, bracket, initial_leverage, notional_cap, notional_floor, maint_margin_ratio, cum FROM exchange_leverage_brackets WHERE corretora = 'binance' ORDER BY symbol, bracket")
+        cursor.execute("SELECT symbol, bracket, initial_leverage, notional_cap, notional_floor, maint_margin_ratio, cum FROM exchange_leverage_brackets WHERE corretora = %s ORDER BY symbol, bracket", ('binance',))
         current_data = cursor.fetchall()
         
         current_brackets = {}
@@ -139,12 +139,12 @@ def update_leverage_brackets_database():
                 values = (symbol, 'binance', bracket_id, bracket_data.get('initialLeverage'), bracket_data.get('notionalCap'), bracket_data.get('notionalFloor'), bracket_data.get('maintMarginRatio'), bracket_data.get('cum', 0))
                 
                 if not current_bracket:
-                    cursor.execute("INSERT INTO exchange_leverage_brackets (symbol, corretora, bracket, initial_leverage, notional_cap, notional_floor, maint_margin_ratio, cum, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())", values)
+                    cursor.execute("INSERT INTO exchange_leverage_brackets (symbol, corretora, bracket, initial_leverage, notional_cap, notional_floor, maint_margin_ratio, cum, updated_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)", values)
                     inserts += 1
                 else:
                     needs_update = (current_bracket['initial_leverage'] != bracket_data.get('initialLeverage') or abs(float(current_bracket['notional_cap']) - float(bracket_data.get('notionalCap', 0))) > 0.01 or abs(float(current_bracket['notional_floor']) - float(bracket_data.get('notionalFloor', 0))) > 0.01 or abs(float(current_bracket['maint_margin_ratio']) - float(bracket_data.get('maintMarginRatio', 0))) > 0.000001 or abs(float(current_bracket['cum']) - float(bracket_data.get('cum', 0))) > 0.01)
                     if needs_update:
-                        cursor.execute("UPDATE exchange_leverage_brackets SET initial_leverage = %s, notional_cap = %s, notional_floor = %s, maint_margin_ratio = %s, cum = %s, updated_at = NOW() WHERE symbol = %s AND corretora = %s AND bracket = %s", values[3:] + (symbol, 'binance', bracket_id))
+                        cursor.execute("UPDATE exchange_leverage_brackets SET initial_leverage = %s, notional_cap = %s, notional_floor = %s, maint_margin_ratio = %s, cum = %s, updated_at = CURRENT_TIMESTAMP WHERE symbol = %s AND corretora = %s AND bracket = %s", values[3:] + (symbol, 'binance', bracket_id))
                         updates += 1
             
             # DELETAR

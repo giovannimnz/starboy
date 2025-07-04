@@ -1,4 +1,4 @@
-const { getDatabaseInstance, insertPosition, insertNewOrder, formatDateForMySQL } = require('../../../core/database/conexao');
+const { getDatabaseInstance, insertPosition, insertNewOrder, formatDateForPostgreSQL } = require('../../../core/database/conexao');
 const websockets = require('../api/websocket');
 const rest = require('../api/rest');
 const path = require('path');
@@ -120,8 +120,7 @@ async function executeReverse(signal, currentPrice, accountId) {
     console.log(`[REVERSE_IMPROVED] ✅ Posição criada no banco com ID: ${positionId}`);
 
     // 5. ✅ ATUALIZAR O SINAL COM O ID DA POSIÇÃO
-    await connection.query(
-      `UPDATE webhook_signals SET position_id = ?, status = 'ENTRADA_EM_PROGRESSO', updated_at = NOW() WHERE id = ?`,
+    await connection.query(`UPDATE webhook_signals SET position_id = $1, status = 'ENTRADA_EM_PROGRESSO', updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
       [positionId, signal.id]
     );
     console.log(`[REVERSE_IMPROVED] ✅ Sinal ${signal.id} atualizado com position_id: ${positionId}`);
@@ -184,16 +183,14 @@ async function executeReverse(signal, currentPrice, accountId) {
     console.log(`[REVERSE_IMPROVED] ✅ Ordem de entrada enviada: ${entryOrderId}`);
 
     // Insert da ordem de entrada no banco
-    await connection.query(
-      `INSERT INTO ordens (
+    await connection.query(`INSERT INTO ordens (
         tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao, 
         id_externo, side, simbolo, tipo_ordem_bot, reduce_only, close_position, 
         last_update, orign_sig, observacao, conta_id
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`, [
         'MARKET', currentPriceTrigger, totalEntrySize, positionId, 'NEW', 
-        formatDateForMySQL(new Date()), entryOrderId, binanceSide, signal.symbol, 
-        'ENTRADA', false, false, formatDateForMySQL(new Date()), 
+        formatDateForPostgreSQL(new Date()), entryOrderId, binanceSide, signal.symbol, 
+        'ENTRADA', false, false, formatDateForPostgreSQL(new Date()), 
         `WEBHOOK_${signal.id}`, 'Ordem de entrada do reverse', accountId
       ]
     );
@@ -272,12 +269,10 @@ async function executeReverse(signal, currentPrice, accountId) {
     console.log(`[REVERSE_IMPROVED] 🎉 Ordem de entrada preenchida:`, orderFilledData);
 
     // 10. ✅ ATUALIZAR POSIÇÃO E ORDEM NO BANCO COM DADOS REAIS
-    await connection.query(
-      `UPDATE posicoes SET 
-        quantidade_executada = ?, preco_medio = ?, preco_entrada = ?, 
-        total_commission = ?, last_update = NOW()
-       WHERE id = ?`,
-      [
+    await connection.query(`UPDATE posicoes SET 
+        quantidade_executada = $1, preco_medio = $2, preco_entrada = $3, 
+        total_commission = $4, last_update = CURRENT_TIMESTAMP
+       WHERE id = $5`, [
         orderFilledData.executedQty, orderFilledData.avgPrice, orderFilledData.avgPrice,
         orderFilledData.commission, positionId
       ]
@@ -286,7 +281,7 @@ async function executeReverse(signal, currentPrice, accountId) {
     await connection.query(
       `UPDATE ordens SET 
         status = 'FILLED', quantidade_executada = ?, preco_executado = ?, 
-        commission = ?, commission_asset = ?, last_update = NOW()
+        commission = ?, commission_asset = ?, last_update = CURRENT_TIMESTAMP
        WHERE id_externo = ? AND conta_id = ?`,
       [
         orderFilledData.executedQty, orderFilledData.avgPrice,
@@ -340,7 +335,7 @@ async function executeReverse(signal, currentPrice, accountId) {
 
     // 12. ✅ ATUALIZAR STATUS DO SINAL PARA EXECUTADO
     await connection.query(
-      `UPDATE webhook_signals SET status = 'EXECUTADO', updated_at = NOW() WHERE id = ?`,
+      `UPDATE webhook_signals SET status = 'EXECUTADO', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
       [signal.id]
     );
 
@@ -355,7 +350,7 @@ async function executeReverse(signal, currentPrice, accountId) {
       `📈 Posição ID: ${positionId}\n` +
       `🔗 Ordem ID: ${entryOrderId}\n` +
       `${slOrderId ? `🛡️ Stop Loss: ${slOrderId}\n` : ''}` +
-      `${tpOrderIds.length > 0 ? `🎯 Take Profits: ${tpOrderIds.join(', ')}\n` : ''}` +
+      `${tpOrderIds.rows.length > 0 ? `🎯 Take Profits: ${tpOrderIds.join(', ')}\n` : ''}` +
       `⚡ Via: ${webhookTimedOut ? 'REST API' : 'WebSocket'}`;
 
     try {
@@ -394,7 +389,7 @@ async function executeReverse(signal, currentPrice, accountId) {
       
       // Atualizar sinal com erro
       await connection.query(
-        `UPDATE webhook_signals SET status = 'ERROR', error_message = ?, updated_at = NOW() WHERE id = ?`,
+        `UPDATE webhook_signals SET status = 'ERROR', error_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
         [error.message.substring(0, 250), signal.id]
       );
       
@@ -443,16 +438,14 @@ async function createStopLossOrder(signal, entryPrice, quantity, accountId, posi
     
     if (slOrderResponse && slOrderResponse.orderId) {
       // Insert no banco
-      await connection.query(
-        `INSERT INTO ordens (
+      await connection.query(`INSERT INTO ordens (
           tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao, 
           id_externo, side, simbolo, tipo_ordem_bot, reduce_only, close_position, 
           last_update, orign_sig, observacao, conta_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`, [
           'STOP_MARKET', slPrice, quantity, positionId, 'NEW', 
-          formatDateForMySQL(new Date()), slOrderResponse.orderId, binanceSide, signal.symbol, 
-          'SL', true, false, formatDateForMySQL(new Date()), 
+          formatDateForPostgreSQL(new Date()), slOrderResponse.orderId, binanceSide, signal.symbol, 
+          'SL', true, false, formatDateForPostgreSQL(new Date()), 
           `WEBHOOK_${signal.id}`, 'Stop Loss do reverse', accountId
         ]
       );
@@ -483,16 +476,14 @@ async function createTakeProfitOrder(signal, tpPrice, quantity, accountId, posit
     
     if (tpOrderResponse && tpOrderResponse.orderId) {
       // Insert no banco
-      await connection.query(
-        `INSERT INTO ordens (
+      await connection.query(`INSERT INTO ordens (
           tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao, 
           id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only, close_position, 
           last_update, orign_sig, observacao, conta_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`, [
           'LIMIT', tpPrice, quantity, positionId, 'NEW', 
-          formatDateForMySQL(new Date()), tpOrderResponse.orderId, binanceSide, signal.symbol, 
-          'TP', targetNumber, true, false, formatDateForMySQL(new Date()), 
+          formatDateForPostgreSQL(new Date()), tpOrderResponse.orderId, binanceSide, signal.symbol, 
+          'TP', targetNumber, true, false, formatDateForPostgreSQL(new Date()), 
           `WEBHOOK_${signal.id}`, `Take Profit ${targetNumber} do reverse`, accountId
         ]
       );
@@ -524,7 +515,7 @@ function calculateOrderSize(balance, capitalPct, price, leverage, stepSize, prec
 }
 
 function calculateAveragePrice(fills) {
-  if (!fills || fills.length === 0) return 0;
+  if (!fills || fills.rows.length === 0) return 0;
   
   const totalQty = fills.reduce((sum, fill) => sum + fill.qty, 0);
   const totalValue = fills.reduce((sum, fill) => sum + (fill.qty * fill.price), 0);

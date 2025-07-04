@@ -83,7 +83,7 @@ async function dashboardRoutes(fastify, options) {
       // Consulta saldo na corretora e atualiza no banco
       const result = await getFuturesAccountBalanceDetails(Number(id));
       if (!result || !result.success) {
-        return reply.status(500).send({ error: 'Erro ao consultar saldo na corretora', details: result$1.error });
+        return reply.status(500).send({ error: 'Erro ao consultar saldo na corretora', details: result?.error });
       }
       reply.send({ success: true, saldo: result.saldo, saldo_disponivel: result.saldo_disponivel, saldo_base_calculo: result.saldo_base_calculo, atualizado_em: result.timestamp });
     } catch (error) {
@@ -142,11 +142,11 @@ async function dashboardRoutes(fastify, options) {
       let query = `
         SELECT id, nome, descricao, id_corretora, ativa, saldo, saldo_base_calculo, ultima_atualizacao
         FROM contas
-        WHERE user_id = $1
+        WHERE user_id = ?
       `;
       const params = [user_id];
       if (id) {
-        query += ' AND id = $1';
+        query += ' AND id = ?';
         params.push(id);
       }
       const result = await db.query(query, params);
@@ -157,7 +157,7 @@ async function dashboardRoutes(fastify, options) {
     }
   });
 
-  // GET /dashboard/account/:id/symbols$1search=BTC
+  // GET /dashboard/account/:id/symbols?search=BTC
   fastify.get('/dashboard/account/chart/:id/symbols', {
     schema: {
       description: 'Lista todos os pares (symbols) disponíveis para a corretora da conta selecionada, com filtro de pesquisa.',
@@ -183,14 +183,14 @@ async function dashboardRoutes(fastify, options) {
     const db = await getDatabaseInstance();
     try {
       // Buscar exchange/corretora da conta
-      const contaRows = await db.query(`SELECT id_corretora FROM contas WHERE id = $1`, [id]);
-      if (!contaRows.rows.length) {
+      const result = await db.query(`SELECT id_corretora FROM contas WHERE id = $1`, [id]);
+      if (!contaRows.length) {
         return reply.status(404).send({ error: 'Conta não encontrada' });
       }
       // Buscar nome da corretora
       const idCorretora = contaRows.rows[0].id_corretora;
-      const corretoraRows = await db.query(`SELECT corretora FROM corretoras WHERE id = $1`, [idCorretora]);
-      if (!corretoraRows.rows.length) {
+      const result = await db.query(`SELECT corretora FROM corretoras WHERE id = $1`, [idCorretora]);
+      if (!corretoraRows.length) {
         return reply.status(404).send({ error: 'Corretora não encontrada' });
       }
       const exchange = corretoraRows.rows[0].corretora.toLowerCase();
@@ -199,16 +199,16 @@ async function dashboardRoutes(fastify, options) {
       let query = `
         SELECT id, exchange, symbol, status, pair, contract_type, base_asset, quote_asset, margin_asset, price_precision, quantity_precision, base_asset_precision, quote_precision, onboard_date, liquidation_fee, market_take_bound, updated_at
         FROM exchange_symbols
-        WHERE exchange = $1 AND quote_asset = 'USDT'
+        WHERE exchange = ? AND quote_asset = 'USDT'
       `;
       const params = [exchange];
       if (search) {
-        query += ` AND (symbol LIKE $1 OR pair LIKE $2 OR base_asset LIKE $3 OR quote_asset LIKE $4)`;
+        query += ` AND (symbol LIKE ? OR pair LIKE ? OR base_asset LIKE ? OR quote_asset LIKE ?)`;
         params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
       }
       query += ' ORDER BY symbol ASC';
       if (limit) {
-        query += ' LIMIT $1';
+        query += ' LIMIT ?';
         params.push(Number(limit));
       }
       const result = await db.query(query, params);
@@ -315,34 +315,33 @@ async function dashboardRoutes(fastify, options) {
     const db = await getDatabaseInstance();
     try {
       // 1. Buscar id_corretora da conta
-      const contaResult2 = await db.query(`SELECT id_corretora FROM contas WHERE id = $1`, [id]);
-      if (!contaResult2.rows.length) {
+      const result = await db.query(`SELECT id_corretora FROM contas WHERE id = $1`, [id]);
+      if (!contaRows.length) {
         return reply.status(404).send({ error: 'Conta não encontrada' });
       }
-      const idCorretora = contaResult2.rows[0].id_corretora;
+      const idCorretora = contaRows.rows[0].id_corretora;
 
       // 2. Buscar nome da corretora
-      const corretoraResult2 = await db.query(`SELECT corretora FROM corretoras WHERE id = $1`, [idCorretora]);
-      if (!corretoraResult2.rows.length) {
+      const result = await db.query(`SELECT corretora FROM corretoras WHERE id = $1`, [idCorretora]);
+      if (!corretoraRows.length) {
         return reply.status(404).send({ error: 'Corretora não encontrada' });
       }
-      const exchange = corretoraResult2.rows[0].corretora.toLowerCase();
+      const exchange = corretoraRows.rows[0].corretora.toLowerCase();
 
       // 3. Buscar symbols de futuros para essa corretora
       let query = `
         SELECT id, exchange, symbol, status, pair, contract_type, base_asset, quote_asset, margin_asset, price_precision, quantity_precision, base_asset_precision, quote_precision, onboard_date, liquidation_fee, market_take_bound, updated_at
         FROM exchange_symbols
-        WHERE exchange = $1 AND contract_type IS NOT NULL
+        WHERE exchange = ? AND contract_type IS NOT NULL
       `;
       const params = [exchange];
       if (search) {
-        query += ` AND (symbol LIKE $1 OR pair LIKE $2 OR base_asset LIKE $3 OR quote_asset LIKE $4)`;
+        query += ` AND (symbol LIKE ? OR pair LIKE ? OR base_asset LIKE ? OR quote_asset LIKE ?)`;
         params.push(`%${search}%`, `%${search}%`, `%${search}%`, `%${search}%`);
       }
       query += ' ORDER BY symbol ASC';
 
-      const symbolsResult = await db.query(query, params);
-      const symbols = symbolsResult.rows;
+      const result = await db.query(query, params);
       reply.send({ success: true, data: symbols, total: symbols.length });
     } catch (error) {
       fastify.log.error('Erro ao buscar symbols:', error);
@@ -371,14 +370,14 @@ async function dashboardRoutes(fastify, options) {
       // Atualiza saldo spot
       const spot = await getSpotAccountBalanceDetails(Number(id));
 
-      if (!fut$1.success && !spot$2.success) {
+      if (!fut?.success && !spot?.success) {
         return reply.status(500).send({ error: 'Erro ao consultar saldos na corretora' });
       }
 
       reply.send({
         success: true,
-        saldo_futuros: fut$1.saldo,
-        saldo_spot: spot$2.saldo,
+        saldo_futuros: fut?.saldo,
+        saldo_spot: spot?.saldo,
         atualizado_em: new Date().toISOString()
       });
     } catch (error) {

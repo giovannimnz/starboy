@@ -1,4 +1,4 @@
-const { getDatabaseInstance, formatDateForMySQL } = require('../../../core/database/conexao');
+const { getDatabaseInstance, formatDateForPostgreSQL } = require('../../../core/database/conexao');
 const api = require('../api/rest');
 //const { sendTelegramMessage, formatPositionClosedMessage, formatAlertMessage } = require('../telegram/telegramBot');
 
@@ -15,27 +15,27 @@ async function cleanupOrphanSignals(accountId) {
     const db = await getDatabaseInstance();
     
     // Resetar sinais em PROCESSANDO há mais de 5 minutos
-    const [resetResult] = await db.query(`
+    const resetResult = await db.query(`
       UPDATE webhook_signals 
       SET status = 'PENDING', 
           error_message = NULL,
-          updated_at = NOW()
+          updated_at = CURRENT_TIMESTAMP
       WHERE status = 'PROCESSANDO' 
-        AND conta_id = ?
-        AND updated_at < DATE_SUB(NOW(), INTERVAL 5 MINUTE)
+        AND conta_id = $1
+        AND updated_at < (CURRENT_TIMESTAMP - INTERVAL '5 minutes')
     `, [accountId]);
     
-    if (resetResult.affectedRows > 0) {
-      console.log(`[CLEANUP] ${resetResult.affectedRows} sinais resetados para conta ${accountId}`);
+    if (resetResult.rowCount > 0) {
+      console.log(`[CLEANUP] ${resetResult.rowCount} sinais resetados para conta ${accountId}`);
     }
 
     // Limpar sinais com erro de "not defined"
     await db.query(`
       UPDATE webhook_signals 
       SET status = 'ERROR', 
-          error_message = CONCAT(IFNULL(error_message, ''), ' | Limpo durante cleanup') 
+          error_message = COALESCE(error_message, '') || ' | Limpo durante cleanup'
       WHERE error_message LIKE '%not defined%' 
-        AND conta_id = ?
+        AND conta_id = $1
         AND status NOT IN ('ERROR', 'CANCELED')
     `, [accountId]);
 
@@ -57,14 +57,16 @@ async function forceCloseGhostPositions(accountId) {
     const db = await getDatabaseInstance();
     
     // Obter posições abertas no banco
-    const [dbPositions] = await db.query(`
+    const dbPositionsResult = await db.query(`
       SELECT id, simbolo, quantidade FROM posicoes 
-      WHERE status = 'OPEN' AND conta_id = ?
+      WHERE status = 'OPEN' AND conta_id = $1
     `, [accountId]);
     
-    if (dbPositions.length === 0) {
+    if (dbPositionsResult.rows.length === 0) {
       return 0;
     }
+    
+    const dbPositions = dbPositionsResult.rows;
     
     // Obter posições abertas na corretora
     const exchangePositions = await api.getAllOpenPositions(accountId);
@@ -79,9 +81,9 @@ async function forceCloseGhostPositions(accountId) {
         await db.query(`
           UPDATE posicoes 
           SET status = 'CLOSED', 
-              data_hora_fechamento = NOW(),
+              data_hora_fechamento = CURRENT_TIMESTAMP,
               observacoes = 'Fechada via cleanup - não encontrada na corretora'
-          WHERE id = ?
+          WHERE id = $1
         `, [dbPos.id]);
         
         console.log(`[CLEANUP] Posição fantasma ${dbPos.simbolo} fechada para conta ${accountId} (ID: ${dbPos.id})`);
@@ -117,17 +119,18 @@ async function cancelOrphanOrders(accountId) {
     const db = await getDatabaseInstance();
     
     // ✅ BUSCAR APENAS ORDENS ATIVAS (excluir já finalizadas)
-    const [activeOrders] = await db.query(`
+    const activeOrdersResult = await db.query(`
       SELECT id_externo, simbolo, tipo_ordem_bot, quantidade, preco, status, id_posicao, orign_sig
       FROM ordens 
       WHERE status IN ('NEW', 'PARTIALLY_FILLED', 'PENDING_CANCEL')
-        AND conta_id = ?
+        AND conta_id = $1
     `, [accountId]);
 
-    if (activeOrders.length === 0) {
+    if (activeOrdersResult.rows.length === 0) {
       return 0;
     }
 
+    const activeOrders = activeOrdersResult.rows;
     console.log(`[CLEANUP] 🔍 Verificando ${activeOrders.length} ordens ATIVAS para órfãs (conta ${accountId})...`);
 
     let orphanCount = 0;
@@ -148,8 +151,8 @@ async function cancelOrphanOrders(accountId) {
             // Atualizar status no banco primeiro
             await db.query(`
               UPDATE ordens 
-              SET status = ?, last_update = NOW()
-              WHERE id_externo = ? AND conta_id = ?
+              SET status = $1, last_update = CURRENT_TIMESTAMP
+              WHERE id_externo = $2 AND conta_id = $3
             `, [exchangeStatus, order.id_externo, accountId]);
             
             // Mover automaticamente
@@ -166,8 +169,8 @@ async function cancelOrphanOrders(accountId) {
             console.log(`[CLEANUP] 🔄 Sincronizando status: ${order.status} → ${exchangeStatus}`);
             await db.query(`
               UPDATE ordens 
-              SET status = ?, last_update = NOW()
-              WHERE id_externo = ? AND conta_id = ?
+              SET status = $1, last_update = CURRENT_TIMESTAMP
+              WHERE id_externo = $2 AND conta_id = $3
             `, [exchangeStatus, order.id_externo, accountId]);
             preservedCount++;
           } else {
@@ -182,12 +185,9 @@ async function cancelOrphanOrders(accountId) {
           await db.query(`
             UPDATE ordens 
             SET status = 'CANCELED', 
-                last_update = NOW(),
-                observacao = CONCAT(
-                  IFNULL(observacao, ''), 
-                  ' | Órfã - não existe na corretora'
-                )
-            WHERE id_externo = ? AND conta_id = ?
+                last_update = CURRENT_TIMESTAMP,
+                observacao = COALESCE(observacao, '') || ' | Órfã - não existe na corretora'
+            WHERE id_externo = $1 AND conta_id = $2
           `, [order.id_externo, accountId]);
           
           // ✅ MOVER ÓRFÃ PARA HISTÓRICO IMEDIATAMENTE
@@ -226,23 +226,24 @@ async function moveOrdersToHistory(accountId) {
     const db = await getDatabaseInstance();
     
     // ✅ BUSCAR ORDENS PARA MOVER (CANCELED + FILLED órfãs)
-    const [ordersToMove] = await db.query(`
+    const ordersToMoveResult = await db.query(`
       SELECT o.*, p.status as position_status FROM ordens o
       LEFT JOIN posicoes p ON o.id_posicao = p.id
-      WHERE o.conta_id = ? 
+      WHERE o.conta_id = $1 
         AND (
-          (o.status = 'CANCELED' AND o.last_update > DATE_SUB(NOW(), INTERVAL 1 MINUTE))
+          (o.status = 'CANCELED' AND o.last_update > (CURRENT_TIMESTAMP - INTERVAL '1 minute'))
           OR 
-          (o.status = 'FILLED' AND (p.id IS NULL OR p.status != 'OPEN') AND o.last_update < DATE_SUB(NOW(), INTERVAL 1 MINUTE))
+          (o.status = 'FILLED' AND (p.id IS NULL OR p.status != 'OPEN') AND o.last_update < (CURRENT_TIMESTAMP - INTERVAL '1 minute'))
           OR 
-          (o.status = 'EXPIRED' AND (p.id IS NULL OR p.status != 'OPEN') AND o.last_update < DATE_SUB(NOW(), INTERVAL 1 MINUTE))
+          (o.status = 'EXPIRED' AND (p.id IS NULL OR p.status != 'OPEN') AND o.last_update < (CURRENT_TIMESTAMP - INTERVAL '1 minute'))
         )
     `, [accountId]);
     
-    if (ordersToMove.length === 0) {
+    if (ordersToMoveResult.rows.length === 0) {
       return 0;
     }
     
+    const ordersToMove = ordersToMoveResult.rows;
     const canceledOrders = ordersToMove.filter(o => o.status === 'CANCELED');
     const orphanFilledOrders = ordersToMove.filter(o => o.status === 'FILLED');
     
@@ -250,140 +251,114 @@ async function moveOrdersToHistory(accountId) {
     console.log(`  - ${canceledOrders.length} ordens CANCELED`);
     console.log(`  - ${orphanFilledOrders.length} ordens FILLED órfãs`);
     
-    const connection = await db.getConnection();
-    await connection.beginTransaction();
+    let movedCount = 0;
     
-    try {
-      let movedCount = 0;
-      
-      for (const order of ordersToMove) {
-        // Nova regra: Se for ENTRADA, FILLED ou CANCELED, sem id_posicao, aguarda e tenta vincular
-        if (
-          (order.status === 'FILLED' || order.status === 'CANCELED') &&
-          order.tipo_ordem_bot === 'ENTRADA' &&
-          (!order.id_posicao || order.id_posicao === 0)
-        ) {
-          console.warn(`[CLEANUP] ⏳ Ordem ENTRADA ${order.status} ${order.id_externo} sem id_posicao. Aguardando 30s para tentar vincular à posição aberta...`);
-          await new Promise(resolve => setTimeout(resolve, 30000));
-          // Buscar posição aberta para o symbol
-          const [openPositions] = await connection.query(
-            'SELECT id FROM posicoes WHERE simbolo = ? AND status = "OPEN" AND conta_id = ? LIMIT 1',
-            [order.simbolo, accountId]
-          );
-          if (openPositions.length > 0) {
-            const posId = openPositions[0].id;
-            await connection.query(
-              'UPDATE ordens SET id_posicao = ? WHERE id_externo = ? AND conta_id = ?',
-              [posId, order.id_externo, accountId]
-            );
-            order.id_posicao = posId;
-            console.log(`[CLEANUP] 🔗 Ordem ${order.id_externo} vinculada à posição ${posId}`);
-          } else {
-            console.warn(`[CLEANUP] ⚠️ Não foi encontrada posição aberta para o symbol ${order.simbolo} após aguardar. Ordem ${order.id_externo} permanecerá sem vínculo.`);
-            // Não mover para o histórico se não conseguir vincular
-            continue;
-          }
-        }
-        // Só mover se já estiver vinculada a uma posição
-        if (!order.id_posicao || order.id_posicao === 0) {
-          console.warn(`[CLEANUP] ⚠️ Ordem ${order.id_externo} ainda não vinculada a uma posição (id_posicao NULL/0). Aguardando vínculo antes de mover para _fechadas.`);
+    for (const order of ordersToMove) {
+      // Nova regra: Se for ENTRADA, FILLED ou CANCELED, sem id_posicao, aguarda e tenta vincular
+      if (
+        (order.status === 'FILLED' || order.status === 'CANCELED') &&
+        order.tipo_ordem_bot === 'ENTRADA' &&
+        (!order.id_posicao || order.id_posicao === 0)
+      ) {
+        console.warn(`[CLEANUP] ⏳ Ordem ENTRADA ${order.status} ${order.id_externo} sem id_posicao. Aguardando 30s para tentar vincular à posição aberta...`);
+        await new Promise(resolve => setTimeout(resolve, 30000));
+        // Buscar posição aberta para o symbol
+        const openPositionsResult = await db.query(`SELECT id FROM posicoes WHERE simbolo = $1 AND status = 'OPEN' AND conta_id = $2 LIMIT 1`,
+          [order.simbolo, accountId]
+        );
+        if (openPositionsResult.rows.length > 0) {
+          const posId = openPositionsResult.rows[0].id;
+          await db.query(`UPDATE ordens SET id_posicao = $1 WHERE id_externo = $2 AND conta_id = $3`, [posId, order.id_externo, accountId]);
+          order.id_posicao = posId;
+          console.log(`[CLEANUP] 🔗 Ordem ${order.id_externo} vinculada à posição ${posId}`);
+        } else {
+          console.warn(`[CLEANUP] ⚠️ Não foi encontrada posição aberta para o symbol ${order.simbolo} após aguardar. Ordem ${order.id_externo} permanecerá sem vínculo.`);
+          // Não mover para o histórico se não conseguir vincular
           continue;
         }
-        // Atualizar posição relacionada, se houver
-        if (order.id_posicao) {
-          // Buscar posição atual
-          const [positions] = await connection.query(
-            'SELECT total_commission, total_realized FROM posicoes WHERE id = ? AND conta_id = ?',
-            [order.id_posicao, accountId]
-          );
-          if (positions.length > 0) {
-            const pos = positions[0];
-            const newTotalCommission = (parseFloat(pos.total_commission) || 0) + (parseFloat(order.commission) || 0);
-            const newTotalRealized = (parseFloat(pos.total_realized) || 0) + (parseFloat(order.realized_profit) || 0);
-
-            let newLiquidPnl;
-            if (newTotalCommission < 0) {
-              newLiquidPnl = newTotalRealized + newTotalCommission;
-            } else {
-              newLiquidPnl = newTotalRealized - newTotalCommission;
-            }
-
-            await connection.query(
-              'UPDATE posicoes SET total_commission = ?, total_realized = ?, liquid_pnl = ? WHERE id = ? AND conta_id = ?',
-              [newTotalCommission, newTotalRealized, newLiquidPnl, order.id_posicao, accountId]
-            );
-            console.log(`[CLEANUP] Posição ${order.id_posicao} atualizada: total_commission=${newTotalCommission}, total_realized=${newTotalRealized}, liquid_pnl=${newLiquidPnl}`);
-          }
-        }
-        // ✅ INSERIR COM TODOS OS CAMPOS
-        await connection.query(`
-          INSERT INTO ordens_fechadas (
-            id_original, id_original_ordens, tipo_ordem, preco, quantidade, id_posicao, status,
-            data_hora_criacao, id_externo, side, simbolo, tipo_ordem_bot,
-            target, reduce_only, close_position, last_update, renew_sl_firs, renew_sl_seco,
-            orign_sig, dados_originais_ws, quantidade_executada, preco_executado, observacao,
-            conta_id, commission, commission_asset, trade_id, client_order_id, time_in_force,
-            stop_price, execution_type, last_filled_quantity, last_filled_price, order_trade_time,
-            realized_profit, position_side
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `, [
-          order.id, // id_original
-          order.id, // id_original_ordens
-          order.tipo_ordem,
-          order.preco,
-          order.quantidade,
-          order.id_posicao,
-          order.status,
-          formatDateForMySQL(order.data_hora_criacao || new Date()),
-          order.id_externo,
-          order.side,
-          order.simbolo,
-          order.tipo_ordem_bot,
-          order.target,
-          order.reduce_only,
-          order.close_position,
-          formatDateForMySQL(order.last_update || new Date()),
-          order.renew_sl_firs,
-          order.renew_sl_seco,
-          order.orign_sig,
-          order.dados_originais_ws,
-          order.quantidade_executada || 0,
-          order.preco_executado,
-          order.observacao || (order.status === 'CANCELED' ? 'Movida via cleanup - órfã' : 'Movida automaticamente - posição fechada'),
-          order.conta_id,
-          order.commission || 0,
-          order.commission_asset,
-          order.trade_id,
-          order.client_order_id,
-          order.time_in_force,
-          order.stop_price,
-          order.execution_type,
-          order.last_filled_quantity,
-          order.last_filled_price,
-          order.order_trade_time,
-          order.realized_profit,
-          order.position_side
-        ]);
-        // ✅ REMOVER DA TABELA ATIVA
-        await connection.query(
-          'DELETE FROM ordens WHERE id_externo = ? AND conta_id = ?',
-          [order.id_externo, accountId]
-        );
-        movedCount++;
       }
-      
-      await connection.commit();
-      console.log(`[CLEANUP] ✅ ${movedCount} ordens movidas para histórico com sucesso`);
-      
-      return movedCount;
-      
-    } catch (moveError) {
-      await connection.rollback();
-      console.error(`[CLEANUP] ❌ Erro ao mover ordens para histórico:`, moveError.message);
-      throw moveError;
-    } finally {
-      connection.release();
+      // Só mover se já estiver vinculada a uma posição
+      if (!order.id_posicao || order.id_posicao === 0) {
+        console.warn(`[CLEANUP] ⚠️ Ordem ${order.id_externo} ainda não vinculada a uma posição (id_posicao NULL/0). Aguardando vínculo antes de mover para _fechadas.`);
+        continue;
+      }
+      // Atualizar posição relacionada, se houver
+      if (order.id_posicao) {
+        // Buscar posição atual
+        const positionsResult = await db.query(`SELECT total_commission, total_realized FROM posicoes WHERE id = $1 AND conta_id = $2`, [order.id_posicao, accountId]);
+        if (positionsResult.rows.length > 0) {
+          const pos = positionsResult.rows[0];
+          const newTotalCommission = (parseFloat(pos.total_commission) || 0) + (parseFloat(order.commission) || 0);
+          const newTotalRealized = (parseFloat(pos.total_realized) || 0) + (parseFloat(order.realized_profit) || 0);
+
+          let newLiquidPnl;
+          if (newTotalCommission < 0) {
+            newLiquidPnl = newTotalRealized + newTotalCommission;
+          } else {
+            newLiquidPnl = newTotalRealized - newTotalCommission;
+          }
+
+          await db.query(`UPDATE posicoes SET total_commission = $1, total_realized = $2, liquid_pnl = $3 WHERE id = $4 AND conta_id = $5`, [newTotalCommission, newTotalRealized, newLiquidPnl, order.id_posicao, accountId]);
+          console.log(`[CLEANUP] Posição ${order.id_posicao} atualizada: total_commission=${newTotalCommission}, total_realized=${newTotalRealized}, liquid_pnl=${newLiquidPnl}`);
+        }
+      }
+      // ✅ INSERIR COM TODOS OS CAMPOS
+      await db.query(`
+        INSERT INTO ordens_fechadas (
+          id_original, id_original_ordens, tipo_ordem, preco, quantidade, id_posicao, status,
+          data_hora_criacao, id_externo, side, simbolo, tipo_ordem_bot,
+          target, reduce_only, close_position, last_update, renew_sl_firs, renew_sl_seco,
+          orign_sig, dados_originais_ws, quantidade_executada, preco_executado, observacao,
+          conta_id, commission, commission_asset, trade_id, client_order_id, time_in_force,
+          stop_price, execution_type, last_filled_quantity, last_filled_price, order_trade_time,
+          realized_profit, position_side
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36)
+      `, [
+        order.id, // id_original
+        order.id, // id_original_ordens
+        order.tipo_ordem,
+        order.preco,
+        order.quantidade,
+        order.id_posicao,
+        order.status,
+        formatDateForPostgreSQL(order.data_hora_criacao || new Date()),
+        order.id_externo,
+        order.side,
+        order.simbolo,
+        order.tipo_ordem_bot,
+        order.target,
+        order.reduce_only,
+        order.close_position,
+        formatDateForPostgreSQL(order.last_update || new Date()),
+        order.renew_sl_firs,
+        order.renew_sl_seco,
+        order.orign_sig,
+        order.dados_originais_ws,
+        order.quantidade_executada || 0,
+        order.preco_executado,
+        order.observacao || (order.status === 'CANCELED' ? 'Movida via cleanup - órfã' : 'Movida automaticamente - posição fechada'),
+        order.conta_id,
+        order.commission || 0,
+        order.commission_asset,
+        order.trade_id,
+        order.client_order_id,
+        order.time_in_force,
+        order.stop_price,
+        order.execution_type,
+        order.last_filled_quantity,
+        order.last_filled_price,
+        order.order_trade_time,
+        order.realized_profit,
+        order.position_side
+      ]);
+      // ✅ REMOVER DA TABELA ATIVA
+      await db.query(`DELETE FROM ordens WHERE id_externo = $1 AND conta_id = $2`, [order.id_externo, accountId]);
+      movedCount++;
     }
+    
+    console.log(`[CLEANUP] ✅ ${movedCount} ordens movidas para histórico com sucesso`);
+    
+    return movedCount;
     
   } catch (error) {
     console.error(`[CLEANUP] ❌ Erro na função moveOrdersToHistory:`, error.message);
@@ -443,17 +418,17 @@ async function checkSingleOrderStatus(orderId, accountId) {
     const db = await getDatabaseInstance();
     
     // Buscar ordem no banco
-    const [orderInDb] = await db.query(`
+    const orderInDbResult = await db.query(`
       SELECT id_externo, simbolo, tipo_ordem_bot, status, last_update
       FROM ordens 
-      WHERE id_externo = ? AND conta_id = ?
+      WHERE id_externo = $1 AND conta_id = $2
     `, [orderId, accountId]);
     
-    if (orderInDb.length === 0) {
+    if (orderInDbResult.rows.length === 0) {
       return { error: 'Ordem não encontrada no banco de dados' };
     }
     
-    const order = orderInDb[0];
+    const order = orderInDbResult.rows[0];
     
     // Verificar na corretora
     const exchangeCheck = await checkOrderExistsOnExchange(order.simbolo, orderId, accountId);
@@ -491,16 +466,16 @@ async function movePositionToHistory(positionId, accountId, force = false) {
     const db = await getDatabaseInstance();
     
     // Obter posição
-    const [positions] = await db.query(`
+    const positionsResult = await db.query(`
       SELECT * FROM posicoes 
-      WHERE id = ? AND conta_id = ?
+      WHERE id = $1 AND conta_id = $2
     `, [positionId, accountId]);
     
-    if (positions.length === 0) {
+    if (positionsResult.rows.length === 0) {
       return 0;
     }
     
-    const position = positions[0];
+    const position = positionsResult.rows[0];
     
     // Verificar se já está fechada
     if (position.status !== 'CLOSED' && !force) {
@@ -512,19 +487,19 @@ async function movePositionToHistory(positionId, accountId, force = false) {
     await db.query(`
       INSERT INTO posicoes_fechadas (
         id_original, simbolo, quantidade, preco_medio, status, data_hora_abertura, data_hora_fechamento, motivo_fechamento, side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente, orign_sig, conta_id, quantidade_aberta, trailing_stop_level, pnl_corrente, breakeven_price, accumulated_realized, unrealized_pnl, margin_type, isolated_wallet, position_side, event_reason, webhook_data_raw, observacoes
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
     `, [
       position.id, // id_original
       position.simbolo,
       position.quantidade,
       position.preco_medio,
       status || position.status,
-      formatDateForMySQL(position.data_hora_abertura),
-      formatDateForMySQL(new Date()), // data_hora_fechamento = agora
+      formatDateForPostgreSQL(position.data_hora_abertura),
+      formatDateForPostgreSQL(new Date()), // data_hora_fechamento = agora
       reason || null, // motivo_fechamento
       position.side,
       position.leverage,
-      formatDateForMySQL(position.data_hora_ultima_atualizacao),
+      formatDateForPostgreSQL(position.data_hora_ultima_atualizacao),
       position.preco_entrada,
       position.preco_corrente,
       position.orign_sig,
@@ -545,7 +520,7 @@ async function movePositionToHistory(positionId, accountId, force = false) {
     
     // Remover da tabela de posições
     await db.query(`
-      DELETE FROM posicoes WHERE id = ?
+      DELETE FROM posicoes WHERE id = $1
     `, [positionId]);
     
     console.log(`[HISTORICO] Posição ${positionId} movida para histórico com sucesso`);
@@ -571,14 +546,16 @@ async function checkAndCloseWebsocket(accountId) {
     const db = await getDatabaseInstance();
     
     // Obter posições abertas no banco
-    const [dbPositions] = await db.query(`
+    const dbPositionsResult = await db.query(`
       SELECT id, simbolo, quantidade FROM posicoes 
-      WHERE status = 'OPEN' AND conta_id = ?
+      WHERE status = 'OPEN' AND conta_id = $1
     `, [accountId]);
     
-    if (dbPositions.length === 0) {
+    if (dbPositionsResult.rows.length === 0) {
       return 0;
     }
+    
+    const dbPositions = dbPositionsResult.rows;
     
     // Obter posições abertas na corretora via WebSocket
     const exchangePositions = await api.api.getAllOpenPositions(accountId);
@@ -593,9 +570,9 @@ async function checkAndCloseWebsocket(accountId) {
         await db.query(`
           UPDATE posicoes 
           SET status = 'CLOSED', 
-              data_hora_fechamento = NOW(),
+              data_hora_fechamento = CURRENT_TIMESTAMP,
               observacoes = 'Fechada via WebSocket - não encontrada na corretora'
-          WHERE id = ?
+          WHERE id = $1
         `, [dbPos.id]);
         
         console.log(`[WEBSOCKET] Posição fantasma ${dbPos.simbolo} fechada para conta ${accountId} (ID: ${dbPos.id})`);
@@ -629,23 +606,20 @@ async function movePositionToHistory(db, positionId, status = 'CLOSED', reason =
     await connection.beginTransaction();
 
     // 1. Obter a posição
-    const [positionResult] = await connection.query(
-      'SELECT * FROM posicoes WHERE id = ? AND conta_id = ?', 
-      [positionId, accountId]
+    const positionResult = await connection.query(`SELECT * FROM posicoes WHERE id = $1 AND conta_id = $2`, [positionId, accountId]
     );
-    if (positionResult.length === 0) {
+    if (positionResult.rows.length === 0) {
       console.log(`[MOVE_POSITION] ⚠️ Posição ${positionId} não encontrada para conta ${accountId}`);
       await connection.rollback();
       return false;
     }
-    const position = positionResult[0];
+    const position = positionResult.rows[0];
     const symbol = position.simbolo;
 
     // 2. Buscar ordens relacionadas ANTES de mover
-    const [relatedOrders] = await connection.query(
-      'SELECT id, id_externo, status FROM ordens WHERE id_posicao = ? AND conta_id = ?', 
-      [positionId, accountId]
+    const relatedOrdersResult = await connection.query(`SELECT id, id_externo, status FROM ordens WHERE id_posicao = $1 AND conta_id = $2`, [positionId, accountId]
     );
+    const relatedOrders = relatedOrdersResult.rows;
     console.log(`[MOVE_POSITION] 📋 Encontradas ${relatedOrders.length} ordens relacionadas para ${symbol}...`);
 
     // 3. Cancelar ordens na corretora
@@ -660,9 +634,7 @@ async function movePositionToHistory(db, positionId, status = 'CLOSED', reason =
           const cancelResult = await api.cancelOrder(symbol, order.id_externo, accountId);
           
           if (cancelResult && cancelResult.status) {
-            await connection.query(
-              'UPDATE ordens SET status = ?, last_update = ?, observacao = ? WHERE id = ? AND conta_id = ?',
-              [cancelResult.status, formatDateForMySQL(new Date()), `Cancelada durante fechamento da posição ${positionId}`, order.id, accountId]
+            await connection.query(`UPDATE ordens SET status = $1, last_update = $2, observacao = $3 WHERE id = $4 AND conta_id = $5`, [cancelResult.status, formatDateForPostgreSQL(new Date()), `Cancelada durante fechamento da posição ${positionId}`, order.id, accountId]
             );
           }
         } catch (cancelError) {
@@ -670,8 +642,8 @@ async function movePositionToHistory(db, positionId, status = 'CLOSED', reason =
               cancelError.message.includes('-2011') ||
               cancelError.message.includes('Order does not exist')) {
             await connection.query(
-              'UPDATE ordens SET status = "CANCELED", last_update = ?, observacao = ? WHERE id = ? AND conta_id = ?',
-              [formatDateForMySQL(new Date()), `Marcada como cancelada - não existe na corretora`, order.id, accountId]
+              'UPDATE ordens SET status = $1, last_update = $2, observacao = $3 WHERE id = $4 AND conta_id = $5',
+              [formatDateForPostgreSQL(new Date()), 'Marcada como cancelada - não existe na corretora', order.id, accountId]
             );
           }
         }
@@ -686,16 +658,14 @@ async function movePositionToHistory(db, positionId, status = 'CLOSED', reason =
     await new Promise(resolve => setTimeout(resolve, 2000));
     
     // 5. Buscar ordens atualizadas
-    const [updatedOrders] = await connection.query(
-      'SELECT id FROM ordens WHERE id_posicao = ? AND conta_id = ?', 
-      [positionId, accountId]
+    const updatedOrdersResult = await connection.query(`SELECT id FROM ordens WHERE id_posicao = $1 AND conta_id = $2`, [positionId, accountId]
     );
     
     // 6. INSERIR POSIÇÃO NO HISTÓRICO COM TODOS OS CAMPOS CORRETOS
     await connection.query(`
       INSERT INTO posicoes_fechadas (
         id_original, simbolo, quantidade, quantidade_aberta, preco_medio, status, data_hora_abertura, data_hora_fechamento, motivo_fechamento, side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente, orign_sig, conta_id, trailing_stop_level, pnl_corrente, breakeven_price, accumulated_realized, unrealized_pnl, total_realized, total_commission, liquid_pnl, margin_type, isolated_wallet, position_side, event_reason, webhook_data_raw, observacoes, last_update
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31)
     `, [
       position.id, // id_original
       position.simbolo,
@@ -703,12 +673,12 @@ async function movePositionToHistory(db, positionId, status = 'CLOSED', reason =
       position.quantidade_aberta,
       position.preco_medio,
       status || position.status,
-      formatDateForMySQL(position.data_hora_abertura),
-      formatDateForMySQL(new Date()), // data_hora_fechamento = agora
+      formatDateForPostgreSQL(position.data_hora_abertura),
+      formatDateForPostgreSQL(new Date()), // data_hora_fechamento = agora
       reason || null, // motivo_fechamento
       position.side,
       position.leverage,
-      formatDateForMySQL(position.data_hora_ultima_atualizacao),
+      formatDateForPostgreSQL(position.data_hora_ultima_atualizacao),
       position.preco_entrada,
       position.preco_corrente,
       position.orign_sig,
@@ -727,20 +697,19 @@ async function movePositionToHistory(db, positionId, status = 'CLOSED', reason =
       position.event_reason,
       position.webhook_data_raw,
       position.observacoes,
-      formatDateForMySQL(new Date())
+      formatDateForPostgreSQL(new Date())
     ]);
 
     // 7. MOVER ORDENS PARA HISTÓRICO (mantém igual)
+    const updatedOrders = updatedOrdersResult.rows;
     for (const order of updatedOrders) {
       // Atualizar posição relacionada, se houver
       if (order.id_posicao) {
         // Buscar posição atual
-        const [positions] = await connection.query(
-          'SELECT total_commission, total_realized FROM posicoes WHERE id = ? AND conta_id = ?',
-          [order.id_posicao, accountId]
+        const positionsResult = await connection.query(`SELECT total_commission, total_realized FROM posicoes WHERE id = $1 AND conta_id = $2`, [order.id_posicao, accountId]
         );
-        if (positions.length > 0) {
-          const pos = positions[0];
+        if (positionsResult.rows.length > 0) {
+          const pos = positionsResult.rows[0];
           const newTotalCommission = (parseFloat(pos.total_commission) || 0) + (parseFloat(order.commission) || 0);
           const newTotalRealized = (parseFloat(pos.total_realizado) || 0) + (parseFloat(order.realized_profit) || 0);
 
@@ -752,9 +721,7 @@ async function movePositionToHistory(db, positionId, status = 'CLOSED', reason =
             newLiquidPnl = newTotalRealized - newTotalCommission;
           }
 
-          await connection.query(
-            'UPDATE posicoes SET total_commission = ?, total_realized = ?, liquid_pnl = ? WHERE id = ? AND conta_id = ?',
-            [newTotalCommission, newTotalRealized, newLiquidPnl, order.id_posicao, accountId]
+          await connection.query(`UPDATE posicoes SET total_commission = $1, total_realized = $2, liquid_pnl = $3 WHERE id = $4 AND conta_id = $5`, [newTotalCommission, newTotalRealized, newLiquidPnl, order.id_posicao, accountId]
           );
           console.log(`[CLEANUP] Posição ${order.id_posicao} atualizada: total_commission=${newTotalCommission}, total_realized=${newTotalRealized}, liquid_pnl=${newLiquidPnl}`);
         }
@@ -785,17 +752,14 @@ async function movePositionToHistory(db, positionId, status = 'CLOSED', reason =
           target,
           reduce_only,
           close_position,
-          ?, -- last_update (formatado)
+          $1, -- last_update (formatado)
           renew_sl_firs,
           renew_sl_seco,
           orign_sig,
           dados_originais_ws,
           quantidade_executada,
           preco_executado,
-          CONCAT(
-            IFNULL(observacao, ''), 
-            ' | Cancelada na corretora antes da movimentação para histórico'
-          ),
+          COALESCE(observacao, '') || ' | Cancelada na corretora antes da movimentação para histórico',
           conta_id,
           commission,
           commission_asset,
@@ -810,27 +774,15 @@ async function movePositionToHistory(db, positionId, status = 'CLOSED', reason =
           realized_profit,
           position_side
         FROM ordens
-        WHERE id = ? AND conta_id = ?
-      `, [
-        formatDateForMySQL(new Date()),
-        order.id,
-        accountId
-      ]);
-    }
-    
-    // 8. Remover ordens da tabela ativa
-    if (updatedOrders.length > 0) {
-      await connection.query(
-        'DELETE FROM ordens WHERE id_posicao = ? AND conta_id = ?', 
-        [positionId, accountId]
+        WHERE id_posicao = $2 AND conta_id = $3`, [formatDateForPostgreSQL(new Date()), positionId, accountId]
       );
     }
     
-    // 9. Remover a posição
-    await connection.query(
-      'DELETE FROM posicoes WHERE id = ? AND conta_id = ?', 
-      [positionId, accountId]
-    );
+    // 8. Deletar ordens da tabela principal
+    await connection.query(`DELETE FROM ordens WHERE id_posicao = $1 AND conta_id = $2`, [positionId, accountId]);
+    
+    // 9. Deletar posição da tabela principal
+    await connection.query(`DELETE FROM posicoes WHERE id = $1 AND conta_id = $2`, [positionId, accountId]);
     
     await connection.commit();
     console.log(`[MOVE_POSITION] ✅ Posição ${symbol} (ID: ${positionId}) movida com sucesso após cancelar ordens na corretora`);
@@ -838,11 +790,9 @@ async function movePositionToHistory(db, positionId, status = 'CLOSED', reason =
     // 10. Enviar notificação ao Telegram APÓS commit e com dados atualizados
     try {
       // Recarregar a posição já atualizada (com PnL final)
-      const [updatedPositionArr] = await connection.query(
-        'SELECT * FROM posicoes_fechadas WHERE id_original = ? AND conta_id = ? ORDER BY id DESC LIMIT 1',
-        [positionId, accountId]
+      const updatedPositionResult = await connection.query(`SELECT * FROM posicoes_fechadas WHERE id_original = $1 AND conta_id = $2 ORDER BY id DESC LIMIT 1`, [positionId, accountId]
       );
-      const updatedPosition = updatedPositionArr && updatedPositionArr[0] ? updatedPositionArr[0] : position;
+      const updatedPosition = updatedPositionResult && updatedPositionResult.rows[0] ? updatedPositionResult.rows[0] : position;
       
       // ✅ REMOVIDO: Envio de mensagem duplicada (já enviada em accountHandlers.js)
       // const message = await formatPositionClosedMessage(updatedPosition);
@@ -873,14 +823,16 @@ async function syncAndCloseGhostPositions(accountId) {
     const db = await getDatabaseInstance();
     
     // Obter posições abertas no banco
-    const [dbPositions] = await db.query(`
+    const dbPositionsResult = await db.query(`
       SELECT id, simbolo, quantidade FROM posicoes 
-      WHERE status = 'OPEN' AND conta_id = ?
+      WHERE status = 'OPEN' AND conta_id = $1
     `, [accountId]);
     
-    if (dbPositions.length === 0) {
+    if (dbPositionsResult.rows.length === 0) {
       return 0;
     }
+    
+    const dbPositions = dbPositionsResult.rows;
     
     // Obter posições abertas na corretora
     const exchangePositions = await api.getAllOpenPositions(accountId);
@@ -895,9 +847,9 @@ async function syncAndCloseGhostPositions(accountId) {
         await db.query(`
           UPDATE posicoes 
           SET status = 'CLOSED', 
-              data_hora_fechamento = NOW(),
+              data_hora_fechamento = CURRENT_TIMESTAMP,
               observacoes = 'Fechada via sync - não encontrada na corretora'
-          WHERE id = ?
+          WHERE id = $1
         `, [dbPos.id]);
         
         console.log(`[SYNC] Posição fantasma ${dbPos.simbolo} fechada para conta ${accountId} (ID: ${dbPos.id})`);
@@ -909,11 +861,11 @@ async function syncAndCloseGhostPositions(accountId) {
         if (quantidadeDiff > 0.000001) {
           await db.query(`
             UPDATE posicoes 
-            SET quantidade = ?, 
+            SET quantidade = $1, 
                 status = 'OPEN', 
                 data_hora_fechamento = NULL,
                 observacoes = 'Sincronizada com a corretora'
-            WHERE id = ?
+            WHERE id = $2
           `, [exchangePos.quantidade, dbPos.id]);
           
           console.log(`[SYNC] Posição ${dbPos.simbolo} sincronizada (nova quantidade: ${exchangePos.quantidade})`);

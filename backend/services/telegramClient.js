@@ -13,7 +13,7 @@ class TelegramClient {
       const timestamp = new Date().toLocaleString('pt-BR');
       console.log(`[TELEGRAM_DISPATCHER] 🕐 ${timestamp} | ARQUIVO: telegramClient.js | FUNÇÃO: sendMessage`);
       console.log(`[TELEGRAM_DISPATCHER] 📋 Request para: ${this.apiBaseUrl}/api/telegram/send-message`);
-      console.log(`[TELEGRAM_DISPATCHER] 📋 Body: { accountId: ${accountId}, chatId: ${chatId || 'null'}, messageLength: ${message?.length || 0} }`);
+      console.log(`[TELEGRAM_DISPATCHER] 📋 Body: { accountId: ${accountId}, chatId: ${chatId || 'null'}, messageLength: ${message$1.length || 0} }`);
       
       const response = await axios.post(`${this.apiBaseUrl}/api/telegram/send-message`, {
         accountId,
@@ -25,7 +25,7 @@ class TelegramClient {
       return response.data;
     } catch (error) {
       const timestamp = new Date().toLocaleString('pt-BR');
-      console.error(`[TELEGRAM_DISPATCHER] ❌ ${timestamp} | telegramClient.js | ERRO em sendMessage:`, error.response?.data || error.message);
+      console.error(`[TELEGRAM_DISPATCHER] ❌ ${timestamp} | telegramClient.js | ERRO em sendMessage:`, error.response$1.data || error.message);
       return { success: false, error: error.message };
     }
   }
@@ -35,7 +35,7 @@ class TelegramClient {
       const timestamp = new Date().toLocaleString('pt-BR');
       console.log(`[TELEGRAM_DISPATCHER] 🕐 ${timestamp} | ARQUIVO: telegramClient.js | FUNÇÃO: sendEntryMessage`);
       console.log(`[TELEGRAM_DISPATCHER] 📋 Request para: ${this.apiBaseUrl}/api/telegram/send-entry-message`);
-      console.log(`[TELEGRAM_DISPATCHER] 📋 Body: { accountId: ${accountId}, signal: ${signal?.id}, symbol: ${signal?.symbol} }`);
+      console.log(`[TELEGRAM_DISPATCHER] 📋 Body: { accountId: ${accountId}, signal: ${signal$1.id}, symbol: ${signal$2.symbol} }`);
       
       const response = await axios.post(`${this.apiBaseUrl}/api/telegram/send-entry-message`, {
         accountId,
@@ -49,7 +49,7 @@ class TelegramClient {
       return response.data;
     } catch (error) {
       const timestamp = new Date().toLocaleString('pt-BR');
-      console.error(`[TELEGRAM_DISPATCHER] ❌ ${timestamp} | telegramClient.js | ERRO em sendEntryMessage:`, error.response?.data || error.message);
+      console.error(`[TELEGRAM_DISPATCHER] ❌ ${timestamp} | telegramClient.js | ERRO em sendEntryMessage:`, error.response$1.data || error.message);
       return { success: false, error: error.message };
     }
   }
@@ -59,7 +59,7 @@ class TelegramClient {
       const timestamp = new Date().toLocaleString('pt-BR');
       console.log(`[TELEGRAM_DISPATCHER] 🕐 ${timestamp} | ARQUIVO: telegramClient.js | FUNÇÃO: sendPositionClosed`);
       console.log(`[TELEGRAM_DISPATCHER] 📋 Request para: ${this.apiBaseUrl}/api/telegram/send-position-closed`);
-      console.log(`[TELEGRAM_DISPATCHER] 📋 Body: { accountId: ${accountId}, position: ${position?.id}, replyToMessageId: ${replyToMessageId || 'null'} }`);
+      console.log(`[TELEGRAM_DISPATCHER] 📋 Body: { accountId: ${accountId}, position: ${position$1.id}, replyToMessageId: ${replyToMessageId || 'null'} }`);
       
       const requestBody = {
         accountId,
@@ -77,7 +77,7 @@ class TelegramClient {
       return response.data;
     } catch (error) {
       const timestamp = new Date().toLocaleString('pt-BR');
-      console.error(`[TELEGRAM_DISPATCHER] ❌ ${timestamp} | telegramClient.js | ERRO em sendPositionClosed:`, error.response?.data || error.message);
+      console.error(`[TELEGRAM_DISPATCHER] ❌ ${timestamp} | telegramClient.js | ERRO em sendPositionClosed:`, error.response$1.data || error.message);
       return { success: false, error: error.message };
     }
   }
@@ -96,7 +96,7 @@ class TelegramClient {
       
       return response.data;
     } catch (error) {
-      console.error(`[TELEGRAM_CLIENT] Erro ao enviar mensagem de ordem:`, error.response?.data || error.message);
+      console.error(`[TELEGRAM_CLIENT] Erro ao enviar mensagem de ordem:`, error.response$1.data || error.message);
       return { success: false, error: error.message };
     }
   }
@@ -113,7 +113,7 @@ class TelegramClient {
       
       return response.data;
     } catch (error) {
-      console.error(`[TELEGRAM_CLIENT] Erro ao enviar mensagem de saldo:`, error.response?.data || error.message);
+      console.error(`[TELEGRAM_CLIENT] Erro ao enviar mensagem de saldo:`, error.response$1.data || error.message);
       return { success: false, error: error.message };
     }
   }
@@ -128,7 +128,7 @@ class TelegramClient {
       
       return response.data;
     } catch (error) {
-      console.error(`[TELEGRAM_CLIENT] Erro ao enviar mensagem de sinal:`, error.response?.data || error.message);
+      console.error(`[TELEGRAM_CLIENT] Erro ao enviar mensagem de sinal:`, error.response$1.data || error.message);
       return { success: false, error: error.message };
     }
   }

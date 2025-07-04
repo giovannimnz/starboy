@@ -91,7 +91,7 @@ async function telegramRoutes(fastify, options) {
         const { accountId, signal, filledQuantity, averagePrice, totalValue } = request.body;
         
         const message = await formatEntryMessage(signal, filledQuantity, averagePrice, totalValue, accountId);
-        console.log(`[TELEGRAM_DISPATCHER] 📝 Mensagem formatada (${message$1.length || 0} chars):`, message$1.substring(0, 100) + '...');
+        console.log(`[TELEGRAM_DISPATCHER] 📝 Mensagem formatada (${message?.length || 0} chars):`, message?.substring(0, 100) + '...');
         
         const result = await telegramApiService.sendMessage(accountId, message);
         
@@ -166,7 +166,7 @@ async function telegramRoutes(fastify, options) {
         }
         
         const message = await formatPositionClosedMessage(position, null, null, null, null, null, accountId);
-        console.log(`[TELEGRAM_DISPATCHER] 📝 Mensagem de posição fechada formatada (${message$1.length || 0} chars):`, message$1.substring(0, 100) + '...');
+        console.log(`[TELEGRAM_DISPATCHER] 📝 Mensagem de posição fechada formatada (${message?.length || 0} chars):`, message?.substring(0, 100) + '...');
         
         const result = await telegramApiService.sendMessage(accountId, message, null, replyToMessageId);
         

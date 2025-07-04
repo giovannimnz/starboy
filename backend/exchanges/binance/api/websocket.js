@@ -499,7 +499,7 @@ async function authenticateWebSocketApi(ws, accountId) {
           accountState.wsApiAuthenticated = true;
           resolve(true);
         } else {
-          const errorMsg = responseMessage.error?.msg || 'Erro na autenticação';
+          const errorMsg = responseMessage.error$1.msg || 'Erro na autenticação';
           console.error(`[WS-API] Falha na autenticação para conta ${accountId}:`, errorMsg);
           reject(new Error(`Falha na autenticação: ${errorMsg}`));
         }

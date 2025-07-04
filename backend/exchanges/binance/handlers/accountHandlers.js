@@ -30,7 +30,7 @@ async function handleAccountUpdate(message, accountId, db = null) {
       console.warn(`[ACCOUNT] Mensagem ACCOUNT_UPDATE inválida para conta ${accountId}:`, {
         hasMessage: !!message,
         hasData: !!(message && message.a),
-        eventType: message?.e
+        eventType: message$1.e
       });
       return;
     }
@@ -151,7 +151,7 @@ async function handleBalanceUpdates(connection, balances, accountId, reason, eve
           console.log(`[ACCOUNT] 💰 ${asset}: Wallet=${walletBalance.toFixed(4)}, Cross=${crossWalletBalance.toFixed(4)}, Change=${balanceChange >= 0 ? '+' : ''}${balanceChange.toFixed(4)}, Reason=${reason}`);
           
           const [currentData] = await connection.query(
-            'SELECT saldo_futuros, saldo_base_calculo_futuros FROM contas WHERE id = ?',
+            'SELECT saldo_futuros, saldo_base_calculo_futuros FROM contas WHERE id = $1',
             [accountId]
           );
           
@@ -174,38 +174,38 @@ async function handleBalanceUpdates(connection, balances, accountId, reason, eve
           
           // ✅ CONSTRUIR UPDATE DINÂMICO - SEMPRE ATUALIZAR O SALDO
           let updateQuery = `UPDATE contas SET 
-                           saldo_futuros = ?,
-                           saldo_base_calculo_futuros = ?,
-                           ultima_atualizacao = NOW()`;
+                           saldo_futuros = $1,
+                           saldo_base_calculo_futuros = $2,
+                           ultima_atualizacao = CURRENT_TIMESTAMP`;
           let updateValues = [walletBalance, novaBaseCalculo];
           
           // ✅ ADICIONAR CAMPOS NOVOS SE EXISTIREM
           if (existingColumns.includes('saldo_cross_wallet')) {
-            updateQuery += `, saldo_cross_wallet = ?`;
+            updateQuery += `, saldo_cross_wallet = $1`;
             updateValues.push(crossWalletBalance);
           }
           
           if (existingColumns.includes('balance_change')) {
-            updateQuery += `, balance_change = ?`;
+            updateQuery += `, balance_change = $1`;
             updateValues.push(balanceChange);
           }
           
           if (existingColumns.includes('last_event_reason')) {
-            updateQuery += `, last_event_reason = ?`;
+            updateQuery += `, last_event_reason = $1`;
             updateValues.push(reason);
           }
           
           if (existingColumns.includes('event_time')) {
-            updateQuery += `, event_time = ?`;
+            updateQuery += `, event_time = $1`;
             updateValues.push(eventTime);
           }
           
           if (existingColumns.includes('transaction_time')) {
-            updateQuery += `, transaction_time = ?`;
+            updateQuery += `, transaction_time = $1`;
             updateValues.push(transactionTime);
           }
           
-          updateQuery += ` WHERE id = ?`;
+          updateQuery += ` WHERE id = $1`;
           updateValues.push(accountId);
           
           // ✅ RETRY EM CASO DE DEADLOCK - ATUALIZAÇÃO DE SALDO
@@ -287,7 +287,7 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
       
       // Buscar posição aberta existente
       const [existingPositions] = await connection.query(
-        'SELECT * FROM posicoes WHERE simbolo = ? AND status = ? AND conta_id = ?',
+        'SELECT * FROM posicoes WHERE simbolo = $1 AND status = $2 AND conta_id = $3',
         [symbol, 'OPEN', accountId]
       );
       
@@ -299,7 +299,7 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
           while (updateTries < 1000) {
             try {
               // Montar update completo com todos os campos relevantes
-              let updateQuery = `UPDATE posicoes SET quantidade = ?, preco_medio = ?, preco_entrada = ?, preco_corrente = ?, breakeven_price = ?, accumulated_realized = ?, unrealized_pnl = ?, margin_type = ?, isolated_wallet = ?, position_side = ?, event_reason = ?, webhook_data_raw = ?, data_hora_ultima_atualizacao = NOW() WHERE id = ?`;
+              let updateQuery = `UPDATE posicoes SET quantidade = $1, preco_medio = $2, preco_entrada = $3, preco_corrente = $4, breakeven_price = $5, accumulated_realized = $6, unrealized_pnl = $7, margin_type = $8, isolated_wallet = $9, position_side = $10, event_reason = $11, webhook_data_raw = $12, data_hora_ultima_atualizacao = CURRENT_TIMESTAMP WHERE id = $13`;
               let updateValues = [positionAmt, entryPrice, entryPrice, entryPrice, breakevenPrice, accumulatedRealized, unrealizedPnl, marginType, isolatedWallet, positionSide, reason, JSON.stringify({ ...positionData, eventTime, transactionTime, reason, action: 'POSITION_UPDATE' }), positionId];
               await connection.query(updateQuery, updateValues);
               break;
@@ -363,7 +363,7 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
             try {
               const [candidateSignals] = await connection.query(
                 `SELECT id, symbol, status, position_id, created_at FROM webhook_signals 
-                 WHERE symbol = ? AND conta_id = ? AND (position_id IS NULL OR position_id = 0) 
+                 WHERE symbol = $1 AND conta_id = $2 AND (position_id IS NULL OR position_id = 0) 
                  ORDER BY created_at DESC LIMIT 5`,
                 [symbol, accountId]
               );
@@ -385,7 +385,7 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
                 console.log(`[ACCOUNT_UPDATE] 🔍 Buscando sinal EXECUTADO para ${symbol} (conta ${accountId})...`);
                 const [executedSignals] = await connection.query(
                   `SELECT id, status, created_at FROM webhook_signals 
-                   WHERE symbol = ? AND conta_id = ? AND status = 'EXECUTADO' AND (position_id IS NULL OR position_id = 0)
+                   WHERE symbol = $1 AND conta_id = $2 AND status = 'EXECUTADO' AND (position_id IS NULL OR position_id = 0)
                    ORDER BY created_at DESC LIMIT 1`,
                   [symbol, accountId]
                 );
@@ -399,7 +399,7 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
                   // 2️⃣ FALLBACK: Buscar sinal mais recente de qualquer status sem position_id
                   const [anyStatusSignals] = await connection.query(
                     `SELECT id, status, created_at FROM webhook_signals 
-                     WHERE symbol = ? AND conta_id = ? AND (position_id IS NULL OR position_id = 0)
+                     WHERE symbol = $1 AND conta_id = $2 AND (position_id IS NULL OR position_id = 0)
                      ORDER BY created_at DESC LIMIT 1`,
                     [symbol, accountId]
                   );
@@ -418,7 +418,7 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
                   
                   // Atualizar o sinal específico
                   const [updateResult] = await connection.query(
-                    `UPDATE webhook_signals SET position_id = ? WHERE id = ?`,
+                    `UPDATE webhook_signals SET position_id = $1 WHERE id = $2`,
                     [newPositionId, signalId]
                   );
                   
@@ -452,7 +452,7 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
             while (ordensUpdateTries < 1000) {
               try {
                 const [ordensResult] = await connection.query(
-                  `UPDATE ordens SET id_posicao = ? WHERE simbolo = ? AND conta_id = ? AND (id_posicao IS NULL OR id_posicao = 0)`,
+                  `UPDATE ordens SET id_posicao = $1 WHERE simbolo = $2 AND conta_id = $3 AND (id_posicao IS NULL OR id_posicao = 0)`,
                   [newPositionId, symbol, accountId]
                 );
                 console.log(`[ACCOUNT_UPDATE] ✅ ${ordensResult.affectedRows} ordens vinculadas à posição ${newPositionId}`);
@@ -473,7 +473,7 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
             while (ordensFechadasUpdateTries < 1000) {
               try {
                 const [ordensFechadasResult] = await connection.query(
-                  `UPDATE ordens_fechadas SET id_posicao = ? WHERE simbolo = ? AND conta_id = ? AND (id_posicao IS NULL OR id_posicao = 0)`,
+                  `UPDATE ordens_fechadas SET id_posicao = $1 WHERE simbolo = $2 AND conta_id = $3 AND (id_posicao IS NULL OR id_posicao = 0)`,
                   [newPositionId, symbol, accountId]
                 );
                 console.log(`[ACCOUNT_UPDATE] ✅ ${ordensFechadasResult.affectedRows} ordens_fechadas vinculadas à posição ${newPositionId}`);
@@ -493,7 +493,7 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
             try {
               const [finalCheck] = await connection.query(
                 `SELECT id, status, position_id FROM webhook_signals 
-                 WHERE symbol = ? AND conta_id = ? AND position_id = ?`,
+                 WHERE symbol = $1 AND conta_id = $2 AND position_id = $3`,
                 [symbol, accountId, newPositionId]
               );
               
@@ -549,7 +549,7 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
           
            // === BUSCAR E SOMAR TRADES DA POSIÇÃO FECHADA ===
           try {
-            const [posRows] = await connection.query('SELECT * FROM posicoes WHERE id = ?', [positionId]);
+            const [posRows] = await connection.query('SELECT * FROM posicoes WHERE id = $1', [positionId]);
             if (posRows.length > 0) {
               const pos = posRows[0];
               const dataAbertura = new Date(pos.data_hora_abertura);
@@ -564,9 +564,9 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
                 let orderIds = [];
                 try {
                   // Buscar em ordens
-                  const [ordensRows] = await connection.query('SELECT id_externo FROM ordens WHERE id_posicao = ?', [positionId]);
+                  const [ordensRows] = await connection.query('SELECT id_externo FROM ordens WHERE id_posicao = $1', [positionId]);
                   // Buscar em ordens_fechadas
-                  const [ordensFechadasRows] = await connection.query('SELECT id_externo FROM ordens_fechadas WHERE id_posicao = ?', [positionId]);
+                  const [ordensFechadasRows] = await connection.query('SELECT id_externo FROM ordens_fechadas WHERE id_posicao = $2', [positionId]);
                   orderIds = [
                     ...ordensRows.map(r => r.id_externo),
                     ...ordensFechadasRows.map(r => r.id_externo)
@@ -612,7 +612,7 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
                 while (pnlUpdateTries < 1000) {
                   try {
                     await connection.query(
-                      'UPDATE posicoes SET total_realized = ?, total_commission = ?, liquid_pnl = ? WHERE id = ?',
+                      'UPDATE posicoes SET total_realized = $1, total_commission = $2, liquid_pnl = $3 WHERE id = $4',
                       [totalRealized, totalCommission, liquidPnl, positionId]
                     );
                     break;
@@ -632,7 +632,7 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
                 // === ENVIAR MENSAGEM TELEGRAM APÓS ATUALIZAÇÃO DO PnL ===
                 try {
                   // Buscar posição atualizada
-                  const [updatedRows] = await connection.query('SELECT * FROM posicoes WHERE id = ?', [positionId]);
+                  const [updatedRows] = await connection.query('SELECT * FROM posicoes WHERE id = $1', [positionId]);
                   if (updatedRows.length > 0) {
                     const updatedPos = updatedRows[0];
                     
@@ -641,7 +641,7 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
                     try {
                       const [signalRows] = await connection.query(
                         `SELECT registry_message_id FROM webhook_signals 
-                         WHERE position_id = ? AND conta_id = ? AND registry_message_id IS NOT NULL 
+                         WHERE position_id = $1 AND conta_id = $2 AND registry_message_id IS NOT NULL 
                          ORDER BY id DESC LIMIT 1`,
                         [positionId, accountId]
                       );
@@ -657,7 +657,7 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
                     }
                     
                     // Buscar chatId da conta
-                    const [contaRows] = await connection.query('SELECT telegram_chat_id FROM contas WHERE id = ?', [accountId]);
+                    const [contaRows] = await connection.query('SELECT telegram_chat_id FROM contas WHERE id = $1', [accountId]);
                     const chatId = contaRows.length > 0 ? contaRows[0].telegram_chat_id : null;
                     if (chatId) {
                       // ✅ SISTEMA DE DEDUPLICAÇÃO ULTRA-ROBUSTO
@@ -710,7 +710,7 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
                           console.log(`[TELEGRAM_DISPATCHER] ✅ ${timestamp} | accountHandlers.js | Mensagem de posição fechada enviada com SUCESSO (conta ${accountId})`);
                         } else {
                           console.warn(`[TELEGRAM_DISPATCHER] ⚠️ ${timestamp} | accountHandlers.js | FALHA ao enviar mensagem de posição fechada`);
-                          console.warn(`[TELEGRAM_DISPATCHER] 🔍 Erro:`, result?.error || 'Erro desconhecido');
+                          console.warn(`[TELEGRAM_DISPATCHER] 🔍 Erro:`, result$1.error || 'Erro desconhecido');
                           console.warn(`[TELEGRAM_DISPATCHER] 🔍 Resposta completa:`, result);
                         }
                       }
@@ -731,24 +731,24 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
           // Verificar colunas para atualização final
           const [columns] = await connection.query(`SHOW COLUMNS FROM posicoes`);
           const existingColumns = columns.map(col => col.Field);
-          let closeQuery = `UPDATE posicoes SET status = 'CLOSED', quantidade = 0, data_hora_fechamento = NOW(), data_hora_ultima_atualizacao = NOW()`;
+          let closeQuery = `UPDATE posicoes SET status = 'CLOSED', quantidade = 0, data_hora_fechamento = CURRENT_TIMESTAMP, data_hora_ultima_atualizacao = CURRENT_TIMESTAMP`;
           let closeValues = [];
           if (existingColumns.includes('accumulated_realized')) {
-            closeQuery += `, accumulated_realized = ?`;
+            closeQuery += `, accumulated_realized = $1`;
             closeValues.push(accumulatedRealized);
           }
           if (existingColumns.includes('unrealized_pnl')) {
             closeQuery += `, unrealized_pnl = 0`;
           }
           if (existingColumns.includes('event_reason')) {
-            closeQuery += `, event_reason = ?`;
+            closeQuery += `, event_reason = $1`;
             closeValues.push(reason);
           }
           if (existingColumns.includes('webhook_data_raw')) {
-            closeQuery += `, webhook_data_raw = ?`;
+            closeQuery += `, webhook_data_raw = $1`;
             closeValues.push(JSON.stringify({ ...positionData, eventTime, transactionTime, reason, action: 'POSITION_CLOSED' }));
           }
-          closeQuery += ` WHERE id = ?`;
+          closeQuery += ` WHERE id = $1`;
           closeValues.push(positionId);
           
           // ✅ RETRY EM CASO DE DEADLOCK - FECHAMENTO DE POSIÇÃO
@@ -966,12 +966,12 @@ async function fixOrphanSignals(accountId = null) {
       SELECT ws.id, ws.symbol, ws.conta_id, ws.status, ws.created_at
       FROM webhook_signals ws
       WHERE (ws.position_id IS NULL OR ws.position_id = 0)
-        AND ws.created_at >= DATE_SUB(NOW(), INTERVAL 30 MINUTE)
+        AND ws.created_at >= (CURRENT_TIMESTAMP - INTERVAL '30 MINUTE')
     `;
     let queryParams = [];
     
     if (accountId) {
-      orphanQuery += ` AND ws.conta_id = ?`;
+      orphanQuery += ` AND ws.conta_id = $1`;
       queryParams.push(accountId);
     }
     
@@ -994,7 +994,7 @@ async function fixOrphanSignals(accountId = null) {
         const [positions] = await connection.query(`
           SELECT id, quantidade, preco_medio, data_hora_abertura
           FROM posicoes 
-          WHERE simbolo = ? AND conta_id = ? AND status = 'OPEN' AND ABS(quantidade) > 0
+          WHERE simbolo = $1 AND conta_id = $2 AND status = 'OPEN' AND ABS(quantidade) > 0
           ORDER BY data_hora_abertura DESC, id DESC
           LIMIT 1
         `, [signal.symbol, signal.conta_id]);
@@ -1014,7 +1014,7 @@ async function fixOrphanSignals(accountId = null) {
             while (updateTries < 100) {
               try {
                 const [updateResult] = await connection.query(
-                  `UPDATE webhook_signals SET position_id = ? WHERE id = ?`,
+                  `UPDATE webhook_signals SET position_id = $1 WHERE id = $2`,
                   [position.id, signal.id]
                 );
                 

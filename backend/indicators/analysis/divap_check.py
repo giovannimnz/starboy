@@ -1,7 +1,8 @@
 import ccxt
 import pandas as pd
 import numpy as np
-import mysql.connector
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from datetime import datetime, timedelta
 import vectorbt as vbt
 import logging
@@ -37,15 +38,9 @@ DB_CONFIG = {
     "host": DB_HOST,
     "user": DB_USER,
     "password": DB_PASSWORD,
-    "database": DB_NAME
+    "database": DB_NAME,
+    "port": int(DB_PORT) if DB_PORT else 5432
 }
-
-# Adicionar porta apenas se estiver definida
-if DB_PORT:
-    try:
-        DB_CONFIG["port"] = int(DB_PORT)
-    except (ValueError, TypeError):
-        logger.warning(f"Valor de porta inválido no .env: '{DB_PORT}'. Usando porta padrão.")
 
 # Configuração para API da Binance do arquivo .env
 API_KEY = os.getenv('API_KEY')
@@ -73,8 +68,9 @@ class DIVAPAnalyzer:
 
     def connect_db(self) -> None:
         try:
-            self.conn = mysql.connector.connect(**self.db_config)
-            self.cursor = self.conn.cursor(dictionary=True)
+            self.conn = psycopg2.connect(**self.db_config)
+            self.conn.autocommit = True
+            self.cursor = self.conn.cursor(cursor_factory=RealDictCursor)
             #logger.info("Conexão com o banco de dados estabelecida com sucesso")
         except Exception as e:
             logger.error(f"Erro ao conectar ao banco de dados: {e}")
@@ -92,7 +88,7 @@ class DIVAPAnalyzer:
     def close_connections(self) -> None:
         if self.cursor:
             self.cursor.close()
-        if self.conn:
+        if self.conn and not self.conn.closed:
             self.conn.close()
         logger.info("Conexões fechadas")
 
@@ -366,8 +362,8 @@ class DIVAPAnalyzer:
             try:
                 update_query = """
                     UPDATE webhook_signals 
-                    SET divap_confirmado = 0,
-                        cancelado_checker = 1,
+                    SET divap_confirmado = False,
+                        cancelado_checker = True,
                         status = 'CANCELED',
                         error_message = %s
                     WHERE id = %s

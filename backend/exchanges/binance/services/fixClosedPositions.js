@@ -14,7 +14,7 @@ async function fixClosedPositions(accountId = 999) {
     const [closedPositions] = await db.query(`
       SELECT id, simbolo, status, data_hora_fechamento, liquid_pnl
       FROM posicoes 
-      WHERE status = 'CLOSED' AND conta_id = ?
+      WHERE status = 'CLOSED' AND conta_id = $1
     `, [accountId]);
     
     console.log(`[FIX_CLOSED] 📊 Encontradas ${closedPositions.length} posições CLOSED na tabela ativa`);
@@ -42,7 +42,7 @@ async function fixClosedPositions(accountId = 999) {
     
     // Verificar se foram movidas
     const [remainingClosed] = await db.query(`
-      SELECT COUNT(*) as count FROM posicoes WHERE status = 'CLOSED' AND conta_id = ?
+      SELECT COUNT(*) as count FROM posicoes WHERE status = 'CLOSED' AND conta_id = $1
     `, [accountId]);
     
     console.log(`[FIX_CLOSED] 📊 Posições CLOSED restantes: ${remainingClosed[0].count}`);

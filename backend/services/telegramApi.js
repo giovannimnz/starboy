@@ -24,16 +24,14 @@ class TelegramApiService {
       }
 
       const db = await getDatabaseInstance();
-      const [rows] = await db.query(
-        'SELECT telegram_bot_token, telegram_chat_id, nome FROM contas WHERE id = ? AND ativa = 1',
-        [accountId]
+      const result = await db.query(`SELECT telegram_bot_token, telegram_chat_id, nome FROM contas WHERE id = $1 AND ativa = true`, [accountId]
       );
 
-      if (rows.length === 0) {
+      if (result.rows.length === 0) {
         throw new Error(`Conta ${accountId} não encontrada ou inativa`);
       }
 
-      const { telegram_bot_token: token, telegram_chat_id: chatId, nome: accountName } = rows[0];
+      const { telegram_bot_token: token, telegram_chat_id: chatId, nome: accountName } = result.rows[0];
 
       if (!token || token.trim() === '') {
         throw new Error(`Token não configurado para conta ${accountId}`);
@@ -45,10 +43,10 @@ class TelegramApiService {
 
       // Validar token
       const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
-      const result = await response.json();
+      const validationResult = await response.json();
 
-      if (!result.ok) {
-        throw new Error(`Token inválido para conta ${accountId}: ${result.description}`);
+      if (!validationResult.ok) {
+        throw new Error(`Token inválido para conta ${accountId}: ${validationResult.description}`);
       }
 
       // Salvar dados
@@ -100,7 +98,7 @@ class TelegramApiService {
       }
 
       console.log(`[TELEGRAM_DISPATCHER] � Token configurado: ${token.substring(0, 10)}... | Chat: ${finalChatId}`);
-      console.log(`[TELEGRAM_DISPATCHER] 📝 Mensagem (${message?.length || 0} chars): ${message?.substring(0, 100)}...`);
+      console.log(`[TELEGRAM_DISPATCHER] 📝 Mensagem (${message$1.length || 0} chars): ${message$2.substring(0, 100)}...`);
 
       const requestBody = {
         chat_id: finalChatId,
@@ -185,9 +183,7 @@ class TelegramApiService {
       let updateTries = 0;
       while (updateTries < 100) {
         try {
-          await db.query(
-            'UPDATE webhook_signals SET registry_message_id = ? WHERE id = ?',
-            [messageId, signalId]
+          await db.query(`UPDATE webhook_signals SET registry_message_id = $1 WHERE id = $2`, [messageId, signalId]
           );
           
           console.log(`[TELEGRAM_API] ✅ registry_message_id ${messageId} atualizado para sinal ${signalId}`);
@@ -245,7 +241,7 @@ async function formatEntryMessage(signal, filledQuantity, averagePrice, totalVal
     const side = signal.side.toUpperCase() === 'BUY' || signal.side.toUpperCase() === 'COMPRA' ? '🟢 COMPRA' : '🔴 VENDA';
     const leverage = signal.leverage || 1;
     const roundedAvgPrice = parseFloat(averagePrice).toFixed(2);
-    const roundedQty = parseFloat(filledQuantity).toString().replace(/\.?0+$/, '');
+    const roundedQty = parseFloat(filledQuantity).toString().replace(/\.$20+$/, '');
 
     return (
       `🎯 <b>ENTRADA EXECUTADA</b>\n\n` +
@@ -273,7 +269,7 @@ async function formatPositionClosedMessage(positionOrSymbol, side, quantity, ent
     if (typeof positionOrSymbol === 'object' && positionOrSymbol !== null) {
       const pos = positionOrSymbol;
       symbol = pos.simbolo;
-      _quantity = parseFloat(pos.quantidade).toString().replace(/\.?0+$/, '');
+      _quantity = parseFloat(pos.quantidade).toString().replace(/\.$10+$/, '');
       _pnl = typeof pos.liquid_pnl === 'number' ? pos.liquid_pnl : parseFloat(pos.liquid_pnl || '0');
 
       // 🔍 Buscar dados corretos da webhook_signals usando position_id
@@ -281,13 +277,11 @@ async function formatPositionClosedMessage(positionOrSymbol, side, quantity, ent
         console.log(`[TELEGRAM_API] 🔍 Buscando dados do sinal para position_id: ${pos.id}`);
         
         const db = await getDatabaseInstance();
-        const [signalRows] = await db.query(
-          'SELECT side, entry_price, tp5_price FROM webhook_signals WHERE position_id = ? ORDER BY created_at DESC LIMIT 1',
-          [pos.id]
+        const result = await db.query(`SELECT side, entry_price, tp5_price FROM webhook_signals WHERE position_id = $1 ORDER BY created_at DESC LIMIT 1`, [pos.id]
         );
 
-        if (signalRows.length > 0) {
-          const signal = signalRows[0];
+        if (signalRows.rows.length > 0) {
+          const signal = signalRows.rows[0];
           
           // ✅ TRATAR OS VALORES "COMPRA" e "VENDA" da webhook_signals
           let normalizedSide = signal.side;
@@ -324,7 +318,7 @@ async function formatPositionClosedMessage(positionOrSymbol, side, quantity, ent
     } else {
       symbol = positionOrSymbol;
       _side = side;
-      _quantity = parseFloat(quantity).toString().replace(/\.?0+$/, '');
+      _quantity = parseFloat(quantity).toString().replace(/\.$30+$/, '');
       _entry = entryPrice;
       _exit = exitPrice;
       _pnl = pnl;

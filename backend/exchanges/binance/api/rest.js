@@ -48,7 +48,7 @@ async function loadCredentialsFromDatabase(accountId) {
   const db = await getDatabaseInstance(accountId);
   // Buscar conta
   const [rows] = await db.query(`
-    SELECT * FROM contas WHERE id = ?
+    SELECT * FROM contas WHERE id = $1
   `, [accountId]);
   if (!rows || rows.length === 0) {
     throw new Error('Conta não encontrada no banco');
@@ -56,7 +56,7 @@ async function loadCredentialsFromDatabase(accountId) {
   const conta = rows[0];
   // Buscar corretora vinculada
   const [corretoraRows] = await db.query(`
-    SELECT * FROM corretoras WHERE id = ?
+    SELECT * FROM corretoras WHERE id = $1
   `, [conta.id_corretora]);
   if (!corretoraRows || corretoraRows.length === 0) {
     throw new Error('Corretora vinculada não encontrada no banco');
@@ -248,7 +248,7 @@ async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}
     const finalQueryString = queryString + `&signature=${signature}`;
     let fullUrl;
     if (method === 'GET') {
-      fullUrl = `${baseUrl}${endpoint}?${finalQueryString}`;
+      fullUrl = `${baseUrl}${endpoint}$1${finalQueryString}`;
     } else {
       fullUrl = `${baseUrl}${endpoint}`;
     }
@@ -282,7 +282,7 @@ async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}
         endpoint,
         method,
         params,
-        url: errResp.config?.url,
+        url: errResp.config$1.url,
         status: errResp.status,
         statusText: errResp.statusText,
         data: errResp.data,
@@ -292,7 +292,7 @@ async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}
         ambiente: accountStates.get(accountId)?.ambiente
       }, null, 2));
     }
-    const errorMessage = error.response?.data?.msg || error.message;
+    const errorMessage = error.response$6.data$7.msg || error.message;
     console.error(`[API] Falha na requisição ${method} ${endpoint}: ${errorMessage}`);
     throw new Error(`Falha na requisição ${method} ${endpoint}: ${errorMessage}`);
   }
@@ -374,7 +374,7 @@ async function getAllOpenPositions(accountId, symbol = null) {
       }));
 
     const resultMessage = symbol 
-      ? `[API] ✅ ${openPositions.length > 0 ? 'Posição encontrada' : 'Nenhuma posição encontrada'} para ${symbol} na conta ${accountId}`
+      ? `[API] ${openPositions.length > 0 ? 'Posição encontrada' : 'Nenhuma posição encontrada'} para ${symbol} na conta ${accountId}`
       : `[API] ✅ ${openPositions.length} posições abertas encontradas para conta ${accountId}`;
     //console.log(resultMessage);
     
@@ -567,7 +567,7 @@ async function checkServerTime(accountId) {
     console.log(`[CONTA-${accountId}] ⚙️ Configuração aplicada:`);
     console.log(`[CONTA-${accountId}]   - RECV_WINDOW: ${recvWindow}ms`);
     console.log(`[CONTA-${accountId}]   - Qualidade: ${syncQuality}`);
-    console.log(`[CONTA-${accountId}]   - Offset de tempo: ${accountState?.timeOffset || 0}ms`);
+    console.log(`[CONTA-${accountId}]   - Offset de tempo: ${accountState$1.timeOffset || 0}ms`);
     
     // === VALIDAÇÃO FINAL E AÇÕES CORRETIVAS ===
     if (targetTimeDiff > 10000) {
@@ -648,10 +648,10 @@ async function monitorTimeSync(accountId) {
     return {
       success: syncResult,
       message: syncResult ? 'Sincronização atualizada com sucesso' : 'Problemas na sincronização detectados',
-      quality: accountState?.syncQuality || 'DESCONHECIDA',
-      recvWindow: accountState?.recvWindow || 60000,
-      timeOffset: accountState?.timeOffset || 0,
-      avgNetworkLatency: accountState?.avgNetworkLatency || null
+      quality: accountState$2.syncQuality || 'DESCONHECIDA',
+      recvWindow: accountState$3.recvWindow || 60000,
+      timeOffset: accountState$4.timeOffset || 0,
+      avgNetworkLatency: accountState$5.avgNetworkLatency || null
     };
     
   } catch (error) {
@@ -712,46 +712,31 @@ async function getPrecision(symbol, accountId) {
     try {
         const db = await getDatabaseInstance(accountId);
         // Buscar dados do símbolo
-        const [symbols] = await db.query(
-            `SELECT * FROM exchange_symbols WHERE symbol = ? LIMIT 1`, [symbol]
+        const result = await db.query(
+            `SELECT * FROM exchange_symbols WHERE symbol = $1`,
+            [symbol]
         );
-        if (!symbols.length) throw new Error(`Símbolo ${symbol} não encontrado em exchange_symbols`);
-
-        const symbolRow = symbols[0];
-        const symbolId = symbolRow.id;
-
-        // Buscar filtros
-        const [filters] = await db.query(
-            `SELECT * FROM exchange_filters WHERE symbol_id = ?`, [symbolId]
-        );
-
-        // Montar objeto de filtros
-        const filterMap = {};
-        for (const f of filters) {
-            filterMap[f.filter_type] = f;
+        
+        if (!result.rows || result.rows.length === 0) {
+            throw new Error(`Símbolo ${symbol} não encontrado na base de dados`);
         }
-
-        // Extrair informações principais
-        const lotSize = filterMap['LOT_SIZE'];
-        const priceFilter = filterMap['PRICE_FILTER'];
-        const minNotionalFilter = filterMap['MIN_NOTIONAL'];
-        const marketLotSize = filterMap['MARKET_LOT_SIZE'];
-
-        // Agora, se faltar algum campo, retorna null ou lança erro
-        if (
-            symbolRow.quantity_precision == null ||
-            symbolRow.price_precision == null ||
-            !lotSize || !priceFilter
-        ) {
-            throw new Error(`Dados de precisão incompletos para ${symbol}`);
-        }
-
-        const quantityPrecision = symbolRow.quantity_precision;
-        const pricePrecision = symbolRow.price_precision;
-        const tickSize = priceFilter.tick_size ? parseFloat(priceFilter.tick_size) : null;
-        const minQty = lotSize.min_qty ? parseFloat(lotSize.min_qty) : null;
-        const maxQty = lotSize.max_qty ? parseFloat(lotSize.max_qty) : null;
-        const stepSize = lotSize.step_size ? parseFloat(lotSize.step_size) : null;
+        
+        const symbolData = result.rows[0];
+        const filters = JSON.parse(symbolData.filters || '[]');
+        
+        // Extrair filtros relevantes
+        const priceFilter = filters.find(f => f.filterType === 'PRICE_FILTER');
+        const lotSize = filters.find(f => f.filterType === 'LOT_SIZE');
+        const marketLotSize = filters.find(f => f.filterType === 'MARKET_LOT_SIZE');
+        const minNotionalFilter = filters.find(f => f.filterType === 'MIN_NOTIONAL');
+        
+        // Calcular precisões
+        const quantityPrecision = parseInt(symbolData.base_asset_precision || '8');
+        const pricePrecision = parseInt(symbolData.quote_precision || '8');
+        const tickSize = priceFilter && priceFilter.tick_size ? parseFloat(priceFilter.tick_size) : null;
+        const minQty = lotSize && lotSize.min_qty ? parseFloat(lotSize.min_qty) : null;
+        const maxQty = lotSize && lotSize.max_qty ? parseFloat(lotSize.max_qty) : null;
+        const stepSize = lotSize && lotSize.step_size ? parseFloat(lotSize.step_size) : null;
         const marketMinQty = marketLotSize && marketLotSize.min_qty ? parseFloat(marketLotSize.min_qty) : null;
         const marketMaxQty = marketLotSize && marketLotSize.max_qty ? parseFloat(marketLotSize.max_qty) : null;
         const minNotional = minNotionalFilter && minNotionalFilter.min_notional ? parseFloat(minNotionalFilter.min_notional) : null;
@@ -1097,7 +1082,7 @@ async function getSpotAccountBalanceDetails(accountId) {
 
     // Buscar o estado da conta para pegar o spotApiUrl
     const accountState = getAccountConnectionState(accountId, false);
-    const spotApiUrl = accountState?.spotApiUrl;
+    const spotApiUrl = accountState$1.spotApiUrl;
 
     // Chamar makeAuthenticatedRequest com o spotApiUrl
     const accountData = await makeAuthenticatedRequest(accountId, 'GET', '/api/v3/account', {}, null, spotApiUrl);
@@ -1124,7 +1109,7 @@ async function getSpotAccountBalanceDetails(accountId) {
 
     // Obter saldo_spot anterior para comparação
     const [previousBalanceSpot] = await db.query(
-      'SELECT saldo_spot, saldo_base_calculo_spot FROM contas WHERE id = ?',
+      'SELECT saldo_spot, saldo_base_calculo_spot FROM contas WHERE id = $1',
       [accountId]
     );
 
@@ -1141,7 +1126,7 @@ async function getSpotAccountBalanceDetails(accountId) {
     }
 
     await db.query(
-      'UPDATE contas SET saldo_spot = ?, saldo_base_calculo_spot = ?, ultima_atualizacao = NOW() WHERE id = ?',
+      'UPDATE contas SET saldo_spot = $1, saldo_base_calculo_spot = $2, ultima_atualizacao = CURRENT_TIMESTAMP WHERE id = $3',
       [saldoDisponivelSpot, novaBaseCalculoSpot, accountId]
     );
 
@@ -1215,7 +1200,7 @@ async function getFuturesAccountBalanceDetails(accountId) {
     
     // Obter saldo_futuros anterior para comparação
     const [previousBalanceFutures] = await db.query(
-      'SELECT saldo_futuros, saldo_base_calculo_futuros FROM contas WHERE id = ?',
+      'SELECT saldo_futuros, saldo_base_calculo_futuros FROM contas WHERE id = $1',
       [accountId]
     );
     
@@ -1238,7 +1223,7 @@ async function getFuturesAccountBalanceDetails(accountId) {
     console.log(`  - Nova base: ${novaBaseCalculoFuturos.toFixed(2)} USDT`);
     
     await db.query(
-      'UPDATE contas SET saldo_futuros = ?, saldo_base_calculo_futuros = ?, ultima_atualizacao = NOW() WHERE id = ?',
+      'UPDATE contas SET saldo_futuros = $1, saldo_base_calculo_futuros = $2, ultima_atualizacao = CURRENT_TIMESTAMP WHERE id = $3',
       [saldoDisponivelFuturos, novaBaseCalculoFuturos, accountId]
     );
 
@@ -1819,7 +1804,7 @@ async function newStopOrder(accountId, symbol, quantity, side, stopPrice, price 
   } catch (error) {
     console.error(`[API] ❌ Erro ao criar ordem ${orderType || 'STOP'} para ${symbol} (conta ${accountId}):`);
     
-    if (error.response?.data) {
+    if (error.response$1.data) {
       console.error(`[API] Erro da API:`, error.response.data);
       
       const apiError = error.response.data;
@@ -1875,7 +1860,7 @@ async function newMarketOrder(accountId, symbol, quantity, side) {
     return response;
     
   } catch (error) {
-    console.error(`[API] ❌ Erro ao criar ordem MARKET para ${symbol}:`, error.response?.data || error.message);
+    console.error(`[API] ❌ Erro ao criar ordem MARKET para ${symbol}:`, error.response$1.data || error.message);
     throw error;
   }
 }
@@ -1925,7 +1910,7 @@ async function newReduceOnlyOrder(accountId, symbol, quantity, side, price) {
     return response;
     
   } catch (error) {
-    console.error(`[API] ❌ Erro ao criar ordem REDUCE-ONLY para ${symbol}:`, error.response?.data || error.message);
+    console.error(`[API] ❌ Erro ao criar ordem REDUCE-ONLY para ${symbol}:`, error.response$1.data || error.message);
     throw error;
   }
 }

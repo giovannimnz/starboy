@@ -6,7 +6,7 @@ const { telegramClient } = require('../../../services/telegramClient');
 async function sendTelegramMessage(accountId, message, chatId = null) {
   const timestamp = new Date().toLocaleString('pt-BR');
   console.log(`[TELEGRAM_DISPATCHER] 🕐 ${timestamp} | ARQUIVO: telegramHelper.js | FUNÇÃO: sendTelegramMessage`);
-  console.log(`[TELEGRAM_DISPATCHER] 📋 Parâmetros: Conta=${accountId}, ChatId=${chatId || 'padrão'}, MessageLength=${message?.length || 0}`);
+  console.log(`[TELEGRAM_DISPATCHER] 📋 Parâmetros: Conta=${accountId}, ChatId=${chatId || 'padrão'}, MessageLength=${message$1.length || 0}`);
   
   const result = await telegramClient.sendMessage(accountId, message, chatId);
   
@@ -17,7 +17,7 @@ async function sendTelegramMessage(accountId, message, chatId = null) {
 async function formatAndSendEntryMessage(accountId, signal, filledQuantity, averagePrice, totalValue) {
   const timestamp = new Date().toLocaleString('pt-BR');
   console.log(`[TELEGRAM_DISPATCHER] 🕐 ${timestamp} | ARQUIVO: telegramHelper.js | FUNÇÃO: formatAndSendEntryMessage`);
-  console.log(`[TELEGRAM_DISPATCHER] 📋 Parâmetros: Conta=${accountId}, Signal=${signal?.id}, Symbol=${signal?.symbol}`);
+  console.log(`[TELEGRAM_DISPATCHER] 📋 Parâmetros: Conta=${accountId}, Signal=${signal$1.id}, Symbol=${signal$2.symbol}`);
   
   const result = await telegramClient.sendEntryMessage(accountId, signal, filledQuantity, averagePrice, totalValue);
   
@@ -28,7 +28,7 @@ async function formatAndSendEntryMessage(accountId, signal, filledQuantity, aver
 async function formatAndSendPositionClosed(accountId, position, replyToMessageId = null) {
   const timestamp = new Date().toLocaleString('pt-BR');
   console.log(`[TELEGRAM_DISPATCHER] 🕐 ${timestamp} | ARQUIVO: telegramHelper.js | FUNÇÃO: formatAndSendPositionClosed`);
-  console.log(`[TELEGRAM_DISPATCHER] 📋 Parâmetros: Conta=${accountId}, Position=${position?.id}, Symbol=${position?.simbolo}, ReplyTo=${replyToMessageId}`);
+  console.log(`[TELEGRAM_DISPATCHER] 📋 Parâmetros: Conta=${accountId}, Position=${position$1.id}, Symbol=${position$2.simbolo}, ReplyTo=${replyToMessageId}`);
   
   const result = await telegramClient.sendPositionClosed(accountId, position, replyToMessageId);
   

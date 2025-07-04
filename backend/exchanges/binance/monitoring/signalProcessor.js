@@ -109,22 +109,7 @@ async function cancelSignal(db, signalId, status, reason, accountId) {
     const [signalData] = await db.query(`
       SELECT symbol, side, leverage, entry_price
       FROM webhook_signals
-      WHERE id = ? AND conta_id = ?
-    `, [signalId, accountId]);
-    
-    await db.query(`
-      UPDATE webhook_signals
-      SET status = ?,
-          error_message = ?,
-          updated_at = NOW()
-      WHERE id = ? AND conta_id = ?
-    `, [status, reason, signalId, accountId]);
-    
-    // Notificação Telegram
-    try {
-      if (signalData.length > 0) {
-        const signal = signalData[0];
-        const side = signal.side === 'BUY' ? '🟢 COMPRA' : '🔴 VENDA';
+      WHERE id = ? 1 : '🟢 COMPRA' : '🔴 VENDA';
         const message = `⏰ <b>SINAL CANCELADO</b>\n\n` +
                         `📊 <b>${signal.symbol}</b>\n` +
                         `${side} | ${signal.leverage}x\n` +
@@ -144,7 +129,7 @@ async function cancelSignal(db, signalId, status, reason, accountId) {
       // Verificar se ainda há sinais aguardando para esse símbolo
       const [pending] = await db.query(`
         SELECT COUNT(*) as count FROM webhook_signals
-        WHERE symbol = ? AND conta_id = ? AND status = 'AGUARDANDO_ACIONAMENTO'
+        WHERE symbol = $1 AND conta_id = $2 AND status = 'AGUARDANDO_ACIONAMENTO'
       `, [symbol, accountId]);
       if (pending[0].count === 0) {
         // Fechar WebSocket de preço
@@ -170,8 +155,8 @@ async function checkSignalTriggers(symbol, currentPrice, db, accountId) {
       tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, conta_id,
       status, created_at, timeout_at, max_lifetime_minutes, chat_id
       FROM webhook_signals 
-      WHERE symbol = ?
-      AND conta_id = ? 
+      WHERE symbol = $1
+      AND conta_id = $2 
       AND status = 'AGUARDANDO_ACIONAMENTO'
       ORDER BY created_at ASC
     `, [symbol, accountId]);
@@ -243,7 +228,7 @@ async function checkSignalTriggers(symbol, currentPrice, db, accountId) {
         try {
           // Atualizar status para PROCESSANDO
           await db.query(
-            'UPDATE webhook_signals SET status = ?, updated_at = NOW() WHERE id = ?',
+            'UPDATE webhook_signals SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
             ['PROCESSANDO', signal.id]
           );
           
@@ -255,7 +240,7 @@ async function checkSignalTriggers(symbol, currentPrice, db, accountId) {
           
           // Reverter status em caso de erro
           await db.query(
-            'UPDATE webhook_signals SET status = ?, error_message = ?, updated_at = NOW() WHERE id = ?',
+            'UPDATE webhook_signals SET status = $1, error_message = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
             ['ERROR', processError.message.substring(0, 250), signal.id]
           );
         }
@@ -310,7 +295,7 @@ async function processSignal(signal, db, accountId) {
 
       // Atualizar sent_msg para não reenviar
       await db.query(
-        'UPDATE webhook_signals SET sent_msg = 1, updated_at = NOW() WHERE id = ?',
+        'UPDATE webhook_signals SET sent_msg = 1, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
         [signalId]
       );
 
@@ -330,7 +315,7 @@ async function processSignal(signal, db, accountId) {
       console.log(`[SIGNAL] ⚠️ Já existe posição aberta para ${signal.symbol}, ignorando sinal ${signalId}`);
       
       await db.query(
-        'UPDATE webhook_signals SET status = ?, error_message = ?, updated_at = NOW() WHERE id = ?',
+        'UPDATE webhook_signals SET status = $1, error_message = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
         ['ERROR', 'Posição já existe para este símbolo', signalId]
       );
       
@@ -383,10 +368,10 @@ async function processSignal(signal, db, accountId) {
     await db.query(
       `UPDATE webhook_signals SET 
         status = 'AGUARDANDO_ACIONAMENTO',
-        timeout_at = ?,
-        max_lifetime_minutes = ?,
-        updated_at = NOW()
-        WHERE id = ?`,
+        timeout_at = $1,
+        max_lifetime_minutes = $2,
+        updated_at = CURRENT_TIMESTAMP
+        WHERE id = $3`,
       [timeoutAt, maxLifetimeMinutes, signalId]
     );
     
@@ -409,7 +394,7 @@ async function processSignal(signal, db, accountId) {
             console.log(`[SIGNAL] 🔍 Status WebSocket ${signal.symbol}: Existe=${wsExists}, Aberto=${isOpen}`);
             
             if (!isOpen) {
-              console.warn(`[SIGNAL] ⚠️ WebSocket para ${signal.symbol} não está aberto! ReadyState: ${ws?.readyState}`);
+              console.warn(`[SIGNAL] ⚠️ WebSocket para ${signal.symbol} não está aberto! ReadyState: ${ws$1.readyState}`);
             }
           } else {
             console.warn(`[SIGNAL] ⚠️ WebSocket para ${signal.symbol} não foi criado!`);
@@ -447,7 +432,7 @@ async function processSignal(signal, db, accountId) {
     
     try {
       await db.query(
-        'UPDATE webhook_signals SET status = ?, error_message = ?, updated_at = NOW() WHERE id = ?',
+        'UPDATE webhook_signals SET status = $1, error_message = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
         ['ERROR', error.message.substring(0, 250), signalId]
       );
     } catch (updateError) {
@@ -471,9 +456,9 @@ async function checkExpiredSignals(accountId) {
         id, symbol, timeframe, created_at, status, entry_price, sl_price, side,
         timeout_at, max_lifetime_minutes
       FROM webhook_signals 
-      WHERE conta_id = ? 
+      WHERE conta_id = $1 
         AND status IN ('PENDING', 'AGUARDANDO_ACIONAMENTO', 'ENTRADA_EM_PROGRESSO')
-        AND created_at < DATE_SUB(NOW(), INTERVAL 5 MINUTE)
+        AND created_at < (CURRENT_TIMESTAMP - INTERVAL '5 MINUTE')
       ORDER BY created_at ASC
     `, [accountId]);
     
@@ -558,7 +543,7 @@ async function checkNewTrades(accountId) {
       tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, conta_id,
       status, created_at, timeout_at, max_lifetime_minutes, chat_id
       FROM webhook_signals 
-      WHERE conta_id = ? 
+      WHERE conta_id = $1 
       AND status = 'PENDING'
       ORDER BY created_at ASC
     `, [accountId]);
@@ -583,7 +568,7 @@ async function checkNewTrades(accountId) {
         
         try {
           await db.query(
-            'UPDATE webhook_signals SET status = ?, error_message = ?, updated_at = NOW() WHERE id = ?',
+            'UPDATE webhook_signals SET status = $1, error_message = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
             ['ERROR', signalError.message.substring(0, 250), signal.id]
           );
         } catch (updateError) {
@@ -607,7 +592,7 @@ async function setSignalWaitingForTrigger(signal, db, accountId) {
   console.log(`[SIGNAL] ⏳ Colocando sinal ${signal.id} em aguardo para gatilho de preço: ${signal.entry_price}`);
   
   await db.query(
-    'UPDATE webhook_signals SET status = ?, updated_at = NOW() WHERE id = ?',
+    'UPDATE webhook_signals SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
     ['AGUARDANDO_ACIONAMENTO', signal.id]
   );
   
@@ -678,7 +663,7 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
     
     const [pendingSignalsCount] = await db.query(`
       SELECT COUNT(*) as count FROM webhook_signals
-      WHERE symbol = ? AND conta_id = ? AND status = 'AGUARDANDO_ACIONAMENTO'
+      WHERE symbol = $1 AND conta_id = $2 AND status = 'AGUARDANDO_ACIONAMENTO'
     `, [symbol, accountId]);
     
     if (pendingSignalsCount[0].count > 0) {
@@ -711,7 +696,7 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
       tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, conta_id,
       status, created_at, timeout_at, max_lifetime_minutes, chat_id
       FROM webhook_signals 
-      WHERE symbol = ?
+      WHERE symbol = $1
       AND conta_id = ? 
       AND status = 'AGUARDANDO_ACIONAMENTO'
       ORDER BY created_at ASC
@@ -792,7 +777,7 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
         
         try {
           await db.query(
-            'UPDATE webhook_signals SET status = ?, updated_at = NOW() WHERE id = ?',
+            'UPDATE webhook_signals SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
             ['PROCESSANDO', signal.id]
           );
           
@@ -804,7 +789,7 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
             console.log(`[SIGNAL] ✅ Entrada executada com sucesso para sinal ${signal.id}`);
             
             await db.query(
-              'UPDATE webhook_signals SET status = ?, updated_at = NOW() WHERE id = ?',
+              'UPDATE webhook_signals SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
               ['EXECUTADO', signal.id]
             );
             
@@ -824,14 +809,14 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
             }*/
           } else {
             console.error(`[SIGNAL] ❌ Falha na execução da entrada:`, entryResult);
-            throw new Error(entryResult?.error || 'Falha na execução da entrada');
+            throw new Error(entryResult$1.error || 'Falha na execução da entrada');
           }
           
         } catch (processError) {
           console.error(`[SIGNAL] ❌ Erro ao executar entrada para sinal ${signal.id}:`, processError.message);
           
           await db.query(
-            'UPDATE webhook_signals SET status = ?, error_message = ?, updated_at = NOW() WHERE id = ?',
+            'UPDATE webhook_signals SET status = $1, error_message = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3',
             ['ERROR', processError.message.substring(0, 250), signal.id]
           );
         }
@@ -886,7 +871,7 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
 async function checkPositionExists(db, symbol, accountId) {
   try {
     const [rows] = await db.query(
-      "SELECT id FROM posicoes WHERE simbolo = ? AND conta_id = ? AND (status = 'OPEN' OR status = 'PENDING')",
+      "SELECT id FROM posicoes WHERE simbolo = $1 AND conta_id = $2 AND (status = 'OPEN' OR status = 'PENDING')",
       [symbol, accountId]
     );
     return rows.length > 0;
@@ -964,7 +949,7 @@ async function checkCanceledSignals(accountId) {
 
         // Marcar como enviado
         await db.query(
-          'UPDATE webhook_signals SET sent_msg = 1, updated_at = NOW() WHERE id = ?',
+          'UPDATE webhook_signals SET sent_msg = 1, updated_at = CURRENT_TIMESTAMP WHERE id = $1',
           [signal.id]
         );
 

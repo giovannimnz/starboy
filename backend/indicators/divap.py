@@ -7,7 +7,8 @@ import re
 import signal
 import sys
 import traceback
-import mysql.connector
+import psycopg2
+from psycopg2.extras import RealDictCursor
 import threading
 import time
 import requests
@@ -179,12 +180,10 @@ if not validate_telegram_config():
 
 DB_CONFIG = {
     'host': DB_HOST,
-    'port': DB_PORT,
+    'port': int(DB_PORT) if DB_PORT else 5432,
     'user': DB_USER,
     'password': DB_PASSWORD,
-    'database': DB_NAME,
-    'charset': 'utf8mb4',
-    'autocommit': True
+    'database': DB_NAME
 }
 
 # --- Cliente Telegram e Controles de Encerramento ---
@@ -380,17 +379,18 @@ def initialize_bracket_scheduler():
 
 def get_database_connection():
     """
-    Obtém conexão com o banco de dados MySQL com rastreamento
+    Obtém conexão com o banco de dados PostgreSQL com rastreamento
     """
     try:
-        conn = mysql.connector.connect(**DB_CONFIG)
+        conn = psycopg2.connect(**DB_CONFIG)
+        conn.autocommit = True
         
         # Rastrear conexão ativa
         with connection_lock:
             active_connections.add(conn)
         
         return conn
-    except mysql.connector.Error as e:
+    except psycopg2.Error as e:
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [DB] Erro ao conectar: {e}")
         return None
 
@@ -398,7 +398,7 @@ def close_database_connection(conn):
     """
     Fecha uma conexão específica e remove do rastreamento
     """
-    if conn and conn.is_connected():
+    if conn and not conn.closed:
         try:
             conn.close()
             with connection_lock:
@@ -486,17 +486,12 @@ def clean_symbol(symbol):
 
 def get_leverage_brackets_from_database(symbol=None):
     """
-    Busca informações de leverage brackets do banco de dados MySQL
+    Busca informações de leverage brackets do banco de dados PostgreSQL
     """
     try:
-        conn = mysql.connector.connect(
-            host=DB_HOST,
-            port=DB_PORT,
-            user=DB_USER,
-            password=DB_PASSWORD,
-            database=DB_NAME
-        )
-        cursor = conn.cursor(dictionary=True)
+        conn = psycopg2.connect(**DB_CONFIG)
+        conn.autocommit = True
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         sql = """
               SELECT symbol, bracket, initial_leverage, notional_cap,
@@ -568,20 +563,15 @@ def get_account_base_balance():
     Obtém o saldo base de cálculo da primeira conta ativa para cálculos de alavancagem
     """
     try:
-        conn = mysql.connector.connect(
-            host=DB_HOST,
-            port=DB_PORT,
-            user=DB_USER,
-            password=DB_PASSWORD,
-            database=DB_NAME
-        )
-        cursor = conn.cursor(dictionary=True)
+        conn = psycopg2.connect(**DB_CONFIG)
+        conn.autocommit = True
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         
         # Buscar primeira conta ativa com saldo base configurado
         sql = """
         SELECT saldo_base_calculo_futuros 
         FROM contas 
-        WHERE ativa = 1 AND saldo_base_calculo_futuros IS NOT NULL AND saldo_base_calculo_futuros > 0
+        WHERE ativa = True AND saldo_base_calculo_futuros IS NOT NULL AND saldo_base_calculo_futuros > 0
         ORDER BY id ASC 
         LIMIT 1
         """
@@ -594,7 +584,7 @@ def get_account_base_balance():
             return saldo
 
         # Fallback: buscar qualquer conta ativa
-        cursor.execute("SELECT saldo_base_calculo_futuros FROM contas WHERE ativa = 1 LIMIT 1")
+        cursor.execute("SELECT saldo_base_calculo_futuros FROM contas WHERE ativa = True LIMIT 1")
         fallback_result = cursor.fetchone()
         
         if fallback_result and fallback_result['saldo_base_calculo_futuros']:
@@ -618,19 +608,14 @@ def get_active_accounts():
     Obtém todas as contas ativas do sistema
     """
     try:
-        conn = mysql.connector.connect(
-            host=DB_HOST,
-            port=DB_PORT,
-            user=DB_USER,
-            password=DB_PASSWORD,
-            database=DB_NAME
-        )
-        cursor = conn.cursor(dictionary=True)
+        conn = psycopg2.connect(**DB_CONFIG)
+        conn.autocommit = True
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         
         sql = """
         SELECT id, nome, telegram_chat_id, saldo_base_calculo_futuros, max_posicoes
         FROM contas 
-        WHERE ativa = 1
+        WHERE ativa = True
         ORDER BY id ASC
         """
         cursor.execute(sql)
@@ -814,17 +799,12 @@ def save_to_database(trade_data):
     conn = None
     cursor = None
     try:
-        conn = mysql.connector.connect(
-            host=DB_HOST,
-            port=DB_PORT,
-            user=DB_USER,
-            password=DB_PASSWORD,
-            database=DB_NAME
-        )
-        cursor = conn.cursor(dictionary=True)
+        conn = psycopg2.connect(**DB_CONFIG)
+        conn.autocommit = True
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         # Buscar todas as contas ativas e seus telegram_chat_id
-        cursor.execute("SELECT id, telegram_chat_id FROM contas WHERE ativa = 1")
+        cursor.execute("SELECT id, telegram_chat_id FROM contas WHERE ativa = %s", (True,))
         contas_ativas = cursor.fetchall()
         if not contas_ativas:
             print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ⚠️ Nenhuma conta ativa encontrada. Sinal não será salvo.")
@@ -884,14 +864,14 @@ def save_to_database(trade_data):
         conn.commit()
         return signal_ids if signal_ids else None
 
-    except mysql.connector.Error as db_err:
+    except psycopg2.Error as db_err:
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ❌ Erro no banco ao salvar: {db_err}")
         return None
     except Exception as e_generic:
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ❌ Erro genérico ao salvar no banco: {e_generic}")
         return None
     finally:
-        if conn and conn.is_connected():
+        if conn and not conn.closed:
             if cursor:
                 cursor.close()
             close_database_connection(conn)
@@ -1195,13 +1175,8 @@ def save_message_to_database(message_id, chat_id, text, is_reply=False,
     Salva uma mensagem do Telegram na tabela signals_msg
     """
     try:
-        conn = mysql.connector.connect(
-            host=DB_HOST,
-            port=DB_PORT,
-            user=DB_USER,
-            password=DB_PASSWORD,
-            database=DB_NAME
-        )
+        conn = psycopg2.connect(**DB_CONFIG)
+        conn.autocommit = True
         cursor = conn.cursor()
 
         if not created_at:

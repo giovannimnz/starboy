@@ -115,6 +115,7 @@ async function startServer() {
     
   } catch (error) {
     fastify.log.error('Erro ao iniciar servidor:', error);
+    console.error('Stack trace completo:', error.stack);
     process.exit(1);
   }
 }

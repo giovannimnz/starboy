@@ -20,7 +20,7 @@ async function updatePositionPricesWithTrailing(db, symbol, currentPrice, accoun
     // Buscar posições abertas para o símbolo
     const [positions] = await db.query(`
       SELECT * FROM posicoes 
-      WHERE simbolo = ? AND conta_id = ? AND status = 'OPEN'
+      WHERE simbolo = $1 AND conta_id = $2 AND status = 'OPEN'
     `, [symbol, accountId]);
 
     if (positions.length === 0) {
@@ -63,7 +63,7 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
 
     // ✅ OBTER NÍVEL ATUAL DE TRAILING DO BANCO
     const [trailingStateResult] = await db.query(
-      `SELECT trailing_stop_level FROM posicoes WHERE id = ?`,
+      `SELECT trailing_stop_level FROM posicoes WHERE id = $1`,
       [positionId]
     );
     
@@ -90,7 +90,7 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
     const [result] = await db.query(
       `SELECT tp1_price, tp3_price, entry_price, sl_price, symbol, side
        FROM webhook_signals
-       WHERE position_id = ?
+       WHERE position_id = $1
        ORDER BY created_at DESC LIMIT 1`,
       [position.id]
     );
@@ -100,7 +100,7 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
       const [fallbackResult] = await db.query(
         `SELECT tp1_price, tp3_price, entry_price, sl_price, symbol, side
          FROM webhook_signals
-         WHERE symbol = ? AND conta_id = ? AND status IN ('EXECUTADO', 'PROCESSANDO')
+         WHERE symbol = $1 AND conta_id = $2 AND status IN ('EXECUTADO', 'PROCESSANDO')
          ORDER BY created_at DESC LIMIT 1`,
         [position.simbolo, accountId]
       );
@@ -126,7 +126,7 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
     // Se ainda não temos um side válido, determinar pela quantidade da posição
     if (!side || side === 'BOTH' || !['BUY', 'SELL', 'LONG', 'SHORT'].includes(side)) {
       const positionQty = parseFloat(position.quantidade || 0);
-      side = positionQty > 0 ? 'BUY' : 'SELL';
+      side = positionQty > 0 ? "BUY" : "SELL";
       //console.log(`[TRAILING] ⚠️ Determinando side pela quantidade da posição: ${positionQty} -> ${side}`);
     }
 
@@ -262,8 +262,8 @@ async function cancelAllActiveStopLosses(db, position, accountId) {
         
         // Atualizar status no banco
         await db.query(
-          'UPDATE ordens SET status = "CANCELED", last_update = ? WHERE id_externo = ? AND conta_id = ?', 
-          [formatDateForMySQL(new Date()), order.orderId, accountId]
+          'UPDATE ordens SET status = "CANCELED", last_update = $1 WHERE id_externo = $2 AND conta_id = $3', 
+          [formatDateForPostgreSQL(new Date()), order.orderId, accountId]
         );
         
         canceledCount++;
@@ -291,7 +291,7 @@ async function cancelStopLossOrders(db, positionId, accountId) {
     // ✅ 1. BUSCAR ORDENS SL NO BANCO
     const [stopLossOrders] = await db.query(`
       SELECT id_externo, simbolo FROM ordens 
-      WHERE id_posicao = ? AND conta_id = ? AND tipo_ordem_bot = 'STOP_LOSS' 
+      WHERE id_posicao = $1 AND conta_id = $2 AND tipo_ordem_bot = 'STOP_LOSS' 
       AND status IN ('NEW', 'PARTIALLY_FILLED')
     `, [positionId, accountId]);
 
@@ -310,12 +310,12 @@ async function cancelStopLossOrders(db, positionId, accountId) {
         // ✅ 3. ATUALIZAR STATUS NO BANCO
         await db.query(`
           UPDATE ordens 
-          SET status = 'CANCELED', last_update = NOW(),
+          SET status = 'CANCELED', last_update = CURRENT_TIMESTAMP,
               observacao = CONCAT(
                 IFNULL(observacao, ''), 
                 ' | Cancelada para trailing stop'
               )
-          WHERE id_externo = ? AND conta_id = ?
+          WHERE id_externo = $1 AND conta_id = $2
         `, [order.id_externo, accountId]);
         
         canceledCount++;
@@ -331,12 +331,12 @@ async function cancelStopLossOrders(db, positionId, accountId) {
           // Marcar como cancelado no banco mesmo assim
           await db.query(`
             UPDATE ordens 
-            SET status = 'CANCELED', last_update = NOW(),
+            SET status = 'CANCELED', last_update = CURRENT_TIMESTAMP,
                 observacao = CONCAT(
                   IFNULL(observacao, ''), 
                   ' | Não existe na corretora'
                 )
-            WHERE id_externo = ? AND conta_id = ?
+            WHERE id_externo = $1 AND conta_id = $2
           `, [order.id_externo, accountId]);
           
           canceledCount++;
@@ -380,7 +380,7 @@ async function createBreakevenStopLoss(db, position, breakevenPrice, accountId) 
     );
 
     // ✅ VALIDAÇÃO CORRIGIDA DA RESPOSTA
-    const orderId = response?.orderId;
+    const orderId = response$1.orderId;
     
     if (orderId) {
       console.log(`[TRAILING] ✅ SL breakeven criado: ${orderId} @ ${breakevenPrice} (closePosition=true)`);
@@ -414,10 +414,7 @@ async function moveStopLossToBreakeven(db, position, accountId) {
 
     // Buscar entry_price do último webhook_signals relacionado à posição
     const [signals] = await db.query(
-      `SELECT entry_price FROM webhook_signals WHERE position_id = ? ORDER BY created_at DESC LIMIT 1`,
-      [positionId]
-    );
-    const breakevenPrice = signals.length > 0 ? parseFloat(signals[0].entry_price) : parseFloat(position.preco_entrada);
+      `SELECT entry_price FROM webhook_signals WHERE position_id = ? 1 : parseFloat(signals[0].entry_price) : parseFloat(position.preco_entrada);
 
     console.log(`[TRAILING] 🎯 Movendo SL para breakeven para ${position.simbolo} (Posição ID: ${positionId}) usando entry_price do sinal: ${breakevenPrice}`);
 
@@ -435,8 +432,8 @@ async function moveStopLossToBreakeven(db, position, accountId) {
       await db.query(`
         UPDATE posicoes 
         SET trailing_stop_level = 'TP1_BREAKEVEN',
-            data_hora_ultima_atualizacao = NOW()
-        WHERE id = ?
+            data_hora_ultima_atualizacao = CURRENT_TIMESTAMP
+        WHERE id = $1
       `, [positionId]);
       console.log(`[TRAILING] ✅ SL movido para breakeven com sucesso para posição ${positionId}`);
       return true;
@@ -477,15 +474,15 @@ async function moveStopLossToTP1(db, position, tp1Price, accountId) {
       true,
       'STOP_MARKET'
     );
-    const orderId = response?.orderId;
+    const orderId = response$1.orderId;
     if (orderId) {
       console.log(`[TRAILING] ✅ SL reposicionado para TP1: ${orderId} @ ${tp1Price}`);
       // Atualiza nível de trailing
       await db.query(`
         UPDATE posicoes 
         SET trailing_stop_level = 'TP3_TP1',
-            data_hora_ultima_atualizacao = NOW()
-        WHERE id = ?
+            data_hora_ultima_atualizacao = CURRENT_TIMESTAMP
+        WHERE id = $1
       `, [positionId]);
       return true;
     } else {

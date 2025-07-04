@@ -57,7 +57,7 @@ async function main() {
     console.log(`\nBanco selecionado: ${selectedDb}`);
 
     // Confirma a operação
-    const confirm = await question('Confirma o backup? (S/N): ');
+    const confirm = await question('Confirma o backup$1 (S/N): ');
     if (confirm.toLowerCase() !== 's') {
       console.log('Operação cancelada pelo usuário.');
       return;

@@ -3,7 +3,8 @@ import os
 import re
 import sys
 import traceback
-import mysql.connector
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from datetime import datetime, timedelta, timezone
 from telethon import TelegramClient, events
 from dotenv import load_dotenv

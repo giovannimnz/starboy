@@ -91,7 +91,7 @@ async function telegramRoutes(fastify, options) {
         const { accountId, signal, filledQuantity, averagePrice, totalValue } = request.body;
         
         const message = await formatEntryMessage(signal, filledQuantity, averagePrice, totalValue, accountId);
-        console.log(`[TELEGRAM_DISPATCHER] 📝 Mensagem formatada (${message$1.length || 0} chars):`, message$1.substring(0, 100) + '...');
+        console.log(`[TELEGRAM_DISPATCHER] 📝 Mensagem formatada (${message?.length || 0} chars):`, message?.substring(0, 100) + '...');
         
         const result = await telegramApiService.sendMessage(accountId, message);
         
@@ -147,13 +147,15 @@ async function telegramRoutes(fastify, options) {
         if (!replyToMessageId) {
           try {
             const db = await getDatabaseInstance();
-            const result = await db.query(`SELECT registry_message_id FROM webhook_signals 
-               WHERE position_id = $1 AND conta_id = $2 AND registry_message_id IS NOT NULL 
-               ORDER BY id DESC LIMIT 1`, [position.id, accountId]
+            const [signalRows] = await db.query(
+              `SELECT registry_message_id FROM webhook_signals 
+               WHERE position_id = ? AND conta_id = ? AND registry_message_id IS NOT NULL 
+               ORDER BY id DESC LIMIT 1`,
+              [position.id, accountId]
             );
             
-            if (signalRows.rows.length > 0 && signalRows.rows[0].registry_message_id) {
-              replyToMessageId = signalRows.rows[0].registry_message_id;
+            if (signalRows.length > 0 && signalRows[0].registry_message_id) {
+              replyToMessageId = signalRows[0].registry_message_id;
               console.log(`[TELEGRAM_DISPATCHER] 📱 Registry message ID encontrado no banco: ${replyToMessageId}`);
             } else {
               console.log(`[TELEGRAM_DISPATCHER] 📱 Nenhum registry_message_id encontrado para posição ${position.id}, enviando mensagem normal`);
@@ -166,7 +168,7 @@ async function telegramRoutes(fastify, options) {
         }
         
         const message = await formatPositionClosedMessage(position, null, null, null, null, null, accountId);
-        console.log(`[TELEGRAM_DISPATCHER] 📝 Mensagem de posição fechada formatada (${message$1.length || 0} chars):`, message$1.substring(0, 100) + '...');
+        console.log(`[TELEGRAM_DISPATCHER] 📝 Mensagem de posição fechada formatada (${message?.length || 0} chars):`, message?.substring(0, 100) + '...');
         
         const result = await telegramApiService.sendMessage(accountId, message, null, replyToMessageId);
         

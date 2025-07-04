@@ -1,4 +1,4 @@
-const { getDatabaseInstance, insertPosition, insertNewOrder, formatDateForMySQL } = require('../../core/database/conexao');
+const { getDatabaseInstance, insertPosition, insertNewOrder, formatDateForPostgreSQL } = require('../../core/database/conexao');
 const websockets = require('../../exchanges/binance/api/websocket');
 const rest = require('../../exchanges/binance/api/rest');
 const path = require('path');
@@ -126,7 +126,7 @@ async function executeReverse(signal, currentPrice, accountId) {
           }
       }
 
-      const binanceSide = signal.side.toUpperCase() === 'COMPRA' || signal.side.toUpperCase() === 'BUY' ? 'BUY' : 'SELL';
+      const binanceSide = signal.side.toUpperCase() === 'COMPRA' || signal.side.toUpperCase() === 'BUY' ? "BUY" : "SELL";
 
       // ✅ PASSO 1: CRIAR POSIÇÃO NO BANCO OBRIGATORIAMENTE ANTES DE QUALQUER ORDEM
       console.log(`[REVERSE_IMPROVED] 🏗️ Criando posição no banco de dados...`);
@@ -149,7 +149,7 @@ async function executeReverse(signal, currentPrice, accountId) {
 
       // ✅ PASSO 2: ATUALIZAR O SINAL COM O ID DA POSIÇÃO
       await connection.query(
-          `UPDATE webhook_signals SET position_id = ?, status = 'ENTRADA_EM_PROGRESSO', updated_at = NOW() WHERE id = ?`,
+          `UPDATE webhook_signals SET position_id = $1, status = 'ENTRADA_EM_PROGRESSO', updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
           [positionId, signal.id]
       );
       console.log(`[REVERSE_IMPROVED] ✅ Sinal ${signal.id} atualizado com position_id: ${positionId}`);
@@ -182,7 +182,7 @@ async function executeReverse(signal, currentPrice, accountId) {
           quantidade: totalEntrySize,
           id_posicao: positionId,
           status: 'NEW',
-          data_hora_criacao: formatDateForMySQL(new Date()),
+          data_hora_criacao: formatDateForPostgreSQL(new Date()),
           id_externo: entryOrderId,
           side: binanceSide,
           simbolo: signal.symbol,
@@ -190,7 +190,7 @@ async function executeReverse(signal, currentPrice, accountId) {
           target: null,
           reduce_only: false,
           close_position: false,
-          last_update: formatDateForMySQL(new Date()),
+          last_update: formatDateForPostgreSQL(new Date()),
           orign_sig: `WEBHOOK_${signal.id}`,
           observacao: `Ordem de entrada para sinal ${signal.id}`
       };
@@ -251,15 +251,15 @@ async function executeReverse(signal, currentPrice, accountId) {
           // Atualizar posição
           await connection.query(`
               UPDATE posicoes 
-              SET quantidade = ?, preco_medio = ?, preco_entrada = ?, preco_corrente = ?, last_update = NOW()
-              WHERE id = ?
+              SET quantidade = $1, preco_medio = $2, preco_entrada = $3, preco_corrente = $4, last_update = CURRENT_TIMESTAMP
+              WHERE id = $5
           `, [totalFilledSize, averageEntryPrice, averageEntryPrice, averageEntryPrice, positionId]);
           
           // Atualizar ordem
           await connection.query(`
               UPDATE ordens 
-              SET status = ?, preco_executado = ?, quantidade_executada = ?, last_update = NOW()
-              WHERE id_externo = ? AND conta_id = ?
+              SET status = $1, preco_executado = $2, quantidade_executada = $3, last_update = CURRENT_TIMESTAMP
+              WHERE id_externo = $4 AND conta_id = $5
           `, ['FILLED', averageEntryPrice, totalFilledSize, entryOrderId, accountId]);
       }
 
@@ -295,7 +295,7 @@ async function executeReverse(signal, currentPrice, accountId) {
       
       // ✅ ATUALIZAR STATUS DO SINAL
       await connection.query(
-          `UPDATE webhook_signals SET status = 'EXECUTADO', updated_at = NOW() WHERE id = ?`,
+          `UPDATE webhook_signals SET status = 'EXECUTADO', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
           [signal.id]
       );
 
@@ -334,7 +334,7 @@ async function executeReverse(signal, currentPrice, accountId) {
       if (signal.id && connection) {
           try {
               await connection.query(
-                  `UPDATE webhook_signals SET status = 'ERROR', error_message = ?, updated_at = NOW() WHERE id = ?`,
+                  `UPDATE webhook_signals SET status = 'ERROR', error_message = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
                   [error.message.substring(0, 250), signal.id]
               );
           } catch (updateError) {
@@ -373,8 +373,8 @@ async function createStopLossOrder(signal, entryPrice, quantity, accountId, posi
         console.log(`[REVERSE_IMPROVED] 🛡️ Criando ordem de Stop Loss...`);
         
         const slPrice = parseFloat(signal.sl_price);
-        const binanceSide = signal.side.toUpperCase() === 'COMPRA' || signal.side.toUpperCase() === 'BUY' ? 'BUY' : 'SELL';
-        const slSide = binanceSide === 'BUY' ? 'SELL' : 'BUY'; // Oposto da entrada
+        const binanceSide = signal.side.toUpperCase() === 'COMPRA' || signal.side.toUpperCase() === 'BUY' ? "BUY" : "SELL";
+        const slSide = binanceSide === 'BUY' ? "SELL" : "BUY"; // Oposto da entrada
         
         // Enviar para corretora
         const slOrderResponse = await newStopOrder(
@@ -395,7 +395,7 @@ async function createStopLossOrder(signal, entryPrice, quantity, accountId, posi
                 quantidade: quantity,
                 id_posicao: positionId,
                 status: 'NEW',
-                data_hora_criacao: formatDateForMySQL(new Date()),
+                data_hora_criacao: formatDateForPostgreSQL(new Date()),
                 id_externo: String(slOrderResponse.orderId),
                 side: slSide,
                 simbolo: signal.symbol,
@@ -403,7 +403,7 @@ async function createStopLossOrder(signal, entryPrice, quantity, accountId, posi
                 target: null,
                 reduce_only: true,
                 close_position: false,
-                last_update: formatDateForMySQL(new Date()),
+                last_update: formatDateForPostgreSQL(new Date()),
                 orign_sig: `WEBHOOK_${signal.id}`,
                 observacao: `Stop Loss para sinal ${signal.id}`,
                 stop_price: slPrice
@@ -425,8 +425,8 @@ async function createTakeProfitOrder(signal, tpPrice, quantity, accountId, posit
     try {
         console.log(`[REVERSE_IMPROVED] 🎯 Criando Take Profit ${targetNumber} (${tpPrice})...`);
         
-        const binanceSide = signal.side.toUpperCase() === 'COMPRA' || signal.side.toUpperCase() === 'BUY' ? 'BUY' : 'SELL';
-        const tpSide = binanceSide === 'BUY' ? 'SELL' : 'BUY'; // Oposto da entrada
+        const binanceSide = signal.side.toUpperCase() === 'COMPRA' || signal.side.toUpperCase() === 'BUY' ? "BUY" : "SELL";
+        const tpSide = binanceSide === 'BUY' ? "SELL" : "BUY"; // Oposto da entrada
         
         // Enviar para corretora
         const tpOrderResponse = await newLimitMakerOrder(
@@ -448,7 +448,7 @@ async function createTakeProfitOrder(signal, tpPrice, quantity, accountId, posit
                 quantidade: quantity,
                 id_posicao: positionId,
                 status: 'NEW',
-                data_hora_criacao: formatDateForMySQL(new Date()),
+                data_hora_criacao: formatDateForPostgreSQL(new Date()),
                 id_externo: String(tpOrderResponse.orderId),
                 side: tpSide,
                 simbolo: signal.symbol,
@@ -456,7 +456,7 @@ async function createTakeProfitOrder(signal, tpPrice, quantity, accountId, posit
                 target: targetNumber,
                 reduce_only: true,
                 close_position: false,
-                last_update: formatDateForMySQL(new Date()),
+                last_update: formatDateForPostgreSQL(new Date()),
                 orign_sig: `WEBHOOK_${signal.id}`,
                 observacao: `Take Profit ${targetNumber} para sinal ${signal.id}`
             };

@@ -1,34 +1,29 @@
-const mysql = require('mysql2/promise');
+const { Pool } = require('pg');
 const path = require('path');
 const fs = require('fs').promises;
 require('dotenv').config({ path: path.resolve(__dirname, '../../../config/.env') });
 
-// Pool de conexões MySQL global
+// Pool de conexões PostgreSQL global
 let pool = null;
+
+// Cache para credenciais de API
+let apiCredentialsCache = new Map();
 
 // Configuração do banco de dados
 const dbConfig = {
   host: process.env.DB_HOST,
-  port: process.env.DB_PORT,
+  port: parseInt(process.env.DB_PORT || '5432', 10),
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
-  connectionLimit: 20,
-  queueLimit: 0,
-  waitForConnections: true,
-  idleTimeout: 300000,
-  enableKeepAlive: true,
-  keepAliveInitialDelay: 0,
-  charset: 'utf8mb4'
+  max: 20, // connectionLimit equivalente
+  idleTimeoutMillis: 300000,
+  connectionTimeoutMillis: 2000
 };
 
 /**
- * Inicializa o pool de conexões MySQL
- * @returns {Promise<mysql.Pool>} - Pool de conexões
- */
-/**
- * Inicializa o pool de conexões MySQL
- * @returns {Promise<mysql.Pool>} - Pool de conexões
+ * Inicializa o pool de conexões PostgreSQL
+ * @returns {Promise<Pool>} - Pool de conexões
  */
 async function initPool() {
   try {
@@ -37,20 +32,16 @@ async function initPool() {
       return pool;
     }
 
-    //console.log('[DB] Inicializando pool de conexões MySQL...');
-    //console.log(`[DB] Conectando a: ${dbConfig.host}:3306/${dbConfig.database}`);
-
-    pool = mysql.createPool(dbConfig);
+    pool = new Pool(dbConfig);
     
-    const connection = await pool.getConnection();
-    //console.log('[DB] ✅ Pool de conexões MySQL inicializado com sucesso');
-    connection.release();
+    const client = await pool.connect();
+    client.release();
     
     return pool;
   } catch (error) {
     console.error('[DB] ❌ Erro ao inicializar pool de conexões:', error.message);
     
-    if (error.code === 'ER_BAD_DB_ERROR') {
+    if (error.code === '3D000') { // database does not exist
       console.log('[DB] Database não existe, tentando criar...');
       await createDatabaseIfNotExists();
       return await initPool();
@@ -66,26 +57,28 @@ async function initPool() {
 async function createDatabaseIfNotExists() {
   try {
     const tempConfig = { ...dbConfig };
-    delete tempConfig.database; // Conectar sem especificar database
+    tempConfig.database = 'postgres'; // Conectar ao DB padrão
     
-    const tempPool = mysql.createPool(tempConfig);
-    const connection = await tempPool.getConnection();
+    const tempPool = new Pool(tempConfig);
+    const client = await tempPool.connect();
     
-    await connection.execute(`CREATE DATABASE IF NOT EXISTS \`${dbConfig.database}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`);
+    await client.query(`CREATE DATABASE "${dbConfig.database}"`);
     console.log(`[DB] ✅ Database '${dbConfig.database}' criado com sucesso`);
     
-    connection.release();
-    tempPool.end();
+    client.release();
+    await tempPool.end();
   } catch (error) {
-    console.error('[DB] ❌ Erro ao criar database:', error.message);
-    throw error;
+    if (error.code !== '42P04') { // database already exists
+      console.error('[DB] ❌ Erro ao criar database:', error.message);
+      throw error;
+    }
   }
 }
 
 /**
  * Obtém uma instância de conexão com o banco de dados
  * @param {number} accountId - ID da conta (opcional, para compatibilidade)
- * @returns {Promise<mysql.Pool>} - Pool de conexões
+ * @returns {Promise<Pool>} - Pool de conexões
  */
 async function getDatabaseInstance(accountId = null) {
   try {
@@ -103,8 +96,8 @@ async function getDatabaseInstance(accountId = null) {
       await initPool();
     }
     
-    if (pool && pool.pool && pool.pool.destroyed) {
-      console.log('[DB] Pool foi destruído, reinicializando...');
+    if (pool && pool.ended) {
+      console.log('[DB] Pool foi encerrado, reinicializando...');
       pool = null;
       await initPool();
     }
@@ -118,6 +111,22 @@ async function getDatabaseInstance(accountId = null) {
 }
 
 /**
+ * Testa a conectividade com o banco de dados
+ * @returns {Promise<boolean>} - true se conectou com sucesso
+ */
+async function testConnection() {
+  try {
+    const db = await getDatabaseInstance();
+    const result = await db.query('SELECT CURRENT_TIMESTAMP');
+    console.log('[DB] ✅ Teste de conectividade bem-sucedido');
+    return true;
+  } catch (error) {
+    console.error('[DB] ❌ Falha no teste de conectividade:', error.message);
+    return false;
+  }
+}
+
+/**
  * Inicializa o banco de dados e suas tabelas
  * @returns {Promise<void>}
  */
@@ -125,14 +134,8 @@ async function initializeDatabase() {
   try {
     console.log('[DB] Inicializando banco de dados...');
     
-    // Primeiro inicializar o pool
     await initPool();
-    
-    // Verificar se as tabelas principais existem
     await checkAndCreateTables();
-    
-    // Verificar e adicionar colunas faltantes
-    await checkAndAddColumns();
     
     console.log('[DB] ✅ Banco de dados inicializado com sucesso');
     
@@ -150,17 +153,17 @@ async function checkAndCreateTables() {
     const db = await getDatabaseInstance();
     
     // Verificar se tabela 'contas' existe
-    const [tables] = await db.query(`
-      SELECT TABLE_NAME 
-      FROM information_schema.TABLES 
-      WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'contas'
-    `, [dbConfig.database]);
+    const tablesResult = await db.query(`
+      SELECT tablename 
+      FROM pg_tables 
+      WHERE schemaname = 'public' AND tablename = 'contas'
+    `);
     
-    if (tables.length === 0) {
+    if (tablesResult.rows.length === 0) {
       console.log('[DB] Criando tabela "contas"...');
       await db.query(`
         CREATE TABLE contas (
-          id INT PRIMARY KEY AUTO_INCREMENT,
+          id SERIAL PRIMARY KEY,
           nome VARCHAR(255) NOT NULL,
           descricao TEXT,
           id_corretora INT,
@@ -173,16 +176,32 @@ async function checkAndCreateTables() {
           ws_url VARCHAR(255),
           ws_api_url VARCHAR(255),
           telegram_chat_id VARCHAR(255),
-          ativa TINYINT DEFAULT 1,
+          ativa BOOLEAN DEFAULT true,
           max_posicoes INT DEFAULT 10,
           saldo_base_calculo DECIMAL(15,8) DEFAULT 0,
           saldo_futuros DECIMAL(15,8) DEFAULT 0,
-          data_criacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          ultima_atualizacao TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          data_criacao TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+          ultima_atualizacao TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
           celular VARCHAR(20),
           telegram_bot_token VARCHAR(255),
           telegram_bot_token_controller VARCHAR(255)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        )
+      `);
+      
+      // Criar trigger para atualizar ultima_atualizacao
+      await db.query(`
+        CREATE OR REPLACE FUNCTION update_ultima_atualizacao_contas()
+        RETURNS TRIGGER AS $$
+        BEGIN
+          NEW.ultima_atualizacao = CURRENT_TIMESTAMP;
+          RETURN NEW;
+        END;
+        $$ language 'plpgsql';
+        
+        CREATE TRIGGER update_contas_ultima_atualizacao
+        BEFORE UPDATE ON contas
+        FOR EACH ROW
+        EXECUTE FUNCTION update_ultima_atualizacao_contas();
       `);
     }
     
@@ -198,838 +217,619 @@ async function checkAndCreateTables() {
 }
 
 /**
- * Verifica se uma tabela existe, se não cria uma versão básica
+ * Verifica se uma tabela existe
  * @param {string} tableName - Nome da tabela
  */
 async function checkTable(tableName) {
   try {
     const db = await getDatabaseInstance();
+    const result = await db.query(`
+      SELECT tablename 
+      FROM pg_tables 
+      WHERE schemaname = 'public' AND tablename = $1
+    `, [tableName]);
     
-    const [tables] = await db.query(`
-      SELECT TABLE_NAME 
-      FROM information_schema.TABLES 
-      WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?
-    `, [dbConfig.database, tableName]);
-    
-    if (tables.length === 0) {
-      console.log(`[DB] Criando tabela "${tableName}"...`);
-      
-      switch (tableName) {
-        case 'webhook_signals':
-          await db.query(`
-            CREATE TABLE webhook_signals (
-              id INT PRIMARY KEY AUTO_INCREMENT,
-              symbol VARCHAR(50) NOT NULL,
-              side ENUM('BUY', 'SELL', 'COMPRA', 'VENDA') NOT NULL,
-              entry_price DECIMAL(15,8),
-              status ENUM('PENDING', 'PROCESSANDO', 'EXECUTED', 'ERROR', 'AGUARDANDO_ACIONAMENTO') DEFAULT 'PENDING',
-              conta_id INT DEFAULT 1,
-              error_message TEXT,
-              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-              updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-              INDEX idx_status (status),
-              INDEX idx_conta_id (conta_id)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-          `);
-          break;
-          
-        case 'posicoes':
-          await db.query(`
-            CREATE TABLE posicoes (
-              id INT PRIMARY KEY AUTO_INCREMENT,
-              simbolo VARCHAR(50) NOT NULL,
-              status ENUM('OPEN', 'CLOSED', 'PENDING') DEFAULT 'PENDING',
-              conta_id INT DEFAULT 1,
-              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-              updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-              INDEX idx_simbolo (simbolo),
-              INDEX idx_status (status),
-              INDEX idx_conta_id (conta_id)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-          `);
-          break;
-          
-        case 'ordens':
-          await db.query(`
-            CREATE TABLE ordens (
-              id INT PRIMARY KEY AUTO_INCREMENT,
-              id_externo VARCHAR(100),
-              simbolo VARCHAR(50) NOT NULL,
-              status ENUM('OPEN', 'FILLED', 'CANCELED', 'PENDING') DEFAULT 'PENDING',
-              conta_id INT DEFAULT 1,
-              created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-              updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-              INDEX idx_id_externo (id_externo),
-              INDEX idx_simbolo (simbolo),
-              INDEX idx_status (status),
-              INDEX idx_conta_id (conta_id)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-          `);
-          break;
-      }
+    if (result.rows.length === 0) {
+      console.log(`[DB] Tabela "${tableName}" não encontrada, deve ser criada via migration`);
     }
-    
   } catch (error) {
     console.error(`[DB] Erro ao verificar tabela ${tableName}:`, error.message);
   }
 }
 
 /**
- * Verifica e adiciona colunas faltantes nas tabelas
+ * Obtém credenciais de API para uma conta específica
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Credenciais da conta
  */
-async function checkAndAddColumns() {
+async function getApiCredentials(accountId) {
+  try {
+    // Verificar cache primeiro
+    const cacheKey = `account_${accountId}`;
+    if (apiCredentialsCache.has(cacheKey)) {
+      const cached = apiCredentialsCache.get(cacheKey);
+      if (Date.now() - cached.timestamp < 300000) { // 5 minutos
+        return cached.data;
+      }
+    }
+
+    const db = await getDatabaseInstance();
+    const result = await db.query(`
+      SELECT api_key, api_secret, ws_api_key, ws_api_secret, telegram_bot_token, telegram_chat_id, nome
+      FROM contas 
+      WHERE id = $1 AND ativa = true
+    `, [accountId]);
+
+    if (result.rows.length === 0) {
+      throw new Error(`Conta ${accountId} não encontrada ou inativa`);
+    }
+
+    const credentials = result.rows[0];
+    
+    // Armazenar no cache
+    apiCredentialsCache.set(cacheKey, {
+      data: credentials,
+      timestamp: Date.now()
+    });
+
+    return credentials;
+  } catch (error) {
+    console.error(`[DB] Erro ao obter credenciais da conta ${accountId}:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Limpa o cache de credenciais
+ */
+function clearCredentialsCache() {
+  apiCredentialsCache.clear();
+}
+
+/**
+ * Obtém todas as posições do banco de dados
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Array>} - Array de posições
+ */
+async function getAllPositionsFromDb(accountId) {
+  try {
+    const db = await getDatabaseInstance();
+    const result = await db.query(`
+      SELECT * FROM posicoes 
+      WHERE conta_id = $1 AND status = 'ABERTA'
+      ORDER BY id DESC
+    `, [accountId]);
+    
+    return result.rows;
+  } catch (error) {
+    console.error(`[DB] Erro ao obter posições da conta ${accountId}:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Insere uma nova posição no banco de dados
+ * @param {Object} positionData - Dados da posição
+ * @returns {Promise<number>} - ID da posição inserida
+ */
+async function insertPosition(positionData) {
+  const db = await getDatabaseInstance();
+  
+  try {
+    const query = `
+      INSERT INTO posicoes (
+        simbolo, quantidade, quantidade_aberta, preco_medio, status, 
+        data_hora_abertura, data_hora_fechamento, side, leverage, 
+        data_hora_ultima_atualizacao, preco_entrada, preco_corrente, 
+        orign_sig, trailing_stop_level, pnl_corrente, conta_id, 
+        observacoes, breakeven_price, accumulated_realized, unrealized_pnl, 
+        total_realized, total_commission, liquid_pnl, margin_type, 
+        isolated_wallet, position_side, event_reason, webhook_data_raw, 
+        last_update
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, 
+        $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29
+      ) RETURNING id
+    `;
+    
+    const values = [
+      positionData.simbolo,
+      positionData.quantidade,
+      positionData.quantidade_aberta,
+      positionData.preco_medio,
+      positionData.status,
+      positionData.data_hora_abertura ? formatDateForPostgreSQL(positionData.data_hora_abertura) : formatDateForPostgreSQL(new Date()),
+      positionData.data_hora_fechamento ? formatDateForPostgreSQL(positionData.data_hora_fechamento) : null,
+      positionData.side,
+      positionData.leverage,
+      positionData.data_hora_ultima_atualizacao ? formatDateForPostgreSQL(positionData.data_hora_ultima_atualizacao) : formatDateForPostgreSQL(new Date()),
+      positionData.preco_entrada,
+      positionData.preco_corrente,
+      positionData.orign_sig,
+      positionData.trailing_stop_level,
+      positionData.pnl_corrente,
+      positionData.conta_id,
+      positionData.observacoes,
+      positionData.breakeven_price,
+      positionData.accumulated_realized,
+      positionData.unrealized_pnl,
+      positionData.total_realized,
+      positionData.total_commission,
+      positionData.liquid_pnl,
+      positionData.margin_type,
+      positionData.isolated_wallet,
+      positionData.position_side,
+      positionData.event_reason,
+      positionData.webhook_data_raw,
+      positionData.last_update ? formatDateForPostgreSQL(positionData.last_update) : null
+    ];
+    
+    const result = await db.query(query, values);
+    return result.rows[0].id;
+  } catch (error) {
+    console.error('[DB] Erro ao inserir posição:', error.message);
+    throw error;
+  }
+}
+
+/**
+ * Insere uma nova ordem no banco de dados (legacy)
+ * @param {Array} orderData - Dados da ordem em formato array
+ * @returns {Promise<number>} - ID da ordem inserida
+ */
+async function insertOrder(orderData) {
+  const db = await getDatabaseInstance();
+  
+  try {
+    const query = `
+      INSERT INTO ordens (
+        data_hora_criacao, id_externo, side, simbolo, tipo_ordem_bot, 
+        reduce_only, close_position, last_update, preco, quantidade, 
+        tipo, status, id_posicao, target, orign_sig, conta_id
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+      ) RETURNING id
+    `;
+    
+    const result = await db.query(query, orderData);
+    return result.rows[0].id;
+  } catch (error) {
+    console.error('[DB] Erro ao inserir ordem:', error.message);
+    throw error;
+  }
+}
+
+/**
+ * Insere uma nova ordem no banco de dados
+ * @param {Object} orderData - Dados da ordem
+ * @returns {Promise<number>} - ID da ordem inserida
+ */
+async function insertNewOrder(orderData) {
+  const db = await getDatabaseInstance();
+  
+  try {
+    const query = `
+      INSERT INTO ordens (
+        simbolo, quantidade, preco, side, tipo, status, id_posicao, 
+        id_externo, data_hora_criacao, tipo_ordem_bot, target, 
+        reduce_only, close_position, last_update, renew_sl_firs, 
+        renew_sl_seco, renew_sl_terc, renew_sl_quar, renew_sl_quin, 
+        renew_sl_seis, renew_sl_sete, renew_sl_oito, renew_sl_nove, 
+        renew_sl_dez, preco_sl_original, preco_tp_original, 
+        gtd_auto_cancel_time, time_in_force, client_order_id, 
+        orign_sig, account_id, is_maker_side, commission, 
+        commission_asset, price_protection, conta_id
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 
+        $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, 
+        $29, $30, $31, $32, $33, $34, $35, $36
+      ) RETURNING id
+    `;
+    
+    const values = [
+      orderData.simbolo,
+      orderData.quantidade,
+      orderData.preco,
+      orderData.side,
+      orderData.tipo,
+      orderData.status,
+      orderData.id_posicao,
+      orderData.id_externo,
+      orderData.data_hora_criacao,
+      orderData.tipo_ordem_bot,
+      orderData.target,
+      orderData.reduce_only || false,
+      orderData.close_position || false,
+      orderData.last_update,
+      orderData.renew_sl_firs,
+      orderData.renew_sl_seco,
+      orderData.renew_sl_terc,
+      orderData.renew_sl_quar,
+      orderData.renew_sl_quin,
+      orderData.renew_sl_seis,
+      orderData.renew_sl_sete,
+      orderData.renew_sl_oito,
+      orderData.renew_sl_nove,
+      orderData.renew_sl_dez,
+      orderData.preco_sl_original,
+      orderData.preco_tp_original,
+      orderData.gtd_auto_cancel_time,
+      orderData.time_in_force,
+      orderData.client_order_id,
+      orderData.orign_sig,
+      orderData.account_id,
+      orderData.is_maker_side || false,
+      orderData.commission,
+      orderData.commission_asset,
+      orderData.price_protection || false,
+      orderData.conta_id
+    ];
+    
+    const result = await db.query(query, values);
+    return result.rows[0].id;
+  } catch (error) {
+    console.error('[DB] Erro ao inserir ordem:', error.message);
+    throw error;
+  }
+}
+
+/**
+ * Obtém data e hora atual formatada
+ * @returns {string} - Data e hora formatada
+ */
+function getCurrentDateTimeAsString() {
+  return new Date().toISOString();
+}
+
+/**
+ * Obtém ordens do banco de dados
+ * @param {number} accountId - ID da conta
+ * @param {string} symbol - Símbolo (opcional)
+ * @returns {Promise<Array>} - Array de ordens
+ */
+async function getOrdersFromDb(accountId, symbol = null) {
+  try {
+    const db = await getDatabaseInstance();
+    let query = `
+      SELECT * FROM ordens 
+      WHERE conta_id = $1 AND status IN ('NEW', 'PARTIALLY_FILLED')
+    `;
+    const params = [accountId];
+    
+    if (symbol) {
+      query += ` AND simbolo = $2`;
+      params.push(symbol);
+    }
+    
+    query += ` ORDER BY id DESC`;
+    
+    const result = await db.query(query, params);
+    return result.rows;
+  } catch (error) {
+    console.error(`[DB] Erro ao obter ordens da conta ${accountId}:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Obtém posições do banco de dados
+ * @param {number} accountId - ID da conta
+ * @param {string} symbol - Símbolo (opcional)
+ * @returns {Promise<Array>} - Array de posições
+ */
+async function getPositionsFromDb(accountId, symbol = null) {
+  try {
+    const db = await getDatabaseInstance();
+    let query = `
+      SELECT * FROM posicoes 
+      WHERE conta_id = $1 AND status = 'ABERTA'
+    `;
+    const params = [accountId];
+    
+    if (symbol) {
+      query += ` AND simbolo = $2`;
+      params.push(symbol);
+    }
+    
+    query += ` ORDER BY id DESC`;
+    
+    const result = await db.query(query, params);
+    return result.rows;
+  } catch (error) {
+    console.error(`[DB] Erro ao obter posições da conta ${accountId}:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Atualiza o status de uma ordem
+ * @param {number} orderId - ID da ordem
+ * @param {string} status - Novo status
+ * @returns {Promise<void>}
+ */
+async function updateOrderStatus(orderId, status) {
+  try {
+    const db = await getDatabaseInstance();
+    await db.query(`
+      UPDATE ordens 
+      SET status = $1, last_update = CURRENT_TIMESTAMP
+      WHERE id = $2
+    `, [status, orderId]);
+  } catch (error) {
+    console.error(`[DB] Erro ao atualizar status da ordem ${orderId}:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Atualiza o status de uma posição
+ * @param {number} positionId - ID da posição
+ * @param {string} status - Novo status
+ * @returns {Promise<void>}
+ */
+async function updatePositionStatus(positionId, status) {
+  try {
+    const db = await getDatabaseInstance();
+    await db.query(`
+      UPDATE posicoes 
+      SET status = $1, data_hora_ultima_atualizacao = CURRENT_TIMESTAMP
+      WHERE id = $2
+    `, [status, positionId]);
+  } catch (error) {
+    console.error(`[DB] Erro ao atualizar status da posição ${positionId}:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Atualiza dados de uma posição
+ * @param {number} positionId - ID da posição
+ * @param {Object} updateData - Dados para atualização
+ * @returns {Promise<void>}
+ */
+async function updatePositionInDb(positionId, updateData) {
   try {
     const db = await getDatabaseInstance();
     
-    // Verificar se conta 1 existe, se não criar
-    const [contas] = await db.query('SELECT id FROM contas WHERE id = 1');
-    if (contas.length === 0) {
-      console.log('[DB] Criando conta padrão (ID: 1)...');
-      await db.query(`
-        INSERT INTO contas (id, nome, ativa) 
-        VALUES (1, 'Conta Principal', 1)
-      `);
-    }
+    const fields = [];
+    const values = [];
+    let paramIndex = 1;
     
-  } catch (error) {
-    console.error('[DB] Erro ao verificar/adicionar colunas:', error.message);
-  }
-}
-
-/**
- * Fecha o pool de conexões
- */
-async function closePool() {
-  if (pool) {
-    console.log('[DB] Fechando pool de conexões...');
-    try {
-      await pool.end();
-      pool = null;
-      console.log('[DB] Pool de conexões fechado');
-    } catch (error) {
-      console.error('[DB] Erro ao fechar pool:', error.message);
-    }
-  }
-}
-
-
-// Fechar pool graciosamente ao encerrar aplicação
-//process.on('SIGINT', closePool);
-//process.on('SIGTERM', closePool);
-//process.on('exit', closePool);
-
-// Obter todas as ordens por símbolo
-async function getAllOrdersBySymbol(db, symbol) {
-  try {
-    const [rows] = await db.query("SELECT id_externo, simbolo FROM ordens WHERE simbolo = ?", [symbol]);
-    return rows;
-  } catch (error) {
-    console.error(`Erro ao consultar ordens por símbolo: ${error.message}`);
-    throw error;
-  }
-}
-
-// Desconectar do banco de dados
-async function disconnectDatabase() {
-  if (dbPool) {
-    try {
-      await dbPool.end();
-      console.log('Conexão com o banco de dados encerrada.');
-      dbPool = null;
-    } catch (error) {
-      console.error('Erro ao fechar a conexão com o banco de dados:', error.message);
-    }
-  }
-}
-
-// Obter todas as posições do banco de dados
-async function getAllPositionsFromDb(db) {
-  try {
-    const [rows] = await db.query("SELECT * FROM posicoes WHERE status = 'OPEN'");
-    return rows;
-  } catch (error) {
-    console.error(`Erro ao consultar posições abertas: ${error.message}`);
-    throw error;
-  }
-}
-
-// Função para obter o último ID de posição aberta para um determinado símbolo
-async function getPositionIdBySymbol(db, symbol) {
-  try {
-    const [rows] = await db.query(
-        "SELECT id FROM posicoes WHERE simbolo = ? AND status = 'OPEN' ORDER BY data_hora_abertura DESC LIMIT 1",
-        [symbol]
-    );
-    return rows.length > 0 ? rows[0].id : null;
-  } catch (error) {
-    console.error('Erro ao buscar ID de posição:', error.message);
-    throw error;
-  }
-}
-
-// Exemplo de modificação para checkPositionExists
-async function checkPositionExists(db, symbol, accountId) {
-  try {
-    const [rows] = await db.query(
-      "SELECT id FROM posicoes WHERE simbolo = ? AND (status = 'OPEN' OR status = 'PENDING') AND conta_id = ?",
-      [symbol, accountId]
-    );
-    return rows.length > 0;
-  } catch (error) {
-    console.error(`[MONITOR] Erro ao verificar existência de posição: ${error.message}`);
-    throw error;
-  }
-}
-
-// Atualizar função insertPosition para inserir todos os campos da tabela posicoes
-async function insertPosition(db, positionData, accountId) {
-  try {
-    // Buscar message_source do último webhook_signals para o símbolo e conta
-    let orignSig = null;
-    if (positionData.simbolo && accountId) {
-      const [signals] = await db.query(
-        `SELECT message_source FROM webhook_signals WHERE symbol = ? AND conta_id = ? ORDER BY created_at DESC LIMIT 1`,
-        [positionData.simbolo, accountId]
-      );
-      if (signals.length > 0 && signals[0].message_source) {
-        orignSig = signals[0].message_source;
+    for (const [key, value] of Object.entries(updateData)) {
+      if (value !== undefined) {
+        fields.push(`${key} = $${paramIndex}`);
+        values.push(value);
+        paramIndex++;
       }
     }
-    // Inserir posição com todos os campos
-    const [result] = await db.query(
-      `INSERT INTO posicoes (
-        simbolo, quantidade, quantidade_aberta, preco_medio, status, data_hora_abertura, data_hora_fechamento, side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente, orign_sig, trailing_stop_level, pnl_corrente, conta_id, observacoes, breakeven_price, accumulated_realized, unrealized_pnl, total_realized, total_commission, liquid_pnl, margin_type, isolated_wallet, position_side, event_reason, webhook_data_raw
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        positionData.simbolo,
-        positionData.quantidade || 0,
-        positionData.quantidade_aberta || 0,
-        positionData.preco_medio || positionData.preco_entrada || 0,
-        positionData.status || 'OPEN',
-        positionData.data_hora_abertura ? formatDateForMySQL(positionData.data_hora_abertura) : formatDateForMySQL(new Date()),
-        positionData.data_hora_fechamento ? formatDateForMySQL(positionData.data_hora_fechamento) : null,
-        positionData.side || null,
-        positionData.leverage || null,
-        positionData.data_hora_ultima_atualizacao ? formatDateForMySQL(positionData.data_hora_ultima_atualizacao) : formatDateForMySQL(new Date()),
-        positionData.preco_entrada || 0,
-        positionData.preco_corrente || 0,
-        orignSig,
-        positionData.trailing_stop_level || null,
-        positionData.pnl_corrente || null,
-        accountId,
-        positionData.observacoes || null,
-        positionData.breakeven_price || null,
-        positionData.accumulated_realized || null,
-        positionData.unrealized_pnl || null,
-        positionData.total_realized || null,
-        positionData.total_commission || null,
-        positionData.liquid_pnl || null,
-        positionData.margin_type || null,
-        positionData.isolated_wallet || null,
-        positionData.position_side || null,
-        positionData.event_reason || null,
-        positionData.webhook_data_raw || null
-      ]
-    );
-    return result.insertId;
-  } catch (error) {
-    console.error(`[DB] Erro ao inserir posição: ${error.message}`);
-    throw error;
-  }
-}
-
-/**
- * Insere uma nova posição na tabela posicoes, preenchendo orign_sig com message_source do último webhook_signals
- * @param {Object} db - Conexão com o banco de dados
- * @param {Object} positionData - Dados da posição (deve conter pelo menos simbolo, quantidade, preco_entrada, etc)
- * @param {number} accountId - ID da conta
- * @returns {Promise<number>} - ID da nova posição
- */
-async function insertPosition(db, positionData, accountId) {
-  try {
-    // Buscar message_source do último webhook_signals para o símbolo e conta
-    let orignSig = null;
-    if (positionData.simbolo && accountId) {
-      const [signals] = await db.query(
-        `SELECT message_source FROM webhook_signals WHERE symbol = ? AND conta_id = ? ORDER BY created_at DESC LIMIT 1`,
-        [positionData.simbolo, accountId]
-      );
-      if (signals.length > 0 && signals[0].message_source) {
-        orignSig = signals[0].message_source;
-      }
-    }
-    // Inserir posição com todos os campos
-    const [result] = await db.query(
-      `INSERT INTO posicoes (
-        simbolo, quantidade, quantidade_aberta, preco_medio, status, data_hora_abertura, data_hora_fechamento, side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente, orign_sig, trailing_stop_level, pnl_corrente, conta_id, observacoes, breakeven_price, accumulated_realized, unrealized_pnl, total_realized, total_commission, liquid_pnl, margin_type, isolated_wallet, position_side, event_reason, webhook_data_raw
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        positionData.simbolo,
-        positionData.quantidade || 0,
-        positionData.quantidade_aberta || 0,
-        positionData.preco_medio || positionData.preco_entrada || 0,
-        positionData.status || 'OPEN',
-        positionData.data_hora_abertura ? formatDateForMySQL(positionData.data_hora_abertura) : formatDateForMySQL(new Date()),
-        positionData.data_hora_fechamento ? formatDateForMySQL(positionData.data_hora_fechamento) : null,
-        positionData.side || null,
-        positionData.leverage || null,
-        positionData.data_hora_ultima_atualizacao ? formatDateForMySQL(positionData.data_hora_ultima_atualizacao) : formatDateForMySQL(new Date()),
-        positionData.preco_entrada || 0,
-        positionData.preco_corrente || 0,
-        orignSig,
-        positionData.trailing_stop_level || null,
-        positionData.pnl_corrente || null,
-        accountId,
-        positionData.observacoes || null,
-        positionData.breakeven_price || null,
-        positionData.accumulated_realized || null,
-        positionData.unrealized_pnl || null,
-        positionData.total_realized || null,
-        positionData.total_commission || null,
-        positionData.liquid_pnl || null,
-        positionData.margin_type || null,
-        positionData.isolated_wallet || null,
-        positionData.position_side || null,
-        positionData.event_reason || null,
-        positionData.webhook_data_raw || null
-      ]
-    );
-    return result.insertId;
-  } catch (error) {
-    console.error(`[DB] Erro ao inserir posição:`, error.message);
-    throw error;
-  }
-}
-
-// Verificar se uma ordem já existe
-async function checkOrderExists(db, id_externo) {
-  try {
-    const [rows] = await db.query("SELECT 1 FROM ordens WHERE id_externo = ?", [id_externo]);
-    return rows.length > 0;
-  } catch (error) {
-    console.error(`Erro ao verificar existência de ordem: ${error.message}`);
-    throw error;
-  }
-}
-
-// Atualizar função insertNewOrder para usar formatDateForMySQL
-
-async function insertNewOrder(connection, orderData) {
-  try {
-    // Construir a query dinamicamente com base nas colunas disponíveis
-    let columns = ['tipo_ordem', 'preco', 'quantidade', 'id_posicao', 'status', 
-                  'data_hora_criacao', 'id_externo', 'side', 'simbolo', 
-                  'tipo_ordem_bot', 'target', 'reduce_only', 'close_position', 
-                  'last_update'];
-                  
-    let placeholders = Array(columns.length).fill('?');
-    let values = [
-      orderData.tipo_ordem,
-      orderData.preco,
-      orderData.quantidade,
-      orderData.id_posicao,
-      orderData.status,
-      orderData.data_hora_criacao,
-      orderData.id_externo,
-      orderData.side,
-      orderData.simbolo,
-      orderData.tipo_ordem_bot,
-      orderData.target,
-      orderData.reduce_only ? 1 : 0,
-      orderData.close_position ? 1 : 0,
-      orderData.last_update
-    ];
     
-    // Verificar e adicionar orign_sig se existir no orderData e na tabela
-    const [orignSigCheck] = await connection.query(`SHOW COLUMNS FROM ordens LIKE 'orign_sig'`);
-    if (orignSigCheck.length > 0 && orderData.orign_sig) {
-      columns.push('orign_sig');
-      placeholders.push('?');
-      values.push(orderData.orign_sig);
-    }
-    
-    // Verificar e adicionar observacao se existir no orderData e na tabela
-    const [observacaoCheck] = await connection.query(`SHOW COLUMNS FROM ordens LIKE 'observacao'`);
-    if (observacaoCheck.length > 0 && orderData.observacao) {
-      columns.push('observacao');
-      placeholders.push('?');
-      values.push(orderData.observacao);
-    }
-    
-    const query = `INSERT INTO ordens (${columns.join(', ')}) VALUES (${placeholders.join(', ')})`;
-    
-    const [result] = await connection.query(query, values);
-    console.log(`Ordem de ${orderData.tipo_ordem_bot} inserida com sucesso: ${result.insertId}`);
-    
-    return result.insertId;
-  } catch (error) {
-    console.error(`Erro ao inserir ordem: ${error.message}`, error);
-    throw error;
-  }
-}
-
-// Inserir uma nova ordem durante a sincronização
-async function insertOrder(db, tipo_ordem, preco, quantidade, status, data_hora_criacao, id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only, close_position, last_update) {
-  try {
-    console.log("Simbolo enviado para getPositionIdBySymbol:", simbolo);
-    const id_posicao = await getPositionIdBySymbol(db, simbolo);
-    if (!id_posicao) {
-      console.log(`Nenhuma posição aberta encontrada para o símbolo: ${simbolo}`);
-      return null;
-    }
-
-    const exists = await checkOrderExists(db, id_externo);
-    if (exists) {
-      console.log(`Ordem já existe para o ID externo: ${id_externo}`);
-      return null;
-    } else {
-      const reduceOnlyValue = reduce_only ? 1 : 0;
-      const closePositionValue = close_position ? 1 : 0;
-
-      const [result] = await db.query(
-          `INSERT INTO ordens (
-          tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao, 
-          id_externo, side, simbolo, tipo_ordem_bot, target, reduce_only, close_position, last_update
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            tipo_ordem, preco, quantidade, id_posicao, status, data_hora_criacao,
-            id_externo, side, simbolo, tipo_ordem_bot, target, reduceOnlyValue, closePositionValue, last_update
-          ]
-      );
-
-      console.log(`Nova ordem inserida com ID ${result.insertId}.`);
-      return result.insertId;
-    }
-  } catch (error) {
-    console.error('Erro durante a inserção da ordem:', error);
-    throw error;
-  }
-}
-
-// Obter ordens abertas do banco de dados
-async function getOpenOrdersFromDb(db) {
-  try {
-    const [rows] = await db.query("SELECT id_externo, simbolo FROM ordens WHERE status = 'OPEN'");
-    return rows;
-  } catch (error) {
-    console.error(`Erro ao consultar ordens abertas: ${error.message}`);
-    throw error;
-  }
-}
-
-// Obter ordens com filtros específicos
-async function getOrdersFromDb(db, params) {
-  try {
-    // Construir a consulta SQL base
-    let sql = "SELECT id, id_externo, simbolo, tipo_ordem, preco, quantidade, " +
-        "id_posicao, status, data_hora_criacao, side, tipo_ordem_bot, " +
-        "target, reduce_only, close_position, last_update";
-
-    // Verificar se as colunas adicionais existem
-    const [columns] = await db.query(
-        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
-       WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'ordens'`,
-        [process.env.DB_NAME]
-    );
-
-    const columnNames = columns.map(col => col.COLUMN_NAME);
-
-    // Adicionar colunas extras se existirem
-    if (columnNames.includes("renew_sl_firs")) sql += ", renew_sl_firs";
-    if (columnNames.includes("renew_sl_seco")) sql += ", renew_sl_seco";
-    if (columnNames.includes("orign_sig")) sql += ", orign_sig";
-
-    sql += " FROM ordens";
-
-    // Adicionar condições WHERE
-    let conditions = [];
-    let sqlValues = [];
-
-    if (params.status) {
-      conditions.push("status = ?");
-      sqlValues.push(params.status);
-    }
-    if (params.tipo_ordem_bot) {
-      conditions.push("tipo_ordem_bot = ?");
-      sqlValues.push(params.tipo_ordem_bot);
-    }
-    if (params.target) {
-      conditions.push("target = ?");
-      sqlValues.push(params.target);
-    }
-    if (params.id_externo) {
-      conditions.push("id_externo = ?");
-      sqlValues.push(params.id_externo);
-    }
-
-    // Adicionar condição para renew_sl_firs se existir
-    if (params.renew_sl_firs !== undefined && columnNames.includes("renew_sl_firs")) {
-      conditions.push("renew_sl_firs IS ?");
-      sqlValues.push(params.renew_sl_firs);
-    }
-
-    if (conditions.length > 0) {
-      sql += " WHERE " + conditions.join(" AND ");
-    }
-
-    const [rows] = await db.query(sql, sqlValues);
-
-    // Preencher propriedades ausentes para manter consistência
-    const completeRows = rows.map(row => {
-      if (!row.hasOwnProperty('renew_sl_firs')) row.renew_sl_firs = null;
-      if (!row.hasOwnProperty('renew_sl_seco')) row.renew_sl_seco = null;
-      if (!row.hasOwnProperty('orign_sig')) row.orign_sig = null;
-      return row;
-    });
-
-    return completeRows;
-  } catch (error) {
-    console.error(`Erro ao consultar ordens: ${error.message}`);
-    throw error;
-  }
-}
-
-// Obter posições por status
-async function getPositionsFromDb(db, status) {
-  try {
-    const [rows] = await db.query(`SELECT * FROM posicoes WHERE status = ?`, [status]);
-    return rows;
-  } catch (error) {
-    console.error(`Erro ao consultar posições: ${error.message}`);
-    throw error;
-  }
-}
-
-// Atualizar status de uma ordem
-async function updateOrderStatus(db, orderId, newStatus) {
-  try {
-    await db.query("UPDATE ordens SET status = ? WHERE id = ?", [newStatus, orderId]);
-    console.log(`Status da ordem ${orderId} atualizado para ${newStatus}`);
-  } catch (error) {
-    console.error(`Erro ao atualizar status da ordem ${orderId}: ${error.message}`);
-    throw error;
-  }
-}
-
-// Corrigir a função updatePositionStatus
-async function updatePositionStatus(db, symbol, updates) {
-  try {
-    // Primeiro obter os dados atuais da posição para não substituir com NULL
-    const [rows] = await db.query(
-        'SELECT * FROM posicoes WHERE simbolo = ? AND status != "CLOSED" LIMIT 1',
-        [symbol]
-    );
-
-    if (rows.length === 0) {
-      console.error(`Posição não encontrada para o símbolo: ${symbol}`);
-      return false;
-    }
-
-    const posicaoAtual = rows[0];
-    const data_hora_ultima_atualizacao = getCurrentDateTimeAsString();
-
-    // Atualizar apenas os campos fornecidos, mantendo os valores existentes para os demais
-    const status = updates.status || posicaoAtual.status;
-    const quantidade = updates.quantidade !== undefined ? updates.quantidade : posicaoAtual.quantidade;
-    const preco_entrada = updates.preco_entrada !== undefined ? updates.preco_entrada : posicaoAtual.preco_entrada;
-    const preco_corrente = updates.preco_corrente !== undefined ? updates.preco_corrente : posicaoAtual.preco_corrente;
-    const preco_medio = updates.preco_medio !== undefined ? updates.preco_medio : posicaoAtual.preco_medio;
-
-    await db.query(
-        `UPDATE posicoes SET 
-       quantidade = ?, 
-       preco_entrada = ?, 
-       preco_corrente = ?,
-       preco_medio = ?, 
-       status = ?, 
-       data_hora_ultima_atualizacao = ? 
-       WHERE simbolo = ? AND status != "CLOSED"`,
-        [quantidade, preco_entrada, preco_corrente, preco_medio, status, data_hora_ultima_atualizacao, symbol]
-    );
-
-    console.log(`Dados da posição atualizados para o símbolo: ${symbol}`);
-    return true;
-  } catch (error) {
-    console.error(`Erro ao atualizar dados da posição: ${error.message}`);
-    throw error;
-  }
-}
-
-// Atualizar posição no banco de dados
-async function updatePositionInDb(db, positionId, quantidade, preco_entrada, preco_corrente, leverage) {
-  try {
-    if (!positionId) {
-      throw new Error('ID da posição é undefined');
-    }
-
-    const data_hora_ultima_atualizacao = new Date().toISOString();
-
-    await db.query(
-        `UPDATE posicoes 
-       SET quantidade = ?, preco_entrada = ?, preco_corrente = ?, 
-       leverage = ?, data_hora_ultima_atualizacao = ?
-       WHERE id = ?`,
-        [quantidade, preco_entrada, preco_corrente, leverage, data_hora_ultima_atualizacao, positionId]
-    );
-    console.log(`Posição com ID ${positionId} atualizada com sucesso.`);
-  } catch (error) {
-    console.error(`Erro ao atualizar posição no banco de dados: ${error.message}`);
-    throw error;
-  }
-}
-
-// Atualizar a função moveClosedPositionsAndOrders para inserir todos os campos em posicoes_fechadas
-async function moveClosedPositionsAndOrders(db, positionId, retryCount = 0) {
-  let connection;
-  try {
-    // Usar formatDateForMySQL para formatar a data atual
-    const nowFormatted = formatDateForMySQL(new Date());
-
-    // Iniciar transação
-    connection = await db.getConnection();
-    await connection.beginTransaction();
-
-    // 1. Verificar se a posição existe
-    const [positionResult] = await connection.query("SELECT * FROM posicoes WHERE id = ?", [positionId]);
-    if (positionResult.length === 0) {
-      console.log(`Posição com ID ${positionId} não encontrada.`);
-      await connection.commit();
+    if (fields.length === 0) {
       return;
     }
-
-    // 2. Verificar todas as ordens que referenciam esta posição
-    const [orderResult] = await connection.query("SELECT * FROM ordens WHERE id_posicao = ?", [positionId]);
-    console.log(`Encontradas ${orderResult.length} ordens para posição ${positionId}.`);
-
-    // 3. ✅ INSERIR ORDENS NO HISTÓRICO COM TODOS OS CAMPOS
-    if (orderResult.length > 0) {
-      for (const order of orderResult) {
-        await connection.query(`
-          INSERT INTO ordens_fechadas (
-            id_original, id_original_ordens, tipo_ordem, preco, quantidade, id_posicao, status,
-            data_hora_criacao, id_externo, side, simbolo, tipo_ordem_bot,
-            target, reduce_only, close_position, last_update, renew_sl_firs, renew_sl_seco,
-            orign_sig, dados_originais_ws, quantidade_executada, preco_executado, observacao,
-            conta_id, commission, commission_asset, trade_id, client_order_id, time_in_force,
-            stop_price, execution_type, last_filled_quantity, last_filled_price, order_trade_time,
-            realized_profit, position_side
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `, [
-          order.id, // id_original
-          order.id, // id_original_ordens
-          order.tipo_ordem,
-          order.preco,
-          order.quantidade,
-          order.id_posicao,
-          order.status,
-          formatDateForMySQL(order.data_hora_criacao || new Date()),
-          order.id_externo,
-          order.side,
-          order.simbolo,
-          order.tipo_ordem_bot,
-          order.target,
-          order.reduce_only,
-          order.close_position,
-          formatDateForMySQL(order.last_update || new Date()),
-          order.renew_sl_firs,
-          order.renew_sl_seco,
-          order.orign_sig,
-          order.dados_originais_ws,
-          order.quantidade_executada || 0,
-          order.preco_executado,
-          order.observacao || 'Movida automaticamente para histórico',
-          order.conta_id,
-          order.commission || 0,
-          order.commission_asset,
-          order.trade_id,
-          order.client_order_id,
-          order.time_in_force,
-          order.stop_price,
-          order.execution_type,
-          order.last_filled_quantity,
-          order.last_filled_price,
-          order.order_trade_time,
-          order.realized_profit,
-          order.position_side
-        ]);
-      }
-      console.log(`Ordens com id_posicao ${positionId} movidas para ordens_fechadas.`);
-    }
-
-    // 4. IMPORTANTE: Excluir ordens ANTES de excluir a posição
-    await connection.query("DELETE FROM ordens WHERE id_posicao = ?", [positionId]);
-    console.log(`Ordens com id_posicao ${positionId} excluídas de ordens.`);
-
-    // 5. Verificar se ainda existem ordens referenciando esta posição (garantia extra)
-    const [remainingOrders] = await connection.query(
-        "SELECT COUNT(*) AS count FROM ordens WHERE id_posicao = ?",
-        [positionId]
-    );
-
-    if (remainingOrders[0].count > 0) {
-      throw new Error(`Ainda existem ${remainingOrders[0].count} ordens vinculadas à posição ${positionId}.`);
-    }
-
-    // 6. INSERIR POSIÇÃO NO HISTÓRICO COM TODOS OS CAMPOS
-    const position = positionResult[0];
-    await connection.query(`
-      INSERT INTO posicoes_fechadas (
-        id_original, simbolo, quantidade, preco_medio, status,
-        data_hora_abertura, data_hora_fechamento, motivo_fechamento,
-        side, leverage, data_hora_ultima_atualizacao, preco_entrada, preco_corrente,
-        orign_sig, conta_id, quantidade_aberta, trailing_stop_level, pnl_corrente, 
-        breakeven_price, accumulated_realized, unrealized_pnl, margin_type, isolated_wallet, position_side, event_reason, webhook_data_raw, observacoes
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [
-      position.id, // id_original
-      position.simbolo,
-      position.quantidade,
-      position.preco_medio,
-      position.status,
-      formatDateForMySQL(position.data_hora_abertura),
-      nowFormatted, // data_hora_fechamento
-      'Movida automaticamente para histórico',
-      position.side,
-      position.leverage,
-      formatDateForMySQL(position.data_hora_ultima_atualizacao || new Date()),
-      position.preco_entrada,
-      position.preco_corrente,
-      position.orign_sig,
-      position.conta_id,
-      position.quantidade_aberta,
-      position.trailing_stop_level,
-      position.pnl_corrente,
-      position.breakeven_price,
-      position.accumulated_realized,
-      position.unrealized_pnl,
-      position.margin_type,
-      position.isolated_wallet,
-      position.position_side,
-      position.event_reason,
-      position.webhook_data_raw,
-      position.observacoes
-    ]);
-    console.log(`Posição com id ${positionId} movida para posicoes_fechadas.`);
-
-    // 7. Agora é seguro excluir a posição
-    await connection.query("DELETE FROM posicoes WHERE id = ?", [positionId]);
-    console.log(`Posição com id ${positionId} excluída de posicoes.`);
-
-    await connection.commit();
-    console.log(`Posição ${positionId} e suas ordens movidas para histórico com sucesso.`);
+    
+    const query = `
+      UPDATE posicoes 
+      SET ${fields.join(', ')}, data_hora_ultima_atualizacao = CURRENT_TIMESTAMP
+      WHERE id = $${paramIndex}
+    `;
+    values.push(positionId);
+    
+    await db.query(query, values);
   } catch (error) {
-    if (connection) {
-      await connection.rollback();
+    console.error(`[DB] Erro ao atualizar posição ${positionId}:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Move posições e ordens fechadas para tabelas históricas
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<void>}
+ */
+async function moveClosedPositionsAndOrders(accountId) {
+  const db = await getDatabaseInstance();
+  const client = await db.connect();
+  
+  try {
+    await client.query('BEGIN');
+    
+    // Mover posições fechadas
+    const closedPositions = await client.query(`
+      SELECT * FROM posicoes 
+      WHERE conta_id = $1 AND status = 'FECHADA'
+    `, [accountId]);
+    
+    for (const position of closedPositions.rows) {
+      await client.query(`
+        INSERT INTO posicoes_fechadas (
+          id_original, simbolo, quantidade, quantidade_aberta, preco_medio, 
+          status, data_hora_abertura, data_hora_fechamento, side, leverage, 
+          data_hora_ultima_atualizacao, preco_entrada, preco_corrente, 
+          orign_sig, trailing_stop_level, pnl_corrente, conta_id, 
+          observacoes, breakeven_price, accumulated_realized, unrealized_pnl, 
+          total_realized, total_commission, liquid_pnl, margin_type, 
+          isolated_wallet, position_side, event_reason, webhook_data_raw, 
+          last_update
+        ) VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, 
+          $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30
+        )
+      `, [
+        position.id, position.simbolo, position.quantidade, position.quantidade_aberta,
+        position.preco_medio, position.status, position.data_hora_abertura,
+        position.data_hora_fechamento, position.side, position.leverage,
+        position.data_hora_ultima_atualizacao, position.preco_entrada,
+        position.preco_corrente, position.orign_sig, position.trailing_stop_level,
+        position.pnl_corrente, position.conta_id, position.observacoes,
+        position.breakeven_price, position.accumulated_realized, position.unrealized_pnl,
+        position.total_realized, position.total_commission, position.liquid_pnl,
+        position.margin_type, position.isolated_wallet, position.position_side,
+        position.event_reason, position.webhook_data_raw, position.last_update
+      ]);
     }
-    // Retry em caso de deadlock
-    if (
-      error.message &&
-      error.message.includes('Deadlock found when trying to get lock') &&
-      retryCount < 3
-    ) {
-      console.warn(`[DB] Deadlock ao mover posição ${positionId}. Tentando novamente (${retryCount + 1}/3)...`);
-      await new Promise(resolve => setTimeout(resolve, 500 * (retryCount + 1)));
-      return moveClosedPositionsAndOrders(db, positionId, retryCount + 1);
+    
+    // Mover ordens fechadas
+    const closedOrders = await client.query(`
+      SELECT * FROM ordens 
+      WHERE conta_id = $1 AND status IN ('FILLED', 'CANCELED', 'EXPIRED')
+    `, [accountId]);
+    
+    for (const order of closedOrders.rows) {
+      await client.query(`
+        INSERT INTO ordens_fechadas (
+          id_original, simbolo, quantidade, preco, side, tipo, status, 
+          id_posicao, id_externo, data_hora_criacao, tipo_ordem_bot, 
+          target, reduce_only, close_position, last_update, conta_id
+        ) VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
+        )
+      `, [
+        order.id, order.simbolo, order.quantidade, order.preco, order.side,
+        order.tipo, order.status, order.id_posicao, order.id_externo,
+        order.data_hora_criacao, order.tipo_ordem_bot, order.target,
+        order.reduce_only, order.close_position, order.last_update, order.conta_id
+      ]);
     }
-    console.error(`Erro ao mover posições fechadas: ${error.message}`);
+    
+    // Remover das tabelas principais
+    await client.query(`DELETE FROM posicoes WHERE conta_id = $1 AND status = 'FECHADA'`, [accountId]);
+    await client.query(`DELETE FROM ordens WHERE conta_id = $1 AND status IN ('FILLED', 'CANCELED', 'EXPIRED')`, [accountId]);
+    
+    await client.query('COMMIT');
+    
+  } catch (error) {
+    await client.query('ROLLBACK');
     throw error;
   } finally {
-    if (connection) {
-      connection.release();
-    }
+    client.release();
   }
 }
 
-// Obter uma posição pelo ID
-async function getPositionById(db, positionId) {
-  try {
-    const [rows] = await db.query("SELECT * FROM posicoes WHERE id = ?", [positionId]);
-    return rows.length > 0 ? rows[0] : null;
-  } catch (error) {
-    console.error(`Erro ao consultar posição por ID: ${error.message}`);
-    throw error;
-  }
-}
-
-// Gerar string de data e hora atual
-function getCurrentDateTimeAsString() {
-  const now = new Date();
-  now.setUTCHours(now.getUTCHours() - 0);
-  return now.toISOString().replace('T', ' ').substring(0, 19);
-}
-
-// Formatar data e hora
-function getDataHoraFormatada() {
-  const data = new Date();
-
-  const dia = String(data.getDate()).padStart(2, '0');
-  const mes = String(data.getMonth() + 1).padStart(2, '0');
-  const ano = data.getFullYear();
-
-  const horas = String(data.getHours()).padStart(2, '0');
-  const minutos = String(data.getMinutes()).padStart(2, '0');
-  const segundos = String(data.getSeconds()).padStart(2, '0');
-
-  return `${dia}-${mes}-${ano} | ${horas}:${minutos}:${segundos}`;
-}
-
-// Atualizar flag de renovação de ordem
-async function updateOrderRenewFlag(db, orderId) {
-  try {
-    await db.query("UPDATE ordens SET renew_sl_firs = 'TRUE' WHERE id = ?", [orderId]);
-    console.log(`Flag de renovação atualizado para ordem ${orderId}`);
-  } catch (error) {
-    console.error(`Erro ao atualizar flag de renovação para ordem ${orderId}: ${error.message}`);
-    throw error;
-  }
-}
-
-// Inserir novo sinal de webhook
-async function insertWebhookSignal(db, signalData) {
-  try {
-    const { symbol, side, leverage, capital_pct, status, created_at, chat_id } = signalData;
-
-    const [result] = await db.query(
-        `INSERT INTO webhook_signals 
-       (symbol, side, leverage, capital_pct, status, created_at, chat_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [symbol, side, leverage, capital_pct, status, created_at, chat_id]
-    );
-
-    console.log(`Sinal de webhook inserido com sucesso: ${result.insertId}`);
-    return result.insertId;
-  } catch (error) {
-    console.error(`Erro ao inserir webhook signal: ${error.message}`);
-    throw error;
-  }
-}
-
-// Nos webhooks (onde o erro continua)
-async function insertWebhookSignalWithDetails(db, testSymbol, positionId, orderId, tpPrice, slPrice) {
-  try {
-    await db.query(`
-      INSERT INTO webhook_signals 
-      (symbol, side, leverage, capital_pct, status, created_at, position_id, entry_order_id, tp_price, sl_price) 
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `, [testSymbol, 'COMPRA', 100, 1, 'PROCESSED', formatDateForMySQL(new Date()), positionId, orderId, tpPrice, slPrice]);
-    console.log('Webhook signal with details inserted successfully.');
-  } catch (error) {
-    console.error(`Erro ao inserir webhook signal com detalhes: ${error.message}`);
-    throw error;
-  }
-}
-
-// Função auxiliar para formatar a data para MySQL
 /**
- * Formata uma data para o formato aceito pelo MySQL (YYYY-MM-DD HH:MM:SS)
+ * Obtém posição por ID
+ * @param {number} positionId - ID da posição
+ * @returns {Promise<Object>} - Dados da posição
+ */
+async function getPositionById(positionId) {
+  try {
+    const db = await getDatabaseInstance();
+    const result = await db.query(`
+      SELECT * FROM posicoes WHERE id = $1
+    `, [positionId]);
+    
+    return result.rows[0] || null;
+  } catch (error) {
+    console.error(`[DB] Erro ao obter posição ${positionId}:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Obtém data e hora formatada
+ * @returns {string} - Data e hora formatada
+ */
+function getDataHoraFormatada() {
+  return new Date().toISOString();
+}
+
+/**
+ * Atualiza flag de renovação de ordem
+ * @param {number} orderId - ID da ordem
+ * @param {string} renewField - Campo de renovação
+ * @param {boolean} value - Valor
+ * @returns {Promise<void>}
+ */
+async function updateOrderRenewFlag(orderId, renewField, value) {
+  try {
+    const db = await getDatabaseInstance();
+    await db.query(`
+      UPDATE ordens 
+      SET ${renewField} = $1, last_update = CURRENT_TIMESTAMP
+      WHERE id = $2
+    `, [value, orderId]);
+  } catch (error) {
+    console.error(`[DB] Erro ao atualizar flag de renovação:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Insere um signal de webhook
+ * @param {Object} signalData - Dados do signal
+ * @returns {Promise<number>} - ID do signal inserido
+ */
+async function insertWebhookSignal(signalData) {
+  try {
+    const db = await getDatabaseInstance();
+    const result = await db.query(`
+      INSERT INTO webhook_signals (
+        symbol, side, timeframe, status, conta_id, created_at, updated_at
+      ) VALUES (
+        $1, $2, $3, $4, $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      ) RETURNING id
+    `, [
+      signalData.symbol,
+      signalData.side,
+      signalData.timeframe,
+      signalData.status,
+      signalData.conta_id
+    ]);
+    
+    return result.rows[0].id;
+  } catch (error) {
+    console.error('[DB] Erro ao inserir webhook signal:', error.message);
+    throw error;
+  }
+}
+
+/**
+ * Insere um signal de webhook com detalhes
+ * @param {Object} signalData - Dados do signal
+ * @returns {Promise<number>} - ID do signal inserido
+ */
+async function insertWebhookSignalWithDetails(signalData) {
+  try {
+    const db = await getDatabaseInstance();
+    const result = await db.query(`
+      INSERT INTO webhook_signals (
+        symbol, side, timeframe, status, conta_id, message_id, chat_id,
+        entry_price, sl_price, tp_price, quantity, leverage, divap_confirmado,
+        created_at, updated_at
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 
+        CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+      ) RETURNING id
+    `, [
+      signalData.symbol,
+      signalData.side,
+      signalData.timeframe,
+      signalData.status,
+      signalData.conta_id,
+      signalData.message_id,
+      signalData.chat_id,
+      signalData.entry_price,
+      signalData.sl_price,
+      signalData.tp_price,
+      signalData.quantity,
+      signalData.leverage,
+      signalData.divap_confirmado || false
+    ]);
+    
+    return result.rows[0].id;
+  } catch (error) {
+    console.error('[DB] Erro ao inserir webhook signal com detalhes:', error.message);
+    throw error;
+  }
+}
+
+/**
+ * Formata uma data para PostgreSQL
  * Corrige também datas futuras (ano 2025) para o ano atual
  * @param {Date|string|null} date - Data a ser formatada
- * @returns {string|null} - Data formatada para MySQL ou null se a entrada for null/undefined
+ * @returns {string|null} - Data formatada para PostgreSQL ou null se a entrada for null/undefined
  */
-function formatDateForMySQL(date) {
+function formatDateForPostgreSQL(date) {
   if (!date) return null;
-
-  const d = new Date(date);
 
   // Converter para objeto Date se for string
   let dateObj = date instanceof Date ? date : new Date(date);
@@ -1049,21 +849,23 @@ function formatDateForMySQL(date) {
     dateObj = new Date(); // Usar data atual
   }
 
-  // Formatar para YYYY-MM-DD HH:MM:SS (formato aceito pelo MySQL)
-  const year = dateObj.getFullYear();
-  const month = String(dateObj.getMonth() + 1).padStart(2, '0');
-  const day = String(dateObj.getDate()).padStart(2, '0');
-  const hours = String(dateObj.getHours()).padStart(2, '0');
-  const minutes = String(dateObj.getMinutes()).padStart(2, '0');
-  const seconds = String(dateObj.getSeconds()).padStart(2, '0');
+  // PostgreSQL aceita ISO format
+  return dateObj.toISOString();
+}
 
-  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+/**
+ * Mantém compatibilidade com código existente
+ * @param {Date|string|null} date - Data a ser formatada
+ * @returns {string|null} - Data formatada
+ */
+function formatDateForMySQL(date) {
+  return formatDateForPostgreSQL(date);
 }
 
 /**
  * Atualiza o saldo_futuros da conta e possivelmente o saldo_base_calculo_futuros
- * @param {Object} db - Conexão com o banco de dados
- * @param {number} saldo_futuros - Novo valor de saldo
+ * @param {Object} db - Pool de conexões com o banco de dados
+ * @param {number} saldo - Novo valor de saldo
  * @param {number} accountId - ID da conta (obrigatório)
  * @returns {Promise<Object>} - Objeto com os valores atualizados
  */
@@ -1072,277 +874,152 @@ async function updateAccountBalance(db, saldo, accountId) {
     throw new Error(`AccountId é obrigatório: ${accountId} (tipo: ${typeof accountId})`);
   }
 
+  const client = await db.connect();
+  
   try {
-    const connection = await db.getConnection();
-    await connection.beginTransaction();
+    await client.query('BEGIN');
 
-    try {
-      // 1. Buscar saldo_futuros atual e saldo_base_calculo_futuros para conta específica
-      const [currentAccount] = await connection.query(
-          'SELECT saldo_futuros, saldo_base_calculo_futuros FROM contas WHERE id = ?',
-          [accountId]
-      );
-
-      if (currentAccount.length === 0) {
-        throw new Error(`Conta com ID ${accountId} não encontrada`);
-      }
-
-      const currentSaldo = parseFloat(currentAccount[0].saldo_futuros || 0);
-      const currentBaseCalculo = parseFloat(currentAccount[0].saldo_base_calculo_futuros || 0);
-      
-      // ✅ CORREÇÃO: Lógica correta do saldo_base_calculo_futuros
-      // saldo_base_calculo_futuros SÓ AUMENTA se o novo saldo_futuros for maior
-      let novoBaseCalculo = currentBaseCalculo;
-      
-      if (saldo_futuros > currentBaseCalculo) {
-        novoBaseCalculo = saldo;
-        console.log(`[DB] Atualizando saldo_base_calculo_futuros da conta ${accountId}: ${currentBaseCalculo.toFixed(2)} → ${novoBaseCalculo.toFixed(2)}`);
-      } else {
-        console.log(`[DB] Mantendo saldo_base_calculo_futuros da conta ${accountId}: ${currentBaseCalculo.toFixed(2)} (saldo_futuros atual: ${saldo.toFixed(2)})`);
-      }
-
-      // 3. Atualizar valores no banco
-      await connection.query(
-          'UPDATE contas SET saldo_futuros = ?, saldo_base_calculo_futuros = ?, ultima_atualizacao = NOW() WHERE id = ?',
-          [saldo, novoBaseCalculo, accountId]
-      );
-
-      await connection.commit();
-
-      return {
-        accountId: accountId,
-        saldo: saldo,
-        saldo_base_calculo_futuros: novoBaseCalculo
-      };
-    } catch (error) {
-      await connection.rollback();
-      throw error;
-    } finally {
-      connection.release();
-    }
-  } catch (error) {
-    console.error(`[DB] Erro ao atualizar saldo_futuros da conta ${accountId}: ${error.message}`);
-    throw error;
-  }
-}
-
-/**
- * Obtém o saldo_base_calculo_futuros do banco de dados
- * @param {Object} db - Conexão com o banco de dados
- * @param {number} accountId - ID da conta (obrigatório)
- * @returns {Promise<number>} - Valor do saldo_base_calculo_futuros
- */
-async function getBaseCalculoBalance(db, accountId) {
-  // CORREÇÃO: Validar accountId obrigatório
-  if (!accountId || typeof accountId !== 'number') {
-    throw new Error(`AccountId é obrigatório: ${accountId} (tipo: ${typeof accountId})`);
-  }
-
-  try {
-    // CORREÇÃO: Usar tabela 'contas' em vez de 'conta'
-    const [rows] = await db.query(
-      'SELECT saldo_base_calculo_futuros FROM contas WHERE id = ?', 
-      [accountId]
-    );
-    
-    if (rows.length === 0) {
-      throw new Error(`Conta ${accountId} não encontrada`);
-    }
-    
-    return parseFloat(rows[0].saldo_base_calculo_futuros || 0);
-  } catch (error) {
-    console.error(`[DB] Erro ao obter saldo_base_calculo_futuros da conta ${accountId}:`, error.message);
-    throw error;
-  }
-}
-
-/**
- * Obtém as credenciais da API da Binance do banco de dados, incluindo todos os campos relevantes da corretora vinculada
- * @param {Object} options - Opções de consulta
- * @param {boolean} options.forceRefresh - Se true, força uma nova consulta ao banco de dados
- * @param {number} options.accountId - ID da conta a ser consultada (obrigatório)
- * @returns {Promise<Object>} - Objeto com as credenciais e dados completos da corretora
- */
-async function getApiCredentials(options = {}) {
-  const { forceRefresh = false, accountId } = options;
-  if (!accountId || typeof accountId !== 'number') {
-    throw new Error(`AccountId é obrigatório: ${accountId} (tipo: ${typeof accountId})`);
-  }
-  const cacheKey = `credentials_${accountId}`;
-  if (!forceRefresh && credentialsCache.has(cacheKey)) {
-    const cached = credentialsCache.get(cacheKey);
-    const now = Date.now();
-    if (now - cached.timestamp < CACHE_DURATION) {
-      console.log(`[DB] Usando credenciais em cache para conta ${accountId}`);
-      return cached.data;
-    }
-  }
-  try {
-    const db = await getDatabaseInstance();
-    if (!db) {
-      throw new Error('Não foi possível obter conexão com o banco de dados');
-    }
-    console.log(`[DB] Carregando credenciais da conta ${accountId} do banco de dados...`);
-    // JOIN completo para trazer todos os campos relevantes de conta e corretora
-    const [rows] = await db.query(`
-      SELECT 
-        c.id,
-        c.nome,
-        c.descricao,
-        c.id_corretora,
-        c.api_key, 
-        c.api_secret,
-        c.ws_api_key,
-        c.ws_api_secret,
-        c.testnet_spot_api_key,
-        c.testnet_spot_api_secret,
-        c.telegram_chat_id,
-        c.telegram_bot_token,
-        c.telegram_bot_token_controller,
-        c.ativa,
-        c.max_posicoes,
-        c.saldo_futuros,
-        c.saldo_spot,
-        c.saldo_base_calculo_futuros,
-        c.saldo_base_calculo_spot,
-        c.data_criacao,
-        c.ultima_atualizacao,
-        c.celular,
-        c.saldo_cross_wallet,
-        c.balance_change,
-        c.last_event_reason,
-        c.event_time,
-        c.transaction_time,
-        c.user_id,
-        cor.id as corretora_id,
-        cor.corretora,
-        cor.ambiente,
-        cor.spot_rest_api_url,
-        cor.futures_rest_api_url,
-        cor.futures_ws_market_url,
-        cor.futures_ws_api_url,
-        cor.ativa as corretora_ativa,
-        cor.data_criacao as corretora_data_criacao,
-        cor.ultima_atualizacao as corretora_ultima_atualizacao
-      FROM contas c
-      LEFT JOIN corretoras cor ON c.id_corretora = cor.id
-      WHERE c.id = ?
+    // 1. Buscar saldo_futuros atual e saldo_base_calculo_futuros para conta específica
+    const currentBalanceResult = await client.query(`
+      SELECT saldo_futuros, saldo_base_calculo_futuros 
+      FROM contas 
+      WHERE id = $1 AND ativa = true
     `, [accountId]);
-    if (rows.length === 0) {
-      throw new Error(`Conta ${accountId} não encontrada no banco de dados`);
-    }
-    const account = rows[0];
-    // Ambiente sempre da corretora
-    const ambiente = (account.ambiente && account.ambiente.toLowerCase().includes('testnet')) ? 'testnet' : 'prd';
-    const credentials = {
-      accountId: account.id,
-      nome: account.nome,
-      descricao: account.descricao,
-      id_corretora: account.id_corretora,
-      apiKey: account.api_key,
-      apiSecret: account.api_secret,
-      wsApiKey: account.ws_api_key,
-      wsApiSecret: account.ws_api_secret,
-      testnetSpotApiKey: account.testnet_spot_api_key,
-      testnetSpotApiSecret: account.testnet_spot_api_secret,
-      telegramChatId: account.telegram_chat_id,
-      telegramBotToken: account.telegram_bot_token,
-      telegramBotTokenController: account.telegram_bot_token_controller,
-      ativa: account.ativa,
-      max_posicoes: account.max_posicoes,
-      saldo_futuros: account.saldo_futuros,
-      saldo_spot: account.saldo_spot,
-      saldo_base_calculo_futuros: account.saldo_base_calculo_futuros,
-      saldo_base_calculo_spot: account.saldo_base_calculo_spot,
-      data_criacao: account.data_criacao,
-      ultima_atualizacao: account.ultima_atualizacao,
-      celular: account.celular,
-      saldo_cross_wallet: account.saldo_cross_wallet,
-      balance_change: account.balance_change,
-      last_event_reason: account.last_event_reason,
-      event_time: account.event_time,
-      transaction_time: account.transaction_time,
-      user_id: account.user_id,
-      corretora: {
-        id: account.corretora_id,
-        nome: account.corretora,
-        ambiente,
-        spot_rest_api_url: account.spot_rest_api_url,
-        futures_rest_api_url: account.futures_rest_api_url,
-        futures_ws_market_url: account.futures_ws_market_url,
-        futures_ws_api_url: account.futures_ws_api_url,
-        ativa: account.corretora_ativa,
-        data_criacao: account.corretora_data_criacao,
-        ultima_atualizacao: account.corretora_ultima_atualizacao
-      }
-    };
-    // Atualiza cache
-    credentialsCache.set(cacheKey, { data: credentials, timestamp: Date.now() });
-    console.log(`[DB] ✅ Credenciais e corretora carregadas para conta ${accountId} (${account.nome})`);
-    return credentials;
-  } catch (error) {
-    console.error(`[DB] Erro ao carregar credenciais da conta ${accountId}:`, error.message);
-    throw error;
-  }
-}
 
-// Limpar cache de credenciais (útil para testes ou quando a conta é atualizada)
-function clearCredentialsCache() {
-  cachedCredentials = null;
-  lastCacheTime = 0;
+    if (currentBalanceResult.rows.length === 0) {
+      throw new Error(`Conta ${accountId} não encontrada ou inativa`);
+    }
+
+    const currentBalance = currentBalanceResult.rows[0];
+    const currentSaldoFuturos = parseFloat(currentBalance.saldo_futuros) || 0;
+    const currentSaldoBaseCalculo = parseFloat(currentBalance.saldo_base_calculo_futuros) || 0;
+
+    // 2. Se saldo_base_calculo_futuros for null ou 0, definir como saldo atual
+    let newSaldoBaseCalculo = currentSaldoBaseCalculo;
+    if (currentSaldoBaseCalculo === 0) {
+      newSaldoBaseCalculo = saldo;
+    }
+
+    // 3. Atualizar saldo_futuros
+    await client.query(`
+      UPDATE contas 
+      SET saldo_futuros = $1, saldo_base_calculo_futuros = $2
+      WHERE id = $3
+    `, [saldo, newSaldoBaseCalculo, accountId]);
+
+    await client.query('COMMIT');
+
+    return {
+      saldo_futuros: saldo,
+      saldo_base_calculo_futuros: newSaldoBaseCalculo,
+      saldo_anterior: currentSaldoFuturos,
+      conta_id: accountId
+    };
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
 /**
- * Obtém as URLs da corretora do banco de dados
- * @param {Object} db - Conexão com o banco de dados
- * @param {number} corretoraId - ID da corretora (padrão: 1 para Binance)
- * @returns {Promise<Object>} - Objeto com as URLs da corretora
+ * Obtém saldo base de cálculo
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<number>} - Saldo base de cálculo
  */
-async function getCorretoraPorId(db, corretoraId = 1) {
+async function getBaseCalculoBalance(accountId) {
   try {
-    const [rows] = await db.query(
-      `SELECT id, corretora, ambiente, spot_rest_api_url, futures_rest_api_url, 
-              futures_ws_market_url, futures_ws_api_url, ativa
-       FROM corretoras 
-       WHERE id = ? AND ativa = 1`,
-      [corretoraId]
-    );
-
-    if (rows.length === 0) {
-      throw new Error(`Corretora com ID ${corretoraId} não encontrada ou não está ativa`);
+    const db = await getDatabaseInstance();
+    const result = await db.query(`
+      SELECT saldo_base_calculo_futuros 
+      FROM contas 
+      WHERE id = $1 AND ativa = true
+    `, [accountId]);
+    
+    if (result.rows.length === 0) {
+      throw new Error(`Conta ${accountId} não encontrada ou inativa`);
     }
-
-    return rows[0];
+    
+    return parseFloat(result.rows[0].saldo_base_calculo_futuros) || 0;
   } catch (error) {
-    console.error(`[DB] Erro ao obter informações da corretora ID ${corretoraId}:`, error.message);
+    console.error(`[DB] Erro ao obter saldo base de cálculo:`, error.message);
     throw error;
   }
 }
 
-// Registrar log no banco de dados
-async function registrarLog(nivel, mensagem, contexto = null) {
+/**
+ * Obtém dados de uma corretora por ID
+ * @param {number} corretoraId - ID da corretora
+ * @returns {Promise<Object>} - Dados da corretora
+ */
+async function getCorretoraPorId(corretoraId) {
   try {
     const db = await getDatabaseInstance();
-    await db.query(
-      'INSERT INTO logs (nivel, mensagem, contexto) VALUES (?, ?, ?)',
-      [nivel, mensagem, contexto]
-    );
+    const result = await db.query(`
+      SELECT * FROM corretoras 
+      WHERE id = $1 AND ativa = true
+    `, [corretoraId]);
+    
+    return result.rows[0] || null;
   } catch (error) {
-    console.error('[LOG] Erro ao registrar log no banco:', error.message);
+    console.error(`[DB] Erro ao obter corretora ${corretoraId}:`, error.message);
+    throw error;
   }
 }
 
-// Exportar as funções
+/**
+ * Registra um log no banco de dados
+ * @param {string} nivel - Nível do log
+ * @param {string} mensagem - Mensagem do log
+ * @param {string} modulo - Módulo que gerou o log
+ * @param {number} contaId - ID da conta (opcional)
+ * @returns {Promise<void>}
+ */
+async function registrarLog(nivel, mensagem, modulo, contaId = null) {
+  try {
+    const db = await getDatabaseInstance();
+    await db.query(`
+      INSERT INTO logs (nivel, mensagem, modulo, conta_id, data_hora)
+      VALUES ($1, $2, $3, $4, CURRENT_TIMESTAMP)
+    `, [nivel, mensagem, modulo, contaId]);
+  } catch (error) {
+    console.error('[DB] Erro ao registrar log:', error.message);
+    // Não propagar erro de log para não quebrar o fluxo principal
+  }
+}
+
+/**
+ * Encerra o pool de conexões de forma segura
+ */
+async function closePool() {
+  if (pool) {
+    console.log('[DB] Encerrando pool de conexões PostgreSQL...');
+    await pool.end();
+    pool = null;
+    console.log('[DB] ✅ Pool de conexões PostgreSQL encerrado');
+  }
+}
+
+// Gerenciamento de desligamento gracioso
+process.on('SIGINT', async () => {
+  console.log('\n[DB] Recebido SIGINT, encerrando conexões...');
+  await closePool();
+  process.exit(0);
+});
+
+process.on('SIGTERM', async () => {
+  console.log('\n[DB] Recebido SIGTERM, encerrando conexões...');
+  await closePool();
+  process.exit(0);
+});
+
 module.exports = {
-  initPool,
   getDatabaseInstance,
+  initPool,
+  testConnection,
   initializeDatabase,
-  closePool,
-  checkOrderExists,
-  getOpenOrdersFromDb,
-  getAllOrdersBySymbol,
-  getPositionIdBySymbol,
-  disconnectDatabase,
+  checkAndCreateTables,
   getApiCredentials,
   clearCredentialsCache,
   getAllPositionsFromDb,
@@ -1362,10 +1039,10 @@ module.exports = {
   insertWebhookSignal,
   insertWebhookSignalWithDetails,
   formatDateForMySQL,
+  formatDateForPostgreSQL,
   updateAccountBalance,
   getBaseCalculoBalance,
   getCorretoraPorId,
-  registrarLog
+  registrarLog,
+  closePool
 };
-
-

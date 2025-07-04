@@ -126,8 +126,8 @@ async function closeAllPositions(accountId, cancelOrders = true, notifyTelegram 
     try {
       for (const closedSymbol of results.closedSymbols) {
         await db.query(
-          `UPDATE posicoes SET status = 'CLOSED', data_hora_fechamento = NOW() 
-           WHERE simbolo = ? AND status = 'OPEN' AND conta_id = ?`,
+          `UPDATE posicoes SET status = 'CLOSED', data_hora_fechamento = CURRENT_TIMESTAMP 
+           WHERE simbolo = $1 AND status = 'OPEN' AND conta_id = $2`,
           [closedSymbol.symbol, accountId]
         );
       }

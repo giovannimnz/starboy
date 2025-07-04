@@ -169,7 +169,7 @@ async function initializeMonitoring(accountId) {
       const closedCount = await forceCloseGhostPositions(accountId);
       if (closedCount > 0) {
         // Buscar posições agora marcadas como CLOSED e mover para histórico
-        const [closedPositions] = await db.query('SELECT id FROM posicoes WHERE status = ? AND conta_id = ?', ['CLOSED', accountId]);
+        const [closedPositions] = await db.query('SELECT id FROM posicoes WHERE status = $1 AND conta_id = $2', ['CLOSED', accountId]);
         for (const pos of closedPositions) {
           try {
             await movePositionToHistory(pos.id, accountId, true);
@@ -231,7 +231,7 @@ async function initializeMonitoring(accountId) {
       if (saldoResult && saldoResult.success) {
         console.log(`[MONITOR] ✅ Saldo atualizado: Disponível ${saldoResult.saldo_disponivel} USDT | Base cálculo ${saldoResult.saldo_base_calculo} USDT`);
       } else {
-        console.warn(`[MONITOR] ⚠️ Falha ao atualizar saldo da corretora: ${saldoResult?.error || 'Erro desconheido'}`);
+        console.warn(`[MONITOR] ⚠️ Falha ao atualizar saldo da corretora: ${saldoResult$1.error || 'Erro desconheido'}`);
       }
     } catch (saldoError) {
       console.error(`[MONITOR] ❌ Erro ao atualizar saldo da corretora:`, saldoError.message);
@@ -244,7 +244,7 @@ try {
   if (saldoSpotResult && saldoSpotResult.success) {
     console.log(`[MONITOR] ✅ Saldo spot atualizado: Disponível ${saldoSpotResult.saldo_disponivel} USDT | Base cálculo ${saldoSpotResult.saldo_base_calculo} USDT`);
   } else {
-    console.warn(`[MONITOR] ⚠️ Falha ao atualizar saldo spot: ${saldoSpotResult?.error || 'Erro desconhecido'}`);
+    console.warn(`[MONITOR] ⚠️ Falha ao atualizar saldo spot: ${saldoSpotResult$1.error || 'Erro desconhecido'}`);
   }
 } catch (saldoError) {
   console.error(`[MONITOR] ❌ Erro ao atualizar saldo spot:`, saldoError.message);
@@ -310,7 +310,7 @@ try {
       console.log(`[MONITOR]   - RECV_WINDOW: ${accountState.recvWindow}ms`);
       console.log(`[MONITOR]   - Qualidade: ${accountState.syncQuality}`);
       console.log(`[MONITOR]   - Offset: ${accountState.timeOffset || 0}ms`);
-      console.log(`[MONITOR]   - Latência média: ${accountState.avgNetworkLatency?.toFixed(2)}ms`);
+      console.log(`[MONITOR]   - Latência média: ${accountState.avgNetworkLatency$1.toFixed(2)}ms`);
     }
   }
 } catch (timeError) {
@@ -413,7 +413,7 @@ try {
     const [closedPositions] = await db.query(`
       SELECT id, simbolo, status, data_hora_fechamento, observacoes 
       FROM posicoes 
-      WHERE status = 'CLOSED' AND conta_id = ?
+      WHERE status = 'CLOSED' AND conta_id = $1
     `, [accountId]);
     
     if (closedPositions.length > 0) {
@@ -511,7 +511,7 @@ async function startPriceMonitoringInline(accountId) {
       tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, conta_id,
       status, created_at, timeout_at, max_lifetime_minutes, chat_id
       FROM webhook_signals 
-      WHERE conta_id = ? 
+      WHERE conta_id = $1 
       AND status = 'AGUARDANDO_ACIONAMENTO'
       ORDER BY created_at ASC
     `, [accountId]);
@@ -520,14 +520,14 @@ async function startPriceMonitoringInline(accountId) {
     const [openPositions] = await db.query(`
       SELECT DISTINCT simbolo as symbol
       FROM posicoes
-      WHERE conta_id = ? AND status = 'OPEN'
+      WHERE conta_id = $1 AND status = 'OPEN'
     `, [accountId]);
 
     // ✅ TERCIÁRIO: Símbolos com ordens de entrada pendentes
     const [pendingEntries] = await db.query(`
       SELECT DISTINCT simbolo as symbol
       FROM ordens
-      WHERE conta_id = ? AND tipo_ordem_bot = 'ENTRADA' AND status IN ('NEW', 'PARTIALLY_FILLED')
+      WHERE conta_id = $1 AND tipo_ordem_bot = 'ENTRADA' AND status IN ('NEW', 'PARTIALLY_FILLED')
     `, [accountId]);
 
     const symbols = new Set();
@@ -620,7 +620,7 @@ async function startPriceMonitoringInline(accountId) {
         // Verificar se há sinais aguardando
         const [signals] = await db.query(`
           SELECT symbol FROM webhook_signals 
-          WHERE conta_id = ? AND status = 'AGUARDANDO_ACIONAMENTO'
+          WHERE conta_id = $1 AND status = 'AGUARDANDO_ACIONAMENTO'
           GROUP BY symbol
           LIMIT 5
         `, [accountId]);
@@ -639,7 +639,7 @@ async function startPriceMonitoringInline(accountId) {
                 if (isOpen) {
                   //console.log(`[MONITOR]   ✅ ${signal.symbol}: WebSocket ativo`);
                 } else {
-                  console.log(`[MONITOR]   ❌ ${signal.symbol}: WebSocket inativo (readyState: ${ws?.readyState})`);
+                  console.log(`[MONITOR]   ❌ ${signal.symbol}: WebSocket inativo (readyState: ${ws$1.readyState})`);
                   
                   // Tentar recriar o WebSocket
                   console.log(`[MONITOR] 🔄 Recriando WebSocket para ${signal.symbol}...`);
@@ -718,7 +718,7 @@ async function startPriceMonitoringInline(accountId) {
           const [closedPositions] = await db.query(`
             SELECT id, simbolo, status, data_hora_fechamento, observacoes 
             FROM posicoes 
-            WHERE status = 'CLOSED' AND conta_id = ?
+            WHERE status = 'CLOSED' AND conta_id = $1
           `, [accountId]);
           if (closedPositions.length > 0) {
             console.log(`[MONITOR] 📚 Movendo ${closedPositions.length} posições CLOSED para histórico...`);

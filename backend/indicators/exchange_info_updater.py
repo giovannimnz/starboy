@@ -3,7 +3,8 @@ import time
 import datetime
 import traceback
 import requests
-import mysql.connector
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from dotenv import load_dotenv
 import pathlib
 import warnings
@@ -26,20 +27,19 @@ CURRENT_EXCHANGE = 'binance'
 # Configurações do banco de dados
 DB_CONFIG = {
     'host': os.getenv('DB_HOST'),
-    'port': os.getenv('DB_PORT'),
+    'port': int(os.getenv('DB_PORT', 5432)),
     'user': os.getenv('DB_USER'),
     'password': os.getenv('DB_PASSWORD'),
-    'database': os.getenv('DB_NAME'),
-    'charset': 'utf8mb4',
-    'autocommit': True
+    'database': os.getenv('DB_NAME')
 }
 
 def get_database_connection():
-    """Obtém conexão com o banco de dados MySQL/MariaDB."""
+    """Obtém conexão com o banco de dados PostgreSQL."""
     try:
-        conn = mysql.connector.connect(**DB_CONFIG)
+        conn = psycopg2.connect(**DB_CONFIG)
+        conn.autocommit = True
         return conn
-    except mysql.connector.Error as e:
+    except psycopg2.Error as e:
         print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [DB] Erro ao conectar: {e}")
         return None
 
@@ -79,7 +79,7 @@ def update_exchange_info_database(exchange_name):
         if not conn:
             return False
         
-        cursor = conn.cursor(dictionary=True)
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
         
         # FASE 3: OBTER DADOS DO BANCO (TODOS OS CAMPOS RELEVANTES)
         cursor.execute("""

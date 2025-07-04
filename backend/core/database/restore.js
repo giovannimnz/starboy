@@ -78,7 +78,7 @@ async function main() {
 
     // Aviso importante
     console.log('\n⚠️ ATENÇÃO! Esta operação irá apagar todos os dados existentes no banco selecionado!');
-    const confirm = await question('Deseja continuar? (Digite "CONFIRMAR" para prosseguir): ');
+    const confirm = await question('Deseja continuar$1 (Digite "CONFIRMAR" para prosseguir): ');
 
     if (confirm !== 'CONFIRMAR') {
       console.log('Operação cancelada pelo usuário.');

@@ -75,7 +75,7 @@ async function testOrphanPositionDetection() {
     const [dbPositions] = await db.query(`
       SELECT id, simbolo, quantidade, status, data_hora_abertura
       FROM posicoes 
-      WHERE status = 'OPEN' AND conta_id = ?
+      WHERE status = 'OPEN' AND conta_id = $1
       ORDER BY simbolo
     `, [accountId]);
     
@@ -94,7 +94,7 @@ async function testOrphanPositionDetection() {
     const [protectionOrders] = await db.query(`
       SELECT simbolo, tipo_ordem_bot, COUNT(*) as count
       FROM ordens 
-      WHERE conta_id = ? AND status IN ('NEW', 'PARTIALLY_FILLED')
+      WHERE conta_id = $1 AND status IN ('NEW', 'PARTIALLY_FILLED')
         AND tipo_ordem_bot IN ('STOP_LOSS', 'RP1', 'RP2', 'RP3', 'RP4', 'TP')
       GROUP BY simbolo, tipo_ordem_bot
       ORDER BY simbolo
@@ -126,7 +126,7 @@ async function testOrphanPositionDetection() {
       const [signals] = await db.query(`
         SELECT id, symbol, side, sl_price, tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, tp_price, created_at
         FROM webhook_signals 
-        WHERE symbol = ? AND conta_id = ? 
+        WHERE symbol = $1 AND conta_id = $2 
         ORDER BY created_at DESC 
         LIMIT 1
       `, [symbol, accountId]);

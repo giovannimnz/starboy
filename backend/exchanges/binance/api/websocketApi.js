@@ -40,10 +40,10 @@ async function placeOrderViaWebSocket(orderParams, accountId) {
       console.log(`[WS-API] ✅ Ordem criada com sucesso para conta ${accountId}: ${response.result.orderId}`);
       return response;
     } else {
-      throw new Error(`Erro na resposta da API: ${response.error?.msg || 'Resposta inválida'}`);
+      throw new Error(`Erro na resposta da API: ${response.error$1.msg || 'Resposta inválida'}`);
     }
   } catch (error) {
-    const errorMessage = error.error?.msg || error.message || 'Erro desconhecido';
+    const errorMessage = error.error$1.msg || error.message || 'Erro desconhecido';
     console.error(`[WS-API] Erro ao enviar ordem via WebSocket API para conta ${accountId}: ${errorMessage}`);
     throw error;
   }
@@ -146,7 +146,7 @@ async function modifyOrderViaWebSocket(modifyParams, accountId) {
       console.log(`[WS-API] ✅ Ordem modificada com sucesso para conta ${accountId}`);
       return response;
     } else {
-      throw new Error(`Erro na modificação: ${response.error?.msg || 'Resposta inválida'}`);
+      throw new Error(`Erro na modificação: ${response.error$1.msg || 'Resposta inválida'}`);
     }
   } catch (error) {
     console.error(`[WS-API] Erro ao modificar ordem via WebSocket API para conta ${accountId}: ${error.message}`);
@@ -175,7 +175,7 @@ async function cancelOrderByIdViaWebSocket(symbol, orderId, accountId) {
       console.log(`[WS-API] ✅ Ordem ${orderId} cancelada com sucesso para conta ${accountId}`);
       return response;
     } else {
-      throw new Error(`Erro no cancelamento: ${response.error?.msg || 'Resposta inválida'}`);
+      throw new Error(`Erro no cancelamento: ${response.error$1.msg || 'Resposta inválida'}`);
     }
   } catch (error) {
     console.error(`[WS-API] Erro ao cancelar ordem ${orderId} para conta ${accountId}: ${error.message}`);
@@ -311,7 +311,7 @@ async function syncAccountBalanceViaWebSocket(accountId) {
     const accountInfo = await getAccountInformationV2({}, accountId);
     
     if (!accountInfo || accountInfo.status !== 200) {
-      throw new Error(`Falha ao obter informações da conta ${accountId}: ${accountInfo?.error?.message || 'Resposta inválida'}`);
+      throw new Error(`Falha ao obter informações da conta ${accountId}: ${accountInfo$1.error$2.message || 'Resposta inválida'}`);
     }
     
     const result = accountInfo.result;
@@ -320,7 +320,7 @@ async function syncAccountBalanceViaWebSocket(accountId) {
     
     // Obter saldo base de cálculo atual
     const [currentData] = await db.query(
-      'SELECT saldo_base_calculo_futuros FROM contas WHERE id = ?',
+      'SELECT saldo_base_calculo_futuros FROM contas WHERE id = $1',
       [accountId]
     );
     
@@ -329,9 +329,9 @@ async function syncAccountBalanceViaWebSocket(accountId) {
     const newBaseCalculo = Math.max(calculoBasadaEm5Porcento, previousBaseCalculo);
     
     // Atualizar banco de dados
-    const currentDateTime = formatDateForMySQL(new Date());
+    const currentDateTime = formatDateForPostgreSQL(new Date());
     await db.query(
-      'UPDATE contas SET saldo_futuros = ?, saldo_base_calculo_futuros = ?, ultima_atualizacao = ? WHERE id = ?',
+      'UPDATE contas SET saldo_futuros = $1, saldo_base_calculo_futuros = $2, ultima_atualizacao = $3 WHERE id = $4',
       [realSaldo, newBaseCalculo, currentDateTime, accountId]
     );
     
