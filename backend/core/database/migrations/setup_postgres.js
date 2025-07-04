@@ -3,8 +3,15 @@ const fs = require('fs').promises;
 const path = require('path');
 
 // Carrega as variáveis de ambiente do arquivo .env
-require('dotenv').config({ path: path.resolve(__dirname, '../../../config/.env') });
+const envPath = path.resolve(__dirname, '../../../../config/.env');
+console.log('Caminho do .env:', envPath);
 
+const dotenvResult = require('dotenv').config({ path: envPath });
+console.log('Resultado do dotenv:', dotenvResult.error ? dotenvResult.error.message : 'OK');
+console.log('DB_HOST:', process.env.DB_HOST);
+console.log('DB_PORT:', process.env.DB_PORT);
+console.log('DB_USER:', process.env.DB_USER);
+console.log('DB_PASSWORD:', process.env.DB_PASSWORD ? 'ENCONTRADA' : 'VAZIA');
 /**
  * Função principal para criar e configurar o banco de dados PostgreSQL.
  */
@@ -15,7 +22,7 @@ async function setupDatabase() {
         user: process.env.DB_USER,
         host: process.env.DB_HOST,
         password: process.env.DB_PASSWORD,
-        port: parseInt(process.env.DB_PORT, 10),
+        port: parseInt(process.env.DB_PORT || '8745', 10),
     };
     const dbName = process.env.DB_NAME || 'starboy_dev';
 
