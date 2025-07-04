@@ -4,87 +4,27 @@ const { getDatabaseInstance } = require('../../../core/database/conexao');
 const { verifyAndFixEnvironmentConsistency, getFuturesAccountBalanceDetails, getSpotAccountBalanceDetails } = require('../api/rest');
 const websockets = require('../api/websocket');
 const api = require('../api/rest');
-const orderHandlers = require('../handlers/orderHandlers');
-const accountHandlers = require('../handlers/accountHandlers');
 const { sendTelegramMessage } = require('../services/telegramHelper');
 const { onPriceUpdate, checkNewTrades, checkExpiredSignals, checkCanceledSignals } = require('./signalProcessor');
 const { syncPositionsWithExchange, syncOrdersWithExchange, logOpenPositionsAndOrdersVisual, syncPositionsWithAutoClose } = require('../services/positionSync');
-const { cleanupOrphanSignals, moveOrdersToHistory, movePositionToHistory, cancelOrphanOrders, retryDatabaseOperation } = require('../services/cleanup');
+const { registerOrderHandlers } = require('../handlers/orderHandlers');
+const { registerAccountHandlers } = require('../handlers/accountHandlers');
+const { cleanupOrphanSignals, moveOrdersToHistory, movePositionToHistory, cancelOrphanOrders } = require('../services/cleanup');
 const { checkOrderTriggers } = require('./trailingStopLoss');
 
-// Carregar configurações de ambiente
-require('dotenv').config({ path: path.resolve(__dirname, '../../../../config/.env') });
-
-// Configurações de logging - SEMPRE ATIVO
-const ENABLE_MONITOR_LOGS = true; // Sempre true
-const ENABLE_SYNC_LOGS = true; // Sempre true para debug
-const ENABLE_ORPHAN_LOGS = true; // Sempre true para debug
+// === CONFIGURAÇÃO WEBSOCKET API ===
 const ENABLE_WS_API = process.env.ENABLE_WS_API === 'true';
+console.log(`[MONITOR] 🔧 WebSocket API: ${ENABLE_WS_API ? 'HABILITADO' : 'DESABILITADO'}`);
 
-// Função auxiliar para logs condicionais - AGORA SEMPRE ATIVA
-const monitorLog = (...args) => {
-  console.log(...args); // Sempre exibe
-};
-
-const syncLog = (...args) => {
-  console.log(...args); // Sempre exibe
-};
-
-const orphanLog = (...args) => {
-  console.log(...args); // Sempre exibe
-};
-
-// Função para limpeza de tela multiplataforma
-function clearScreenMultiplatform() {
-  try {
-    // Método 1: console.clear() - Funciona na maioria dos casos
-    console.clear();
-    
-    // Método 2: ANSI escape codes - Compatível com terminais modernos
-    process.stdout.write('\u001b[2J\u001b[0;0H');
-    
-    // Método 3: Fallback específico para plataforma
-    if (process.platform === 'win32') {
-      // Windows - Usar comando cls via spawn se necessário
-      try {
-        const { spawn } = require('child_process');
-        const cls = spawn('cmd', ['/c', 'cls'], { stdio: 'inherit' });
-        cls.on('error', () => {
-          // Silenciar erros do cmd, já usamos outros métodos
-        });
-      } catch (winError) {
-        // Silenciar erros do Windows
-      }
-    } else {
-      // Linux/Mac - Usar comando clear
-      try {
-        const { spawn } = require('child_process');
-        const clear = spawn('clear', [], { stdio: 'inherit' });
-        clear.on('error', () => {
-          // Silenciar erros do clear, já usamos outros métodos
-        });
-      } catch (nixError) {
-        // Silenciar erros do Linux/Mac
-      }
-    }
-    
-  } catch (error) {
-    console.error(`[MONITOR] ⚠️ Não foi possível limpar a tela: ${error.message}`);
-    console.error(`[MONITOR] 🖥️ Plataforma: ${process.platform}`);
-    console.error(`[MONITOR] 📺 Terminal: ${process.env.TERM || 'não detectado'}`);
-    
-    // Fallback final: adicionar linhas em branco
-    console.log('\n'.repeat(50));
-    console.log(`[MONITOR] 📄 Usando fallback de linhas em branco`);
-  }
-}
+// === CONFIGURAÇÃO RECV WINDOW ===
+const RECV_WINDOW = 60000; // 60 segundos para evitar erros de sincronização
 
 // === DEBUGGING ROBUSTO ===
 console.log(`[MONITOR] 🚀 === INICIANDO MONITORAMENTO PARA CONTA ${process.argv[4] || ''} ===`);
-//console.log(`[MONITOR] 📅 Timestamp: ${new Date().toISOString()}`);
+console.log(`[MONITOR] 📅 Timestamp: ${new Date().toISOString()}`);
 console.log(`[MONITOR] 🖥️ Process ID: ${process.pid}`);
-//console.log(`[MONITOR] 📁 Working Directory: ${process.cwd()}`);
-//console.log(`[MONITOR] 📋 Arguments: ${JSON.stringify(process.argv)}`);
+console.log(`[MONITOR] 📁 Working Directory: ${process.cwd()}`);
+console.log(`[MONITOR] 📋 Arguments: ${JSON.stringify(process.argv)}`);
 
 // Capturar erros não tratados ANTES de qualquer outra coisa
 process.on('uncaughtException', (error) => {
@@ -140,19 +80,18 @@ function registerWebSocketHandlers(accountId) {
   console.log(`[MONITOR] 🎧 Registrando todos os handlers de WebSocket para a conta ${accountId}...`);
 
   // 1. Registrar handlers de atualização de ordens
-  orderHandlers.registerOrderUpdateHandler(accountId);
+  registerOrderHandlers();
 
   // 2. Registrar handlers de atualização de conta
-  accountHandlers.registerAccountHandlers(accountId);
+  registerAccountHandlers();
 
   // 3. Registrar handler de atualização de preço (markPrice)
-  const priceUpdateWrapper = (symbol, tickerData) => {
-    // tickerData contém as informações do preço, extrair o preço atual
-    const currentPrice = parseFloat(tickerData.c || tickerData.markPrice || 0);
-    onPriceUpdate(symbol, currentPrice, null, accountId);
+  // O handler onPriceUpdate é usado para processamento de sinais, como verificar trades.
+  const priceUpdateWrapper = ({ message, accountId: eventAccountId }) => {
+    // A função original espera (message, accountId)
+    onPriceUpdate(message, eventAccountId);
   };
-  // ✅ CORREÇÃO: Usar um ID de listener único por conta
-  websockets.on('priceUpdate', priceUpdateWrapper, accountId, `mainPriceSignalProcessor_${accountId}`);
+  websockets.on('priceUpdate', priceUpdateWrapper, 'mainPriceSignalProcessor');
   console.log(`[MONITOR] 🎧 Handler de atualização de preço (priceUpdate) registrado.`);
 
   console.log(`[MONITOR] ✅ Todos os handlers de WebSocket foram registrados com sucesso.`);
@@ -221,6 +160,37 @@ async function initializeMonitoring(accountId) {
     const db = await getDatabaseInstance();
     if (!db) throw new Error('Banco não disponível');
     console.log(`✅ Banco de dados conectado com sucesso para conta ${accountId}\n`);
+
+    // === ETAPA 1.5: Limpeza de ordens e posições fantasmas ===
+    console.log(`[MONITOR] 🧹 Buscando e limpando ordens e posições fantasmas para conta ${accountId}...`);
+    try {
+      const { forceCloseGhostPositions, cancelOrphanOrders, movePositionToHistory } = require('../services/cleanup');
+      // 1. Forçar fechamento de posições fantasmas
+      const closedCount = await forceCloseGhostPositions(accountId);
+      if (closedCount > 0) {
+        // Buscar posições agora marcadas como CLOSED e mover para histórico
+        const [closedPositions] = await db.query('SELECT id FROM posicoes WHERE status = ? AND conta_id = ?', ['CLOSED', accountId]);
+        for (const pos of closedPositions) {
+          try {
+            await movePositionToHistory(pos.id, accountId, true);
+          } catch (moveErr) {
+            console.error(`[MONITOR] ⚠️ Erro ao mover posição fantasma ${pos.id} para histórico:`, moveErr.message);
+          }
+        }
+        console.log(`[MONITOR] ✅ ${closedCount} posições fantasmas fechadas e movidas para histórico.`);
+      } else {
+        console.log(`[MONITOR] ✅ Nenhuma posição fantasma encontrada para conta ${accountId}.`);
+      }
+      // 2. Cancelar ordens órfãs
+      const orphanOrderCount = await cancelOrphanOrders(accountId);
+      if (orphanOrderCount > 0) {
+        console.log(`[MONITOR] ✅ ${orphanOrderCount} ordens órfãs processadas/movidas para histórico.`);
+      } else {
+        console.log(`[MONITOR] ✅ Nenhuma ordem órfã encontrada para conta ${accountId}.`);
+      }
+    } catch (ghostError) {
+      console.error(`[MONITOR] ⚠️ Erro ao processar ordens/posições fantasmas:`, ghostError.message);
+    }
 
     // === ETAPA 2: Verificar consistência de ambiente ===
     console.log(`🔍 ETAPA 2: Verificando consistência de ambiente para conta ${accountId}...`);
@@ -296,54 +266,125 @@ try {
     
     console.log('📋 Estado da conta verificado');
 
-    console.log(`🕐 ETAPA 4.5: Verificando sincronização de tempo para conta ${accountId}...`);
+    console.log(`🕐 ETAPA 4.5: Verificando sincronização de tempo avançada para conta ${accountId}...`);
 try {
-  const { checkServerTime } = require('../api/rest');
-  const timeSync = await checkServerTime(accountId);
+  const { checkServerTime, forceTimeResync } = require('../api/rest');
+  let timeSync = await checkServerTime(accountId);
+  
+  // Se a sincronização inicial falhou ou está muito ruim, tentar re-sincronização forçada
+  const accountState = api.getAccountConnectionState(accountId);
+  const currentTimeDiff = accountState ? Math.abs(accountState.timeOffset || 0) : 0;
+  
+  if (!timeSync || currentTimeDiff > 2000) {
+    console.warn(`[MONITOR] 🔄 Sincronização crítica detectada (${currentTimeDiff.toFixed(2)}ms), iniciando re-sincronização forçada...`);
+    
+    const resyncResult = await forceTimeResync(accountId, 5); // 5 tentativas
+    
+    if (resyncResult.success && resyncResult.timeDiff < currentTimeDiff) {
+      console.log(`[MONITOR] ✅ Re-sincronização melhorou a qualidade:`);
+      console.log(`[MONITOR]   - Antes: ${currentTimeDiff.toFixed(2)}ms`);
+      console.log(`[MONITOR]   - Depois: ${resyncResult.timeDiff.toFixed(2)}ms`);
+      console.log(`[MONITOR]   - RECV_WINDOW: ${resyncResult.recvWindow}ms`);
+      console.log(`[MONITOR]   - Qualidade: ${resyncResult.syncQuality}`);
+      timeSync = true; // Marcar como bem-sucedida
+    } else {
+      console.error(`[MONITOR] ❌ Re-sincronização não conseguiu melhorar a situação`);
+    }
+  }
   
   if (!timeSync) {
-    console.warn(`[MONITOR] ⚠️ Problema significativo de sincronização de tempo detectado (>3s)`);
-    console.warn(`[MONITOR] ⚠️ Isso pode causar erros de 'recvWindow' nas requisições`);
+    console.warn(`[MONITOR] ⚠️ Sincronização de tempo permanece problemática`);
+    console.warn(`[MONITOR] ⚙️ Sistema aplicou configurações automáticas de compensação máxima`);
+    
+    // Configurações já foram aplicadas automaticamente pela função checkServerTime
+    if (accountState) {
+      console.log(`[MONITOR] ✅ RECV_WINDOW configurado para ${accountState.recvWindow}ms automaticamente`);
+      console.log(`[MONITOR] ✅ Offset de tempo aplicado: ${accountState.timeOffset || 0}ms`);
+      console.log(`[MONITOR] ✅ Qualidade de sincronização: ${accountState.syncQuality || 'DESCONHECIDA'}`);
+    }
   } else {
-    console.log(`[MONITOR] ✅ Sincronização de tempo aceitável`);
+    console.log(`[MONITOR] ✅ Sincronização de tempo otimizada com sucesso para conta ${accountId}`);
+    
+    if (accountState) {
+      console.log(`[MONITOR] 📊 Configuração ótima aplicada:`);
+      console.log(`[MONITOR]   - RECV_WINDOW: ${accountState.recvWindow}ms`);
+      console.log(`[MONITOR]   - Qualidade: ${accountState.syncQuality}`);
+      console.log(`[MONITOR]   - Offset: ${accountState.timeOffset || 0}ms`);
+      console.log(`[MONITOR]   - Latência média: ${accountState.avgNetworkLatency?.toFixed(2)}ms`);
+    }
   }
 } catch (timeError) {
   console.warn(`[MONITOR] ⚠️ Erro ao verificar sincronização de tempo:`, timeError.message);
+  console.warn(`[MONITOR] 🛡️ Aplicando configuração de segurança máxima`);
+  
+  // ✅ CORRIGIDO: Configurar recv window respeitando limites do ambiente
+  const accountState = api.getAccountConnectionState(accountId);
+  if (accountState) {
+    // Verificar ambiente para definir limite correto
+    const isTestnet = accountState.ambiente === 'testnet';
+    const maxRecvWindow = isTestnet ? 59000 : 120000;
+    
+    accountState.recvWindow = maxRecvWindow;
+    accountState.syncQuality = 'ERRO';
+    console.log(`[MONITOR] ✅ RECV_WINDOW configurado para ${maxRecvWindow}ms (modo segurança máxima - ambiente: ${isTestnet ? 'testnet' : 'produção'})`);
+  }
 }
 
 // === ETAPA 5: Inicializando WebSocket (SEM WebSocket API) ===
 console.log(`🌐 ETAPA 5: Inicializando WebSockets para conta ${accountId}...`);
 
 try {
-  // ✅ APENAS WebSockets tradicionais, SEM WebSocket API
+  if (ENABLE_WS_API) {
+    console.log(`📡 WebSocket API: HABILITADO`);
+  } else {
+    console.log(`📡 WebSocket API: DESABILITADO - Usando apenas WebSockets tradicionais`);
+  }
   console.log(`📡 WebSockets tradicionais disponíveis`);
 } catch (wsInitError) {
   console.warn('⚠️ Erro nos WebSockets:', wsInitError.message);
 }
 
     // === ETAPA 6: Verificar status da sessão ===
-    if (ENABLE_WS_API) {
-      console.log(`🔍 ETAPA 6: Verificando status da sessão WebSocket API para conta ${accountId}...`);
-      try {
+    console.log(`🔍 ETAPA 6: Verificando status da sessão WebSocket para conta ${accountId}...`);
+    try {
+      if (ENABLE_WS_API) {
         const sessionStatusResponse = await websockets.checkSessionStatus(accountId);
         const isActive = sessionStatusResponse && sessionStatusResponse.result && sessionStatusResponse.result.apiKey !== null;
         console.log('📊 Status da sessão WebSocket API:', isActive ? 'ATIVA' : 'INATIVA');
-      } catch (sessionError) {
-        console.warn('⚠️ Erro ao verificar status da sessão WebSocket API:', sessionError.message);
+      } else {
+        console.log('📊 Status da sessão WebSocket API: PULAR (desabilitado)');
       }
-    } else {
-      console.log(`🔍 ETAPA 6: WebSocket API desabilitada, pulando verificação de sessão...`);
+    } catch (sessionError) {
+      if (ENABLE_WS_API) {
+        console.warn('⚠️ Erro ao verificar status da sessão WebSocket API:', sessionError.message);
+      } else {
+        console.log('📊 WebSocket API desabilitado - pulando verificação de sessão');
+      }
     }
 
-    // === ETAPA 7: CONFIGURAR HANDLERS (NOVO MÉTODO CENTRALIZADO) ===
+    // === ETAPA 6.5: Registrar callbacks de monitoramento ===
+console.log(`🔄 ETAPA 6.5: Configurando handlers de WebSocket para conta ${accountId}...`);
+
+try {
+  // ✅ Usar websockets.on() ao invés de setMonitoringCallbacks deprecated
+  console.log(`[MONITOR] ✅ Handlers serão registrados via websockets.on() nos próximos passos`);
+  
+} catch (callbackError) {
+  console.error(`[MONITOR] ❌ Erro ao configurar handlers para conta ${accountId}:`, callbackError.message);
+}
+
+    // === ETAPA 7: CONFIGURAR HANDLERS SEPARADAMENTE ===
     console.log(`🔧 ETAPA 7: Configurando handlers para conta ${accountId}...`);
-    try {
-      // ✅ Esta chamada única substitui todo o código legado de callbacks e handlers
-      registerWebSocketHandlers(accountId);
-    } catch (error) {
-      console.error(`[MONITOR] ❌ Erro ao configurar handlers para conta ${accountId}:`, error.message);
-      throw error;
-    }
+  try {
+    // ✅ CORREÇÃO: Usar a função importada corretamente com accountId
+    registerOrderHandlers(accountId);
+    registerAccountHandlers(accountId);
+
+    console.log(`[MONITOR]   ✅ Handlers de ordem e conta configurados para conta ${accountId}`);
+  } catch (error) {
+    console.error(`[MONITOR] ❌ Erro ao configurar handlers para conta ${accountId}:`, error.message);
+    throw error;
+  }
 
     // === ETAPA 8: Iniciar UserDataStream ===
     console.log(`🌐 ETAPA 8: Iniciando UserDataStream para conta ${accountId}...`);
@@ -364,7 +405,7 @@ try {
   await syncOrdersWithExchange(accountId);
 
   // ✅ NOVO: LIMPEZA DE POSIÇÕES FECHADAS (movido do job agendado)
-  //console.log(`[MONITOR] 📚 Verificando posições CLOSED para movimentação...`);
+  console.log(`[MONITOR] 📚 Verificando posições CLOSED para movimentação...`);
   try {
     const db = await getDatabaseInstance();
     
@@ -400,7 +441,7 @@ try {
         }
       }
     } else {
-      //monitorLog(`[MONITOR] ℹ️ Nenhuma posição CLOSED encontrada para movimentação`);
+      console.log(`[MONITOR] ℹ️ Nenhuma posição CLOSED encontrada para movimentação`);
     }
     
   } catch (cleanupClosedError) {
@@ -408,26 +449,26 @@ try {
   }
 
   // ✅ LIMPEZA SIMPLIFICADA DE ORDENS ÓRFÃS (Nova versão)
-  orphanLog(`[MONITOR] 🔍 Verificando ordens órfãs para conta ${accountId}...`);
+  console.log(`[MONITOR] 🔍 Verificando ordens órfãs para conta ${accountId}...`);
   const orphanResult = await cancelOrphanOrders(accountId);
 
   if (orphanResult > 0) {
-    orphanLog(`[MONITOR] ✅ ${orphanResult} ordens órfãs processadas para conta ${accountId}`);
+    console.log(`[MONITOR] ✅ ${orphanResult} ordens órfãs processadas para conta ${accountId}`);
   } else {
-    orphanLog(`[MONITOR] ✅ Nenhuma ordem órfã encontrada para conta ${accountId}`);
+    console.log(`[MONITOR] ✅ Nenhuma ordem órfã encontrada para conta ${accountId}`);
   }
   
   // ✅ MOVER ORDENS CANCELED PARA HISTÓRICO
   const movedOrders = await moveOrdersToHistory(accountId);
   if (movedOrders > 0) {
-    monitorLog(`[MONITOR] 📚 ${movedOrders} ordens movidas para histórico para conta ${accountId}`);
+    console.log(`[MONITOR] 📚 ${movedOrders} ordens movidas para histórico para conta ${accountId}`);
   }
   
   // ✅ LIMPEZA DE SINAIS ÓRFÃOS (mantém como estava)
-  orphanLog(`[MONITOR] 🗑️ Limpando sinais órfãos...`);
+  console.log(`[MONITOR] 🗑️ Limpando sinais órfãos...`);
   await cleanupOrphanSignals(accountId);
   
-  //console.log(`[MONITOR] ✅ Limpeza avançada concluída para conta ${accountId}`);
+  console.log(`[MONITOR] ✅ Limpeza avançada concluída para conta ${accountId}`);
 } catch (cleanupError) {
   console.error(`[MONITOR] ⚠️ Erro durante limpeza avançada para conta ${accountId}:`, cleanupError.message);
 }
@@ -457,12 +498,11 @@ try {
  */
 async function startPriceMonitoringInline(accountId) {
   try {
-    return await retryDatabaseOperation(async () => {
-      const db = await getDatabaseInstance();
-      if (!db) {
-        console.error('[MONITOR] Falha ao obter instância do banco de dados');
-        return 0;
-      }
+    const db = await getDatabaseInstance();
+    if (!db) {
+      console.error('[MONITOR] Falha ao obter instância do banco de dados');
+      return 0;
+    }
 
     // ✅ PRIORITÁRIO: Símbolos com sinais AGUARDANDO_ACIONAMENTO
     const [pendingSignals] = await db.query(`
@@ -539,7 +579,6 @@ async function startPriceMonitoringInline(accountId) {
     }
 
     return symbols.size;
-    }, 10, 1000, `Price Monitoring (conta ${accountId})`);
 
   } catch (error) {
     console.error('[MONITOR] Erro ao iniciar monitoramento de preços:', error);
@@ -672,7 +711,7 @@ async function startPriceMonitoringInline(accountId) {
         await syncOrdersWithExchange(accountId);
 
         // ✅ NOVO: LIMPEZA DE POSIÇÕES FECHADAS (movido do job agendado)
-        //monitorLog(`[MONITOR] 📚 Verificando posições CLOSED para movimentação...`);
+        console.log(`[MONITOR] 📚 Verificando posições CLOSED para movimentação...`);
         try {
           const db = await getDatabaseInstance();
           // ✅ Buscar posições CLOSED para mover
@@ -682,7 +721,7 @@ async function startPriceMonitoringInline(accountId) {
             WHERE status = 'CLOSED' AND conta_id = ?
           `, [accountId]);
           if (closedPositions.length > 0) {
-            monitorLog(`[MONITOR] 📚 Movendo ${closedPositions.length} posições CLOSED para histórico...`);
+            console.log(`[MONITOR] 📚 Movendo ${closedPositions.length} posições CLOSED para histórico...`);
             for (const position of closedPositions) {
               try {
                 const { movePositionToHistory } = require('../services/cleanup');
@@ -694,36 +733,36 @@ async function startPriceMonitoringInline(accountId) {
                   accountId
                 );
                 if (moved) {
-                  monitorLog(`[MONITOR] ✅ Posição ${position.simbolo} movida para histórico`);
+                  console.log(`[MONITOR] ✅ Posição ${position.simbolo} movida para histórico`);
                 }
               } catch (moveError) {
                 console.error(`[MONITOR] ❌ Erro ao mover posição ${position.simbolo}:`, moveError.message);
               }
             }
           } else {
-            //monitorLog(`[MONITOR] ℹ️ Nenhuma posição CLOSED encontrada para movimentação`);
+            console.log(`[MONITOR] ℹ️ Nenhuma posição CLOSED encontrada para movimentação`);
           }
         } catch (cleanupClosedError) {
           console.error(`[MONITOR] ⚠️ Erro na limpeza de posições CLOSED:`, cleanupClosedError.message);
         }
 
         // ✅ LIMPEZA SIMPLIFICADA DE ORDENS ÓRFÃS (Nova versão)
-        orphanLog(`[MONITOR] 🔍 Verificando ordens órfãs para conta ${accountId}...`);
+        console.log(`[MONITOR] 🔍 Verificando ordens órfãs para conta ${accountId}...`);
         const orphanResult = await cancelOrphanOrders(accountId);
         if (orphanResult > 0) {
-          orphanLog(`[MONITOR] ✅ ${orphanResult} ordens órfãs processadas para conta ${accountId}`);
+          console.log(`[MONITOR] ✅ ${orphanResult} ordens órfãs processadas para conta ${accountId}`);
         } else {
-          orphanLog(`[MONITOR] ✅ Nenhuma ordem órfã encontrada para conta ${accountId}`);
+          console.log(`[MONITOR] ✅ Nenhuma ordem órfã encontrada para conta ${accountId}`);
         }
         // ✅ MOVER ORDENS CANCELED PARA HISTÓRICO
         const movedOrders = await moveOrdersToHistory(accountId);
         if (movedOrders > 0) {
-          monitorLog(`[MONITOR] 📚 ${movedOrders} ordens movidas para histórico para conta ${accountId}`);
+          console.log(`[MONITOR] 📚 ${movedOrders} ordens movidas para histórico para conta ${accountId}`);
         }
         // ✅ LIMPEZA DE SINAIS ÓRFÃOS (mantém como estava)
-        orphanLog(`[MONITOR] 🗑️ Limpando sinais órfãos...`);
+        console.log(`[MONITOR] 🗑️ Limpando sinais órfãos...`);
         await cleanupOrphanSignals(accountId);
-        //monitorLog(`[MONITOR] ✅ Limpeza avançada concluída para conta ${accountId}`);
+        console.log(`[MONITOR] ✅ Limpeza avançada concluída para conta ${accountId}`);
       } catch (cleanupError) {
         console.error(`[MONITOR] ⚠️ Erro durante limpeza avançada para conta ${accountId}:`, cleanupError.message);
       }
@@ -739,24 +778,44 @@ async function startPriceMonitoringInline(accountId) {
       }
     });
 
+    // ✅ Job de monitoramento de sincronização de tempo a cada 5 minutos
+    accountJobs.timeSyncMonitor = schedule.scheduleJob('*/5 * * * *', async () => {
+      if (isShuttingDown) return;
+      try {
+        const { monitorTimeSync } = require('../api/rest');
+        const syncStatus = await monitorTimeSync(accountId);
+        
+        if (!syncStatus.success) {
+          console.warn(`[MONITOR] ⚠️ Problema na sincronização de tempo detectado para conta ${accountId}`);
+          console.warn(`[MONITOR] 📊 Status: ${syncStatus.message}`);
+          console.warn(`[MONITOR] ⚙️ Qualidade: ${syncStatus.quality}, RECV_WINDOW: ${syncStatus.recvWindow}ms`);
+        } else if (syncStatus.quality && syncStatus.quality !== 'EXCELENTE') {
+          console.log(`[MONITOR] 📊 Sincronização ${syncStatus.quality}: RECV_WINDOW=${syncStatus.recvWindow}ms, Offset=${syncStatus.timeOffset}ms`);
+        }
+        
+      } catch (timeSyncError) {
+        console.error(`[MONITOR] ❌ Erro no monitoramento de sincronização para conta ${accountId}:`, timeSyncError.message);
+      }
+    });
+
     // Armazenar jobs para cleanup no shutdown
     scheduledJobs[accountId] = accountJobs;
 
-    //console.log(`[MONITOR] ✅ Sistema de monitoramento avançado inicializado com sucesso para conta ${accountId}!`);
-    //console.log(`[MONITOR] 📊 Jobs agendados: ${Object.keys(accountJobs).length}`);
-    //console.log(`[MONITOR] 📋 Jobs ativos:`);
+    console.log(`[MONITOR] ✅ Sistema de monitoramento avançado inicializado com sucesso para conta ${accountId}!`);
+    console.log(`[MONITOR] 📊 Jobs agendados: ${Object.keys(accountJobs).length}`);
+    console.log(`[MONITOR] 📋 Jobs ativos:`);
     Object.keys(accountJobs).forEach(jobName => { 
       console.log(`[MONITOR]   - ${jobName}: ${accountJobs[jobName] ? '✅' : '❌'}`); 
     });
-    //console.log(`[MONITOR] 🎯 Funcionalidades ativas:`);
-    //console.log(`[MONITOR]   - Trailing Stop Loss: ✅`);
-    //console.log(`[MONITOR]   - Signal Timeout: ✅`);
-    //console.log(`[MONITOR]   - Telegram Bot: ✅`);
-    //console.log(`[MONITOR]   - Enhanced Monitoring: ✅`);
-    //console.log(`[MONITOR]   - Position History: ✅`);
-    //console.log(`[MONITOR]   - Cleanup System (Órfãs Simplificado): ✅`);
-    //console.log(`[MONITOR]   - Orphan Order Detection: ✅`);
-    //console.log(`[MONITOR]   - WebSocket API: ${ENABLE_WS_API ? '✅' : '❌ (Desabilitada)'}`);
+    console.log(`[MONITOR] 🎯 Funcionalidades ativas:`);
+    console.log(`[MONITOR]   - Trailing Stop Loss: ✅`);
+    console.log(`[MONITOR]   - Signal Timeout: ✅`);
+    console.log(`[MONITOR]   - Telegram Bot: ✅`);
+    console.log(`[MONITOR]   - Enhanced Monitoring: ✅`);
+    console.log(`[MONITOR]   - Position History: ✅`);
+    console.log(`[MONITOR]   - Cleanup System (Órfãs Simplificado): ✅`);
+    console.log(`[MONITOR]   - Orphan Order Detection: ✅`);
+    console.log(`[MONITOR]   - WebSocket API: ✅`);
 
     try {
       await logOpenPositionsAndOrdersVisual(accountId);
@@ -839,7 +898,7 @@ async function gracefulShutdown(accountIdToShutdown) {
     
     console.log(`[MONITOR] 🤖 6.5/7 - Parando bot do Telegram para conta ${accountIdToShutdown}...`);
     try {
-      const { stopTelegramBot } = require('../telegram/telegramBot');
+      const { stopTelegramBot } = require('./telegramBot');
       await stopTelegramBot(accountIdToShutdown);
       console.log(`[MONITOR]   ✅ Bot do Telegram parado para conta ${accountIdToShutdown}`);
     } catch (telegramShutdownError) {
@@ -895,23 +954,18 @@ try {
 
 async function runSignalMonitoring(accountId) {
   try {
-    return await retryDatabaseOperation(async () => {
-      // Verificar novos sinais (PENDING)
-      const newSignals = await checkNewTrades(accountId);
-      const canceledSignals = await checkCanceledSignals(accountId);
-      const expiredSignals = await checkExpiredSignals(accountId);
+    // Verificar novos sinais (PENDING)
+    const newSignals = await checkNewTrades(accountId);
+    const canceledSignals = await checkCanceledSignals(accountId);
+    const expiredSignals = await checkExpiredSignals(accountId);
     
     const totalProcessed = newSignals + canceledSignals + expiredSignals;
     if (totalProcessed > 0) {
       console.log(`[MONITORING] 📊 Processados: ${newSignals} novos, ${canceledSignals} cancelados, ${expiredSignals} expirados`);
     }
-      
-      return totalProcessed;
-    }, 10, 1000, `Signal Monitoring (conta ${accountId})`);
     
   } catch (error) {
     console.error(`[MONITORING] ❌ Erro no monitoramento de sinais:`, error.message);
-    return 0;
   }
 }
 
@@ -933,21 +987,12 @@ async function startMonitoringProcess() {
     const jobsResult = await initializeMonitoring(targetAccountId);
     
     if (!jobsResult || Object.keys(jobsResult).length === 0) {
-      console.error(`[MONITOR] ❌ ERRO: initializeMonitoring retornou resultado vazio ou inválido`);
-      console.error(`[MONITOR] ❌ jobsResult:`, jobsResult);
-      console.error(`[MONITOR] ❌ Tipo:`, typeof jobsResult);
-      console.error(`[MONITOR] ❌ Keys:`, jobsResult ? Object.keys(jobsResult) : 'N/A');
       throw new Error('initializeMonitoring retornou resultado vazio ou inválido');
     }
-
-    // ✅ SUCESSO: Limpa a tela e mostra apenas a mensagem de sucesso daqui para frente
-    setTimeout(() => {
-      clearScreenMultiplatform();
-      console.log(`[MONITOR] 🚀 === MONITORAMENTO INICIALIZADO ===`);
-      //console.log(`[MONITOR] 📊 Jobs agendados: ${Object.keys(jobsResult).length}`);
-      //console.log(`[MONITOR] 🔄 Sistema entrando em modo de operação contínua...`);
-      //console.log(`[MONITOR] ⏰ ${new Date().toLocaleString('pt-BR')}`);
-    }, 2000);
+    
+    console.log(`[MONITOR] 🎉 === MONITORAMENTO INICIALIZADO ===`);
+    console.log(`[MONITOR] 📊 Jobs agendados: ${Object.keys(jobsResult).length}`);
+    console.log(`[MONITOR] 🔄 Sistema entrando em modo de operação contínua...`);
     
     // Manter o processo vivo com heartbeat
     let heartbeatCounter = 0;
@@ -965,7 +1010,7 @@ async function startMonitoringProcess() {
     
   } catch (error) {
     console.error(`[MONITOR] ❌ ERRO FATAL na inicialização da conta ${targetAccountId}:`, error.message);
-    console.error(`[MONITOR] ❌ Stack trace:`, error.stack);
+    console.error(`[MONITOR] Stack trace:`, error.stack);
     
     // Tentar limpeza de emergência
     try {

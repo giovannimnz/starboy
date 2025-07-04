@@ -16,7 +16,9 @@
     "api": "node backend/server/api.js",
     "api:dev": "nodemon backend/server/api.js",
     "frontend": "cd frontend && npm run dev",
-    "dev": "concurrently \"npm run api:dev\" \"npm run frontend\"",
+    "dev": "bash start-dev.sh",
+    "dev:backend": "bash start-dev.sh backend",
+    "dev:frontend": "bash start-dev.sh frontend",
     "dev:api": "nodemon backend/server/api.js",
     "dev:full": "nodemon backend/server/api.js --watch backend --watch config",
     "start": "npm run api"
@@ -41,6 +43,7 @@
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.14.0",
     "node-schedule": "^2.1.1",
+    "pg": "^8.16.3",
     "pino-pretty": "^13.0.0",
     "sqlite3": "^5.1.7",
     "telegraf": "^4.16.3",

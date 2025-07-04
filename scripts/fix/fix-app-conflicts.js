@@ -4,7 +4,7 @@ const fs = require('fs');
 function fixAppConflicts() {
   console.log('🔧 Removendo funções duplicadas do app.js...\n');
   
-  const filePath = 'backend/server/app.js';
+  const filePath = '../../backend/server/app.js'; // Ajustado caminho relativo
   
   try {
     let content = fs.readFileSync(filePath, 'utf8');

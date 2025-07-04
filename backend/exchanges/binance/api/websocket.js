@@ -1,28 +1,9 @@
 const WebSocket = require('ws');
 const crypto = require('crypto');
 const { v4: uuidv4 } = require('uuid');
-const path = require('path');
 const { getDatabaseInstance } = require('../../../core/database/conexao');
 const api = require('../api/rest');
 const { getAccountConnectionState } = api;
-
-// Carregar configurações de ambiente
-require('dotenv').config({ path: path.resolve(__dirname, '../../../../config/.env') });
-
-// Configuração da WebSocket API
-const ENABLE_WS_API = process.env.ENABLE_WS_API === 'true';
-
-// Função para verificar se a WebSocket API está habilitada
-function isWebSocketApiEnabled() {
-  return ENABLE_WS_API;
-}
-
-// Função auxiliar para logs condicionais da WebSocket API
-const wsApiLog = (...args) => {
-  if (ENABLE_WS_API) {
-    console.log(...args);
-  }
-};
 
 // Variáveis para as bibliotecas Ed25519
 let nobleEd25519SignFunction = null;
@@ -35,16 +16,16 @@ async function loadNobleEd25519() {
     const nobleModule = await import('@noble/ed25519');
     if (nobleModule && typeof nobleModule.sign === 'function') {
       nobleEd25519SignFunction = nobleModule.sign;
-      wsApiLog('[WS-API] @noble/ed25519 carregado dinamicamente com sucesso.');
+      console.log('[WS-API] @noble/ed25519 carregado dinamicamente com sucesso.');
       return true;
     }
-    wsApiLog('[WS-API] @noble/ed25519 carregado, mas a função sign não foi encontrada.');
+    console.log('[WS-API] @noble/ed25519 carregado, mas a função sign não foi encontrada.');
     return false;
   } catch (e) {
     if (e.code !== 'ERR_MODULE_NOT_FOUND') {
         console.warn('[WS-API] Falha ao carregar @noble/ed25519 dinamicamente:', e.message);
     } else {
-        wsApiLog('[WS-API] @noble/ed25519 não instalado, pulando.');
+        console.log('[WS-API] @noble/ed25519 não instalado, pulando.');
     }
     return false;
   }
@@ -53,9 +34,9 @@ async function loadNobleEd25519() {
 // Carregar tweetnacl
 try {
   tweetnaclInstance = require('tweetnacl');
-  wsApiLog('[WS-API] tweetnacl carregado com sucesso.');
+  console.log('[WS-API] tweetnacl carregado com sucesso.');
 } catch (e) {
-  wsApiLog('[WS-API] tweetnacl não disponível, será usado apenas crypto nativo ou @noble/ed25519 (se disponível).');
+  console.log('[WS-API] tweetnacl não disponível, será usado apenas crypto nativo ou @noble/ed25519 (se disponível).');
 }
 
 // Mapa local para WebSockets de preço por conta
@@ -116,27 +97,6 @@ function off(eventName, listenerOrId, accountId) {
         console.log(`[WS-EVENTS] Removendo listener com ID '${String(listenerOrId)}' do evento '${eventName}' na conta ${accountId}.`);
         eventHandlers.delete(listenerOrId);
     }
-}
-
-/**
- * ✅ NOVO: Verifica se um listener específico está registrado.
- * @param {string} eventName - O nome do evento.
- * @param {number|string} accountId - O ID da conta.
- * @param {string} listenerId - O ID do listener a ser verificado.
- * @returns {boolean} - Retorna true se o listener estiver registrado.
- */
-function hasListener(eventName, accountId, listenerId) {
-    if (!accountId || !eventListeners.has(accountId)) {
-        return false;
-    }
-    const accountEvents = eventListeners.get(accountId);
-
-    if (!accountEvents.has(eventName)) {
-        return false;
-    }
-    const eventHandlers = accountEvents.get(eventName);
-    
-    return eventHandlers.has(listenerId);
 }
 
 /**
@@ -888,6 +848,14 @@ async function handleUserDataMessage(jsonData, accountId, db) {
   const eventType = jsonData.e;
   if (!eventType) return;
 
+  // ✅ NOVO: Verificar se há listeners de execução dedicados primeiro (prioridade alta)
+  if (eventType === 'ORDER_TRADE_UPDATE' && jsonData.o) {
+    const orderData = jsonData.o;
+    
+    // Notificar listeners de entrada dedicados primeiro
+    emitEntryExecutionEvent({ o: orderData }, accountId);
+  }
+
   // ✅ EMITIR EVENTOS USANDO O NOVO SISTEMA PUB/SUB
   switch (eventType) {
     case 'outboundAccountPosition':
@@ -901,7 +869,7 @@ async function handleUserDataMessage(jsonData, accountId, db) {
       break;
     case 'ACCOUNT_UPDATE':
       // Este evento pode conter múltiplas informações, vamos emitir eventos mais granulares
-      emit('accountUpdate', accountId, { message: jsonData, accountId: accountId });
+      emit('accountUpdate', accountId, jsonData);
       // Exemplo de como emitir sub-eventos se necessário
       if (jsonData.a && jsonData.a.B) { // Balances
         emit('balanceUpdateBulk', accountId, jsonData.a.B);
@@ -1112,6 +1080,52 @@ function forceCleanupAccount(accountId) {
   reset(accountId);
 }
 
+// ✅ NOVO: Sistema Pub/Sub dedicado para execução de entrada
+const entryExecutionListeners = new Map(); // Map<listenerId, {listener, accountId}>
+
+/**
+ * ✅ NOVO: Registra um listener dedicado para execução de entrada.
+ * Este listener só recebe atualizações de ordens durante uma entrada específica.
+ * @param {Function} listener - A função de callback a ser executada quando uma ordem for atualizada
+ * @param {number|string} accountId - O ID da conta
+ * @param {string} listenerId - ID único para identificar e remover o listener posteriormente
+ */
+function registerEntryExecutionListener(listener, accountId, listenerId) {
+    console.log(`[WS-ENTRY] 📝 Registrando listener de execução de entrada: ${listenerId} para conta ${accountId}`);
+    entryExecutionListeners.set(listenerId, {
+        listener: listener,
+        accountId: accountId,
+        registeredAt: Date.now()
+    });
+}
+
+/**
+ * ✅ NOVO: Remove um listener de execução de entrada.
+ * @param {string} listenerId - O ID do listener a ser removido
+ */
+function unregisterEntryExecutionListener(listenerId) {
+    if (entryExecutionListeners.has(listenerId)) {
+        console.log(`[WS-ENTRY] 🗑️ Removendo listener de execução de entrada: ${listenerId}`);
+        entryExecutionListeners.delete(listenerId);
+    }
+}
+
+/**
+ * ✅ NOVO: Disparar eventos para listeners de entrada
+ * @param {Object} orderMsg - Mensagem de atualização da ordem
+ * @param {number|string} accountId - ID da conta
+ */
+function emitEntryExecutionEvent(orderMsg, accountId) {
+    for (const [listenerId, listenerData] of entryExecutionListeners.entries()) {
+        if (listenerData.accountId == accountId) {
+            try {
+                listenerData.listener(orderMsg);
+            } catch (error) {
+                console.error(`[WS-ENTRY] ❌ Erro ao executar listener ${listenerId}:`, error.message);
+            }
+        }
+    }
+}
 
 module.exports = {
   // Funções de UserDataStream
@@ -1139,8 +1153,6 @@ module.exports = {
   setMonitoringCallbacks,
   getHandlers,
   getCredentials,
-  
-  // Funções utilitárias
   monitorWebSocketHealth,
   getAllAccountConnections,
   handleWebSocketApiMessage,
@@ -1149,9 +1161,14 @@ module.exports = {
   loadNobleEd25519,
   getAccountConnectionState,
   reset,
-  // ✅ EXPORTAR NOVAS FUNÇÕES DO SISTEMA DE EVENTOS
+  
+  // ✅ Sistema Pub/Sub
   on,
   off,
   emit,
-  hasListener
+  
+  // ✅ Sistema Pub/Sub dedicado para execução de entrada
+  registerEntryExecutionListener,
+  unregisterEntryExecutionListener,
+  emitEntryExecutionEvent
 };

@@ -13,7 +13,14 @@ const fastify = require('fastify')({
 // PLUGINS
 async function registerPlugins() {
   await fastify.register(require('@fastify/cors'), {
-    origin: ['http://localhost:3050', 'http://127.0.0.1:3050'],
+    origin: [
+      process.env.FRONTEND_URL || 'http://0.0.0.0:3050',
+      `http://0.0.0.0:${process.env.FRONTEND_PORT || 3050}`,
+      `http://localhost:${process.env.FRONTEND_PORT || 3050}`,
+      `http://127.0.0.1:${process.env.FRONTEND_PORT || 3050}`,
+      // Permitir qualquer origem para desenvolvimento (remover em produção)
+      '*'
+    ],
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
     allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
     credentials: true
@@ -39,7 +46,7 @@ async function registerPlugins() {
         version: '1.0.0'
       },
       servers: [{
-        url: `http://localhost:${process.env.API_PORT || 8001}`,
+        url: `http://0.0.0.0:${process.env.API_PORT || 8050}`,
         description: 'Servidor de Desenvolvimento'
       }],
     },
@@ -98,7 +105,7 @@ async function startServer() {
     await registerPlugins();
     await registerRoutes();
 
-    const port = process.env.API_PORT || 8001;
+    const port = process.env.API_PORT || 8050;
     const host = process.env.API_HOST || '0.0.0.0';
     
     await fastify.listen({ port, host });

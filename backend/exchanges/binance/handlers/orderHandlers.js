@@ -1,19 +1,6 @@
 const { getDatabaseInstance, insertPosition, insertNewOrder, formatDateForMySQL } = require('../../../core/database/conexao');
-const { retryDatabaseOperation } = require('../services/cleanup');
 const websockets = require('../api/websocket');
 const { sendTelegramMessage, formatOrderMessage } = require('../services/telegramHelper');
-const path = require('path');
-
-// Carregar configurações de ambiente
-require('dotenv').config({ path: path.resolve(__dirname, '../../../../config/.env') });
-
-// Configurações de logging - SEMPRE ATIVO
-const ENABLE_ORPHAN_LOGS = true; // Sempre true
-
-// Função auxiliar para logs condicionais - AGORA SEMPRE ATIVA
-const orphanLog = (...args) => {
-  console.log(...args); // Sempre exibe
-};
 
 const targetCache = new Map();
 
@@ -46,14 +33,13 @@ function registerOrderUpdateHandler(accountId) {
  */
 async function handleOrderUpdate(accountId, orderUpdateData, db = null) {
   try {
-    return await retryDatabaseOperation(async () => {
-      let connection;
+    let connection;
 
-      // ✅ VALIDAÇÃO UNIFICADA
-      if (!accountId || typeof accountId !== 'number') {
-        console.error(`[ORDER] AccountId inválido: ${accountId} (tipo: ${typeof accountId})`);
-        return;
-      }
+    // ✅ VALIDAÇÃO UNIFICADA
+    if (!accountId || typeof accountId !== 'number') {
+      console.error(`[ORDER] AccountId inválido: ${accountId} (tipo: ${typeof accountId})`);
+      return;
+    }
 
     if (!orderUpdateData || !orderUpdateData.i) {
         console.error(`[ORDER] Dados de atualização de ordem inválidos para conta ${accountId}:`, orderUpdateData);
@@ -160,14 +146,10 @@ async function handleOrderUpdate(accountId, orderUpdateData, db = null) {
       console.log(`[ORDER]   - Quantidade: ${orderData.q}`);
       console.log(`[ORDER]   - Preço: ${orderData.p}`);
     }
-    
-    return true; // Indicar sucesso do processamento
-    }, 10, 1000, `Handle Order Update (ordem ${orderId || 'unknown'})`);
 
   } catch (error) {
     console.error(`[ORDER] ❌ Erro ao processar atualização da ordem:`, error.message);
     console.error(`[ORDER] Stack trace:`, error.stack);
-    return false;
   }
 }
 
@@ -288,14 +270,13 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCou
     return false;
   }
 
-  return await retryDatabaseOperation(async () => {
-    let connection;
-    try {
-      console.log(`[ORDER_AUTO_MOVE] 🔄 Iniciando migração da ordem ${orderId} com status ${newStatus}...`);
-      
-      const db = await getDatabaseInstance();
-      connection = await db.getConnection();
-      await connection.beginTransaction();
+  let connection;
+  try {
+    console.log(`[ORDER_AUTO_MOVE] 🔄 Iniciando migração da ordem ${orderId} com status ${newStatus}...`);
+    
+    const db = await getDatabaseInstance();
+    connection = await db.getConnection();
+    await connection.beginTransaction();
 
     // ✅ 1. VERIFICAÇÃO PRELIMINAR: Ordem já foi movida para histórico?
     const [historyCheck] = await connection.query(
@@ -559,13 +540,25 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCou
     console.log(`[ORDER_AUTO_MOVE] ✅ Ordem ${orderId} movida e deletada com sucesso - verificação final confirmada`);
     return true;
 
-    } catch (error) {
-      if (connection) await connection.rollback();
-      throw error; // Relançar para que retryDatabaseOperation possa tratar
-    } finally {
-      if (connection) connection.release();
+  } catch (error) {
+    if (connection) await connection.rollback();
+
+    // Retry em caso de deadlock
+    if (
+      error.message &&
+      error.message.includes('Deadlock found when trying to get lock') &&
+      retryCount < 1000
+    ) {
+      console.warn(`[ORDER_AUTO_MOVE] ⚠️ Deadlock ao mover ordem ${orderId}. Tentando novamente (${retryCount + 1}/1000)...`);
+      await new Promise(resolve => setTimeout(resolve, 500 * (retryCount + 1)));
+      return autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCount + 1);
     }
-  }, 10, 1000, `Auto Move Order (ordem ${orderId})`);
+
+    console.error(`[ORDER_AUTO_MOVE] ❌ Erro ao mover ordem ${orderId}:`, error.message);
+    return false;
+  } finally {
+    if (connection) connection.release();
+  }
 }
 
 /**
@@ -1014,33 +1007,43 @@ function determineOrderBotTypeFromExternal(orderData) {
 }
 
 /**
+ * ✅ FUNÇÃO AUXILIAR: Mapear tipo de ordem da Binance para formato do banco
+ */
+function mapOrderType(binanceOrderType) {
+  const mapping = {
+    'LIMIT': 'LIMIT',
+    'MARKET': 'MARKET',
+    'STOP_MARKET': 'STOP_MARKET',
+    'TAKE_PROFIT_MARKET': 'TAKE_PROFIT_MARKET',
+    'TRAILING_STOP_MARKET': 'TRAILING_STOP_MARKET',
+    'STOP': 'STOP',
+    'TAKE_PROFIT': 'TAKE_PROFIT',
+    'LIMIT_MAKER': 'LIMIT_MAKER'
+  };
+  
+  return mapping[binanceOrderType] || binanceOrderType;
+}
+
+/**
  * ✅ FUNÇÃO CORRIGIDA: Registrar handlers de ordem
  */
 function registerOrderHandlers(accountId) {
   try {
     console.log(`[ORDER-HANDLERS] Registrando handlers de ordem para conta ${accountId}...`);
     
-    // ✅ CRIAR HANDLER ROBUSTO QUE ACEITA MÚLTIPLOS FORMATOS
-    const robustOrderHandler = async (messageOrOrder, db) => {
+    // ✅ USAR websockets.on() ao invés de setMonitoringCallbacks deprecated
+    const robustOrderHandler = async (orderUpdatePayload) => {
       try {
-      /*  console.log(`[ORDER-HANDLERS] 📨 Mensagem recebida para conta ${accountId}:`, {
-          type: typeof messageOrOrder,
-          hasE: messageOrOrder?.e,
-          hasO: messageOrOrder?.o,
-          hasI: messageOrOrder?.i,
-          hasS: messageOrOrder?.s
-        });*/
-        
         // ✅ CHAMAR FUNÇÃO UNIFICADA
-        await handleOrderUpdate(messageOrOrder, accountId, db);
+        await handleOrderUpdate(accountId, orderUpdatePayload, null);
         
       } catch (handlerError) {
         console.error(`[ORDER-HANDLERS] ❌ Erro no handler robusto para conta ${accountId}:`, handlerError.message);
       }
     };
     
-    // ✅ CORREÇÃO: Usar websockets.on() em vez de setMonitoringCallbacks deprecated
-    websockets.on('orderUpdate', robustOrderHandler, accountId, `orderHandler_${accountId}`);
+    // ✅ REGISTRAR USANDO websockets.on()
+    websockets.on('orderUpdate', robustOrderHandler, accountId, 'mainOrderHandler');
     
     console.log(`[ORDER-HANDLERS] ✅ Handler robusto registrado para conta ${accountId}`);
     return true;
@@ -1457,6 +1460,7 @@ async function searchAndLinkPosition(orderDbId, orderData, accountId) {
 module.exports = {
   handleOrderUpdate,
   registerOrderUpdateHandler, // ✅ Garante que a função correta está exportada
+  registerOrderHandlers, // ✅ ADICIONADO: Exportar a função principal
   autoMoveOrderOnCompletion,
   checkPositionClosureAfterOrderExecution,
   insertExternalOrder,

@@ -222,17 +222,24 @@ async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}
       throw new Error(`Credenciais incompletas para conta ${accountId}: apiKey=${!!apiKey}, secretKey=${!!secretKey}, baseUrl=${!!baseUrl}`);
     }
 
-    function getTimestamp() { return Date.now() - 1000; }
+    function getTimestamp() { 
+      // ✅ Usar timestamp corrigido baseado na sincronização
+      return getCorrectedTimestamp(accountId) - 500; // Margem de segurança reduzida
+    }
     const timestamp = getTimestamp();
-    // Adicionar timestamp aos parâmetros
-    const allParams = { ...params, timestamp };
+    
+    // ✅ Usar recvWindow otimizado baseado na qualidade de sincronização
+    const recvWindow = getOptimizedRecvWindow(accountId);
+    
+    // Adicionar timestamp e recvWindow aos parâmetros
+    const allParams = { ...params, timestamp, recvWindow };
     let queryString = '';
     let bodyData = '';
     if (method === 'GET') {
-      const queryParams = { ...params, timestamp };
+      const queryParams = { ...params, timestamp, recvWindow };
       queryString = Object.keys(queryParams).sort().map(key => `${key}=${encodeURIComponent(queryParams[key])}`).join('&');
     } else {
-      const bodyParams = { ...params, timestamp };
+      const bodyParams = { ...params, timestamp, recvWindow };
       queryString = Object.keys(bodyParams).sort().map(key => `${key}=${encodeURIComponent(bodyParams[key])}`).join('&');
       bodyData = queryString;
     }
@@ -327,7 +334,7 @@ async function getPrice(symbol, accountId) {
 }
 
 
-const RECV_WINDOW = 10000; // 10 segundos (mais flexível)
+const RECV_WINDOW = 60000; // 60 segundos (mais flexível para evitar erros de sincronização)
 
 async function getAllOpenPositions(accountId, symbol = null) {
   try {
@@ -336,8 +343,9 @@ async function getAllOpenPositions(accountId, symbol = null) {
       : `[API] Obtendo posições abertas para conta ${accountId}...`;
     //console.log(logMessage);
     
-    // ✅ ADICIONAR recvWindow aos parâmetros
-    const requestParams = { recvWindow: RECV_WINDOW };
+    // ✅ USAR recvWindow otimizado baseado no ambiente
+    const optimizedRecvWindow = getOptimizedRecvWindow(accountId);
+    const requestParams = { recvWindow: optimizedRecvWindow };
     
     // Se símbolo específico for fornecido, adicionar aos parâmetros
     if (symbol) {
@@ -415,43 +423,248 @@ async function getListenKey(accountId) {
 
 async function checkServerTime(accountId) {
   try {
-    console.log(`[API] 🕐 Verificando sincronização de tempo para conta ${accountId}...`);
+    console.log(`[CONTA-${accountId}] 🕐 Verificando sincronização de tempo avançada...`);
     
-    const startTime = Date.now();
+    // === MÚLTIPLAS AMOSTRAGENS PARA PRECISÃO ===
+    const samples = [];
+    const sampleCount = 5; // 5 amostras para maior precisão
     
-    // Fazer requisição simples para obter tempo do servidor
-    const response = await fetch('https://fapi.binance.com/fapi/v1/time');
-    const data = await response.json();
-    
-    const endTime = Date.now();
-    const roundTripTime = endTime - startTime;
-    const serverTime = parseInt(data.serverTime);
-    const localTime = Date.now();
-    const timeDiff = Math.abs(localTime - serverTime);
-    
-    //console.log(`[API] 🕐 Sincronização de tempo:`);
-    //console.log(`[API]   - Tempo local: ${localTime}`);
-    //console.log(`[API]   - Tempo servidor: ${serverTime}`);
-    //console.log(`[API]   - Diferença: ${timeDiff}ms`);
-    //console.log(`[API]   - RTT: ${roundTripTime}ms`);
-    
-    // ✅ CORREÇÃO: Aumentar tolerância para 3 segundos devido à latência de rede
-    if (timeDiff > 3000) {
-      console.warn(`[API] ⚠️ Grande diferença de tempo: ${timeDiff}ms (>3s)`);
-      return false;
-    } else if (timeDiff > 1500) {
-      console.warn(`[API] ⚠️ Diferença de tempo moderada: ${timeDiff}ms (>1.5s) - ainda aceitável`);
+    for (let i = 0; i < sampleCount; i++) {
+      const startTime = process.hrtime.bigint(); // Precisão de nanosegundos
+      const localTimeBeforeRequest = Date.now();
+      
+      try {
+        // Usar endpoint mais rápido da Binance
+        const response = await fetch('https://fapi.binance.com/fapi/v1/ping', {
+          method: 'GET',
+          timeout: 5000
+        });
+        
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        
+        // Requisição para obter tempo do servidor
+        const timeResponse = await fetch('https://fapi.binance.com/fapi/v1/time', {
+          method: 'GET',
+          timeout: 5000
+        });
+        
+        if (!timeResponse.ok) {
+          throw new Error(`HTTP ${timeResponse.status}`);
+        }
+        
+        const endTime = process.hrtime.bigint();
+        const localTimeAfterRequest = Date.now();
+        
+        const data = await timeResponse.json();
+        const serverTime = parseInt(data.serverTime);
+        
+        // Calcular tempo de rede (RTT)
+        const networkLatencyNs = Number(endTime - startTime);
+        const networkLatencyMs = networkLatencyNs / 1000000; // Converter para ms
+        
+        // Estimar o tempo real do servidor compensando latência de rede
+        const estimatedServerTime = serverTime + (networkLatencyMs / 2);
+        const currentLocalTime = (localTimeBeforeRequest + localTimeAfterRequest) / 2;
+        
+        const timeDiff = Math.abs(currentLocalTime - estimatedServerTime);
+        
+        samples.push({
+          localTime: currentLocalTime,
+          serverTime: estimatedServerTime,
+          timeDiff: timeDiff,
+          networkLatency: networkLatencyMs,
+          rawServerTime: serverTime
+        });
+        
+        // Pequeno delay entre amostras
+        if (i < sampleCount - 1) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+        
+      } catch (sampleError) {
+        console.warn(`[CONTA-${accountId}] ⚠️ Erro na amostra ${i + 1}:`, sampleError.message);
+      }
     }
     
-    console.log(`[API] ✅ Sincronização de tempo OK`);
-    return true;
+    if (samples.length === 0) {
+      console.error(`[CONTA-${accountId}] ❌ Não foi possível obter nenhuma amostra válida`);
+      return false;
+    }
+    
+    // === ANÁLISE ESTATÍSTICA DAS AMOSTRAS ===
+    const avgTimeDiff = samples.reduce((sum, s) => sum + s.timeDiff, 0) / samples.length;
+    const avgNetworkLatency = samples.reduce((sum, s) => sum + s.networkLatency, 0) / samples.length;
+    const minTimeDiff = Math.min(...samples.map(s => s.timeDiff));
+    const maxTimeDiff = Math.max(...samples.map(s => s.timeDiff));
+    
+    // Detectar amostra mais confiável (menor latência de rede)
+    const bestSample = samples.reduce((best, current) => 
+      current.networkLatency < best.networkLatency ? current : best
+    );
+    
+    console.log(`[CONTA-${accountId}] � Análise de sincronização (${samples.length} amostras):`);
+    console.log(`[CONTA-${accountId}]   - Diferença média: ${avgTimeDiff.toFixed(2)}ms`);
+    console.log(`[CONTA-${accountId}]   - Diferença mínima: ${minTimeDiff.toFixed(2)}ms`);
+    console.log(`[CONTA-${accountId}]   - Diferença máxima: ${maxTimeDiff.toFixed(2)}ms`);
+    console.log(`[CONTA-${accountId}]   - Latência média: ${avgNetworkLatency.toFixed(2)}ms`);
+    console.log(`[CONTA-${accountId}]   - Melhor amostra: ${bestSample.timeDiff.toFixed(2)}ms (lat: ${bestSample.networkLatency.toFixed(2)}ms)`);
+    
+    // === APLICAR CORREÇÃO DINÂMICA ===
+    const accountState = getAccountState(accountId);
+    let targetTimeDiff = bestSample.timeDiff; // Usar a melhor amostra
+    
+    // ✅ NOVO: Verificar limites do ambiente (testnet vs produção)
+    const isTestnet = accountState && accountState.ambiente === 'testnet';
+    const maxRecvWindow = isTestnet ? 59000 : 180000; // Testnet: máximo 59s, Produção: máximo 3min
+    
+    console.log(`[CONTA-${accountId}] 🏗️ Ambiente detectado: ${isTestnet ? 'TESTNET' : 'PRODUÇÃO'} (limite: ${maxRecvWindow}ms)`);
+    
+    // Definir RECV_WINDOW baseado na qualidade da sincronização E no ambiente
+    let recvWindow;
+    let syncQuality;
+    
+    if (targetTimeDiff <= 200) {
+      // Excelente sincronização
+      recvWindow = Math.min(5000, maxRecvWindow);
+      syncQuality = 'EXCELENTE';
+    } else if (targetTimeDiff <= 500) {
+      // Boa sincronização
+      recvWindow = Math.min(10000, maxRecvWindow);
+      syncQuality = 'BOA';
+    } else if (targetTimeDiff <= 1000) {
+      // Sincronização aceitável
+      recvWindow = Math.min(20000, maxRecvWindow);
+      syncQuality = 'ACEITÁVEL';
+    } else if (targetTimeDiff <= 2000) {
+      // Sincronização ruim
+      recvWindow = Math.min(40000, maxRecvWindow);
+      syncQuality = 'RUIM';
+    } else if (targetTimeDiff <= 5000) {
+      // Sincronização muito ruim (NOVO: casos como 2081ms)
+      recvWindow = Math.min(isTestnet ? 59000 : 80000, maxRecvWindow);
+      syncQuality = 'MUITO_RUIM';
+    } else if (targetTimeDiff <= 10000) {
+      // Sincronização crítica (NOVO: casos extremos)
+      recvWindow = Math.min(isTestnet ? 59000 : 120000, maxRecvWindow);
+      syncQuality = 'CRÍTICA';
+    } else {
+      // Sincronização inaceitável
+      recvWindow = maxRecvWindow; // Usar o máximo permitido pelo ambiente
+      syncQuality = 'INACEITÁVEL';
+    }
+    
+    // Aplicar correção no estado da conta
+    if (accountState) {
+      accountState.recvWindow = recvWindow;
+      accountState.timeOffset = Math.round(bestSample.serverTime - bestSample.localTime); // Offset para correção
+      accountState.lastTimeSyncCheck = Date.now();
+      accountState.syncQuality = syncQuality;
+      accountState.avgNetworkLatency = avgNetworkLatency;
+    }
+    
+    console.log(`[CONTA-${accountId}] ⚙️ Configuração aplicada:`);
+    console.log(`[CONTA-${accountId}]   - RECV_WINDOW: ${recvWindow}ms`);
+    console.log(`[CONTA-${accountId}]   - Qualidade: ${syncQuality}`);
+    console.log(`[CONTA-${accountId}]   - Offset de tempo: ${accountState?.timeOffset || 0}ms`);
+    
+    // === VALIDAÇÃO FINAL E AÇÕES CORRETIVAS ===
+    if (targetTimeDiff > 10000) {
+      console.error(`[CONTA-${accountId}] ❌ SINCRONIZAÇÃO INACEITÁVEL: ${targetTimeDiff.toFixed(2)}ms`);
+      console.error(`[CONTA-${accountId}] 🚨 CRÍTICO: Verificar urgentemente NTP do sistema, relogio ou conexão`);
+      console.error(`[CONTA-${accountId}] 🔧 Ações recomendadas:`);
+      console.error(`[CONTA-${accountId}]   1. Verificar se o NTP está ativo: w32tm /query /status`);
+      console.error(`[CONTA-${accountId}]   2. Sincronizar manualmente: w32tm /resync`);
+      console.error(`[CONTA-${accountId}]   3. Verificar conexão de internet`);
+      console.error(`[CONTA-${accountId}]   4. Considerar usar VPS com melhor conectividade`);
+      return false;
+    } else if (targetTimeDiff > 5000) {
+      console.error(`[CONTA-${accountId}] ❌ SINCRONIZAÇÃO CRÍTICA: ${targetTimeDiff.toFixed(2)}ms`);
+      console.error(`[CONTA-${accountId}] 🚨 Sistema pode funcionar com limitações severas`);
+      console.error(`[CONTA-${accountId}] 📝 RECV_WINDOW configurado para ${recvWindow}ms (modo defensivo)`);
+      console.warn(`[CONTA-${accountId}] ⚠️ Recomendação urgente: Verificar NTP e conexão de internet`);
+      return true; // Ainda tenta funcionar com RECV_WINDOW muito alto
+    } else if (targetTimeDiff > 2000) {
+      console.warn(`[CONTA-${accountId}] ⚠️ Sincronização MUITO RUIM: ${targetTimeDiff.toFixed(2)}ms`);
+      console.warn(`[CONTA-${accountId}] 🔧 RECV_WINDOW ajustado para ${recvWindow}ms (modo compensação)`);
+      console.warn(`[CONTA-${accountId}] 📋 Recomendações:`);
+      console.warn(`[CONTA-${accountId}]   - Verificar latência de rede: ping 8.8.8.8`);
+      console.warn(`[CONTA-${accountId}]   - Verificar sincronização NTP`);
+      console.warn(`[CONTA-${accountId}]   - Considerar usar conexão com fio`);
+      return true; // Funcional com compensações
+    } else if (targetTimeDiff > 1000) {
+      console.warn(`[CONTA-${accountId}] ⚠️ Sincronização sub-ótima: ${targetTimeDiff.toFixed(2)}ms`);
+      console.warn(`[CONTA-${accountId}] 📝 RECV_WINDOW ajustado para ${recvWindow}ms para compensar`);
+      return true; // Ainda funcional, mas com warning
+    } else {
+      console.log(`[CONTA-${accountId}] ✅ Sincronização de tempo ${syncQuality}: ${targetTimeDiff.toFixed(2)}ms`);
+      return true;
+    }
     
   } catch (error) {
-    console.error(`[API] ❌ Erro ao verificar tempo do servidor:`, error.message);
+    console.error(`[CONTA-${accountId}] ❌ Erro ao verificar tempo do servidor:`, error.message);
+    
+    // Configuração de segurança em caso de erro
+    const accountState = getAccountState(accountId);
+    if (accountState) {
+      accountState.recvWindow = 120000; // Máximo aumentado para casos extremos
+      accountState.syncQuality = 'ERRO';
+      accountState.timeOffset = 0; // Reset do offset em caso de erro
+      console.warn(`[CONTA-${accountId}] 🛡️ RECV_WINDOW configurado para 120000ms (modo segurança máxima)`);
+    }
+    
     return false;
   }
 }
 
+
+/**
+ * Monitora a sincronização de tempo de forma contínua e aplica correções automáticas
+ * @param {number} accountId - ID da conta
+ * @returns {Promise<Object>} - Status da sincronização
+ */
+async function monitorTimeSync(accountId) {
+  try {
+    const accountState = getAccountState(accountId);
+    
+    // Verificar se já foi feita uma sincronização recente (últimos 5 minutos)
+    if (accountState && accountState.lastTimeSyncCheck) {
+      const timeSinceLastCheck = Date.now() - accountState.lastTimeSyncCheck;
+      if (timeSinceLastCheck < 300000) { // 5 minutos
+        return {
+          success: true,
+          message: 'Sincronização ainda válida',
+          quality: accountState.syncQuality,
+          recvWindow: accountState.recvWindow,
+          timeOffset: accountState.timeOffset || 0
+        };
+      }
+    }
+    
+    // Executar nova verificação de sincronização
+    const syncResult = await checkServerTime(accountId);
+    
+    return {
+      success: syncResult,
+      message: syncResult ? 'Sincronização atualizada com sucesso' : 'Problemas na sincronização detectados',
+      quality: accountState?.syncQuality || 'DESCONHECIDA',
+      recvWindow: accountState?.recvWindow || 60000,
+      timeOffset: accountState?.timeOffset || 0,
+      avgNetworkLatency: accountState?.avgNetworkLatency || null
+    };
+    
+  } catch (error) {
+    console.error(`[CONTA-${accountId}] ❌ Erro no monitoramento de sincronização:`, error.message);
+    return {
+      success: false,
+      message: `Erro: ${error.message}`,
+      quality: 'ERRO',
+      recvWindow: 60000,
+      timeOffset: 0
+    };
+  }
+}
 
 /**
  * Obtém precisão de um símbolo
@@ -859,8 +1072,13 @@ async function verifyAndFixEnvironmentConsistency(accountId) {
   }
 }
 
-function getTimestamp() {
-  // ✅ Usar timestamp mais preciso e com margem de segurança
+function getTimestamp(accountId = null) {
+  // ✅ Se accountId for fornecido, usar timestamp corrigido
+  if (accountId) {
+    return getCorrectedTimestamp(accountId) - 500; // Margem de segurança reduzida
+  }
+  
+  // ✅ Fallback para timestamp padrão com margem de segurança
   return Date.now() - 1000; // Subtrair 1 segundo para margem de segurança
 }
 
@@ -1509,6 +1727,8 @@ async function editOrder(accountId, symbol, orderId, newPrice, side, quantity = 
       
       // Erro -2011: Ordem não encontrada
       if (apiError.code === -2011) {
+       
+       
         console.error(`[API] Ordem ${orderId} não encontrada (já executada/cancelada)`);
         throw new Error(`Ordem ${orderId} não encontrada - pode ter sido executada ou cancelada`);
       }
@@ -1845,6 +2065,154 @@ async function getUserTrades(accountId, symbol, options = {}) {
   }
 }
 
+/**
+ * Obtém timestamp corrigido para requisições, aplicando offset de sincronização
+ * @param {number} accountId - ID da conta
+ * @returns {number} - Timestamp corrigido em milissegundos
+ */
+function getCorrectedTimestamp(accountId) {
+  const accountState = getAccountState(accountId);
+  const localTime = Date.now();
+  
+  if (accountState && accountState.timeOffset !== undefined) {
+    const correctedTime = localTime + accountState.timeOffset;
+    //console.log(`[CONTA-${accountId}] ⏰ Timestamp corrigido: ${localTime} + ${accountState.timeOffset} = ${correctedTime}`);
+    return correctedTime;
+  }
+  
+  return localTime;
+}
+
+/**
+ * Obtém RECV_WINDOW otimizado baseado na qualidade de sincronização
+ * @param {number} accountId - ID da conta
+ * @returns {number} - RECV_WINDOW em milissegundos
+ */
+function getOptimizedRecvWindow(accountId) {
+  const accountState = getAccountState(accountId);
+  
+  // ✅ NOVO: Verificar limites do ambiente
+  const isTestnet = accountState && accountState.ambiente === 'testnet';
+  const maxRecvWindow = isTestnet ? 59000 : 180000; // Testnet: máximo 59s, Produção: máximo 3min
+  
+  if (accountState && accountState.recvWindow) {
+    // Garantir que o valor está dentro de limites seguros do ambiente
+    const recvWindow = Math.min(accountState.recvWindow, maxRecvWindow);
+    
+    if (accountState.recvWindow > maxRecvWindow) {
+      console.warn(`[CONTA-${accountId}] ⚠️ RECV_WINDOW ajustado de ${accountState.recvWindow}ms para ${recvWindow}ms (limite ${isTestnet ? 'testnet' : 'produção'})`);
+    }
+    
+    return recvWindow;
+  }
+  
+  // Fallback baseado no ambiente
+  const fallbackRecvWindow = isTestnet ? 59000 : 120000;
+  console.log(`[CONTA-${accountId}] 📝 Usando RECV_WINDOW padrão: ${fallbackRecvWindow}ms (ambiente: ${isTestnet ? 'testnet' : 'produção'})`);
+  return fallbackRecvWindow;
+}
+
+/**
+ * Força uma re-sincronização agressiva de tempo com múltiplas tentativas
+ * @param {number} accountId - ID da conta
+ * @param {number} maxRetries - Número máximo de tentativas (padrão: 3)
+ * @returns {Promise<Object>} - Resultado da re-sincronização
+ */
+async function forceTimeResync(accountId, maxRetries = 3) {
+  console.log(`[CONTA-${accountId}] 🔄 INICIANDO RE-SINCRONIZAÇÃO FORÇADA (${maxRetries} tentativas)`);
+  
+  let bestResult = null;
+  let attempts = 0;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    console.log(`[CONTA-${accountId}] 🔄 Tentativa ${attempt}/${maxRetries} de re-sincronização...`);
+    
+    try {
+      // Limpar estado de sincronização anterior
+      const accountState = getAccountState(accountId);
+      if (accountState) {
+        delete accountState.lastTimeSyncCheck;
+        delete accountState.timeOffset;
+        delete accountState.syncQuality;
+        console.log(`[CONTA-${accountId}] 🧹 Estado de sincronização anterior limpo`);
+      }
+      
+      // Aguardar um pouco entre tentativas
+      if (attempt > 1) {
+        await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+      }
+      
+      // Executar nova sincronização
+      const syncResult = await checkServerTime(accountId);
+      
+      if (syncResult && accountState) {
+        const timeDiff = accountState.syncQuality;
+        const recvWindow = accountState.recvWindow;
+        const timeOffset = accountState.timeOffset || 0;
+        
+        console.log(`[CONTA-${accountId}] 📊 Tentativa ${attempt} - Resultado:`);
+        console.log(`[CONTA-${accountId}]   - Sucesso: ${syncResult ? 'SIM' : 'NÃO'}`);
+        console.log(`[CONTA-${accountId}]   - Qualidade: ${timeDiff || 'DESCONHECIDA'}`);
+        console.log(`[CONTA-${accountId}]   - RECV_WINDOW: ${recvWindow || 60000}ms`);
+        console.log(`[CONTA-${accountId}]   - Offset: ${timeOffset}ms`);
+        
+        // Guardar o melhor resultado até agora
+        if (!bestResult || (syncResult && (!bestResult.success || recvWindow < bestResult.recvWindow))) {
+          bestResult = {
+            success: syncResult,
+            attempt: attempt,
+            quality: timeDiff,
+            recvWindow: recvWindow,
+            timeOffset: timeOffset
+          };
+          console.log(`[CONTA-${accountId}] ⭐ Nova melhor sincronização na tentativa ${attempt}`);
+        }
+        
+        // Se conseguiu uma sincronização boa, pode parar
+        if (syncResult && recvWindow <= 20000) {
+          console.log(`[CONTA-${accountId}] ✅ Sincronização satisfatória alcançada na tentativa ${attempt}`);
+          break;
+        }
+      }
+      
+      attempts++;
+      
+    } catch (error) {
+      console.error(`[CONTA-${accountId}] ❌ Erro na tentativa ${attempt} de re-sincronização:`, error.message);
+    }
+  }
+  
+  // Avaliar resultado final
+  if (bestResult && bestResult.success) {
+    console.log(`[CONTA-${accountId}] ✅ RE-SINCRONIZAÇÃO CONCLUÍDA:`);
+    console.log(`[CONTA-${accountId}]   - Melhor resultado: Tentativa ${bestResult.attempt}`);
+    console.log(`[CONTA-${accountId}]   - Qualidade: ${bestResult.quality}`);
+    console.log(`[CONTA-${accountId}]   - RECV_WINDOW: ${bestResult.recvWindow}ms`);
+    console.log(`[CONTA-${accountId}]   - Offset de tempo: ${bestResult.timeOffset}ms`);
+    
+    return {
+      success: true,
+      message: `Re-sincronização bem-sucedida na tentativa ${bestResult.attempt}`,
+      attempts: attempts,
+      quality: bestResult.quality,
+      recvWindow: bestResult.recvWindow,
+      timeOffset: bestResult.timeOffset
+    };
+  } else {
+    console.error(`[CONTA-${accountId}] ❌ RE-SINCRONIZAÇÃO FALHOU após ${attempts} tentativas`);
+    console.error(`[CONTA-${accountId}] 🚨 AÇÃO REQUERIDA: Verificar conectividade e NTP do sistema`);
+    
+    return {
+      success: false,
+      message: `Re-sincronização falhou após ${attempts} tentativas`,
+      attempts: attempts,
+      quality: 'FALHA',
+      recvWindow: 180000, // Modo ultra-defensivo
+      timeOffset: 0
+    };
+  }
+}
+
 // ✅ MODULE.EXPORTS COMPLETO
 module.exports = {
   // Gerenciamento de Estados
@@ -1899,10 +2267,121 @@ module.exports = {
   // WebSocket
   getListenKey,
   checkServerTime,
+  
+  // ✅ Novas funções de sincronização de tempo
+  getCorrectedTimestamp,
+  getOptimizedRecvWindow,
+  monitorTimeSync,
+  forceTimeResync,
+  monitorTimeSync,
 
   // Spot API
   getSpotAccountBalanceDetails,
 
   // User Trades
   getUserTrades,
+
+  // Forçar re-sincronização
+  forceTimeResync,
+  
+  /**
+   * Força uma re-sincronização agressiva de tempo com múltiplas tentativas
+   * @param {number} accountId - ID da conta
+   * @param {number} maxRetries - Número máximo de tentativas (padrão: 3)
+   * @returns {Promise<Object>} - Resultado da re-sincronização
+   */
+  async forceTimeResync(accountId, maxRetries = 3) {
+    console.log(`[CONTA-${accountId}] 🔄 INICIANDO RE-SINCRONIZAÇÃO FORÇADA (${maxRetries} tentativas)`);
+    
+    let bestResult = null;
+    let attempts = 0;
+    
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      console.log(`[CONTA-${accountId}] 🔄 Tentativa ${attempt}/${maxRetries} de re-sincronização...`);
+      
+      try {
+        // Limpar estado de sincronização anterior
+        const accountState = getAccountState(accountId);
+        if (accountState) {
+          delete accountState.lastTimeSyncCheck;
+          delete accountState.timeOffset;
+          delete accountState.syncQuality;
+          console.log(`[CONTA-${accountId}] 🧹 Estado de sincronização anterior limpo`);
+        }
+        
+        // Aguardar um pouco entre tentativas
+        if (attempt > 1) {
+          await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+        }
+        
+        // Executar nova sincronização
+        const syncResult = await checkServerTime(accountId);
+        
+        if (syncResult && accountState) {
+          const timeDiff = accountState.syncQuality;
+          const recvWindow = accountState.recvWindow;
+          const timeOffset = accountState.timeOffset || 0;
+          
+          console.log(`[CONTA-${accountId}] 📊 Tentativa ${attempt} - Resultado:`);
+          console.log(`[CONTA-${accountId}]   - Sucesso: ${syncResult ? 'SIM' : 'NÃO'}`);
+          console.log(`[CONTA-${accountId}]   - Qualidade: ${timeDiff || 'DESCONHECIDA'}`);
+          console.log(`[CONTA-${accountId}]   - RECV_WINDOW: ${recvWindow || 60000}ms`);
+          console.log(`[CONTA-${accountId}]   - Offset: ${timeOffset}ms`);
+          
+          // Guardar o melhor resultado até agora
+          if (!bestResult || (syncResult && (!bestResult.success || recvWindow < bestResult.recvWindow))) {
+            bestResult = {
+              success: syncResult,
+              attempt: attempt,
+              quality: timeDiff,
+              recvWindow: recvWindow,
+              timeOffset: timeOffset
+            };
+            console.log(`[CONTA-${accountId}] ⭐ Nova melhor sincronização na tentativa ${attempt}`);
+          }
+          
+          // Se conseguiu uma sincronização boa, pode parar
+          if (syncResult && recvWindow <= 20000) {
+            console.log(`[CONTA-${accountId}] ✅ Sincronização satisfatória alcançada na tentativa ${attempt}`);
+            break;
+          }
+        }
+        
+        attempts++;
+        
+      } catch (error) {
+        console.error(`[CONTA-${accountId}] ❌ Erro na tentativa ${attempt} de re-sincronização:`, error.message);
+      }
+    }
+    
+    // Avaliar resultado final
+    if (bestResult && bestResult.success) {
+      console.log(`[CONTA-${accountId}] ✅ RE-SINCRONIZAÇÃO CONCLUÍDA:`);
+      console.log(`[CONTA-${accountId}]   - Melhor resultado: Tentativa ${bestResult.attempt}`);
+      console.log(`[CONTA-${accountId}]   - Qualidade: ${bestResult.quality}`);
+      console.log(`[CONTA-${accountId}]   - RECV_WINDOW: ${bestResult.recvWindow}ms`);
+      console.log(`[CONTA-${accountId}]   - Offset de tempo: ${bestResult.timeOffset}ms`);
+      
+      return {
+        success: true,
+        message: `Re-sincronização bem-sucedida na tentativa ${bestResult.attempt}`,
+        attempts: attempts,
+        quality: bestResult.quality,
+        recvWindow: bestResult.recvWindow,
+        timeOffset: bestResult.timeOffset
+      };
+    } else {
+      console.error(`[CONTA-${accountId}] ❌ RE-SINCRONIZAÇÃO FALHOU após ${attempts} tentativas`);
+      console.error(`[CONTA-${accountId}] 🚨 AÇÃO REQUERIDA: Verificar conectividade e NTP do sistema`);
+      
+      return {
+        success: false,
+        message: `Re-sincronização falhou após ${attempts} tentativas`,
+        attempts: attempts,
+        quality: 'FALHA',
+        recvWindow: 180000, // Modo ultra-defensivo
+        timeOffset: 0
+      };
+    }
+  }
 };
