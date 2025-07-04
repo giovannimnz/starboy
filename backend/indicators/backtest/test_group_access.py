@@ -8,6 +8,9 @@ from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent))
 
 # ✅ AGORA IMPORTAR do divap.py
+import sys
+from pathlib import Path
+sys.path.append(str(Path(__file__).parent.parent))
 from divap import pers_api_id, pers_api_hash
 
 async def test_group_access():

@@ -256,7 +256,7 @@ def update_exchange_info_database(exchange_name):
     except Exception as e:
         print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [EXCHANGE-INFO] ❌ Erro crítico na atualização: {e}")
         print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [EXCHANGE-INFO] Stack trace: {traceback.format_exc()}")
-        if 'conn' in locals() and conn.is_connected(): 
+        if 'conn' in locals() and conn and not conn.closed: 
             conn.rollback()
         return False
 

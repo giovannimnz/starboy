@@ -385,7 +385,7 @@ async function insertOrder(orderData) {
       INSERT INTO ordens (
         data_hora_criacao, id_externo, side, simbolo, tipo_ordem_bot, 
         reduce_only, close_position, last_update, preco, quantidade, 
-        tipo, status, id_posicao, target, orign_sig, conta_id
+        tipo_ordem, status, id_posicao, target, orign_sig, conta_id
       ) VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16
       ) RETURNING id
@@ -410,7 +410,7 @@ async function insertNewOrder(orderData) {
   try {
     const query = `
       INSERT INTO ordens (
-        simbolo, quantidade, preco, side, tipo, status, id_posicao, 
+        simbolo, quantidade, preco, side, tipo_ordem, status, id_posicao, 
         id_externo, data_hora_criacao, tipo_ordem_bot, target, 
         reduce_only, close_position, last_update, renew_sl_firs, 
         renew_sl_seco, renew_sl_terc, renew_sl_quar, renew_sl_quin, 

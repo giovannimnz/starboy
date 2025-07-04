@@ -106,10 +106,24 @@ async function cancelSignal(db, signalId, status, reason, accountId) {
     console.log(`[SIGNAL] Cancelando sinal ${signalId} para conta ${accountId}: ${reason}`);
     
     // Obter dados do sinal antes de cancelar
-    const [signalData] = await db.query(`
+    const signalResult = await db.query(`
       SELECT symbol, side, leverage, entry_price
       FROM webhook_signals
-      WHERE id = ? 1 : '🟢 COMPRA' : '🔴 VENDA';
+      WHERE id = $1 AND conta_id = $2
+    `, [signalId, accountId]);
+    
+    // Atualizar status do sinal
+    await db.query(`
+      UPDATE webhook_signals 
+      SET status = $1, error_message = $2, updated_at = CURRENT_TIMESTAMP
+      WHERE id = $3 AND conta_id = $4
+    `, [status, reason, signalId, accountId]);
+    
+    // Enviar notificação via Telegram se dados disponíveis
+    if (signalResult.rows.length > 0) {
+      try {
+        const signal = signalResult.rows[0];
+        const side = signal.side === 'BUY' ? '🟢 COMPRA' : '🔴 VENDA';
         const message = `⏰ <b>SINAL CANCELADO</b>\n\n` +
                         `📊 <b>${signal.symbol}</b>\n` +
                         `${side} | ${signal.leverage}x\n` +
@@ -118,20 +132,20 @@ async function cancelSignal(db, signalId, status, reason, accountId) {
                         `🆔 Sinal: #${signalId}\n` +
                         `⏰ ${new Date().toLocaleString('pt-BR')}`;
         
+        const { sendTelegramMessage } = require('../services/telegramHelper');
         await sendTelegramMessage(accountId, message);
+      } catch (telegramError) {
+        console.warn(`[SIGNAL] ⚠️ Erro ao enviar notificação Telegram:`, telegramError.message);
       }
-    } catch (telegramError) {
-      console.warn(`[SIGNAL] ⚠️ Erro ao enviar notificação Telegram:`, telegramError.message);
-    }
-    
-    if (signalData.length > 0) {
-      const symbol = signalData[0].symbol;
+      
+      const symbol = signalResult.rows[0].symbol;
       // Verificar se ainda há sinais aguardando para esse símbolo
-      const [pending] = await db.query(`
+      const pendingResult = await db.query(`
         SELECT COUNT(*) as count FROM webhook_signals
         WHERE symbol = $1 AND conta_id = $2 AND status = 'AGUARDANDO_ACIONAMENTO'
       `, [symbol, accountId]);
-      if (pending[0].count === 0) {
+      
+      if (pendingResult.rows[0].count === 0) {
         // Fechar WebSocket de preço
         const websockets = require('../api/websocket');
         websockets.stopPriceMonitoring(symbol, accountId);
@@ -149,7 +163,7 @@ async function cancelSignal(db, signalId, status, reason, accountId) {
 async function checkSignalTriggers(symbol, currentPrice, db, accountId) {
   try {
     // Buscar sinais AGUARDANDO_ACIONAMENTO para este símbolo
-    const [pendingSignals] = await db.query(`
+    const pendingSignalsResult = await db.query(`
       SELECT
       id, symbol, side, leverage, capital_pct, entry_price, sl_price, 
       tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, conta_id,
@@ -161,6 +175,7 @@ async function checkSignalTriggers(symbol, currentPrice, db, accountId) {
       ORDER BY created_at ASC
     `, [symbol, accountId]);
 
+    const pendingSignals = pendingSignalsResult.rows;
     if (pendingSignals.length === 0) return;
 
     const now = new Date();
@@ -451,7 +466,7 @@ async function checkExpiredSignals(accountId) {
     const db = await getDatabaseInstance();
     
     // Buscar sinais que podem ter expirado
-    const [potentialExpiredSignals] = await db.query(`
+    const potentialExpiredSignalsResult = await db.query(`
       SELECT 
         id, symbol, timeframe, created_at, status, entry_price, sl_price, side,
         timeout_at, max_lifetime_minutes
@@ -462,6 +477,7 @@ async function checkExpiredSignals(accountId) {
       ORDER BY created_at ASC
     `, [accountId]);
     
+    const potentialExpiredSignals = potentialExpiredSignalsResult.rows;
     if (potentialExpiredSignals.length === 0) return 0;
     
     let canceledCount = 0;
@@ -537,7 +553,7 @@ async function checkNewTrades(accountId) {
     const db = await getDatabaseInstance(accountId);
     
     // Buscar apenas sinais PENDING (como na versão antiga)
-    const [pendingSignals] = await db.query(`
+    const pendingSignalsResult = await db.query(`
       SELECT
       id, symbol, side, leverage, capital_pct, entry_price, sl_price, 
       tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, conta_id,
@@ -547,6 +563,8 @@ async function checkNewTrades(accountId) {
       AND status = 'PENDING'
       ORDER BY created_at ASC
     `, [accountId]);
+    
+    const pendingSignals = pendingSignalsResult.rows;
     
     if (pendingSignals.length === 0) return 0;
     
@@ -661,12 +679,12 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
   try {
     let hasRelevantActivity = false;
     
-    const [pendingSignalsCount] = await db.query(`
+    const pendingSignalsCountResult = await db.query(`
       SELECT COUNT(*) as count FROM webhook_signals
       WHERE symbol = $1 AND conta_id = $2 AND status = 'AGUARDANDO_ACIONAMENTO'
     `, [symbol, accountId]);
     
-    if (pendingSignalsCount[0].count > 0) {
+    if (pendingSignalsCountResult.rows[0].count > 0) {
       hasRelevantActivity = true;
     }
     
@@ -690,18 +708,19 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
     }
     
     // 3. VERIFICAR SINAIS AGUARDANDO ACIONAMENTO (mantém o nome original)
-    const [pendingSignals] = await db.query(`
+    const pendingSignalsResult = await db.query(`
       SELECT
       id, symbol, side, leverage, capital_pct, entry_price, sl_price, 
       tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, conta_id,
       status, created_at, timeout_at, max_lifetime_minutes, chat_id
       FROM webhook_signals 
       WHERE symbol = $1
-      AND conta_id = ? 
+      AND conta_id = $2 
       AND status = 'AGUARDANDO_ACIONAMENTO'
       ORDER BY created_at ASC
     `, [symbol, accountId]);
     
+    const pendingSignals = pendingSignalsResult.rows;
     if (pendingSignals.length === 0) {
       return;
     }
@@ -870,11 +889,11 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
 
 async function checkPositionExists(db, symbol, accountId) {
   try {
-    const [rows] = await db.query(
+    const result = await db.query(
       "SELECT id FROM posicoes WHERE simbolo = $1 AND conta_id = $2 AND (status = 'OPEN' OR status = 'PENDING')",
       [symbol, accountId]
     );
-    return rows.length > 0;
+    return result.rows.length > 0;
   } catch (error) {
     console.error(`[SIGNAL] ❌ Erro ao verificar existência de posição: ${error.message}`);
     throw error;
@@ -906,13 +925,15 @@ async function checkCanceledSignals(accountId) {
     const db = await getDatabaseInstance(accountId);
     
     // Buscar sinais que chegaram cancelados e ainda não enviaram mensagem
-    const [canceledSignals] = await db.query(`
+    const canceledSignalsResult = await db.query(`
       SELECT * FROM webhook_signals 
-      WHERE conta_id = ? 
+      WHERE conta_id = $1 
       AND status = 'CANCELED'
-      AND sent_msg = 0
+      AND sent_msg = false
       ORDER BY created_at ASC
     `, [accountId]);
+    
+    const canceledSignals = canceledSignalsResult.rows;
     
     if (canceledSignals.length === 0) return 0;
     

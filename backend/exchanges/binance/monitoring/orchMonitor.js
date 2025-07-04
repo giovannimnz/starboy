@@ -149,9 +149,6 @@ async function initializeMonitoring(accountId) {
     throw new Error(`AccountId inválido: ${accountId} (tipo: ${typeof accountId})`);
   }
 
-  // Garantir que o estado da conta está carregado no Map antes de qualquer operação
-  await api.loadCredentialsFromDatabase(accountId);
-
   console.log(`[MONITOR] Inicializando sistema de monitoramento para conta ID: ${accountId}...`);
 
   try {
@@ -161,6 +158,48 @@ async function initializeMonitoring(accountId) {
     if (!db) throw new Error('Banco não disponível');
     console.log(`✅ Banco de dados conectado com sucesso para conta ${accountId}\n`);
 
+    // === ETAPA 0: Verificar se a conta existe no banco ===
+    console.log(`📋 ETAPA 0: Verificando se a conta ${accountId} existe no banco...`);
+    try {
+      const accountCheckResult = await db.query('SELECT id, nome, ativa FROM contas WHERE id = $1', [accountId]);
+      
+      if (accountCheckResult.rows.length === 0) {
+        console.error(`❌ CONTA ${accountId} NÃO ENCONTRADA!`);
+        
+        // Listar contas disponíveis
+        const allAccountsResult = await db.query('SELECT id, nome, ativa FROM contas ORDER BY id');
+        const allAccounts = allAccountsResult.rows;
+        
+        console.log(`📋 Contas disponíveis no banco (${allAccounts.length}):`);
+        if (allAccounts.length === 0) {
+          console.log('❌ NENHUMA CONTA ENCONTRADA NO BANCO!');
+          console.log('💡 Você precisa criar contas primeiro no banco de dados.');
+          console.log('💡 Execute: node setup_basic_data.js para criar dados básicos');
+        } else {
+          allAccounts.forEach(account => {
+            console.log(`   - ID: ${account.id}, Nome: ${account.nome || 'N/A'}, Ativa: ${account.ativa}`);
+          });
+          console.log(`💡 Use uma das contas listadas acima. Exemplo: node orchMonitor.js --account ${allAccounts[0].id}`);
+        }
+        
+        throw new Error(`Conta ${accountId} não existe no banco de dados`);
+      }
+      
+      const accountInfo = accountCheckResult.rows[0];
+      console.log(`✅ Conta encontrada: ID=${accountInfo.id}, Nome=${accountInfo.nome || 'N/A'}, Ativa=${accountInfo.ativa}`);
+      
+      if (!accountInfo.ativa) {
+        console.warn(`⚠️ ATENÇÃO: A conta ${accountId} está INATIVA!`);
+      }
+      
+    } catch (accountCheckError) {
+      console.error(`❌ Erro ao verificar conta ${accountId}:`, accountCheckError.message);
+      throw accountCheckError;
+    }
+
+    // Garantir que o estado da conta está carregado no Map APÓS verificar que ela existe
+    await api.loadCredentialsFromDatabase(accountId);
+
     // === ETAPA 1.5: Limpeza de ordens e posições fantasmas ===
     console.log(`[MONITOR] 🧹 Buscando e limpando ordens e posições fantasmas para conta ${accountId}...`);
     try {
@@ -169,7 +208,8 @@ async function initializeMonitoring(accountId) {
       const closedCount = await forceCloseGhostPositions(accountId);
       if (closedCount > 0) {
         // Buscar posições agora marcadas como CLOSED e mover para histórico
-        const [closedPositions] = await db.query('SELECT id FROM posicoes WHERE status = $1 AND conta_id = $2', ['CLOSED', accountId]);
+        const closedPositionsResult = await db.query('SELECT id FROM posicoes WHERE status = $1 AND conta_id = $2', ['CLOSED', accountId]);
+        const closedPositions = closedPositionsResult.rows;
         for (const pos of closedPositions) {
           try {
             await movePositionToHistory(pos.id, accountId, true);
@@ -231,7 +271,7 @@ async function initializeMonitoring(accountId) {
       if (saldoResult && saldoResult.success) {
         console.log(`[MONITOR] ✅ Saldo atualizado: Disponível ${saldoResult.saldo_disponivel} USDT | Base cálculo ${saldoResult.saldo_base_calculo} USDT`);
       } else {
-        console.warn(`[MONITOR] ⚠️ Falha ao atualizar saldo da corretora: ${saldoResult$1.error || 'Erro desconheido'}`);
+        console.warn(`[MONITOR] ⚠️ Falha ao atualizar saldo da corretora: ${saldoResult.error || 'Erro desconhecido'}`);
       }
     } catch (saldoError) {
       console.error(`[MONITOR] ❌ Erro ao atualizar saldo da corretora:`, saldoError.message);
@@ -244,7 +284,7 @@ try {
   if (saldoSpotResult && saldoSpotResult.success) {
     console.log(`[MONITOR] ✅ Saldo spot atualizado: Disponível ${saldoSpotResult.saldo_disponivel} USDT | Base cálculo ${saldoSpotResult.saldo_base_calculo} USDT`);
   } else {
-    console.warn(`[MONITOR] ⚠️ Falha ao atualizar saldo spot: ${saldoSpotResult$1.error || 'Erro desconhecido'}`);
+    console.warn(`[MONITOR] ⚠️ Falha ao atualizar saldo spot: ${saldoSpotResult.error || 'Erro desconhecido'}`);
   }
 } catch (saldoError) {
   console.error(`[MONITOR] ❌ Erro ao atualizar saldo spot:`, saldoError.message);
@@ -305,12 +345,16 @@ try {
   } else {
     console.log(`[MONITOR] ✅ Sincronização de tempo otimizada com sucesso para conta ${accountId}`);
     
-    if (accountState) {
+    // Recarregar accountState após sincronização
+    const accountStateUpdated = api.getAccountConnectionState(accountId);
+    if (accountStateUpdated) {
       console.log(`[MONITOR] 📊 Configuração ótima aplicada:`);
-      console.log(`[MONITOR]   - RECV_WINDOW: ${accountState.recvWindow}ms`);
-      console.log(`[MONITOR]   - Qualidade: ${accountState.syncQuality}`);
-      console.log(`[MONITOR]   - Offset: ${accountState.timeOffset || 0}ms`);
-      console.log(`[MONITOR]   - Latência média: ${accountState.avgNetworkLatency$1.toFixed(2)}ms`);
+      console.log(`[MONITOR]   - RECV_WINDOW: ${accountStateUpdated.recvWindow || 'undefined'}ms`);
+      console.log(`[MONITOR]   - Qualidade: ${accountStateUpdated.syncQuality || 'DESCONHECIDA'}`);
+      console.log(`[MONITOR]   - Offset: ${accountStateUpdated.timeOffset || 0}ms`);
+      console.log(`[MONITOR]   - Latência média: ${accountStateUpdated.avgNetworkLatency ? accountStateUpdated.avgNetworkLatency.toFixed(2) : 'N/A'}ms`);
+    } else {
+      console.log(`[MONITOR] ⚠️ Não foi possível acessar estado atualizado da conta`);
     }
   }
 } catch (timeError) {
@@ -410,11 +454,12 @@ try {
     const db = await getDatabaseInstance();
     
     // ✅ Buscar posições CLOSED para mover
-    const [closedPositions] = await db.query(`
+    const closedPositionsResult = await db.query(`
       SELECT id, simbolo, status, data_hora_fechamento, observacoes 
       FROM posicoes 
       WHERE status = 'CLOSED' AND conta_id = $1
     `, [accountId]);
+    const closedPositions = closedPositionsResult.rows;
     
     if (closedPositions.length > 0) {
       console.log(`[MONITOR] 📚 Movendo ${closedPositions.length} posições CLOSED para histórico...`);
@@ -505,7 +550,7 @@ async function startPriceMonitoringInline(accountId) {
     }
 
     // ✅ PRIORITÁRIO: Símbolos com sinais AGUARDANDO_ACIONAMENTO
-    const [pendingSignals] = await db.query(`
+    const pendingSignalsResult = await db.query(`
       SELECT
       id, symbol, side, leverage, capital_pct, entry_price, sl_price, 
       tp1_price, tp2_price, tp3_price, tp4_price, tp5_price, conta_id,
@@ -515,20 +560,23 @@ async function startPriceMonitoringInline(accountId) {
       AND status = 'AGUARDANDO_ACIONAMENTO'
       ORDER BY created_at ASC
     `, [accountId]);
+    const pendingSignals = pendingSignalsResult.rows;
 
     // ✅ SECUNDÁRIO: Símbolos com posições abertas
-    const [openPositions] = await db.query(`
+    const openPositionsResult = await db.query(`
       SELECT DISTINCT simbolo as symbol
       FROM posicoes
       WHERE conta_id = $1 AND status = 'OPEN'
     `, [accountId]);
+    const openPositions = openPositionsResult.rows;
 
     // ✅ TERCIÁRIO: Símbolos com ordens de entrada pendentes
-    const [pendingEntries] = await db.query(`
+    const pendingEntriesResult = await db.query(`
       SELECT DISTINCT simbolo as symbol
       FROM ordens
       WHERE conta_id = $1 AND tipo_ordem_bot = 'ENTRADA' AND status IN ('NEW', 'PARTIALLY_FILLED')
     `, [accountId]);
+    const pendingEntries = pendingEntriesResult.rows;
 
     const symbols = new Set();
 
@@ -618,12 +666,13 @@ async function startPriceMonitoringInline(accountId) {
         const db = await getDatabaseInstance();
         
         // Verificar se há sinais aguardando
-        const [signals] = await db.query(`
+        const signalsResult = await db.query(`
           SELECT symbol FROM webhook_signals 
           WHERE conta_id = $1 AND status = 'AGUARDANDO_ACIONAMENTO'
           GROUP BY symbol
           LIMIT 5
         `, [accountId]);
+        const signals = signalsResult.rows;
         
         if (signals.length > 0) {
           //console.log(`[MONITOR] 🔍 Verificando saúde do WebSocket para ${signals.length} símbolos:`);
@@ -639,7 +688,7 @@ async function startPriceMonitoringInline(accountId) {
                 if (isOpen) {
                   //console.log(`[MONITOR]   ✅ ${signal.symbol}: WebSocket ativo`);
                 } else {
-                  console.log(`[MONITOR]   ❌ ${signal.symbol}: WebSocket inativo (readyState: ${ws$1.readyState})`);
+                  console.log(`[MONITOR]   ❌ ${signal.symbol}: WebSocket inativo (readyState: ${ws.readyState})`);
                   
                   // Tentar recriar o WebSocket
                   console.log(`[MONITOR] 🔄 Recriando WebSocket para ${signal.symbol}...`);
@@ -715,11 +764,12 @@ async function startPriceMonitoringInline(accountId) {
         try {
           const db = await getDatabaseInstance();
           // ✅ Buscar posições CLOSED para mover
-          const [closedPositions] = await db.query(`
+          const closedPositionsResult = await db.query(`
             SELECT id, simbolo, status, data_hora_fechamento, observacoes 
             FROM posicoes 
             WHERE status = 'CLOSED' AND conta_id = $1
           `, [accountId]);
+          const closedPositions = closedPositionsResult.rows;
           if (closedPositions.length > 0) {
             console.log(`[MONITOR] 📚 Movendo ${closedPositions.length} posições CLOSED para histórico...`);
             for (const position of closedPositions) {

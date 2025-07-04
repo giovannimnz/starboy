@@ -42,6 +42,7 @@ async function syncPositionsWithExchange(accountId) {
       ORDER BY simbolo
     `, [accountId]);
 
+    const dbPositions = result.rows;
     //console.log(`[SYNC] Encontradas ${dbPositions.length} posições no banco para conta ${accountId}`);
 
     let syncResults = {
@@ -176,6 +177,7 @@ async function logOpenPositionsAndOrdersVisual(accountId) {
 
     // Obter posições abertas do banco
     const result = await db.query(`SELECT id, simbolo, quantidade, preco_entrada, preco_corrente, side FROM posicoes WHERE status = 'OPEN'${accountId ? ' AND conta_id = $1' : ''}`, accountId ? [accountId] : []);
+    const dbPositions = result.rows;
     
     // Obter ordens pendentes
     const ordersResult = await db.query(`
@@ -184,6 +186,7 @@ async function logOpenPositionsAndOrdersVisual(accountId) {
       WHERE status IN ('NEW', 'PARTIALLY_FILLED')${accountId ? ' AND conta_id = $1' : ''}
       ORDER BY simbolo, tipo_ordem_bot
     `, accountId ? [accountId] : []);
+    const pendingOrders = ordersResult.rows;
 
     // Obter posições abertas da corretora para comparação
     const exchangePositions = await getAllOpenPositions(accountId);
@@ -205,19 +208,19 @@ async function logOpenPositionsAndOrdersVisual(accountId) {
     console.log('-------------------------------------------');
 
     // Mostrar detalhes (opcional)
-    if (dbPositions.rows.length > 0) {
+    if (dbPositions.length > 0) {
       console.log('\n📊 Posições no Banco:');
       dbPositions.forEach(pos => {
         console.log(`  ${pad(pos.simbolo, 8)} | ${pad(pos.side, 4)} | ${pad(pos.quantidade, 8)} @ ${pad(pos.preco_entrada, 10)} | Atual: ${pos.preco_corrente}`);
       });
     }
-    if (exchangePositions.rows.length > 0) {
+    if (exchangePositions.length > 0) {
       console.log('\n🏦 Posições na Corretora:');
       exchangePositions.forEach(pos => {
         console.log(`  ${pad(pos.simbolo, 8)} | ${pad(pos.side, 4)} | ${pad(pos.quantidade, 8)} @ ${pad(pos.preco_entrada, 10)}`);
       });
     }
-    if (pendingOrders.rows.length > 0) {
+    if (pendingOrders.length > 0) {
       console.log('\n📋 Ordens Pendentes:');
       pendingOrders.forEach(order => {
         console.log(`  ${pad(order.simbolo, 8)} | ${pad(order.tipo_ordem_bot, 10)} | ${pad(order.side, 4)} | ${pad(order.quantidade, 8)} @ ${pad(order.preco, 10)} (${order.status})`);
@@ -251,6 +254,7 @@ async function syncPositionsWithAutoClose(accountId) {
       ORDER BY simbolo
     `, [accountId]);
 
+    const dbPositions = result.rows;
     const exchangePositions = await getAllOpenPositions(accountId);
 
     // Lógica para exibir logs apenas se houver diferença ou alteração
@@ -321,7 +325,7 @@ async function syncPositionsWithAutoClose(accountId) {
         syncResults.orphansChecked = orphanResults.processed;
       }
       
-      if (orphanResults.errors.rows.length > 0) {
+      if (orphanResults.errors && orphanResults.errors.length > 0) {
         console.warn(`[SYNC_AUTO] ⚠️ ${orphanResults.errors.length} erros na detecção de órfãs:`, orphanResults.errors);
         syncResults.orphanErrors = orphanResults.errors;
       }
@@ -337,7 +341,7 @@ async function syncPositionsWithAutoClose(accountId) {
       if (linkResults.linked > 0) {
         syncResults.signalsLinked = linkResults.linked;
       }
-      if (linkResults.errors.rows.length > 0) {
+      if (linkResults.errors && linkResults.errors.length > 0) {
         syncResults.signalLinkErrors = linkResults.errors;
       }
     } catch (linkError) {
@@ -455,13 +459,13 @@ async function syncOrdersWithExchange(accountId) {
             }
           } else {
             // ✅ PARA ORDENS ATIVAS, ASSOCIAR id_posicao CORRETO
-            const result = await db.query(`SELECT id FROM posicoes WHERE simbolo = $1 AND status = 'OPEN' AND conta_id = $1 LIMIT 1`,
+            const result = await db.query(`SELECT id FROM posicoes WHERE simbolo = $1 AND status = 'OPEN' AND conta_id = $2 LIMIT 1`,
               [order.symbol, accountId]
             );
             
-            if (posRows.rows.length > 0) {
-              const posId = posRows.rows[0].id;
-              const result = await db.query(`UPDATE ordens SET id_posicao = $1 WHERE id_externo = $2 AND conta_id = $3 AND (id_posicao IS NULL OR id_posicao != $4)`, [posId, order.orderId, accountId, posId]
+            if (result.rows.length > 0) {
+              const posId = result.rows[0].id;
+              const updateResult = await db.query(`UPDATE ordens SET id_posicao = $1 WHERE id_externo = $2 AND conta_id = $3 AND (id_posicao IS NULL OR id_posicao != $4)`, [posId, order.orderId, accountId, posId]
               );
               
               if (updateResult.rowCount > 0) {
@@ -637,6 +641,8 @@ async function logOpenPositionsAndOrdersVisual(accountId) {
       FROM posicoes WHERE status = 'OPEN' AND conta_id = $1
     `, [accountId]);
     
+    const dbPositions = result.rows;
+    
     // Posições da corretora  
     const exchangePositions = await getAllOpenPositions(accountId);
     
@@ -670,7 +676,7 @@ async function logOpenPositionsAndOrdersVisual(accountId) {
       }
     });
     
-    if (discrepancies.rows.length > 0) {
+    if (discrepancies.length > 0) {
       console.log(`[SYNC_CHECK] ⚠️ ENCONTRADAS ${discrepancies.length} DISCREPÂNCIAS:`);
       discrepancies.forEach(disc => {
         if (disc.type === 'MISSING_ON_EXCHANGE') {
@@ -707,7 +713,9 @@ async function moveClosedPositionsToHistory(accountId) {
       ORDER BY data_hora_fechamento DESC
     `, [accountId]);
     
-    if (closedPositions.rows.length === 0) {
+    const closedPositions = result.rows;
+    
+    if (closedPositions.length === 0) {
       //console.log(`[MOVE_CLOSED] ℹ️ Nenhuma posição CLOSED encontrada para conta ${accountId}`);
       return { moved: 0, errors: [] };
     }
@@ -963,7 +971,7 @@ async function detectAndFixOrphanPositions(accountId) {
     // ✅ OBTER POSIÇÕES DA CORRETORA
     const exchangePositions = await getAllOpenPositions(accountId);
     
-    if (exchangePositions.rows.length === 0) {
+    if (exchangePositions.length === 0) {
       console.log(`[ORPHAN_DETECTION] ℹ️ Nenhuma posição encontrada na corretora para conta ${accountId}`);
       return { processed: 0, fixed: 0, errors: [] };
     }
@@ -995,20 +1003,20 @@ async function detectAndFixOrphanPositions(accountId) {
         // ✅ CRITÉRIO 2: Verificar se tem ordens abertas (se tiver, não é órfã)
         const openOrders = await getOpenOrders(accountId, symbol);
         if (openOrders.rows.length > 0) {
-          console.log(`[ORPHAN_DETECTION] 📋 ${symbol}: tem ${openOrders.length} ordens abertas, não é órfã`);
+          console.log(`[ORPHAN_DETECTION] 📋 ${symbol}: tem ${openOrders.rows.length} ordens abertas, não é órfã`);
           continue;
         }
         
         // ✅ CRITÉRIO 3: Verificar se existe posição correspondente no banco
-        const dbPositions = await db.query(`
+        const dbPositionsResult = await db.query(`
           SELECT id, simbolo FROM posicoes 
           WHERE simbolo = $1 AND conta_id = $2 AND status = 'OPEN'
         `, [symbol, accountId]);
         
-        if (dbPositions.rows.length === 0) {
+        if (dbPositionsResult.rows.length === 0) {
           console.log(`[ORPHAN_DETECTION] ⚠️ ${symbol}: não encontrada no banco, posição órfã detectada!`);
         } else {
-          console.log(`[ORPHAN_DETECTION] ✅ ${symbol}: encontrada no banco (ID: ${dbPositions.rows[0].id}), verificando ordens...`);
+          console.log(`[ORPHAN_DETECTION] ✅ ${symbol}: encontrada no banco (ID: ${dbPositionsResult.rows[0].id}), verificando ordens...`);
           
           // ✅ VERIFICAR SE TEM ORDENS DE PROTEÇÃO (SL/TP) NO BANCO
           const protectionOrders = await db.query(`
@@ -1034,13 +1042,13 @@ async function detectAndFixOrphanPositions(accountId) {
           LIMIT 1
         `, [symbol, accountId]);
         
-        if (latestSignals.rows.length === 0) {
+        if (result.rows.length === 0) {
           console.warn(`[ORPHAN_DETECTION] ⚠️ ${symbol}: nenhum sinal encontrado para criar ordens de proteção`);
           results.errors.push(`${symbol}: sem sinal de referência`);
           continue;
         }
         
-        const latestSignal = latestSignals.rows[0];
+        const latestSignal = result.rows[0];
         const signalAge = Date.now() - new Date(latestSignal.created_at).getTime();
         const signalAgeMinutes = Math.floor(signalAge / (1000 * 60));
         
@@ -1081,7 +1089,7 @@ async function detectAndFixOrphanPositions(accountId) {
     //console.log(`[ORPHAN_DETECTION]   🔧 Posições órfãs corrigidas: ${results.fixed}`);
     //console.log(`[ORPHAN_DETECTION]   ❌ Erros: ${results.errors.length}`);
     
-    if (results.errors.rows.length > 0) {
+    if (results.errors.length > 0) {
       //console.log(`[ORPHAN_DETECTION]   📋 Detalhes dos erros:`, results.errors);
     }
     
@@ -1115,7 +1123,9 @@ async function linkSignalsToOpenPositions(accountId) {
       ORDER BY created_at DESC
     `, [accountId]);
 
-    if (signalsToLink.rows.length === 0) {
+    const signalsToLink = result.rows;
+
+    if (signalsToLink.length === 0) {
       //console.log(`[LINK_SIGNALS] ℹ️ Nenhum sinal 'EXECUTADO' para vincular.`);
       return { linked: 0, errors: [] };
     }
@@ -1135,23 +1145,23 @@ async function linkSignalsToOpenPositions(accountId) {
 
       try {
         // 2. Encontrar a posição aberta correspondente para o símbolo que ainda não tem um sinal
-        const result = await db.query(`
+        const positionResult = await db.query(`
           SELECT p.id, p.simbolo
           FROM posicoes p
           LEFT JOIN webhook_signals ws ON ws.position_id = p.id
           WHERE p.simbolo = $1 
             AND p.status = 'OPEN' 
-            AND p.conta_id = $1
+            AND p.conta_id = $2
             AND ws.position_id IS NULL
           LIMIT 1
         `, [signal.symbol, accountId]);
 
-        if (openPositions.rows.length > 0) {
-          const position = openPositions.rows[0];
+        if (positionResult.rows.length > 0) {
+          const position = positionResult.rows[0];
           console.log(`[LINK_SIGNALS] 🔗 Vinculando sinal ${signal.id} (${signal.symbol}) à posição ${position.id}...`);
 
           // 3. Atualizar o sinal com o ID da posição
-          const result = await db.query(`
+          const signalUpdateResult = await db.query(`
             UPDATE webhook_signals
             SET position_id = $1
             WHERE id = $2

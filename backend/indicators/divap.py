@@ -537,7 +537,7 @@ def get_leverage_brackets_from_database(symbol=None):
 
 def load_leverage_brackets(symbol=None):
     """
-    Carrega os brackets de alavancagem do banco de dados MySQL
+    Carrega os brackets de alavancagem do banco de dados PostgreSQL
     """
     brackets_data = get_leverage_brackets_from_database(symbol)
 
@@ -782,7 +782,7 @@ def send_to_webhook(trade_data):
 
 def save_to_database(trade_data):
     """
-    Salva informações da operação no banco MySQL para TODAS as contas ativas,
+    Salva informações da operação no banco PostgreSQL para TODAS as contas ativas,
     criando um registro na tabela webhook_signals para cada conta.
     
     Para cada conta ativa:
@@ -1771,8 +1771,11 @@ async def main():
     # Configurar tratamento de sinais
     try:
         if os.name == 'nt':  # Windows
-            import win32api
-            win32api.SetConsoleCtrlHandler(lambda x: signal_handler_sync(), True)
+            try:
+                import win32api  # type: ignore
+                win32api.SetConsoleCtrlHandler(lambda x: signal_handler_sync(), True)
+            except ImportError:
+                print("[WARN] win32api não disponível - sinais de controle não serão tratados no Windows")
         else:  # Unix/Linux/Mac
             loop = asyncio.get_event_loop()
             for sig in (signal.SIGINT, signal.SIGTERM):

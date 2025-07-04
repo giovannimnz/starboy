@@ -16,7 +16,7 @@ from pathlib import Path
 import pathlib
 import re
 
-sys.path.append(str(Path(__file__).parent / '../analysis'))
+sys.path.append(str(Path(__file__).parent.parent))
 try:
     from analysis.divap_check import DIVAPAnalyzer, DB_CONFIG, BINANCE_CONFIG
 except ImportError as e:

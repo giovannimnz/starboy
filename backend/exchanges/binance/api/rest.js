@@ -46,22 +46,64 @@ async function loadCredentialsFromDatabase(accountId) {
     throw new Error('AccountId inválido');
   }
   const db = await getDatabaseInstance(accountId);
+  
+  console.log(`[REST] 🔍 Buscando conta com ID: ${accountId}`);
+  
   // Buscar conta
-  const [rows] = await db.query(`
+  const result = await db.query(`
     SELECT * FROM contas WHERE id = $1
   `, [accountId]);
+  const rows = result.rows;
+  
+  console.log(`[REST] 📊 Resultado da busca: ${rows.length} conta(s) encontrada(s)`);
+  
   if (!rows || rows.length === 0) {
-    throw new Error('Conta não encontrada no banco');
+    // Listar contas disponíveis para debug
+    console.log(`[REST] 📋 Listando contas disponíveis no banco...`);
+    try {
+      const allAccountsResult = await db.query('SELECT id, nome, ativa FROM contas ORDER BY id');
+      const allAccounts = allAccountsResult.rows;
+      console.log(`[REST] 📋 Contas disponíveis (${allAccounts.length}):`);
+      allAccounts.forEach(account => {
+        console.log(`[REST]   - ID: ${account.id}, Nome: ${account.nome || 'N/A'}, Ativa: ${account.ativa}`);
+      });
+    } catch (listError) {
+      console.error(`[REST] ❌ Erro ao listar contas:`, listError.message);
+    }
+    
+    throw new Error(`Conta não encontrada no banco - ID solicitado: ${accountId}`);
   }
+  
   const conta = rows[0];
+  console.log(`[REST] ✅ Conta encontrada: ID=${conta.id}, Nome=${conta.nome || 'N/A'}, Ativa=${conta.ativa}`);
+  
   // Buscar corretora vinculada
-  const [corretoraRows] = await db.query(`
+  console.log(`[REST] 🔍 Buscando corretora com ID: ${conta.id_corretora}`);
+  const corretoraResult = await db.query(`
     SELECT * FROM corretoras WHERE id = $1
   `, [conta.id_corretora]);
+  const corretoraRows = corretoraResult.rows;
+  
+  console.log(`[REST] 📊 Resultado da busca da corretora: ${corretoraRows.length} corretora(s) encontrada(s)`);
+  
   if (!corretoraRows || corretoraRows.length === 0) {
-    throw new Error('Corretora vinculada não encontrada no banco');
+    // Listar corretoras disponíveis para debug
+    console.log(`[REST] 📋 Listando corretoras disponíveis no banco...`);
+    try {
+      const allCorretoras = await db.query('SELECT id, corretora, ambiente FROM corretoras ORDER BY id');
+      console.log(`[REST] 📋 Corretoras disponíveis (${allCorretoras.rows.length}):`);
+      allCorretoras.rows.forEach(corr => {
+        console.log(`[REST]   - ID: ${corr.id}, Corretora: ${corr.corretora}, Ambiente: ${corr.ambiente}`);
+      });
+    } catch (listError) {
+      console.error(`[REST] ❌ Erro ao listar corretoras:`, listError.message);
+    }
+    
+    throw new Error(`Corretora vinculada não encontrada no banco - ID solicitado: ${conta.id_corretora}`);
   }
+  
   const corretora = corretoraRows[0];
+  console.log(`[REST] ✅ Corretora encontrada: ID=${corretora.id}, Nome=${corretora.corretora}, Ambiente=${corretora.ambiente}`);
 
   // Determinar ambiente (testnet ou produção) a partir da corretora
   const ambiente = corretora.ambiente && corretora.ambiente.toLowerCase().includes('testnet') ? 'testnet' : 'prd';
@@ -81,12 +123,31 @@ async function loadCredentialsFromDatabase(accountId) {
     telegramBotTokenController: conta.telegram_bot_token_controller,
     ambiente,
     corretora: corretora.corretora,
-    // URLs vindas da corretora
-    apiUrl: corretora.futures_rest_api_url,
-    spotApiUrl: corretora.spot_rest_api_url,
+    // URLs vindas da corretora - verificar se existem
+    apiUrl: corretora.futures_rest_api_url || corretora.spot_rest_api_url,
+    spotApiUrl: corretora.spot_rest_api_url || corretora.futures_rest_api_url,
     futuresWsMarketUrl: corretora.futures_ws_market_url,
     futuresWsApiUrl: corretora.futures_ws_api_url,
   };
+  
+  // Verificar se as URLs foram carregadas corretamente
+  if (!state.apiUrl || !state.spotApiUrl) {
+    console.error(`[REST] ❌ URLs não encontradas na corretora ${corretora.id}:`);
+    console.error(`[REST]   - futures_rest_api_url: ${corretora.futures_rest_api_url || 'undefined'}`);
+    console.error(`[REST]   - spot_rest_api_url: ${corretora.spot_rest_api_url || 'undefined'}`);
+    console.error(`[REST]   - Objeto corretora completo:`, corretora);
+    
+    // Tentar usar URLs padrão baseadas no ambiente
+    if (ambiente === 'testnet') {
+      state.apiUrl = state.apiUrl || 'https://testnet.binancefuture.com/fapi';
+      state.spotApiUrl = state.spotApiUrl || 'https://testnet.binance.vision';
+    } else {
+      state.apiUrl = state.apiUrl || 'https://fapi.binance.com/fapi';
+      state.spotApiUrl = state.spotApiUrl || 'https://api.binance.com';
+    }
+    
+    console.log(`[REST] ✅ URLs padrão aplicadas: apiUrl=${state.apiUrl}, spotApiUrl=${state.spotApiUrl}`);
+  }
 
   // Garantir que para testnet, as credenciais spot testnet sejam usadas
   if (ambiente === 'testnet') {
@@ -218,7 +279,39 @@ async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}
       secretKey = accountState.secretKey;
       baseUrl = customApiUrl || accountState.apiUrl;
     }
-    if (!apiKey || !secretKey || !baseUrl) {
+    
+    // Verificação adicional de segurança
+    if (!baseUrl) {
+      console.error(`[API] ❌ baseUrl não definida para conta ${accountId}:`);
+      console.error(`[API]   - isSpot: ${isSpot}`);
+      console.error(`[API]   - spotApiUrl: ${accountState.spotApiUrl || 'undefined'}`);
+      console.error(`[API]   - apiUrl: ${accountState.apiUrl || 'undefined'}`);
+      console.error(`[API]   - customApiUrl: ${customApiUrl || 'undefined'}`);
+      console.error(`[API]   - ambiente: ${accountState.ambiente || 'undefined'}`);
+      
+      // Tentar aplicar URLs padrão baseadas no ambiente
+      if (isSpot) {
+        if (accountState.ambiente === 'testnet') {
+          baseUrl = 'https://testnet.binance.vision';
+        } else {
+          baseUrl = 'https://api.binance.com';
+        }
+        console.log(`[API] 🔧 URL padrão aplicada para spot: ${baseUrl}`);
+      } else {
+        if (accountState.ambiente === 'testnet') {
+          baseUrl = 'https://testnet.binancefuture.com/fapi';
+        } else {
+          baseUrl = 'https://fapi.binance.com/fapi';
+        }
+        console.log(`[API] 🔧 URL padrão aplicada para futures: ${baseUrl}`);
+      }
+      
+      if (!baseUrl) {
+        throw new Error(`URL da API não definida para conta ${accountId}. Tipo: ${isSpot ? 'spot' : 'futures'}`);
+      }
+    }
+    
+    if (!apiKey || !secretKey) {
       throw new Error(`Credenciais incompletas para conta ${accountId}: apiKey=${!!apiKey}, secretKey=${!!secretKey}, baseUrl=${!!baseUrl}`);
     }
 
@@ -248,7 +341,7 @@ async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}
     const finalQueryString = queryString + `&signature=${signature}`;
     let fullUrl;
     if (method === 'GET') {
-      fullUrl = `${baseUrl}${endpoint}$1${finalQueryString}`;
+      fullUrl = `${baseUrl}${endpoint}?${finalQueryString}`;
     } else {
       fullUrl = `${baseUrl}${endpoint}`;
     }
@@ -282,7 +375,7 @@ async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}
         endpoint,
         method,
         params,
-        url: errResp.config$1.url,
+        url: errResp.config?.url,
         status: errResp.status,
         statusText: errResp.statusText,
         data: errResp.data,
@@ -292,7 +385,7 @@ async function makeAuthenticatedRequest(accountId, method, endpoint, params = {}
         ambiente: accountStates.get(accountId)?.ambiente
       }, null, 2));
     }
-    const errorMessage = error.response$6.data$7.msg || error.message;
+    const errorMessage = error.response?.data?.msg || error.message;
     console.error(`[API] Falha na requisição ${method} ${endpoint}: ${errorMessage}`);
     throw new Error(`Falha na requisição ${method} ${endpoint}: ${errorMessage}`);
   }
@@ -567,7 +660,7 @@ async function checkServerTime(accountId) {
     console.log(`[CONTA-${accountId}] ⚙️ Configuração aplicada:`);
     console.log(`[CONTA-${accountId}]   - RECV_WINDOW: ${recvWindow}ms`);
     console.log(`[CONTA-${accountId}]   - Qualidade: ${syncQuality}`);
-    console.log(`[CONTA-${accountId}]   - Offset de tempo: ${accountState$1.timeOffset || 0}ms`);
+    console.log(`[CONTA-${accountId}]   - Offset de tempo: ${accountState.timeOffset || 0}ms`);
     
     // === VALIDAÇÃO FINAL E AÇÕES CORRETIVAS ===
     if (targetTimeDiff > 10000) {
@@ -1082,7 +1175,16 @@ async function getSpotAccountBalanceDetails(accountId) {
 
     // Buscar o estado da conta para pegar o spotApiUrl
     const accountState = getAccountConnectionState(accountId, false);
-    const spotApiUrl = accountState$1.spotApiUrl;
+    
+    if (!accountState) {
+      throw new Error(`Estado da conta ${accountId} não encontrado. Execute loadCredentialsFromDatabase primeiro.`);
+    }
+    
+    if (!accountState.spotApiUrl) {
+      throw new Error(`spotApiUrl não configurada para conta ${accountId}`);
+    }
+    
+    const spotApiUrl = accountState.spotApiUrl;
 
     // Chamar makeAuthenticatedRequest com o spotApiUrl
     const accountData = await makeAuthenticatedRequest(accountId, 'GET', '/api/v3/account', {}, null, spotApiUrl);
@@ -1108,10 +1210,11 @@ async function getSpotAccountBalanceDetails(accountId) {
     const db = await getDatabaseInstance(accountId);
 
     // Obter saldo_spot anterior para comparação
-    const [previousBalanceSpot] = await db.query(
+    const previousBalanceSpotResult = await db.query(
       'SELECT saldo_spot, saldo_base_calculo_spot FROM contas WHERE id = $1',
       [accountId]
     );
+    const previousBalanceSpot = previousBalanceSpotResult.rows;
 
     const previousSaldoSpot = previousBalanceSpot.length > 0 ? parseFloat(previousBalanceSpot[0].saldo_spot || '0') : 0;
     const previousBaseCalculoSpot = previousBalanceSpot.length > 0 ? parseFloat(previousBalanceSpot[0].saldo_base_calculo_spot || '0') : 0;
@@ -1199,10 +1302,11 @@ async function getFuturesAccountBalanceDetails(accountId) {
     const db = await getDatabaseInstance(accountId);
     
     // Obter saldo_futuros anterior para comparação
-    const [previousBalanceFutures] = await db.query(
+    const previousBalanceFuturesResult = await db.query(
       'SELECT saldo_futuros, saldo_base_calculo_futuros FROM contas WHERE id = $1',
       [accountId]
     );
+    const previousBalanceFutures = previousBalanceFuturesResult.rows;
     
     const previousSaldoFuturos = previousBalanceFutures.length > 0 ? parseFloat(previousBalanceFutures[0].saldo_futuros || '0') : 0;
     const previousBaseCalculoFuturos = previousBalanceFutures.length > 0 ? parseFloat(previousBalanceFutures[0].saldo_base_calculo_futuros || '0') : 0;

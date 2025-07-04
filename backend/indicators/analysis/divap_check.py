@@ -33,20 +33,14 @@ DB_USER = os.getenv('DB_USER')
 DB_PASSWORD = os.getenv('DB_PASSWORD')
 DB_NAME = os.getenv('DB_NAME')
 
-# Configuração da conexão com banco de dados
+# Configuração da conexão com banco de dados PostgreSQL
 DB_CONFIG = {
     "host": DB_HOST,
     "user": DB_USER,
     "password": DB_PASSWORD,
-    "database": DB_NAME
+    "database": DB_NAME,
+    "port": int(DB_PORT) if DB_PORT else 5432
 }
-
-# Adicionar porta apenas se estiver definida
-if DB_PORT:
-    try:
-        DB_CONFIG["port"] = int(DB_PORT)
-    except (ValueError, TypeError):
-        logger.warning(f"Valor de porta inválido no .env: '{DB_PORT}'. Usando porta padrão.")
 
 # Configuração para API da Binance do arquivo .env
 API_KEY = os.getenv('API_KEY')
@@ -750,7 +744,7 @@ class DIVAPAnalyzer:
             
             while True:
                 # Verificar conexão a cada iteração
-                if not self.conn.is_connected():
+                if not self.conn or self.conn.closed:
                     logger.warning("[ALERTA] Conexão perdida, reconectando...")
                     self.connect_db()
                 

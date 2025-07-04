@@ -16,7 +16,10 @@ BEGIN;
 CREATE OR REPLACE FUNCTION update_timestamp_column()
 RETURNS TRIGGER AS $$
 BEGIN
-    NEW.atualizado_em = CURRENT_TIMESTAMP;
+    -- Para a tabela 'users' que usa 'atualizado_em'
+    IF TG_TABLE_NAME = 'users' THEN
+        NEW.atualizado_em = CURRENT_TIMESTAMP;
+    END IF;
     -- Para a tabela 'contas' que usa 'ultima_atualizacao'
     IF TG_TABLE_NAME = 'contas' THEN
         NEW.ultima_atualizacao = CURRENT_TIMESTAMP;
