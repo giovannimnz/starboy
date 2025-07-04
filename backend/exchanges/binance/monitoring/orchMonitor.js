@@ -88,10 +88,10 @@ function registerWebSocketHandlers(accountId) {
   console.log(`[MONITOR] 🎧 Registrando todos os handlers de WebSocket para a conta ${accountId}...`);
 
   // 1. Registrar handlers de atualização de ordens
-  registerOrderHandlers();
+  registerOrderHandlers(accountId);
 
   // 2. Registrar handlers de atualização de conta
-  registerAccountHandlers();
+  registerAccountHandlers(accountId);
 
   // 3. Registrar handler de atualização de preço (markPrice)
   // O handler onPriceUpdate é usado para processamento de sinais, como verificar trades.

@@ -37,27 +37,138 @@ async function registerPlugins() {
     timeWindow: '1 minute'
   });
   
-  // Configuração do Swagger
+  // Configuração do Swagger - Versão mais robusta
   await fastify.register(require('@fastify/swagger'), {
     openapi: {
+      openapi: '3.0.0',
       info: {
         title: 'Starboy API',
         description: 'Documentação da API para o sistema de trading Starboy.',
-        version: '1.0.0'
+        version: '1.0.0',
+        contact: {
+          name: 'Suporte API',
+          email: 'suporte@starboy.com'
+        }
       },
-      servers: [{
-        url: `http://0.0.0.0:${process.env.API_PORT || 8050}`,
-        description: 'Servidor de Desenvolvimento'
-      }],
+      servers: [
+        {
+          url: `http://0.0.0.0:${process.env.API_PORT || 8050}`,
+          description: 'Servidor de Desenvolvimento'
+        },
+        {
+          url: `http://137.131.190.161:${process.env.API_PORT || 8050}`,
+          description: 'Servidor de Produção'
+        }
+      ],
+      components: {
+        securitySchemes: {
+          bearerAuth: {
+            type: 'http',
+            scheme: 'bearer',
+            bearerFormat: 'JWT',
+            description: 'Token JWT para autenticação nas rotas protegidas'
+          }
+        },
+        schemas: {
+          Error: {
+            type: 'object',
+            properties: {
+              error: {
+                type: 'string',
+                description: 'Mensagem de erro'
+              }
+            }
+          },
+          Success: {
+            type: 'object',
+            properties: {
+              success: {
+                type: 'boolean',
+                description: 'Indica se a operação foi bem-sucedida'
+              },
+              message: {
+                type: 'string',
+                description: 'Mensagem de sucesso'
+              }
+            }
+          }
+        }
+      },
+      tags: [
+        {
+          name: 'Sistema',
+          description: 'Endpoints do sistema'
+        },
+        {
+          name: 'Usuários',
+          description: 'Gestão de usuários'
+        },
+        {
+          name: 'Contas',
+          description: 'Gestão de contas de trading'
+        },
+        {
+          name: 'Dashboard',
+          description: 'Dados do dashboard'
+        },
+        {
+          name: 'Telegram',
+          description: 'Integração com Telegram'
+        }
+      ]
     },
+    exposeRoute: true,
+    hideUntagged: false,
+    stripBasePath: false
   });
 
+  // Configuração do Swagger UI - Versão mais robusta
   await fastify.register(require('@fastify/swagger-ui'), {
     routePrefix: '/docs',
+    exposeRoute: true,
     uiConfig: {
       docExpansion: 'list',
-      deepLinking: true
+      deepLinking: true,
+      defaultModelsExpandDepth: 1,
+      defaultModelExpandDepth: 1,
+      displayRequestDuration: true,
+      tryItOutEnabled: true,
+      filter: true,
+      showExtensions: true,
+      showCommonExtensions: true,
+      persistAuthorization: true
     },
+    uiHooks: {
+      onRequest: function (request, reply, next) { 
+        // Log das requisições do Swagger
+        console.log(`[SWAGGER] ${request.method} ${request.url}`);
+        next();
+      },
+      preHandler: function (request, reply, next) { 
+        next();
+      }
+    },
+    staticCSP: true,
+    transformStaticCSP: (header) => header,
+    transformSpecification: (swaggerObject, request, reply) => {
+      // Validação adicional do objeto Swagger
+      if (!swaggerObject.components) {
+        swaggerObject.components = {};
+      }
+      if (!swaggerObject.components.securitySchemes) {
+        swaggerObject.components.securitySchemes = {};
+      }
+      if (!swaggerObject.components.securitySchemes.bearerAuth) {
+        swaggerObject.components.securitySchemes.bearerAuth = {
+          type: 'http',
+          scheme: 'bearer',
+          bearerFormat: 'JWT',
+          description: 'Token JWT para autenticação'
+        };
+      }
+      return swaggerObject;
+    },
+    transformSpecificationClone: true
   });
 
   fastify.log.info('Plugins registrados com sucesso.');

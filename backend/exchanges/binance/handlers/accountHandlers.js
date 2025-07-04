@@ -30,7 +30,7 @@ async function handleAccountUpdate(message, accountId, db = null) {
       console.warn(`[ACCOUNT] Mensagem ACCOUNT_UPDATE inválida para conta ${accountId}:`, {
         hasMessage: !!message,
         hasData: !!(message && message.a),
-        eventType: message$1.e
+        eventType: message?.e
       });
       return;
     }
@@ -107,24 +107,45 @@ async function handleAccountUpdate(message, accountId, db = null) {
 /**
  * ✅ NOVO: Handler principal para o evento 'accountUpdate' do Pub/Sub.
  * Este handler é o ponto de entrada para todas as atualizações de conta vindas do WebSocket.
- * @param {Object} eventData - Dados do evento.
- * @param {Object} eventData.message - A mensagem completa do WebSocket.
- * @param {number} eventData.accountId - O ID da conta associada.
+ * @param {Object} jsonData - A mensagem completa do WebSocket.
  */
-async function onAccountUpdate({ message, accountId }) {
+async function onAccountUpdate(jsonData) {
+    // O accountId é obtido através do contexto do listener quando registrado no pub/sub
+    // Vamos extrair do próprio evento se disponível
+    let accountId = null;
+    
+    // Tentar obter accountId de diferentes formas
+    if (jsonData && jsonData.accountId) {
+        accountId = jsonData.accountId;
+    } else if (global.currentProcessAccountId) {
+        accountId = global.currentProcessAccountId;
+    } else {
+        console.error('[ACCOUNT_UPDATE] AccountId não encontrado. JsonData:', jsonData);
+        return;
+    }
+    
     // Chama a função de lógica de negócios existente.
-    // O terceiro parâmetro (db) é opcional e será tratado dentro de handleAccountUpdate.
-    await handleAccountUpdate(message, accountId);
+    await handleAccountUpdate(jsonData, accountId);
 }
 
 /**
  * ✅ NOVO: Registra os handlers de conta no sistema Pub/Sub do WebSocket.
  * Deve ser chamado uma vez na inicialização do monitor.
  */
-function registerAccountHandlers() {
+function registerAccountHandlers(accountId) {
+    if (!accountId) {
+        console.error('[ACCOUNT_HANDLERS] AccountId é obrigatório para registrar handlers');
+        return;
+    }
+    
+    // Criar um wrapper que captura o accountId
+    const accountUpdateWrapper = (jsonData) => {
+        handleAccountUpdate(jsonData, accountId);
+    };
+    
     const listenerId = 'mainAccountHandler'; // ID único para este listener
-    websockets.on('accountUpdate', onAccountUpdate, listenerId);
-    console.log(`[ACCOUNT_HANDLERS] 🎧 Handler principal de conta registrado com o ID: ${listenerId}`);
+    websockets.on('accountUpdate', accountUpdateWrapper, accountId, listenerId);
+    console.log(`[ACCOUNT_HANDLERS] 🎧 Handler principal de conta registrado para a conta ${accountId} com o ID: ${listenerId}`);
 }
 
 /**

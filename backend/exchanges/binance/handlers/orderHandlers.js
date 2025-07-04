@@ -49,7 +49,7 @@ async function handleOrderUpdate(accountId, orderUpdateData, db = null) {
     // ✅ PROCESSAR DADOS DA ORDEM
     const orderData = orderUpdateData.o || orderUpdateData; // O payload pode vir aninhado em 'o'
     
-    const orderId = orderData.i$1.toString();
+    const orderId = orderData.i?.toString();
     const symbol = orderData.s;
     const orderStatus = orderData.X;
     const executionType = orderData.x;
@@ -274,7 +274,7 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCou
     connection = await db.getConnection();
     await connection.beginTransaction();
 
-    // ✅ 1. VERIFICAÇÃO PRELIMINAR: Ordem já foi movida para histórico$1
+    // ✅ 1. VERIFICAÇÃO PRELIMINAR: Ordem já foi movida para histórico
     const historyCheck = await connection.query(`SELECT id FROM ordens_fechadas WHERE id_externo = $1 AND conta_id = $2`, [orderId, accountId]
     );
     
@@ -558,7 +558,7 @@ async function handleOrderUpdate(accountId, orderUpdateData, db = null) {
     // ✅ PROCESSAR DADOS DA ORDEM
     const orderData = orderUpdateData.o || orderUpdateData; // O payload pode vir aninhado em 'o'
     
-    const orderId = orderData.i$1.toString();
+    const orderId = orderData.i?.toString();
     const symbol = orderData.s;
     const orderStatus = orderData.X;
     const executionType = orderData.x;
@@ -1315,7 +1315,7 @@ async function searchAndLinkPosition(orderDbId, orderData, accountId) {
     try {
       connection = await db.getConnection();
       
-      // ✅ VERIFICAÇÃO INTERMEDIÁRIA 1: Ordem já foi movida para histórico$1
+      // ✅ VERIFICAÇÃO INTERMEDIÁRIA 1: Ordem já foi movida para histórico
       const historyCheck = await connection.query(`SELECT id FROM ordens_fechadas WHERE id_externo = $1 AND conta_id = $2`, [orderData.i, accountId]
       );
       
