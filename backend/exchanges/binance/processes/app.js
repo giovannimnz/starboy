@@ -98,8 +98,9 @@ async function iniciarTodasContas() {
   try {
     const db = await getDatabaseInstance();
     const result = await db.query('SELECT id, nome FROM contas WHERE ativa = true');
+    const accounts = result.rows;
     
-    if (accounts.rows.length === 0) {
+    if (accounts.length === 0) {
       console.log('Nenhuma conta ativa encontrada.');
       return;
     }
@@ -120,7 +121,7 @@ async function listarContasAtivas() {
   
   const instancias = listActiveInstances();
   
-  if (instancias.rows.length === 0) {
+  if (instancias.length === 0) {
     console.log('Nenhuma conta está ativa no momento.');
   } else {
     console.log('\n🟢 CONTAS ATIVAS:');
@@ -133,11 +134,12 @@ async function listarContasAtivas() {
   try {
     const db = await getDatabaseInstance();
     const result = await db.query('SELECT id, nome, ativa FROM contas WHERE ativa = true');
+    const allAccounts = result.rows;
     
     const inactiveAccounts = allAccounts.filter(acc => 
       !instancias.some(inst => inst.accountId === acc.id));
     
-    if (inactiveAccounts.rows.length > 0) {
+    if (inactiveAccounts.length > 0) {
       console.log('\n⚪ CONTAS DISPONÍVEIS (INATIVAS):');
       inactiveAccounts.forEach(acc => {
         console.log(`  [${acc.id}] ${acc.nome} - Pronta para iniciar`);
@@ -155,8 +157,9 @@ async function iniciarContaEspecifica() {
   try {
     const db = await getDatabaseInstance();
     const result = await db.query('SELECT id, nome, ativa FROM contas WHERE ativa = true');
+    const accounts = result.rows;
     
-    if (accounts.rows.length === 0) {
+    if (accounts.length === 0) {
       console.log('Nenhuma conta ativa encontrada.');
       return;
     }
@@ -251,8 +254,9 @@ async function reiniciarContaEspecifica() {
   try {
     const db = await getDatabaseInstance();
     const result = await db.query('SELECT id, nome, ativa FROM contas WHERE ativa = true');
+    const accounts = result.rows;
     
-    if (accounts.rows.length === 0) {
+    if (accounts.length === 0) {
       console.log('Nenhuma conta ativa encontrada.');
       return;
     }
@@ -317,7 +321,8 @@ async function mostrarEstatisticas() {
   try {
     const db = await getDatabaseInstance();
     const result = await db.query('SELECT COUNT(*) as total FROM contas WHERE ativa = true');
-    const totalAtivas = totalAccounts.rows[0].total;
+    const totalAccounts = result.rows;
+    const totalAtivas = totalAccounts[0].total;
     
     console.log(`📋 Total de contas no banco: ${totalAtivas}`);
     console.log(`🚀 Taxa de utilização: ${totalAtivas > 0 ? ((stats.running / totalAtivas) * 100).toFixed(1) : 0}%`);

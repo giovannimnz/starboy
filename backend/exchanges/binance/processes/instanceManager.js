@@ -21,8 +21,9 @@ async function startAllInstances() {
     
     const db = await getDatabaseInstance();
     const result = await db.query('SELECT id, nome FROM contas WHERE ativa = true');
+    const accounts = result.rows;
     
-    if (accounts.rows.length === 0) {
+    if (accounts.length === 0) {
       console.log('[INSTANCE-MANAGER] ⚠️ Nenhuma conta ativa encontrada.');
       return 0;
     }
@@ -77,13 +78,14 @@ async function startInstance(accountId) {
     // Validar conta no banco
     const db = await getDatabaseInstance();
     const result = await db.query(`SELECT nome FROM contas WHERE id = $1 AND ativa = true`, [accountId]);
+    const accounts = result.rows;
     
-    if (!accounts || accounts.rows.length === 0) {
+    if (!accounts || accounts.length === 0) {
       console.error(`[INSTANCE-MANAGER] ❌ Conta ID ${accountId} não encontrada ou inativa`);
       return false;
     }
     
-    const accountName = accounts.rows[0].nome;
+    const accountName = accounts[0].nome;
     console.log(`[INSTANCE-MANAGER] 🚀 Iniciando processo para conta ${accountId} (${accountName})...`);
     
     // Criar processo separado para orchMonitor
@@ -322,7 +324,7 @@ function listActiveInstances() {
 async function stopAllInstances() {
   const instanceIds = [...activeInstances.keys()];
   
-  if (instanceIds.rows.length === 0) {
+  if (instanceIds.length === 0) {
     console.log('[INSTANCE-MANAGER] ℹ️ Nenhuma instância ativa para parar');
     return 0;
   }
@@ -364,7 +366,7 @@ function getInstanceStats() {
   const stopped = total - running;
   
   const uptimes = instances.map(inst => inst.uptimeSeconds);
-  const avgUptime = uptimes.rows.length > 0 ? Math.floor(uptimes.reduce((a, b) => a + b, 0) / uptimes.length) : 0;
+  const avgUptime = uptimes.length > 0 ? Math.floor(uptimes.reduce((a, b) => a + b, 0) / uptimes.length) : 0;
   
   return {
     total,

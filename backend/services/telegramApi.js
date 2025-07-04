@@ -280,8 +280,8 @@ async function formatPositionClosedMessage(positionOrSymbol, side, quantity, ent
         const result = await db.query(`SELECT side, entry_price, tp5_price FROM webhook_signals WHERE position_id = $1 ORDER BY created_at DESC LIMIT 1`, [pos.id]
         );
 
-        if (signalRows.rows.length > 0) {
-          const signal = signalRows.rows[0];
+        if (result.rows.length > 0) {
+          const signal = result.rows[0];
           
           // ✅ TRATAR OS VALORES "COMPRA" e "VENDA" da webhook_signals
           let normalizedSide = signal.side;

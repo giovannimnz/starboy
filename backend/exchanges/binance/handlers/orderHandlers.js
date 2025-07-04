@@ -1,4 +1,4 @@
-const { getDatabaseInstance, insertPosition, insertNewOrder, formatDateForMySQL } = require('../../../core/database/conexao');
+const { getDatabaseInstance, insertPosition, insertNewOrder, formatDateForPostgreSQL } = require('../../../core/database/conexao');
 const websockets = require('../api/websocket');
 const { sendTelegramMessage, formatOrderMessage } = require('../services/telegramHelper');
 
@@ -275,24 +275,24 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCou
     await connection.beginTransaction();
 
     // ✅ 1. VERIFICAÇÃO PRELIMINAR: Ordem já foi movida para histórico$1
-    const result = await connection.query(`SELECT id FROM ordens_fechadas WHERE id_externo = $1 AND conta_id = $2`, [orderId, accountId]
+    const historyCheck = await connection.query(`SELECT id FROM ordens_fechadas WHERE id_externo = $1 AND conta_id = $2`, [orderId, accountId]
     );
     
     if (historyCheck.rows.length > 0) {
       console.log(`[ORDER_AUTO_MOVE] ✅ Ordem ${orderId} já existe no histórico - verificando duplicatas na tabela ativa...`);
       
       // Verificar se ainda está na tabela ativa (situação de duplicata)
-      const result = await connection.query(`SELECT id FROM ordens WHERE id_externo = $1 AND conta_id = $2`, [orderId, accountId]
+      const activeCheck = await connection.query(`SELECT id FROM ordens WHERE id_externo = $1 AND conta_id = $2`, [orderId, accountId]
       );
       
       if (activeCheck.rows.length > 0) {
         console.log(`[ORDER_AUTO_MOVE] 🔧 CORREÇÃO: Ordem ${orderId} duplicada - removendo da tabela ativa...`);
         
-        const result = await connection.query(`DELETE FROM ordens WHERE id_externo = $1 AND conta_id = $2`, [orderId, accountId]
+        const deleteResult = await connection.query(`DELETE FROM ordens WHERE id_externo = $1 AND conta_id = $2`, [orderId, accountId]
         );
         
         await connection.commit();
-        console.log(`[ORDER_AUTO_MOVE] ✅ Ordem duplicada ${orderId} removida (${deleteResult.affectedRows} linha(s))`);
+        console.log(`[ORDER_AUTO_MOVE] ✅ Ordem duplicada ${orderId} removida (${deleteResult.rowCount} linha(s))`);
         return true;
       } else {
         console.log(`[ORDER_AUTO_MOVE] ✅ Ordem ${orderId} já está corretamente no histórico`);
@@ -302,7 +302,7 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCou
     }
 
     // ✅ 2. BUSCAR ORDEM COMPLETA DA TABELA ATIVA
-    const result = await connection.query(`SELECT * FROM ordens WHERE id_externo = $1 AND conta_id = $2`, [orderId, accountId]
+    const orderResult = await connection.query(`SELECT * FROM ordens WHERE id_externo = $1 AND conta_id = $2`, [orderId, accountId]
     );
 
     if (orderResult.rows.length === 0) {
@@ -328,7 +328,7 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCou
         retryAttempt++;
         
         // ✅ VERIFICAÇÃO INTERMEDIÁRIA 1: Ordem já foi movida para histórico durante o retry$1
-        const result = await connection.query(`SELECT id FROM ordens_fechadas WHERE id_externo = $1 AND conta_id = $2`, [orderId, accountId]
+        const intermediateMoveCheck = await connection.query(`SELECT id FROM ordens_fechadas WHERE id_externo = $1 AND conta_id = $2`, [orderId, accountId]
         );
         
         if (intermediateMoveCheck.rows.length > 0) {
@@ -338,7 +338,7 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCou
         }
         
         // ✅ VERIFICAÇÃO INTERMEDIÁRIA 2: Ordem já tem id_posicao$1
-        const result = await connection.query(`SELECT id_posicao FROM ordens WHERE id_externo = $1 AND conta_id = $2`, [orderId, accountId]
+        const intermediatePositionCheck = await connection.query(`SELECT id_posicao FROM ordens WHERE id_externo = $1 AND conta_id = $2`, [orderId, accountId]
         );
         
         if (intermediatePositionCheck.rows.length === 0) {
@@ -355,7 +355,7 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCou
         
         // ✅ BUSCAR POSIÇÃO CORRESPONDENTE PARA VINCULAR
         const symbol = orderToMove.simbolo;
-        const result = await connection.query(`SELECT id, quantidade, preco_medio, data_hora_abertura 
+        const availablePositions = await connection.query(`SELECT id, quantidade, preco_medio, data_hora_abertura 
            FROM posicoes 
            WHERE simbolo = $1 AND conta_id = $2 AND status = 'OPEN' AND ABS(quantidade) > 0
            ORDER BY data_hora_abertura DESC, id DESC
@@ -412,7 +412,7 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCou
     }
 
     // ✅ 4. VERIFICAÇÃO FINAL: Ordem ainda não foi movida enquanto processávamos$1
-    const result = await connection.query(`SELECT id FROM ordens_fechadas WHERE id_externo = $1 AND conta_id = $2`, [orderId, accountId]
+    const finalMoveCheck = await connection.query(`SELECT id FROM ordens_fechadas WHERE id_externo = $1 AND conta_id = $2`, [orderId, accountId]
     );
     
     if (finalMoveCheck.rows.length > 0) {
@@ -433,8 +433,8 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCou
     delete closedOrderData.id;
 
     // ✅ 6. OBTER COLUNAS DA TABELA DE DESTINO
-    const result = await connection.query('SHOW COLUMNS FROM ordens_fechadas');
-    const destColumns = destColumnsResult.map(col => col.Field);
+    const destColumnsResult = await connection.query(`SELECT column_name FROM information_schema.columns WHERE table_name = 'ordens_fechadas' AND table_schema = CURRENT_SCHEMA()`);
+    const destColumns = destColumnsResult.rows.map(row => row.column_name);
 
     // ✅ 7. FILTRAR DADOS PARA INSERIR APENAS COLUNAS EXISTENTES
     const finalDataToInsert = {};
@@ -446,7 +446,7 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCou
 
     // ✅ 8. INSERIR NA TABELA DE HISTÓRICO
     const columns = Object.keys(finalDataToInsert);
-    const placeholders = columns.map(() => '$1').join(', ');
+    const placeholders = columns.map((_, index) => `$${index + 1}`).join(', ');
     const values = Object.values(finalDataToInsert);
 
     // ✅ RETRY EM CASO DE DEADLOCK - INSERÇÃO NO HISTÓRICO
@@ -493,18 +493,18 @@ async function autoMoveOrderOnCompletion(orderId, newStatus, accountId, retryCou
       }
     }
     
-    if (deleteResult.affectedRows === 0) {
+    if (deleteResult.rowCount === 0) {
       console.error(`[ORDER_AUTO_MOVE] ❌ FALHA: Nenhuma linha foi deletada para ordem ${orderId}`);
       await connection.rollback();
       return false;
     }
     
-    console.log(`[ORDER_AUTO_MOVE] ✅ ${deleteResult.affectedRows} cópia(s) da ordem ${orderId} deletada(s) da tabela ativa`);
+    console.log(`[ORDER_AUTO_MOVE] ✅ ${deleteResult.rowCount} cópia(s) da ordem ${orderId} deletada(s) da tabela ativa`);
 
     await connection.commit();
     
     // ✅ 10. VERIFICAÇÃO FINAL: CONFIRMAR QUE A ORDEM FOI REALMENTE REMOVIDA
-    const result = await connection.query(`SELECT COUNT(*) as count FROM ordens WHERE id_externo = $1 AND conta_id = $2`, [orderId, accountId]
+    const verifyResult = await connection.query(`SELECT COUNT(*) as count FROM ordens WHERE id_externo = $1 AND conta_id = $2`, [orderId, accountId]
     );
     
     if (verifyResult.rows[0].count > 0) {
@@ -764,8 +764,8 @@ async function insertExternalOrder(dbConnection, orderData, accountId) {
     };
 
     // ✅ VERIFICAR QUAIS COLUNAS EXISTEM NA TABELA
-    const result = await connection.query(`SHOW COLUMNS FROM ordens`);
-    const existingColumns = columns.map(col => col.Field);
+    const columnsResult = await connection.query(`SELECT column_name FROM information_schema.columns WHERE table_name = 'ordens' AND table_schema = CURRENT_SCHEMA()`);
+    const existingColumns = columnsResult.rows.map(row => row.column_name);
     
     // ✅ FILTRAR APENAS CAMPOS QUE EXISTEM NA TABELA
     const validData = {};
@@ -778,23 +778,24 @@ async function insertExternalOrder(dbConnection, orderData, accountId) {
     // ✅ CONSTRUIR QUERY DINÂMICA
     const columnNames = Object.keys(validData);
     const values = Object.values(validData);
-    const placeholders = columnNames.map(() => '$1').join(', ');
+    const placeholders = columnNames.map((_, index) => `$${index + 1}`).join(', ');
     
     const insertQuery = `
       INSERT INTO ordens (${columnNames.join(', ')}) 
       VALUES (${placeholders})
+      RETURNING id
     `;
 
     // ✅ RETRY EM CASO DE DEADLOCK - INSERÇÃO DE ORDEM EXTERNA
     let insertTries = 0;
-    let result, orderDbId;
+    let insertResult, orderDbId;
     while (insertTries < 1000) {
       try {
-        [result] = await connection.query(insertQuery, values);
-        orderDbId = result.insertId;
+        insertResult = await connection.query(insertQuery, values);
+        orderDbId = insertResult.rows[0].id;
         break;
       } catch (error) {
-        if (error.message && error.message.includes('Deadlock found when trying to get lock') && insertTries < 99) {
+        if (error.message && error.message.includes('deadlock') && insertTries < 99) {
           insertTries++;
           console.warn(`[ORDER] ⚠️ Deadlock detectado ao inserir ordem externa, tentativa ${insertTries}/1000...`);
           await new Promise(res => setTimeout(res, 10 + Math.random() * 50));
@@ -843,7 +844,19 @@ async function updateExistingOrder(dbConnection, orderData, accountId, existingO
       connection = await db.getConnection();
     }
     // Buscar valores atuais do banco
-    const result = await connection.query(`SELECT * FROM ordens WHERE id_externo = ? 1 : parseFloat(orderData.rp) : current.realized_profit;
+    const result = await connection.query(`SELECT * FROM ordens WHERE id_externo = $1 AND conta_id = $2`, [orderId, accountId]);
+    
+    if (result.rows.length === 0) {
+      console.error(`[ORDER] ❌ Ordem ${orderId} não encontrada no banco para atualização`);
+      return;
+    }
+    
+    const current = result.rows[0];
+    
+    // Construir valores para atualização, preservando os atuais se os novos forem nulos/undefined
+    const realized_profit = orderData.rp !== null && orderData.rp !== undefined && orderData.rp !== '' ? 
+                            (orderData.rp !== 0 ? parseFloat(orderData.rp) : 0) : 
+                            current.realized_profit;
     const commission = orderData.n !== null && orderData.n !== undefined ? parseFloat(orderData.n) : current.commission;
     const commission_asset = orderData.N !== null && orderData.N !== undefined ? orderData.N : current.commission_asset;
     const trade_id = orderData.t !== null && orderData.t !== undefined ? orderData.t : current.trade_id;
@@ -1027,11 +1040,11 @@ async function checkPositionClosureAfterOrderExecution(orderId, accountId) {
     const db = await getDatabaseInstance();
     
     // Buscar ordem executada
-    const result = await db.query(`
+    const executedOrder = await db.query(`
       SELECT o.*, p.simbolo as position_symbol, p.id as position_id, p.quantidade as position_qty
       FROM ordens o
       LEFT JOIN posicoes p ON o.id_posicao = p.id
-      WHERE o.id_externo = $1 AND o.conta_id = $2 AND o.status = `FILLED'
+      WHERE o.id_externo = $1 AND o.conta_id = $2 AND o.status = 'FILLED'
     `, [orderId, accountId]);
     
     if (executedOrder.rows.length === 0) {
@@ -1116,7 +1129,7 @@ async function cleanupOrphanOrders(accountId) {
           const result = await connection.query(`DELETE FROM ordens WHERE id = $1`, [order.id]
           );
           
-          if (deleteResult.affectedRows > 0) {
+          if (deleteResult.rowCount > 0) {
             console.log(`[CLEANUP_ORDERS] 🗑️ Ordem órfã removida: ${order.id_externo} (${order.simbolo})`);
             cleanedCount++;
           }
@@ -1303,7 +1316,7 @@ async function searchAndLinkPosition(orderDbId, orderData, accountId) {
       connection = await db.getConnection();
       
       // ✅ VERIFICAÇÃO INTERMEDIÁRIA 1: Ordem já foi movida para histórico$1
-      const result = await connection.query(`SELECT id FROM ordens_fechadas WHERE id_externo = $1 AND conta_id = $2`, [orderData.i, accountId]
+      const historyCheck = await connection.query(`SELECT id FROM ordens_fechadas WHERE id_externo = $1 AND conta_id = $2`, [orderData.i, accountId]
       );
       
       if (historyCheck.rows.length > 0) {
@@ -1313,7 +1326,7 @@ async function searchAndLinkPosition(orderDbId, orderData, accountId) {
       }
       
       // ✅ VERIFICAÇÃO INTERMEDIÁRIA 2: Ordem ainda existe na tabela ativa$1
-      const result = await connection.query(`SELECT id_posicao FROM ordens WHERE id = $1 AND conta_id = $2`, [orderDbId, accountId]
+      const orderCheck = await connection.query(`SELECT id_posicao FROM ordens WHERE id = $1 AND conta_id = $2`, [orderDbId, accountId]
       );
       
       if (orderCheck.rows.length === 0) {
@@ -1330,7 +1343,7 @@ async function searchAndLinkPosition(orderDbId, orderData, accountId) {
       }
       
       // ✅ BUSCAR POSIÇÃO CORRESPONDENTE
-      const result = await connection.query(`SELECT id, quantidade, preco_medio 
+      const positions = await connection.query(`SELECT id, quantidade, preco_medio 
          FROM posicoes 
          WHERE simbolo = $1 AND conta_id = $2 AND ABS(quantidade) > 0
          ORDER BY data_hora_abertura DESC, id DESC

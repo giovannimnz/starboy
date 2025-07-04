@@ -54,7 +54,7 @@ async function executeReverse(signal, currentPrice, accountId) {
     if (positionAlreadyExists) {
       console.log(`[REVERSE_IMPROVED] ALERTA: Posição já existe para ${signal.symbol}. Cancelando.`);
       await connection.query(
-        `UPDATE webhook_signals SET status = 'ERROR', error_message = ? WHERE id = ?`,
+        `UPDATE webhook_signals SET status = 'ERROR', error_message = $1 WHERE id = $2`,
         ['Posição já existe na corretora', signal.id]
       );
       await connection.commit();
@@ -280,9 +280,9 @@ async function executeReverse(signal, currentPrice, accountId) {
 
     await connection.query(
       `UPDATE ordens SET 
-        status = 'FILLED', quantidade_executada = ?, preco_executado = ?, 
-        commission = ?, commission_asset = ?, last_update = CURRENT_TIMESTAMP
-       WHERE id_externo = ? AND conta_id = ?`,
+        status = 'FILLED', quantidade_executada = $1, preco_executado = $2, 
+        commission = $3, commission_asset = $4, last_update = CURRENT_TIMESTAMP
+       WHERE id_externo = $5 AND conta_id = $6`,
       [
         orderFilledData.executedQty, orderFilledData.avgPrice,
         orderFilledData.commission, orderFilledData.commissionAsset,
@@ -335,7 +335,7 @@ async function executeReverse(signal, currentPrice, accountId) {
 
     // 12. ✅ ATUALIZAR STATUS DO SINAL PARA EXECUTADO
     await connection.query(
-      `UPDATE webhook_signals SET status = 'EXECUTADO', updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+      `UPDATE webhook_signals SET status = 'EXECUTADO', updated_at = CURRENT_TIMESTAMP WHERE id = $1`,
       [signal.id]
     );
 
@@ -382,14 +382,14 @@ async function executeReverse(signal, currentPrice, accountId) {
       // Se posição foi criada, marcar como erro
       if (positionCreated && positionId) {
         await connection.query(
-          `UPDATE posicoes SET status = 'ERROR', observacoes = ? WHERE id = ?`,
+          `UPDATE posicoes SET status = 'ERROR', observacoes = $1 WHERE id = $2`,
           [`Erro na execução: ${error.message}`, positionId]
         );
       }
       
       // Atualizar sinal com erro
       await connection.query(
-        `UPDATE webhook_signals SET status = 'ERROR', error_message = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+        `UPDATE webhook_signals SET status = 'ERROR', error_message = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2`,
         [error.message.substring(0, 250), signal.id]
       );
       

@@ -103,15 +103,16 @@ async function loadCredentialsFromDatabase(accountId) {
   // PASSO 3: Executar query
   console.log(`[API] PASSO 3: Executando query para carregar credenciais...`);
   
-  const [rows] = await db.query(
+  const result = await db.query(
     `SELECT c.id, c.nome, c.api_key, c.api_secret, c.ws_api_key, c.ws_api_secret, 
             co.ambiente, co.corretora, co.futures_rest_api_url, co.futures_ws_market_url, co.futures_ws_api_url
      FROM contas c
      JOIN corretoras co ON c.id_corretora = co.id
-     WHERE c.id = ? AND c.ativa = 1`,
+     WHERE c.id = $1 AND c.ativa = true`,
     [accountId]
   );
 
+  const rows = result.rows;
   console.log(`[API] Query executada, ${rows.length} linha(s) retornada(s)`);
   
   if (rows.length === 0) {

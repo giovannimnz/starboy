@@ -1,4 +1,4 @@
-const { getDatabaseInstance, insertPosition, formatDateForMySQL } = require('../../../core/database/conexao');
+const { getDatabaseInstance, insertPosition, formatDateForPostgreSQL } = require('../../../core/database/conexao');
 const websockets = require('../api/websocket');
 const { sendTelegramMessage, formatBalanceMessage } = require('../services/telegramHelper');
 const { movePositionToHistory } = require('../services/cleanup');
@@ -169,8 +169,8 @@ async function handleBalanceUpdates(connection, balances, accountId, reason, eve
           }
           
           // ✅ VERIFICAR QUAIS COLUNAS EXISTEM
-          const [columns] = await connection.query(`SHOW COLUMNS FROM contas`);
-          const existingColumns = columns.map(col => col.Field);
+          const columns = await connection.query(`SELECT column_name FROM information_schema.columns WHERE table_name = 'contas' AND table_schema = CURRENT_SCHEMA()`);
+          const existingColumns = columns.rows.map(row => row.column_name);
           
           // ✅ CONSTRUIR UPDATE DINÂMICO - SEMPRE ATUALIZAR O SALDO
           let updateQuery = `UPDATE contas SET 
@@ -422,7 +422,7 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
                     [newPositionId, signalId]
                   );
                   
-                  if (updateResult.affectedRows > 0) {
+                  if (updateResult.rowCount > 0) {
                     console.log(`[ACCOUNT_UPDATE] ✅ Sinal ${signalId} vinculado à posição ${newPositionId} com sucesso (tipo: ${signalStatus === 'EXECUTADO' ? 'prioritário' : 'fallback'})`);
                     signalUpdated = true;
                   } else {
@@ -455,7 +455,7 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
                   `UPDATE ordens SET id_posicao = $1 WHERE simbolo = $2 AND conta_id = $3 AND (id_posicao IS NULL OR id_posicao = 0)`,
                   [newPositionId, symbol, accountId]
                 );
-                console.log(`[ACCOUNT_UPDATE] ✅ ${ordensResult.affectedRows} ordens vinculadas à posição ${newPositionId}`);
+                console.log(`[ACCOUNT_UPDATE] ✅ ${ordensResult.rowCount} ordens vinculadas à posição ${newPositionId}`);
                 break;
               } catch (error) {
                 if (error.message && error.message.includes('Deadlock found when trying to get lock') && ordensUpdateTries < 999) {
@@ -476,7 +476,7 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
                   `UPDATE ordens_fechadas SET id_posicao = $1 WHERE simbolo = $2 AND conta_id = $3 AND (id_posicao IS NULL OR id_posicao = 0)`,
                   [newPositionId, symbol, accountId]
                 );
-                console.log(`[ACCOUNT_UPDATE] ✅ ${ordensFechadasResult.affectedRows} ordens_fechadas vinculadas à posição ${newPositionId}`);
+                console.log(`[ACCOUNT_UPDATE] ✅ ${ordensFechadasResult.rowCount} ordens_fechadas vinculadas à posição ${newPositionId}`);
                 break;
               } catch (error) {
                 if (error.message && error.message.includes('Deadlock found when trying to get lock') && ordensFechadasUpdateTries < 999) {
@@ -729,8 +729,8 @@ async function handlePositionUpdates(connection, positions, accountId, reason, e
           }
 
           // Verificar colunas para atualização final
-          const [columns] = await connection.query(`SHOW COLUMNS FROM posicoes`);
-          const existingColumns = columns.map(col => col.Field);
+          const columns = await connection.query(`SELECT column_name FROM information_schema.columns WHERE table_name = 'posicoes' AND table_schema = CURRENT_SCHEMA()`);
+          const existingColumns = columns.rows.map(row => row.column_name);
           let closeQuery = `UPDATE posicoes SET status = 'CLOSED', quantidade = 0, data_hora_fechamento = CURRENT_TIMESTAMP, data_hora_ultima_atualizacao = CURRENT_TIMESTAMP`;
           let closeValues = [];
           if (existingColumns.includes('accumulated_realized')) {
@@ -1018,7 +1018,7 @@ async function fixOrphanSignals(accountId = null) {
                   [position.id, signal.id]
                 );
                 
-                if (updateResult.affectedRows > 0) {
+                if (updateResult.rowCount > 0) {
                   console.log(`[ACCOUNT_ORPHAN] ✅ Sinal órfão ${signal.id} (${signal.symbol}) vinculado à posição ${position.id}`);
                   console.log(`[ACCOUNT_ORPHAN]   - Quantidade posição: ${position.quantidade}`);
                   console.log(`[ACCOUNT_ORPHAN]   - Preço médio: ${position.preco_medio}`);

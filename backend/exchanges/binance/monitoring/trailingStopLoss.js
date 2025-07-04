@@ -1,4 +1,4 @@
-const { getDatabaseInstance, insertNewOrder, formatDateForMySQL } = require('../../../core/database/conexao');
+const { getDatabaseInstance, insertNewOrder, formatDateForPostgreSQL } = require('../../../core/database/conexao');
 const { newStopOrder, cancelOrder, getOpenOrders } = require('../api/rest');
 const { sendTelegramMessage, formatAlertMessage } = require('../services/telegramHelper');
 
@@ -8,7 +8,7 @@ const MIN_CHECK_INTERVAL = 10000; // 10 segundos
 const TWO_MINUTES_RECHECK_NO_SL = 2 * 60 * 1000; // 2 minutos
 
 /**
- * ✅ FUNÇÃO PRINCIPAL: Substitui o enhancedMonitoring
+ * FUNÇÃO PRINCIPAL: Substitui o enhancedMonitoring
  * Atualiza posições com trailing stop loss
  * @param {Object} db - Instância do banco
  * @param {string} symbol - Símbolo da moeda
@@ -18,10 +18,11 @@ const TWO_MINUTES_RECHECK_NO_SL = 2 * 60 * 1000; // 2 minutos
 async function updatePositionPricesWithTrailing(db, symbol, currentPrice, accountId) {
   try {
     // Buscar posições abertas para o símbolo
-    const [positions] = await db.query(`
+    const result = await db.query(`
       SELECT * FROM posicoes 
       WHERE simbolo = $1 AND conta_id = $2 AND status = 'OPEN'
     `, [symbol, accountId]);
+    const positions = result.rows;
 
     if (positions.length === 0) {
       return;
@@ -42,7 +43,7 @@ async function updatePositionPricesWithTrailing(db, symbol, currentPrice, accoun
 }
 
 /**
- * ✅ SISTEMA COMPLETO DE TRAILING STOP BASEADO NO _DEV
+ * SISTEMA COMPLETO DE TRAILING STOP BASEADO NO _DEV
  * Verifica e atualiza trailing stops para posições abertas
  * @param {Object} db - Instância do banco
  * @param {Object} position - Dados da posição
@@ -54,14 +55,14 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
     const positionId = position.id;
     const functionPrefix = "[TRAILING]";
 
-    // ✅ CONTROLE DE INTERVALO MÍNIMO
+    // CONTROLE DE INTERVALO MÍNIMO
     const now = Date.now();
     if (lastTrailingCheck[positionId] && (now - lastTrailingCheck[positionId] < MIN_CHECK_INTERVAL)) {
       return;
     }
     lastTrailingCheck[positionId] = now;
 
-    // ✅ OBTER NÍVEL ATUAL DE TRAILING DO BANCO
+    // OBTER NÍVEL ATUAL DE TRAILING DO BANCO
     const [trailingStateResult] = await db.query(
       `SELECT trailing_stop_level FROM posicoes WHERE id = $1`,
       [positionId]
@@ -75,9 +76,9 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
           ALTER TABLE posicoes 
           ADD COLUMN trailing_stop_level VARCHAR(20) DEFAULT 'ORIGINAL'
         `);
-        console.log(`${functionPrefix} ✅ Coluna trailing_stop_level criada`);
+        console.log(`${functionPrefix} [OK] Coluna trailing_stop_level criada`);
       } catch (alterError) {
-        console.warn(`${functionPrefix} ⚠️ Erro ao criar coluna trailing_stop_level:`, alterError.message);
+        console.warn(`${functionPrefix} [WARN] Erro ao criar coluna trailing_stop_level:`, alterError.message);
       }
     }
     
@@ -120,14 +121,14 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
     let side = (position.side || '').toUpperCase();
     if (side === 'BOTH' || !side || !['BUY', 'SELL', 'LONG', 'SHORT'].includes(side)) {
       side = (signal.side || '').toUpperCase();
-      //console.log(`[TRAILING] ⚠️ Side da posição era '${position.side}', usando side do sinal: '${side}'`);
+      //console.log(`[TRAILING] [WARN] Side da posição era '${position.side}', usando side do sinal: '${side}'`);
     }
     
     // Se ainda não temos um side válido, determinar pela quantidade da posição
     if (!side || side === 'BOTH' || !['BUY', 'SELL', 'LONG', 'SHORT'].includes(side)) {
       const positionQty = parseFloat(position.quantidade || 0);
       side = positionQty > 0 ? "BUY" : "SELL";
-      //console.log(`[TRAILING] ⚠️ Determinando side pela quantidade da posição: ${positionQty} -> ${side}`);
+      //console.log(`[TRAILING] [WARN] Determinando side pela quantidade da posição: ${positionQty} -> ${side}`);
     }
 
     // Verificar validade dos preços
@@ -137,7 +138,7 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
     }
 
     // LOG DETALHADO
-    //console.log(`[TRAILING] 📊 Posição ${position.simbolo} (${side}) - ID: ${position.id}:`);
+    //console.log(`[TRAILING] [INFO] Posição ${position.simbolo} (${side}) - ID: ${position.id}:`);
     //console.log(`[TRAILING]   - Preço atual: ${currentPrice}`);
     //console.log(`[TRAILING]   - Preço entrada: ${entryPrice}`);
     //console.log(`[TRAILING]   - TP1: ${tp1Price}`);
@@ -165,30 +166,30 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
     if (side === 'BUY' || side === 'COMPRA' || side === 'LONG') {
       priceHitTP1 = currentPriceNum >= tp1PriceNum;
       priceHitTP3 = tp3PriceNum > 0 ? currentPriceNum >= tp3PriceNum : false;
-      //console.log(`[TRAILING] 🔍 LONG: ${currentPriceNum} >= ${tp1PriceNum} = ${priceHitTP1}`);
+      //console.log(`[TRAILING] [CHECK] LONG: ${currentPriceNum} >= ${tp1PriceNum} = ${priceHitTP1}`);
     } else if (side === 'SELL' || side === 'VENDA' || side === 'SHORT') {
       priceHitTP1 = currentPriceNum <= tp1PriceNum;
       priceHitTP3 = tp3PriceNum > 0 ? currentPriceNum <= tp3PriceNum : false;
-      //console.log(`[TRAILING] 🔍 SHORT: ${currentPriceNum} <= ${tp1PriceNum} = ${priceHitTP1}`);
+      //console.log(`[TRAILING] [CHECK] SHORT: ${currentPriceNum} <= ${tp1PriceNum} = ${priceHitTP1}`);
     }
 
-    //console.log(`[TRAILING] 🎯 Verificação de gatilhos:`);
+    //console.log(`[TRAILING] [CHECK] Verificação de gatilhos:`);
     //console.log(`[TRAILING]   - TP1 atingido: ${priceHitTP1}`);
     //console.log(`[TRAILING]   - TP3 atingido: ${priceHitTP3}`);
 
     // REPOSICIONAMENTO PARA BREAKEVEN (APÓS TP1)
     if (priceHitTP1 && !['TP1_BREAKEVEN', 'BREAKEVEN'].includes(currentTrailingLevel)) {
-      //console.log(`[TRAILING] 🚀 TP1 atingido! Condições para reposicionamento:`);
+      //console.log(`[TRAILING] [TP1] TP1 atingido! Condições para reposicionamento:`);
       //console.log(`[TRAILING]   - priceHitTP1: ${priceHitTP1}`);
       //console.log(`[TRAILING]   - currentTrailingLevel: '${currentTrailingLevel}'`);
       //console.log(`[TRAILING]   - Não está em ['TP1_BREAKEVEN', 'BREAKEVEN']: ${!['TP1_BREAKEVEN', 'BREAKEVEN'].includes(currentTrailingLevel)}`);
-      //console.log(`[TRAILING] 🚀 Movendo SL para breakeven...`);
+      //console.log(`[TRAILING] [ACTION] Movendo SL para breakeven...`);
       
       const result = await moveStopLossToBreakeven(db, position, accountId);
       if (result) {
-        console.log(`[TRAILING] ✅ SL movido para breakeven com sucesso`);
+        console.log(`[TRAILING] [OK] SL movido para breakeven com sucesso`);
       } else {
-        console.log(`[TRAILING] ❌ Falha ao mover SL para breakeven`);
+        console.log(`[TRAILING] [ERROR] Falha ao mover SL para breakeven`);
       }
       return;
     } else if (priceHitTP1) {
@@ -202,9 +203,9 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
     ) {
       const result = await moveStopLossToTP1(db, position, tp1Price, accountId);
       if (result) {
-        console.log(`[TRAILING] ✅ SL movido para TP1 com sucesso após TP3`);
+        console.log(`[TRAILING] [OK] SL movido para TP1 com sucesso após TP3`);
       } else {
-        console.log(`[TRAILING] ❌ Falha ao mover SL para TP1 após TP3`);
+        console.log(`[TRAILING] [ERROR] Falha ao mover SL para TP1 após TP3`);
       }
       return;
     } else if (tp3Price > 0 && priceHitTP3) {
@@ -213,12 +214,12 @@ async function checkOrderTriggers(db, position, currentPrice, accountId) {
     }
   } catch (error) {
     const positionIdError = position && position.id ? position.id : 'desconhecida';
-    console.error(`[TRAILING] ❌ Erro em checkOrderTriggers para posição ${positionIdError}:`, error.message);
+    console.error(`[TRAILING] [ERROR] Erro em checkOrderTriggers para posição ${positionIdError}:`, error.message);
   }
 }
 
 /**
- * ✅ FUNÇÃO MELHORADA PARA CANCELAR STOP LOSSES
+ * FUNÇÃO MELHORADA PARA CANCELAR STOP LOSSES
  */
 async function cancelAllActiveStopLosses(db, position, accountId) {
   let canceledCount = 0;
@@ -232,7 +233,7 @@ async function cancelAllActiveStopLosses(db, position, accountId) {
     const openOrdersOnExchange = await getOpenOrders(accountId, simbolo);
     
     if (!openOrdersOnExchange || openOrdersOnExchange.length === 0) {
-      console.log(`${functionPrefix} ℹ️ Nenhuma ordem aberta encontrada na corretora para ${simbolo}`);
+      console.log(`${functionPrefix} [INFO] Nenhuma ordem aberta encontrada na corretora para ${simbolo}`);
       return 0;
     }
 
@@ -248,54 +249,55 @@ async function cancelAllActiveStopLosses(db, position, accountId) {
     });
 
     if (stopLossOrdersToCancel.length === 0) {
-      console.log(`${functionPrefix} ℹ️ Nenhuma ordem SL relevante encontrada para cancelar para ${simbolo}`);
+      console.log(`${functionPrefix} [INFO] Nenhuma ordem SL relevante encontrada para cancelar para ${simbolo}`);
       return 0;
     }
 
-    console.log(`${functionPrefix} 🎯 Encontradas ${stopLossOrdersToCancel.length} ordens SL para cancelar`);
+    console.log(`${functionPrefix} [TARGET] Encontradas ${stopLossOrdersToCancel.length} ordens SL para cancelar`);
 
     // Cancelar cada ordem
     for (const order of stopLossOrdersToCancel) {
       try {
         await cancelOrder(accountId, simbolo, order.orderId);
-        console.log(`${functionPrefix} ✅ SL ${order.orderId} cancelado`);
+        console.log(`${functionPrefix} [OK] SL ${order.orderId} cancelado`);
         
         // Atualizar status no banco
         await db.query(
-          'UPDATE ordens SET status = "CANCELED", last_update = $1 WHERE id_externo = $2 AND conta_id = $3', 
-          [formatDateForPostgreSQL(new Date()), order.orderId, accountId]
+          'UPDATE ordens SET status = $1, last_update = $2 WHERE id_externo = $3 AND conta_id = $4', 
+          ['CANCELED', formatDateForPostgreSQL(new Date()), order.orderId, accountId]
         );
         
         canceledCount++;
       } catch (cancelError) {
-        console.error(`${functionPrefix} ❌ Erro ao cancelar SL ${order.orderId}:`, cancelError.message);
+        console.error(`${functionPrefix} [ERROR] Erro ao cancelar SL ${order.orderId}:`, cancelError.message);
       }
     }
     
-    console.log(`${functionPrefix} 📊 Total cancelado: ${canceledCount} de ${stopLossOrdersToCancel.length} ordens SL`);
+    console.log(`${functionPrefix} [INFO] Total cancelado: ${canceledCount} de ${stopLossOrdersToCancel.length} ordens SL`);
     return canceledCount;
     
   } catch (error) {
-    console.error(`${functionPrefix} ❌ Erro geral ao cancelar SLs para ${simbolo}:`, error.message);
+    console.error(`${functionPrefix} [ERROR] Erro geral ao cancelar SLs para ${simbolo}:`, error.message);
     return 0;
   }
 }
 
 /**
- * ✅ FUNÇÃO CORRIGIDA PARA CANCELAR ORDENS DE STOP LOSS ESPECÍFICAS
+ * FUNÇÃO CORRIGIDA PARA CANCELAR ORDENS DE STOP LOSS ESPECÍFICAS
  */
 async function cancelStopLossOrders(db, positionId, accountId) {
   try {
-    console.log(`[CANCEL_SL] 🔍 Cancelando SLs para posição ${positionId} (conta ${accountId})`);
+    console.log(`[CANCEL_SL] [SEARCH] Cancelando SLs para posição ${positionId} (conta ${accountId})`);
 
-    // ✅ 1. BUSCAR ORDENS SL NO BANCO
-    const [stopLossOrders] = await db.query(`
+    // 1. BUSCAR ORDENS SL NO BANCO
+    const result = await db.query(`
       SELECT id_externo, simbolo FROM ordens 
       WHERE id_posicao = $1 AND conta_id = $2 AND tipo_ordem_bot = 'STOP_LOSS' 
       AND status IN ('NEW', 'PARTIALLY_FILLED')
     `, [positionId, accountId]);
+    const stopLossOrders = result.rows;
 
-    console.log(`[CANCEL_SL] 📋 Encontradas ${stopLossOrders.length} ordens SL no banco`);
+    console.log(`[CANCEL_SL] [LIST] Encontradas ${stopLossOrders.length} ordens SL no banco`);
 
     if (stopLossOrders.length === 0) {
       return 0;
@@ -304,59 +306,53 @@ async function cancelStopLossOrders(db, positionId, accountId) {
     let canceledCount = 0;
     for (const order of stopLossOrders) {
       try {
-        // ✅ 2. CANCELAR NA CORRETORA USANDO IMPORT CORRETO
+        // 2. CANCELAR NA CORRETORA USANDO IMPORT CORRETO
         await cancelOrder(order.simbolo, order.id_externo, accountId);
         
-        // ✅ 3. ATUALIZAR STATUS NO BANCO
+        // 3. ATUALIZAR STATUS NO BANCO
         await db.query(`
           UPDATE ordens 
           SET status = 'CANCELED', last_update = CURRENT_TIMESTAMP,
-              observacao = CONCAT(
-                IFNULL(observacao, ''), 
-                ' | Cancelada para trailing stop'
-              )
+              observacao = COALESCE(observacao, '') || ' | Cancelada para trailing stop'
           WHERE id_externo = $1 AND conta_id = $2
         `, [order.id_externo, accountId]);
         
         canceledCount++;
-        console.log(`[CANCEL_SL] ✅ SL ${order.id_externo} cancelado com sucesso`);
+        console.log(`[CANCEL_SL] [OK] SL ${order.id_externo} cancelado com sucesso`);
         
       } catch (cancelError) {
-        // ✅ 4. TRATAR ERRO DE "ORDEM NÃO EXISTE"
+        // 4. TRATAR ERRO DE "ORDEM NÃO EXISTE"
         if (cancelError.message && 
             (cancelError.message.includes('Unknown order') || 
              cancelError.message.includes('does not exist'))) {
-          console.log(`[CANCEL_SL] ℹ️ SL ${order.id_externo} já foi executado/cancelado`);
+          console.log(`[CANCEL_SL] [INFO] SL ${order.id_externo} já foi executado/cancelado`);
           
           // Marcar como cancelado no banco mesmo assim
           await db.query(`
             UPDATE ordens 
             SET status = 'CANCELED', last_update = CURRENT_TIMESTAMP,
-                observacao = CONCAT(
-                  IFNULL(observacao, ''), 
-                  ' | Não existe na corretora'
-                )
+                observacao = COALESCE(observacao, '') || ' | Não existe na corretora'
             WHERE id_externo = $1 AND conta_id = $2
           `, [order.id_externo, accountId]);
           
           canceledCount++;
         } else {
-          console.error(`[CANCEL_SL] ❌ Erro ao cancelar SL ${order.id_externo}:`, cancelError.message);
+          console.error(`[CANCEL_SL] [ERROR] Erro ao cancelar SL ${order.id_externo}:`, cancelError.message);
         }
       }
     }
 
-    console.log(`[CANCEL_SL] 📊 Total processado: ${canceledCount} de ${stopLossOrders.length} ordens SL`);
+    console.log(`[CANCEL_SL] [INFO] Total processado: ${canceledCount} de ${stopLossOrders.length} ordens SL`);
     return canceledCount;
 
   } catch (error) {
-    console.error(`[CANCEL_SL] ❌ Erro geral ao cancelar ordens SL:`, error.message);
+    console.error(`[CANCEL_SL] [ERROR] Erro geral ao cancelar ordens SL:`, error.message);
     return 0;
   }
 }
 
 /**
- * ✅ FUNÇÃO CORRIGIDA PARA CRIAR STOP LOSS NO BREAKEVEN
+ * FUNÇÃO CORRIGIDA PARA CRIAR STOP LOSS NO BREAKEVEN
  */
 async function createBreakevenStopLoss(db, position, breakevenPrice, accountId) {
   try {
@@ -364,29 +360,29 @@ async function createBreakevenStopLoss(db, position, breakevenPrice, accountId) 
     // Corrigir side para o oposto, aceitando todos os aliases
     const side = getOppositeSide(position.side);
 
-    console.log(`[TRAILING] 🎯 Criando SL breakeven: ${breakevenPrice} para ${symbol} (side SL: ${side}, side posição: ${position.side})`);
+    console.log(`[TRAILING] [TARGET] Criando SL breakeven: ${breakevenPrice} para ${symbol} (side SL: ${side}, side posição: ${position.side})`);
 
-    // ✅ USAR closePosition=true (RECOMENDADO)
+    // USAR closePosition=true (RECOMENDADO)
     const response = await newStopOrder(
       accountId,           // accountId
       symbol,              // symbol
-      null,                // ✅ quantity = null quando closePosition=true
+      null,                // quantity = null quando closePosition=true
       side,                // side
       breakevenPrice,      // stopPrice
       null,                // price (não usado para STOP_MARKET)
-      false,               // ✅ reduceOnly = false (não usado com closePosition)
-      true,                // ✅ closePosition = true (FECHA TODA A POSIÇÃO)
+      false,               // reduceOnly = false (não usado com closePosition)
+      true,                // closePosition = true (FECHA TODA A POSIÇÃO)
       'STOP_MARKET'        // orderType
     );
 
-    // ✅ VALIDAÇÃO CORRIGIDA DA RESPOSTA
-    const orderId = response$1.orderId;
+    // VALIDAÇÃO CORRIGIDA DA RESPOSTA
+    const orderId = response.orderId;
     
     if (orderId) {
-      console.log(`[TRAILING] ✅ SL breakeven criado: ${orderId} @ ${breakevenPrice} (closePosition=true)`);
+      console.log(`[TRAILING] [OK] SL breakeven criado: ${orderId} @ ${breakevenPrice} (closePosition=true)`);
       
-      // ✅ A ORDEM SERÁ INSERIDA NO BANCO VIA WEBHOOK automaticamente
-      console.log(`[TRAILING] 📡 Aguardando confirmação via webhook...`);
+      // A ORDEM SERÁ INSERIDA NO BANCO VIA WEBHOOK automaticamente
+      console.log(`[TRAILING] [WEBHOOK] Aguardando confirmação via webhook...`);
       
       return {
         success: true,
@@ -395,7 +391,7 @@ async function createBreakevenStopLoss(db, position, breakevenPrice, accountId) 
         closePosition: true
       };
     } else {
-      console.error(`[TRAILING] ❌ Resposta da API sem orderId:`, response);
+      console.error(`[TRAILING] [ERROR] Resposta da API sem orderId:`, response);
       return { success: false, error: 'OrderId não encontrado na resposta' };
     }
 
@@ -413,36 +409,40 @@ async function moveStopLossToBreakeven(db, position, accountId) {
     const positionId = position.id;
 
     // Buscar entry_price do último webhook_signals relacionado à posição
-    const [signals] = await db.query(
-      `SELECT entry_price FROM webhook_signals WHERE position_id = ? 1 : parseFloat(signals[0].entry_price) : parseFloat(position.preco_entrada);
+    const signalsResult = await db.query(
+      `SELECT entry_price FROM webhook_signals WHERE position_id = $1 ORDER BY timestamp DESC LIMIT 1`, 
+      [positionId]
+    );
+    
+    const breakevenPrice = signalsResult.rows.length > 0 ? parseFloat(signalsResult.rows[0].entry_price) : parseFloat(position.preco_entrada);
 
-    console.log(`[TRAILING] 🎯 Movendo SL para breakeven para ${position.simbolo} (Posição ID: ${positionId}) usando entry_price do sinal: ${breakevenPrice}`);
+    console.log(`[TRAILING] Movendo SL para breakeven para ${position.simbolo} (Posição ID: ${positionId}) usando entry_price do sinal: ${breakevenPrice}`);
 
-    // ✅ 1. CANCELAR SLS EXISTENTES COM accountId CORRETO
+    // 1. CANCELAR SLS EXISTENTES COM accountId CORRETO
     const canceledCount = await cancelStopLossOrders(db, positionId, accountId);
     if (canceledCount === 0) {
-      console.warn(`[TRAILING] ⚠️ Nenhuma ordem SL foi cancelada`);
+      console.warn(`[TRAILING] Nenhuma ordem SL foi cancelada`);
     }
-    // ✅ 2. AGUARDAR UM POUCO PARA CANCELAMENTO PROCESSAR
+    // 2. AGUARDAR UM POUCO PARA CANCELAMENTO PROCESSAR
     await new Promise(resolve => setTimeout(resolve, 1000));
-    // ✅ 3. CRIAR NOVO SL BREAKEVEN
+    // 3. CRIAR NOVO SL BREAKEVEN
     const result = await createBreakevenStopLoss(db, position, breakevenPrice, accountId);
     if (result.success) {
-      // ✅ 4. ATUALIZAR NÍVEL DE TRAILING NO BANCO (sempre como TP1_BREAKEVEN)
+      // 4. ATUALIZAR NÍVEL DE TRAILING NO BANCO (sempre como TP1_BREAKEVEN)
       await db.query(`
         UPDATE posicoes 
         SET trailing_stop_level = 'TP1_BREAKEVEN',
             data_hora_ultima_atualizacao = CURRENT_TIMESTAMP
         WHERE id = $1
       `, [positionId]);
-      console.log(`[TRAILING] ✅ SL movido para breakeven com sucesso para posição ${positionId}`);
+      console.log(`[TRAILING] SL movido para breakeven com sucesso para posição ${positionId}`);
       return true;
     } else {
-      console.error(`[TRAILING] ❌ Falha ao criar SL breakeven:`, result.error);
+      console.error(`[TRAILING] Falha ao criar SL breakeven:`, result.error);
       return false;
     }
   } catch (error) {
-    console.error(`[TRAILING] ❌ Erro ao mover SL para breakeven:`, error.message);
+    console.error(`[TRAILING] Erro ao mover SL para breakeven:`, error.message);
     return false;
   }
 }
@@ -457,7 +457,7 @@ async function moveStopLossToTP1(db, position, tp1Price, accountId) {
     // Cancelar SLs existentes
     const canceledCount = await cancelStopLossOrders(db, positionId, accountId);
     if (canceledCount === 0) {
-      console.warn(`[TRAILING] ⚠️ Nenhuma ordem SL foi cancelada para TP1`);
+      console.warn(`[TRAILING] [WARN] Nenhuma ordem SL foi cancelada para TP1`);
     }
     // Aguarda um pouco
     await new Promise(resolve => setTimeout(resolve, 1000));
@@ -474,9 +474,9 @@ async function moveStopLossToTP1(db, position, tp1Price, accountId) {
       true,
       'STOP_MARKET'
     );
-    const orderId = response$1.orderId;
+    const orderId = response.orderId;
     if (orderId) {
-      console.log(`[TRAILING] ✅ SL reposicionado para TP1: ${orderId} @ ${tp1Price}`);
+      console.log(`[TRAILING] [OK] SL reposicionado para TP1: ${orderId} @ ${tp1Price}`);
       // Atualiza nível de trailing
       await db.query(`
         UPDATE posicoes 
@@ -486,11 +486,11 @@ async function moveStopLossToTP1(db, position, tp1Price, accountId) {
       `, [positionId]);
       return true;
     } else {
-      console.error(`[TRAILING] ❌ Falha ao criar SL no TP1:`, response);
+      console.error(`[TRAILING] [ERROR] Falha ao criar SL no TP1:`, response);
       return false;
     }
   } catch (error) {
-    console.error(`[TRAILING] ❌ Erro ao mover SL para TP1:`, error.message);
+    console.error(`[TRAILING] [ERROR] Erro ao mover SL para TP1:`, error.message);
     return false;
   }
 }
