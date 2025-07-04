@@ -12,7 +12,7 @@ let apiCredentialsCache = new Map();
 // Configuração do banco de dados
 const dbConfig = {
   host: process.env.DB_HOST,
-  port: parseInt(process.env.DB_PORT || '5432', 10),
+  port: parseInt(process.env.DB_PORT),
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
@@ -858,7 +858,7 @@ function formatDateForPostgreSQL(date) {
  * @param {Date|string|null} date - Data a ser formatada
  * @returns {string|null} - Data formatada
  */
-function formatDateForMySQL(date) {
+function formatDateForPostgreSQL(date) {
   return formatDateForPostgreSQL(date);
 }
 
@@ -1038,7 +1038,7 @@ module.exports = {
   updateOrderRenewFlag,
   insertWebhookSignal,
   insertWebhookSignalWithDetails,
-  formatDateForMySQL,
+  formatDateForPostgreSQL,
   formatDateForPostgreSQL,
   updateAccountBalance,
   getBaseCalculoBalance,

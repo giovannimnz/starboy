@@ -120,7 +120,7 @@ async function authRoutes(fastify, options) {
   // MIDDLEWARE DE AUTENTICAÇÃO
   async function authenticate(request, reply) {
     try {
-      const token = request.headers.authorization$1.split(' ')[1];
+      const token = request.headers.authorization?.split(' ')[1];
       if (!token) {
         return reply.status(401).send({ error: 'Token de acesso requerido.' });
       }

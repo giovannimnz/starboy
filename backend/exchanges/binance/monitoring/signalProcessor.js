@@ -409,7 +409,7 @@ async function processSignal(signal, db, accountId) {
             console.log(`[SIGNAL] 🔍 Status WebSocket ${signal.symbol}: Existe=${wsExists}, Aberto=${isOpen}`);
             
             if (!isOpen) {
-              console.warn(`[SIGNAL] ⚠️ WebSocket para ${signal.symbol} não está aberto! ReadyState: ${ws$1.readyState}`);
+              console.warn(`[SIGNAL] ⚠️ WebSocket para ${signal.symbol} não está aberto! ReadyState: ${ws?.readyState}`);
             }
           } else {
             console.warn(`[SIGNAL] ⚠️ WebSocket para ${signal.symbol} não foi criado!`);
@@ -828,7 +828,7 @@ async function onPriceUpdate(symbol, currentPrice, db, accountId) {
             }*/
           } else {
             console.error(`[SIGNAL] ❌ Falha na execução da entrada:`, entryResult);
-            throw new Error(entryResult$1.error || 'Falha na execução da entrada');
+            throw new Error(entryResult?.error || 'Falha na execução da entrada');
           }
           
         } catch (processError) {

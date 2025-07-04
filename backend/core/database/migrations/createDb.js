@@ -1,4 +1,12 @@
-const mysql = require('mysql2/promise');
+/**
+ * ARQUIVO DESCONTINUADO - USO DE MySQL
+ * Este arquivo foi migrado para PostgreSQL.
+ * Use o arquivo create_postgres_db.sql em backend/core/database/migrations/
+ */
+
+/*
+
+const { Pool } = require('pg');
 const path = require('path');
 // Carrega as variáveis de ambiente do arquivo .env
 require('dotenv').config({ path: path.resolve(__dirname, '../../../config/.env') });
@@ -7,6 +15,7 @@ require('dotenv').config({ path: path.resolve(__dirname, '../../../config/.env')
  * Função assíncrona para conectar ao MySQL, criar o banco de dados e todas as tabelas
  * conforme a nova estrutura fornecida.
  */
+/*
 async function createDatabase() {
     console.log('Iniciando a configuração do banco de dados MySQL...');
     console.log(`Host: ${process.env.DB_HOST}, Porta: ${process.env.DB_PORT}, Usuário: ${process.env.DB_USER}`);
@@ -584,3 +593,5 @@ createDatabase()
         console.error('Falha crítica na execução do script:', err.message);
         process.exit(1); // Sai do processo com código de erro
     });
+
+*/

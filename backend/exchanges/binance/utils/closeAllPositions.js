@@ -1,6 +1,6 @@
 const { getDatabaseInstance } = require('../../../core/database/conexao');
 const { getAllOpenPositions, newMarketOrder, cancelOrder, getOpenOrders, loadCredentialsFromDatabase } = require('../api/rest');
-const { sendTelegramMessage, formatAlertMessage } = require('../telegram/telegramBot');
+const { sendTelegramMessage, formatAlertMessage } = require('../services/telegramHelper');
 
 /**
  * Fecha TODAS as posições abertas de uma conta a mercado

@@ -741,10 +741,10 @@ async function monitorTimeSync(accountId) {
     return {
       success: syncResult,
       message: syncResult ? 'Sincronização atualizada com sucesso' : 'Problemas na sincronização detectados',
-      quality: accountState$2.syncQuality || 'DESCONHECIDA',
-      recvWindow: accountState$3.recvWindow || 60000,
-      timeOffset: accountState$4.timeOffset || 0,
-      avgNetworkLatency: accountState$5.avgNetworkLatency || null
+      quality: accountState?.syncQuality || 'DESCONHECIDA',
+      recvWindow: accountState?.recvWindow || 60000,
+      timeOffset: accountState?.timeOffset || 0,
+      avgNetworkLatency: accountState?.avgNetworkLatency || null
     };
     
   } catch (error) {

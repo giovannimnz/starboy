@@ -64,6 +64,14 @@ if (accountIndex !== -1 && accountIndex + 1 < process.argv.length) {
 
 console.log(`[MONITOR] ✅ AccountId validado: ${targetAccountId}`);
 
+// === VARIÁVEIS GLOBAIS ===
+let dbInstance = null;
+
+// === FUNÇÃO PARA OBTER INSTÂNCIA DO BANCO ===
+function getDatabase() {
+  return dbInstance;
+}
+
 // Variáveis globais
 let handlers = {};
 let scheduledJobs = {};
@@ -87,12 +95,15 @@ function registerWebSocketHandlers(accountId) {
 
   // 3. Registrar handler de atualização de preço (markPrice)
   // O handler onPriceUpdate é usado para processamento de sinais, como verificar trades.
-  const priceUpdateWrapper = ({ message, accountId: eventAccountId }) => {
-    // A função original espera (message, accountId)
-    onPriceUpdate(message, eventAccountId);
+  const priceUpdateWrapper = (symbol, tickerData) => {
+    // Extrair o preço atual do ticker
+    const currentPrice = parseFloat(tickerData.c || tickerData.currentPrice || 0);
+    
+    // Chamar a função original com os parâmetros corretos
+    onPriceUpdate(symbol, currentPrice, getDatabase(), accountId);
   };
-  websockets.on('priceUpdate', priceUpdateWrapper, 'mainPriceSignalProcessor');
-  console.log(`[MONITOR] 🎧 Handler de atualização de preço (priceUpdate) registrado.`);
+  websockets.on('priceUpdate', priceUpdateWrapper, accountId, 'mainPriceSignalProcessor');
+  console.log(`[MONITOR] 🎧 Handler de atualização de preço (priceUpdate) registrado para conta ${accountId}.`);
 
   console.log(`[MONITOR] ✅ Todos os handlers de WebSocket foram registrados com sucesso.`);
 }
@@ -156,6 +167,7 @@ async function initializeMonitoring(accountId) {
     console.log(`📊 ETAPA 1: Verificando conexão com banco de dados para conta ${accountId}...`);
     const db = await getDatabaseInstance();
     if (!db) throw new Error('Banco não disponível');
+    dbInstance = db; // Armazenar instância global
     console.log(`✅ Banco de dados conectado com sucesso para conta ${accountId}\n`);
 
     // === ETAPA 0: Verificar se a conta existe no banco ===

@@ -1,4 +1,4 @@
-const mysql = require('mysql2/promise');
+const { Pool } = require('pg');
 const { exec } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -70,11 +70,11 @@ async function main() {
     const backupFileName = `${selectedDb}_${timestamp}.sql`;
     const backupFilePath = path.join(backupDir, backupFileName);
 
-    // Cria o comando mysqldump
-    const mysqldumpCmd = buildMysqldumpCommand(selectedDb, backupFilePath);
+    // Cria o comando pg_dump
+    const pgDumpCmd = buildPgDumpCommand(selectedDb, backupFilePath);
     
     // Executa o comando
-    const { stdout, stderr } = await execPromise(mysqldumpCmd);
+    const { stdout, stderr } = await execPromise(pgDumpCmd);
     
     if (stderr && !stderr.includes('Warning')) {
       throw new Error(`Erro ao executar backup: ${stderr}`);
@@ -90,39 +90,40 @@ async function main() {
   }
 }
 
-// Constrói o comando mysqldump
-function buildMysqldumpCommand(database, outputFile) {
+// Constrói o comando pg_dump
+function buildPgDumpCommand(database, outputFile) {
   const host = process.env.DB_HOST;
   const port = process.env.DB_PORT;
   const user = process.env.DB_USER;
   const password = process.env.DB_PASSWORD;
 
-  // Comando simplificado compatível com versões mais antigas do MySQL
-  return `mysqldump -h${host} -P${port} -u${user} -p${password} --routines --triggers --events ${database} > "${outputFile}"`;
+  // Comando pg_dump para PostgreSQL
+  return `PGPASSWORD=${password} pg_dump -h ${host} -p ${port} -U ${user} -d ${database} -f "${outputFile}"`;
 }
 
 // Obtém a lista de bancos de dados disponíveis
 async function getDatabases() {
   try {
-    // Conecta ao MySQL
-    const connection = await mysql.createConnection({
+    // Conecta ao PostgreSQL
+    const pool = new Pool({
       host: process.env.DB_HOST,
       port: process.env.DB_PORT,
       user: process.env.DB_USER,
-      password: process.env.DB_PASSWORD
+      password: process.env.DB_PASSWORD,
+      database: 'postgres' // Conecta ao banco padrão
     });
 
     // Consulta bancos disponíveis
-    const [rows] = await connection.execute('SHOW DATABASES');
-    await connection.end();
+    const result = await pool.query('SELECT datname FROM pg_database WHERE datistemplate = false');
+    await pool.end();
 
     // Filtra bancos do sistema
-    return rows
-      .map(row => row.Database)
-      .filter(db => !['information_schema', 'performance_schema', 'mysql', 'sys'].includes(db));
+    return result.rows
+      .map(row => row.datname)
+      .filter(db => !['postgres', 'template0', 'template1'].includes(db));
       
   } catch (error) {
-    console.error(`Erro ao conectar ao MySQL: ${error.message}`);
+    console.error(`Erro ao conectar ao PostgreSQL: ${error.message}`);
     return [];
   }
 }

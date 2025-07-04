@@ -1,4 +1,4 @@
-const mysql = require('mysql2/promise');
+const { Pool } = require('pg');
 const { exec } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -91,11 +91,11 @@ async function main() {
     // Executa a restauração
     console.log('\nIniciando restauração...');
     
-    // Cria o comando mysql
-    const mysqlCmd = buildMysqlCommand(dbName, backupFilePath);
+    // Cria o comando psql
+    const psqlCmd = buildPsqlCommand(dbName, backupFilePath);
     
     // Executa o comando
-    const { stdout, stderr } = await execPromise(mysqlCmd);
+    const { stdout, stderr } = await execPromise(psqlCmd);
     
     if (stderr && !stderr.includes('Warning')) {
       console.warn(`Avisos durante a restauração: ${stderr}`);
@@ -110,41 +110,41 @@ async function main() {
   }
 }
 
-// Constrói o comando mysql para restauração
-function buildMysqlCommand(database, inputFile) {
+// Constrói o comando psql para restauração
+function buildPsqlCommand(database, inputFile) {
   const host = process.env.DB_HOST;
   const port = process.env.DB_PORT;
   const user = process.env.DB_USER;
   const password = process.env.DB_PASSWORD;
 
-  // Comando para Windows
-  return `mysql -h${host} -P${port} -u${user} -p${password} ${database} < "${inputFile}"`;
+  // Comando para PostgreSQL
+  return `PGPASSWORD=${password} psql -h ${host} -p ${port} -U ${user} -d ${database} -f "${inputFile}"`;
 }
 
 // Cria o banco de dados se não existir
 async function createDatabaseIfNotExists(dbName) {
   try {
-    // Conecta ao MySQL
-    const connection = await mysql.createConnection({
+    // Conecta ao PostgreSQL
+    const pool = new Pool({
       host: process.env.DB_HOST,
       port: process.env.DB_PORT,
       user: process.env.DB_USER,
-      password: process.env.DB_PASSWORD
+      password: process.env.DB_PASSWORD,
+      database: 'postgres' // Conecta ao banco padrão
     });
 
     // Verifica se o banco existe
-    const [databases] = await connection.execute('SHOW DATABASES');
-    const dbExists = databases.some(db => db.Database === dbName);
-
-    if (!dbExists) {
+    const result = await pool.query('SELECT datname FROM pg_database WHERE datname = $1', [dbName]);
+    
+    if (result.rows.length === 0) {
       console.log(`Banco de dados '${dbName}' não existe. Criando...`);
-      await connection.execute(`CREATE DATABASE ${dbName}`);
+      await pool.query(`CREATE DATABASE "${dbName}"`);
       console.log(`Banco de dados '${dbName}' criado com sucesso.`);
     } else {
       console.log(`Banco de dados '${dbName}' já existe.`);
     }
 
-    await connection.end();
+    await pool.end();
   } catch (error) {
     console.error(`Erro ao criar banco de dados: ${error.message}`);
     throw error;

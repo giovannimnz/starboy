@@ -1,6 +1,6 @@
 const api = require('./api');
-const { getDatabaseInstance, formatDateForMySQL } = require('./backend/core/database/conexao');
-const websockets = require('./websockets');
+const { getDatabaseInstance, formatDateForPostgreSQL } = require('../../../core/database/conexao');
+const websockets = require('./websocket');
 
 /**
  * Envia uma nova ordem via WebSocket API - VERSÃO CORRIGIDA
