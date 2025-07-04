@@ -361,8 +361,8 @@ class DIVAPAnalyzer:
             try:
                 update_query = """
                     UPDATE webhook_signals 
-                    SET divap_confirmado = 0,
-                        cancelado_checker = 1,
+                    SET divap_confirmado = false,
+                        cancelado_checker = true,
                         status = 'CANCELED',
                         error_message = %s
                     WHERE id = %s

@@ -1429,8 +1429,8 @@ async def handle_new_message(event):
                     sent_message_created_at = sent_message_to_dest.date.strftime("%Y-%m-%d %H:%M:%S")
                     
                     trade_info['message_id'] = sent_message_id_in_dest
-                    trade_info['divap_confirmado'] = 1
-                    trade_info['cancelado_checker'] = 0
+                    trade_info['divap_confirmado'] = True
+                    trade_info['cancelado_checker'] = False
                     
                     # Salvar no banco
                     signal_ids_info = save_to_database(trade_info)
@@ -1473,8 +1473,8 @@ async def handle_new_message(event):
                     trade_info['chat_id_origem_sinal'] = incoming_chat_id
                     trade_info['chat_id'] = GRUPO_DESTINO_ID
                     trade_info['message_source'] = message_source
-                    trade_info['divap_confirmado'] = 0
-                    trade_info['cancelado_checker'] = 1
+                    trade_info['divap_confirmado'] = False
+                    trade_info['cancelado_checker'] = True
                     trade_info['status'] = 'CANCELED'
                     trade_info['error_message'] = error_message
                     

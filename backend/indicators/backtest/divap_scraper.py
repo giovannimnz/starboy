@@ -431,8 +431,8 @@ class DivapScraper:
                 )
                 
                 trade_info['message_id'] = sent_message.id
-                trade_info['divap_confirmado'] = 1
-                trade_info['cancelado_checker'] = 0
+                trade_info['divap_confirmado'] = True
+                trade_info['cancelado_checker'] = False
                 
                 self.estatisticas['enviadas'] += 1
                 print(f"   ✅ Mensagem enviada (ID: {sent_message.id})")
@@ -472,8 +472,8 @@ class DivapScraper:
             else:
                 # DIVAP não confirmado
                 if self.config['salvar_banco']:
-                    trade_info['divap_confirmado'] = 0
-                    trade_info['cancelado_checker'] = 1
+                    trade_info['divap_confirmado'] = False
+                    trade_info['cancelado_checker'] = True
                     trade_info['status'] = 'CANCELED'
                     trade_info['error_message'] = error_message
                     
