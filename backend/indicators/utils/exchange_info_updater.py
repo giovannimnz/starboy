@@ -137,7 +137,7 @@ def update_exchange_info_database(exchange_name):
                 sql = f"INSERT INTO exchange_symbols (exchange, symbol, {cols}) VALUES (%s, %s, {vals}) RETURNING id"
                 cursor.execute(sql, (exchange_name, symbol, *symbol_values.values()))
                 result = cursor.fetchone()
-                symbol_id = result[0] if result else None
+                symbol_id = result['id'] if result else None
                 if symbol_id is None:
                     print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [EXCHANGE-INFO] ❌ Erro: não foi possível obter ID do símbolo inserido: {symbol}")
                     continue
