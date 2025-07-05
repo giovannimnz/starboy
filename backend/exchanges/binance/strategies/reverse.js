@@ -350,7 +350,7 @@ async function executeReverse(signal, currentPrice, accountId) {
       `📈 Posição ID: ${positionId}\n` +
       `🔗 Ordem ID: ${entryOrderId}\n` +
       `${slOrderId ? `🛡️ Stop Loss: ${slOrderId}\n` : ''}` +
-      `${tpOrderIds.rows.length > 0 ? `🎯 Take Profits: ${tpOrderIds.join(', ')}\n` : ''}` +
+      `${tpOrderIds.length > 0 ? `🎯 Take Profits: ${tpOrderIds.join(', ')}\n` : ''}` +
       `⚡ Via: ${webhookTimedOut ? 'REST API' : 'WebSocket'}`;
 
     try {
@@ -515,7 +515,7 @@ function calculateOrderSize(balance, capitalPct, price, leverage, stepSize, prec
 }
 
 function calculateAveragePrice(fills) {
-  if (!fills || fills.rows.length === 0) return 0;
+  if (!fills || fills.length === 0) return 0;
   
   const totalQty = fills.reduce((sum, fill) => sum + fill.qty, 0);
   const totalValue = fills.reduce((sum, fill) => sum + (fill.qty * fill.price), 0);
