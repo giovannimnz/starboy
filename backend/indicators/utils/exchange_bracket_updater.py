@@ -28,6 +28,16 @@ BINANCE_CONFIG = {
     'enableRateLimit': True,
 }
 
+# Fallback para senhas.py se as variáveis de ambiente não estiverem definidas
+if not BINANCE_CONFIG['apiKey'] or not BINANCE_CONFIG['secret']:
+    try:
+        from senhas import API_KEY, API_SECRET
+        BINANCE_CONFIG['apiKey'] = API_KEY
+        BINANCE_CONFIG['secret'] = API_SECRET
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [CONFIG] Usando credenciais do senhas.py")
+    except ImportError:
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [ERRO] Credenciais Binance não encontradas")
+
 def test_binance_credentials():
     """Testa as credenciais da Binance"""
     try:
