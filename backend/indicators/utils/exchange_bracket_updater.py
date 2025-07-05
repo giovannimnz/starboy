@@ -31,6 +31,9 @@ BINANCE_CONFIG = {
 # Fallback para senhas.py se as variáveis de ambiente não estiverem definidas
 if not BINANCE_CONFIG['apiKey'] or not BINANCE_CONFIG['secret']:
     try:
+        # Adicionar o diretório pai ao path para encontrar senhas.py
+        import sys
+        sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         from senhas import API_KEY, API_SECRET
         BINANCE_CONFIG['apiKey'] = API_KEY
         BINANCE_CONFIG['secret'] = API_SECRET
@@ -82,43 +85,140 @@ def update_leverage_brackets():
         cursor = conn.cursor(cursor_factory=RealDictCursor)
         
         changes_count = 0
+        symbols_inserted = 0
         
         for bracket_data in response:
             symbol = bracket_data['symbol']
             brackets = bracket_data['brackets']
             
-            # Verificar se existe na tabela
+            # Verificar se o símbolo existe na tabela exchange_symbols
             cursor.execute("""
-                SELECT leverage_brackets FROM exchange_info 
+                SELECT id FROM exchange_symbols 
                 WHERE symbol = %s AND exchange = 'binance'
             """, (symbol,))
             
-            result = cursor.fetchone()
+            symbol_result = cursor.fetchone()
             
-            if result:
-                # Comparar brackets
-                current_brackets = result['leverage_brackets']
-                new_brackets = json.dumps(brackets, sort_keys=True)
-                
-                if current_brackets != new_brackets:
-                    # Atualizar brackets
+            if not symbol_result:
+                # Símbolo não encontrado, inserir automaticamente
+                try:
+                    # Obter informações básicas do símbolo da API
+                    market_info = exchange.markets.get(symbol, {})
+                    
                     cursor.execute("""
-                        UPDATE exchange_info 
-                        SET leverage_brackets = %s, updated_at = %s
-                        WHERE symbol = %s AND exchange = 'binance'
-                    """, (new_brackets, datetime.now(), symbol))
+                        INSERT INTO exchange_symbols (exchange, symbol, status, base_asset, quote_asset, updated_at)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        RETURNING id
+                    """, (
+                        'binance',
+                        symbol,
+                        'TRADING',
+                        market_info.get('base', symbol.replace('USDT', '').replace('BUSD', '')),
+                        market_info.get('quote', 'USDT'),
+                        datetime.now()
+                    ))
+                    
+                    symbol_id = cursor.fetchone()['id']
+                    symbols_inserted += 1
+                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ➕ Símbolo {symbol} inserido automaticamente (ID: {symbol_id})")
+                    
+                except Exception as e:
+                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ❌ Erro ao inserir símbolo {symbol}: {e}")
+                    continue
+            else:
+                symbol_id = symbol_result['id']
+            
+            # Processar cada bracket
+            for bracket in brackets:
+                bracket_num = bracket['bracket']
+                
+                # Verificar se o bracket já existe
+                cursor.execute("""
+                    SELECT id FROM exchange_leverage_brackets 
+                    WHERE symbol = %s AND corretora = 'binance' AND bracket = %s
+                """, (symbol, bracket_num))
+                
+                existing_bracket = cursor.fetchone()
+                
+                if existing_bracket:
+                    # Atualizar bracket existente
+                    cursor.execute("""
+                        UPDATE exchange_leverage_brackets 
+                        SET initial_leverage = %s, notional_cap = %s, notional_floor = %s,
+                            maint_margin_ratio = %s, cum = %s, updated_at = %s
+                        WHERE symbol = %s AND corretora = 'binance' AND bracket = %s
+                    """, (
+                        bracket['initialLeverage'],
+                        bracket['notionalCap'],
+                        bracket['notionalFloor'],
+                        bracket['maintMarginRatio'],
+                        bracket['cum'],
+                        datetime.now(),
+                        symbol,
+                        bracket_num
+                    ))
                     changes_count += 1
-                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 📊 Brackets atualizados para {symbol}")
+                else:
+                    # Inserir novo bracket
+                    cursor.execute("""
+                        INSERT INTO exchange_leverage_brackets 
+                        (symbol, corretora, bracket, initial_leverage, notional_cap, 
+                         notional_floor, maint_margin_ratio, cum, updated_at)
+                        VALUES (%s, 'binance', %s, %s, %s, %s, %s, %s, %s)
+                    """, (
+                        symbol,
+                        bracket_num,
+                        bracket['initialLeverage'],
+                        bracket['notionalCap'],
+                        bracket['notionalFloor'],
+                        bracket['maintMarginRatio'],
+                        bracket['cum'],
+                        datetime.now()
+                    ))
+                    changes_count += 1
+                    
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 📊 Brackets processados para {symbol}")
+        
+        # Verificar e remover símbolos obsoletos (que não existem mais na Binance)
+        cursor.execute("""
+            SELECT DISTINCT symbol FROM exchange_leverage_brackets 
+            WHERE corretora = 'binance'
+        """)
+        
+        db_symbols = {row['symbol'] for row in cursor.fetchall()}
+        api_symbols = {bracket_data['symbol'] for bracket_data in response}
+        obsolete_symbols = db_symbols - api_symbols
+        
+        if obsolete_symbols:
+            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🗑️ Removendo {len(obsolete_symbols)} símbolos obsoletos")
+            for obsolete_symbol in obsolete_symbols:
+                cursor.execute("""
+                    DELETE FROM exchange_leverage_brackets 
+                    WHERE symbol = %s AND corretora = 'binance'
+                """, (obsolete_symbol,))
+                
+                cursor.execute("""
+                    DELETE FROM exchange_symbols 
+                    WHERE symbol = %s AND exchange = 'binance'
+                """, (obsolete_symbol,))
+                
+                print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🗑️ Removido símbolo obsoleto: {obsolete_symbol}")
         
         conn.commit()
         cursor.close()
         conn.close()
         
-        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Atualização de brackets concluída. {changes_count} alterações")
-        return changes_count > 0
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ✅ Atualização de brackets concluída:")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}]   • {symbols_inserted} símbolos inseridos")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}]   • {changes_count} brackets atualizados")
+        print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}]   • {len(obsolete_symbols)} símbolos obsoletos removidos")
+        
+        return changes_count > 0 or symbols_inserted > 0
         
     except Exception as e:
         print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ❌ Erro ao atualizar brackets: {e}")
+        if 'conn' in locals():
+            conn.rollback()
         return False
 
 if __name__ == "__main__":

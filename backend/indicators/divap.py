@@ -22,10 +22,20 @@ from telethon import TelegramClient, events
 from dotenv import load_dotenv
 import pathlib
 from pathlib import Path
-from utils.senhas import pers_api_hash, pers_api_id, API_KEY, API_SECRET, API_URL
 import schedule
 from utils.exchange_bracket_updater import update_leverage_brackets, test_binance_credentials, test_database_connection
 from utils.exchange_info_updater import update_exchange_info_database, CURRENT_EXCHANGE
+
+# Importar credenciais
+try:
+    from utils.senhas import pers_api_hash, pers_api_id, API_KEY, API_SECRET, API_URL
+except ImportError:
+    print("[ERRO] Não foi possível importar credenciais de utils.senhas")
+    pers_api_hash = None
+    pers_api_id = None
+    API_KEY = None
+    API_SECRET = None
+    API_URL = None
 
 # --- Configuração de Logging e Avisos ---
 logging.basicConfig(level=logging.ERROR)
