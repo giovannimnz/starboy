@@ -19,6 +19,8 @@ openai_api_key = 'sk-proj-F8K5lY3XEzNXPMI51kZgT3BlbkFJf377N195aMeVcfyc7TC0'
 openai_url = 'https://api.openai.com/v1/chat/completions'
 
 #Binance API
-API_KEY = 'g6Cn6dJcbTtfJDx6ESYgBUKGnPoj9BmkuHJwZbV0fGsvWpWh4fOghkSlorr5YLLN'
-API_SECRET = 'Btiq61Zq01WGCeVcri2iDIRZagignFFCvaZ1YB8SthM19InOquLeXdBOeFN1sa8l'
+#API_KEY = 'g6Cn6dJcbTtfJDx6ESYgBUKGnPoj9BmkuHJwZbV0fGsvWpWh4fOghkSlorr5YLLN'
+#API_SECRET = 'Btiq61Zq01WGCeVcri2iDIRZagignFFCvaZ1YB8SthM19InOquLeXdBOeFN1sa8l'
+API_KEY = 'Zp2jBR9J74j6tCd2YJ3w15ODOCTMIv9yu4hIDLu3FVYUyZKewrbn7NyaYsu2Okm5'
+API_SECRET = 'gWwsrlBdBUfCztWISaXGssrOQSaRIDvrqDPL71id1ymqHTssQgTUaroEi9RDzTty'
 API_URL = 'https://fapi.binance.com/fapi'

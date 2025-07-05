@@ -17,8 +17,30 @@ import pathlib
 import re
 
 sys.path.append(str(Path(__file__).parent))
+
+# Configurar o caminho do .env
+env_path = Path(__file__).parents[2] / 'config' / '.env'
+load_dotenv(dotenv_path=env_path)
+
+# Configurações do banco
+DB_CONFIG = {
+    'host': os.getenv('DB_HOST'),
+    'port': int(os.getenv('DB_PORT', 5432)),
+    'user': os.getenv('DB_USER'),
+    'password': os.getenv('DB_PASSWORD'),
+    'database': os.getenv('DB_NAME')
+}
+
+# Configurações da Binance
+BINANCE_CONFIG = {
+    'apiKey': os.getenv('BINANCE_API_KEY'),
+    'secret': os.getenv('BINANCE_SECRET_KEY'),
+    'sandbox': False,
+    'enableRateLimit': True,
+}
+
 try:
-    from utils.analysis.divap_check import DIVAPAnalyzer, DB_CONFIG, BINANCE_CONFIG
+    from utils.analysis.divap_check import DIVAPAnalyzer
 except ImportError as e:
     print(f"[ERRO] Não foi possível importar DIVAPAnalyzer: {e}")
     DIVAPAnalyzer = None
