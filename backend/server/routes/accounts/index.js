@@ -38,9 +38,9 @@ async function accountsRoutes(fastify, options) {
           cor.ambiente
         FROM contas c
         JOIN corretoras cor ON c.id_corretora = cor.id
-        WHERE c.user_id = $1 AND c.ativa = true
+        WHERE c.user_id = $1 AND c.ativa = $2
         ORDER BY c.data_criacao DESC
-      `, [userId]);
+      `, [userId, true]);
       
       reply.send({ 
         success: true, 
@@ -77,7 +77,7 @@ async function accountsRoutes(fastify, options) {
       const result = await db.query(`
         SELECT id, corretora, ambiente, ativa
         FROM corretoras
-        WHERE ativa = true
+        WHERE ativa = $2
         ORDER BY corretora, ambiente
       `);
       
@@ -131,19 +131,19 @@ async function accountsRoutes(fastify, options) {
       } = request.body;
 
       // Validar se o usuário existe
-      const userCheck = await db.query('SELECT id FROM users WHERE id = $1 AND ativa = true', [user_id]);
+      const userCheck = await db.query('SELECT id FROM users WHERE id = $1 AND ativa = $2', [user_id, true]);
       if (userCheck.rows.length === 0) {
         return reply.code(400).send({ success: false, error: 'Usuário não encontrado ou inativo' });
       }
 
       // Validar se a corretora existe
-      const brokerCheck = await db.query('SELECT id FROM corretoras WHERE id = $1 AND ativa = true', [id_corretora]);
+      const brokerCheck = await db.query('SELECT id FROM corretoras WHERE id = $1 AND ativa = $2', [id_corretora, true]);
       if (brokerCheck.rows.length === 0) {
         return reply.code(400).send({ success: false, error: 'Corretora não encontrada ou inativa' });
       }
 
       // Verificar se já existe uma conta com o mesmo nome para o usuário
-      const nameCheck = await db.query('SELECT id FROM contas WHERE user_id = $1 AND nome = $2 AND ativa = true', [user_id, nome]);
+      const nameCheck = await db.query('SELECT id FROM contas WHERE user_id = $1 AND nome = $2 AND ativa = $3', [user_id, nome, true]);
       if (nameCheck.rows.length > 0) {
         return reply.code(400).send({ success: false, error: 'Já existe uma conta com este nome para este usuário' });
       }
@@ -214,7 +214,7 @@ async function accountsRoutes(fastify, options) {
     
     try {
       // Verificar se a conta existe
-      const accountCheck = await db.query('SELECT id, user_id FROM contas WHERE id = $1 AND ativa = true', [id]);
+      const accountCheck = await db.query('SELECT id, user_id FROM contas WHERE id = $1 AND ativa = $2', [id, true]);
       if (accountCheck.rows.length === 0) {
         return reply.code(404).send({ success: false, error: 'Conta não encontrada' });
       }
@@ -278,13 +278,13 @@ async function accountsRoutes(fastify, options) {
     
     try {
       // Verificar se a conta existe
-      const accountCheck = await db.query('SELECT id FROM contas WHERE id = $1 AND ativa = true', [id]);
+      const accountCheck = await db.query('SELECT id FROM contas WHERE id = $1 AND ativa = $2', [id, true]);
       if (accountCheck.rows.length === 0) {
         return reply.code(404).send({ success: false, error: 'Conta não encontrada' });
       }
 
       // Desativar a conta
-      await db.query('UPDATE contas SET ativa = false, ultima_atualizacao = CURRENT_TIMESTAMP WHERE id = $1', [id]);
+      await db.query('UPDATE contas SET ativa = $24, ultima_atualizacao = CURRENT_TIMESTAMP WHERE id = $1', [id]);
 
       reply.send({ 
         success: true, 
@@ -332,7 +332,7 @@ async function accountsRoutes(fastify, options) {
           cor.ambiente
         FROM contas c
         JOIN corretoras cor ON c.id_corretora = cor.id
-        WHERE c.id = $1 AND c.ativa = true
+        WHERE c.id = $1 AND c.ativa = $2
       `, [id]);
       
       if (result.rows.length === 0) {
@@ -369,7 +369,7 @@ async function accountsRoutes(fastify, options) {
     
     try {
       const result = await db.query(
-        'SELECT saldo_futuros, saldo_spot, saldo_base_calculo_futuros, saldo_base_calculo_spot FROM contas WHERE id = $1 AND ativa = true',
+        'SELECT saldo_futuros, saldo_spot, saldo_base_calculo_futuros, saldo_base_calculo_spot FROM contas WHERE id = $1 AND ativa = $2',
         [id]
       );
       
@@ -416,7 +416,7 @@ async function accountsRoutes(fastify, options) {
     
     try {
       const result = await db.query(
-        'SELECT id FROM contas WHERE id = $1 AND ativa = true',
+        'SELECT id FROM contas WHERE id = $1 AND ativa = $2',
         [id]
       );
       

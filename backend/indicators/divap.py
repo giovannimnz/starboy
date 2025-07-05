@@ -22,10 +22,10 @@ from telethon import TelegramClient, events
 from dotenv import load_dotenv
 import pathlib
 from pathlib import Path
-from senhas import pers_api_hash, pers_api_id, API_KEY, API_SECRET, API_URL
+from utils.senhas import pers_api_hash, pers_api_id, API_KEY, API_SECRET, API_URL
 import schedule
-from exchange_bracket_updater import update_leverage_brackets, test_binance_credentials, test_database_connection
-from exchange_info_updater import update_exchange_info_database, CURRENT_EXCHANGE
+from utils.exchange_bracket_updater import update_leverage_brackets, test_binance_credentials, test_database_connection
+from utils.exchange_info_updater import update_exchange_info_database, CURRENT_EXCHANGE
 
 # --- Configuração de Logging e Avisos ---
 logging.basicConfig(level=logging.ERROR)
@@ -43,12 +43,20 @@ TAXA_ENTRADA = 0.02
 TAXA_SAIDA = 0.05
 
 # --- Importações e Configurações de Módulos Locais ---
-sys.path.append(str(Path(__file__).parent / 'analysis'))
+sys.path.append(str(Path(__file__).parent / 'utils' / 'analysis'))
 try:
-    from analysis.divap_check import DIVAPAnalyzer
+    from utils.analysis.divap_check import DIVAPAnalyzer
 except ImportError as e:
     print(f"[ERRO] Não foi possível importar DIVAPAnalyzer: {e}")
     DIVAPAnalyzer = None
+
+# Importar validador de booleanos
+try:
+    from utils.boolean_validator import validate_webhook_signals_data, normalize_boolean
+except ImportError as e:
+    print(f"[AVISO] Não foi possível importar validador de booleanos: {e}")
+    validate_webhook_signals_data = lambda x: x
+    normalize_boolean = lambda x: x
 
 # --- Carregamento de Variáveis de Ambiente ---
 env_path = pathlib.Path(__file__).parents[2] / 'config' / '.env'
@@ -569,11 +577,11 @@ def get_account_base_balance():
         sql = """
         SELECT saldo_base_calculo_futuros 
         FROM contas 
-        WHERE ativa = true AND saldo_base_calculo_futuros IS NOT NULL AND saldo_base_calculo_futuros > 0
+        WHERE ativa = %s AND saldo_base_calculo_futuros IS NOT NULL AND saldo_base_calculo_futuros > 0
         ORDER BY id ASC 
         LIMIT 1
         """
-        cursor.execute(sql)
+        cursor.execute(sql, (True,))
         result = cursor.fetchone()
             
         if result and 'saldo_base_calculo_futuros' in result:
@@ -582,7 +590,7 @@ def get_account_base_balance():
             return saldo
 
         # Fallback: buscar qualquer conta ativa
-        cursor.execute("SELECT saldo_base_calculo_futuros FROM contas WHERE ativa = true LIMIT 1")
+        cursor.execute("SELECT saldo_base_calculo_futuros FROM contas WHERE ativa = %s LIMIT 1", (True,))
         fallback_result = cursor.fetchone()
         
         if fallback_result and fallback_result['saldo_base_calculo_futuros']:
@@ -612,10 +620,10 @@ def get_active_accounts():
         sql = """
         SELECT id, nome, telegram_chat_id, saldo_base_calculo_futuros, max_posicoes
         FROM contas 
-        WHERE ativa = true
+        WHERE ativa = %s
         ORDER BY id ASC
         """
-        cursor.execute(sql)
+        cursor.execute(sql, (True,))
         contas = cursor.fetchall()
         
         if not contas:
@@ -796,11 +804,14 @@ def save_to_database(trade_data):
     conn = None
     cursor = None
     try:
+        # Validar campos booleanos nos dados de entrada
+        trade_data = validate_webhook_signals_data(trade_data)
+        
         conn = psycopg2.connect(**DB_CONFIG)
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         # Buscar todas as contas ativas e seus telegram_chat_id
-        cursor.execute("SELECT id, telegram_chat_id FROM contas WHERE ativa = true")
+        cursor.execute("SELECT id, telegram_chat_id FROM contas WHERE ativa = %s", (True,))
         contas_ativas = cursor.fetchall()
         if not contas_ativas:
             print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ⚠️ Nenhuma conta ativa encontrada. Sinal não será salvo.")

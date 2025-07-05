@@ -145,8 +145,8 @@ async function authRoutes(fastify, options) {
     const db = await getDatabaseInstance();
     try {
       const result = await db.query(
-        'SELECT id, nome, sobrenome, email, criado_em, atualizado_em FROM users WHERE id = $1 AND ativa = true', 
-        [request.user.id]
+        'SELECT id, nome, sobrenome, email, criado_em, atualizado_em FROM users WHERE id = $1 AND ativa = $2', 
+        [request.user.id, true]
       );
       
       if (result.rows.length === 0) {
@@ -252,7 +252,7 @@ async function authRoutes(fastify, options) {
       const { senhaAtual, novaSenha } = request.body;
       
       // Buscar senha atual do usuário
-      const result = await db.query('SELECT senha FROM users WHERE id = $1 AND ativa = true', [request.user.id]);
+      const result = await db.query('SELECT senha FROM users WHERE id = $1 AND ativa = $2', [request.user.id, true]);
       
       if (result.rows.length === 0) {
         return reply.status(404).send({ error: 'Usuário não encontrado.' });
@@ -305,7 +305,7 @@ async function authRoutes(fastify, options) {
       const { senha } = request.body;
       
       // Verificar se o usuário existe e está ativo
-      const result = await db.query('SELECT senha FROM users WHERE id = $1 AND ativa = true', [request.user.id]);
+      const result = await db.query('SELECT senha FROM users WHERE id = $1 AND ativa = $2', [request.user.id, true]);
       
       if (result.rows.length === 0) {
         return reply.status(404).send({ error: 'Usuário não encontrado.' });
@@ -321,8 +321,8 @@ async function authRoutes(fastify, options) {
       
       // Desativar usuário
       await db.query(
-        'UPDATE users SET ativa = false, atualizado_em = CURRENT_TIMESTAMP WHERE id = $1', 
-        [request.user.id]
+        'UPDATE users SET ativa = $2, atualizado_em = CURRENT_TIMESTAMP WHERE id = $1', 
+        [request.user.id, false]
       );
       
       reply.send({ message: 'Conta desativada com sucesso!' });

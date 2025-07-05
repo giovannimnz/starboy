@@ -329,7 +329,7 @@ async function createDatabase() {
         `);
         console.log('✅ Tabela "monitoramento" criada ou já existente.');
 
-        // 11. Tabela 'webhook_signals' (necessária para 'signals_msg' e 'divap_analysis')
+        // 11. Tabela 'webhook_signals' (necessária para 'signals_msg' e 'signals_analysis')
         await connection.execute(`
             CREATE TABLE IF NOT EXISTS webhook_signals (
                 id INT(11) NOT NULL AUTO_INCREMENT,
@@ -374,9 +374,9 @@ async function createDatabase() {
         `);
         console.log('✅ Tabela "webhook_signals" criada ou já existente.');
         
-        // 12. Tabela 'divap_analysis'
+        // 12. Tabela 'signals_analysis'
         await connection.execute(`
-            CREATE TABLE IF NOT EXISTS divap_analysis (
+            CREATE TABLE IF NOT EXISTS signals_analysis (
                 id INT(11) NOT NULL AUTO_INCREMENT,
                 signal_id INT(11) DEFAULT NULL,
                 is_bull_divap BOOLEAN DEFAULT 0,
@@ -394,11 +394,12 @@ async function createDatabase() {
                 analyzed_at DATETIME DEFAULT NULL,
                 bull_reversal_pattern BOOLEAN DEFAULT 0,
                 bear_reversal_pattern BOOLEAN DEFAULT 0,
+                analysis_type VARCHAR(20) DEFAULT 'trade',
                 PRIMARY KEY (id),
                 UNIQUE KEY signal_id (signal_id)
             ) ENGINE=InnoDB AUTO_INCREMENT=490 DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         `);
-        console.log('✅ Tabela "divap_analysis" criada ou já existente.');
+        console.log('✅ Tabela "signals_analysis" criada ou já existente.');
 
         // 13. Tabela 'signals_msg'
         await connection.execute(`
@@ -534,9 +535,9 @@ async function createDatabase() {
         `);
         console.log('✅ Tabela "logs" criada ou já existente.');
 
-        // 17. Tabela 'signals_backtest'
+        // 17. Tabela 'backtest_signals'
         await connection.execute(`
-            CREATE TABLE IF NOT EXISTS signals_backtest (
+            CREATE TABLE IF NOT EXISTS backtest_signals (
                 id INT(11) NOT NULL AUTO_INCREMENT,
                 symbol VARCHAR(32) NOT NULL,
                 side VARCHAR(16) NOT NULL,
@@ -564,7 +565,40 @@ async function createDatabase() {
                 PRIMARY KEY (id)
             ) ENGINE=InnoDB DEFAULT CHARSET=latin1 COLLATE=latin1_swedish_ci;
         `);
-        console.log('✅ Tabela "signals_backtest" criada ou já existente.');
+        console.log('✅ Tabela "backtest_signals" criada ou já existente.');
+
+        // 18. Tabela 'backtest_results'
+        await connection.execute(`
+            CREATE TABLE IF NOT EXISTS backtest_results (
+                id INT(11) NOT NULL AUTO_INCREMENT,
+                symbol VARCHAR(50) NOT NULL,
+                total_pnl DECIMAL(20,8) DEFAULT NULL,
+                trade_time BIGINT DEFAULT NULL,
+                open_datetime DATETIME DEFAULT NULL,
+                close_datetime DATETIME DEFAULT NULL,
+                base_fee DECIMAL(20,8) DEFAULT NULL,
+                total_profit DECIMAL(20,8) DEFAULT NULL,
+                total_fee DECIMAL(20,8) DEFAULT NULL,
+                tp1_profit DECIMAL(20,8) DEFAULT NULL,
+                tp1_fee DECIMAL(20,8) DEFAULT NULL,
+                tp2_profit DECIMAL(20,8) DEFAULT NULL,
+                tp2_fee DECIMAL(20,8) DEFAULT NULL,
+                tp3_profit DECIMAL(20,8) DEFAULT NULL,
+                tp3_fee DECIMAL(20,8) DEFAULT NULL,
+                tp4_profit DECIMAL(20,8) DEFAULT NULL,
+                tp4_fee DECIMAL(20,8) DEFAULT NULL,
+                tp5_profit DECIMAL(20,8) DEFAULT NULL,
+                tp5_fee DECIMAL(20,8) DEFAULT NULL,
+                sl_profit DECIMAL(20,8) DEFAULT NULL,
+                sl_fee DECIMAL(20,8) DEFAULT NULL,
+                third_to_last_tp DECIMAL(20,8) DEFAULT NULL,
+                last_tp DECIMAL(20,8) DEFAULT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                PRIMARY KEY (id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        `);
+        console.log('✅ Tabela "backtest_results" criada ou já existente.');
 
         console.log('\n🚀 Processo concluído! O banco de dados e todas as tabelas foram criados/verificados com sucesso conforme a nova estrutura.');
 

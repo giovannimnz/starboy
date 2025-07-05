@@ -319,7 +319,7 @@ CREATE TABLE IF NOT EXISTS webhook_signals (
     conta_id INT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS divap_analysis (
+CREATE TABLE IF NOT EXISTS signals_analysis (
     id SERIAL PRIMARY KEY,
     signal_id INT UNIQUE,
     is_bull_divap BOOLEAN DEFAULT false,
@@ -336,8 +336,71 @@ CREATE TABLE IF NOT EXISTS divap_analysis (
     price_reversal_down BOOLEAN DEFAULT false,
     analyzed_at TIMESTAMPTZ,
     bull_reversal_pattern BOOLEAN DEFAULT false,
-    bear_reversal_pattern BOOLEAN DEFAULT false
+    bear_reversal_pattern BOOLEAN DEFAULT false,
+    analysis_type VARCHAR(20) DEFAULT 'trade'
 );
+COMMENT ON COLUMN signals_analysis.analysis_type IS 'Tipo de análise: trade ou backtest';
+COMMENT ON COLUMN signals_analysis.signal_id IS 'ID do sinal associado da tabela webhook_signals';
+
+CREATE TABLE IF NOT EXISTS backtest_signals (
+    id SERIAL PRIMARY KEY,
+    symbol VARCHAR(50) NOT NULL,
+    side VARCHAR(20) NOT NULL,
+    leverage INT,
+    capital_pct DECIMAL(10,2),
+    entry_price DECIMAL(20,8),
+    sl_price DECIMAL(20,8),
+    chat_id BIGINT,
+    status VARCHAR(50),
+    timeframe VARCHAR(20),
+    message_id BIGINT,
+    message_id_orig BIGINT,
+    chat_id_orig_sinal BIGINT,
+    tp1_price DECIMAL(20,8),
+    tp2_price DECIMAL(20,8),
+    tp3_price DECIMAL(20,8),
+    tp4_price DECIMAL(20,8),
+    tp5_price DECIMAL(20,8),
+    signal_datetime TIMESTAMPTZ,
+    divap_confirmado BOOLEAN DEFAULT false,
+    cancelado_checker BOOLEAN DEFAULT false,
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS backtest_results (
+    id SERIAL PRIMARY KEY,
+    symbol VARCHAR(50) NOT NULL,
+    initial_capital DECIMAL(20,8),
+    final_capital DECIMAL(20,8),
+    total_pnl DECIMAL(20,8),
+    trade_time BIGINT,
+    open_datetime TIMESTAMPTZ,
+    close_datetime TIMESTAMPTZ,
+    base_fee DECIMAL(10,4),
+    total_profit DECIMAL(20,8),
+    total_fee DECIMAL(20,8),
+    entry_price DECIMAL(20,8),
+    entry_fee DECIMAL(20,8),
+    tp1_profit DECIMAL(20,8),
+    tp1_fee DECIMAL(20,8),
+    tp2_profit DECIMAL(20,8),
+    tp2_fee DECIMAL(20,8),
+    tp3_profit DECIMAL(20,8),
+    tp3_fee DECIMAL(20,8),
+    tp4_profit DECIMAL(20,8),
+    tp4_fee DECIMAL(20,8),
+    tp5_profit DECIMAL(20,8),
+    tp5_fee DECIMAL(20,8),
+    sl_profit DECIMAL(20,8),
+    sl_fee DECIMAL(20,8),
+    third_to_last_tp DECIMAL(20,8),
+    last_tp DECIMAL(20,8),
+    strategy VARCHAR(100),
+    created_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
+);
+COMMENT ON TABLE backtest_results IS 'Resultados detalhados de backtests de estratégias';
 
 CREATE TABLE IF NOT EXISTS signals_msg (
     id SERIAL PRIMARY KEY,
@@ -436,35 +499,7 @@ CREATE TABLE IF NOT EXISTS logs (
     contexto VARCHAR(255),
     data_hora TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP,
     conta_id INT
-);
 COMMENT ON COLUMN logs.modulo IS 'Módulo que gerou o log (ex: webhook, monitoramento)';
-
-CREATE TABLE IF NOT EXISTS signals_backtest (
-    id SERIAL PRIMARY KEY,
-    symbol VARCHAR(32) NOT NULL,
-    side VARCHAR(16) NOT NULL,
-    leverage INT,
-    capital_pct DECIMAL(8,4),
-    entry_price DECIMAL(18,8),
-    sl_price DECIMAL(18,8),
-    chat_id BIGINT,
-    status VARCHAR(32),
-    timeframe VARCHAR(16),
-    message_id BIGINT,
-    message_id_orig BIGINT,
-    chat_id_orig_sinal BIGINT,
-    tp1_price DECIMAL(18,8),
-    tp2_price DECIMAL(18,8),
-    tp3_price DECIMAL(18,8),
-    tp4_price DECIMAL(18,8),
-    tp5_price DECIMAL(18,8),
-    message_source VARCHAR(64),
-    divap_confirmado BOOLEAN,
-    cancelado_checker BOOLEAN,
-    error_message VARCHAR(255),
-    conta_id INT,
-    created_at TIMESTAMPTZ
-);
 
 
 -- -------------------------------------------------------------------------
@@ -583,6 +618,21 @@ CREATE INDEX IF NOT EXISTS idx_leverage_brackets_initial ON exchange_leverage_br
 -- Tabelas de Log e Monitoramento
 CREATE INDEX IF NOT EXISTS idx_logs_data_nivel ON logs (data_hora, nivel);
 CREATE INDEX IF NOT EXISTS idx_logs_modulo_conta ON logs (modulo, conta_id, data_hora);
+
+-- Tabela 'signals_analysis'
+CREATE INDEX IF NOT EXISTS idx_signals_analysis_confirmed ON signals_analysis (divap_confirmed, analyzed_at);
+CREATE INDEX IF NOT EXISTS idx_signals_analysis_patterns ON signals_analysis (bull_reversal_pattern, bear_reversal_pattern);
+CREATE INDEX IF NOT EXISTS idx_signals_analysis_signal ON signals_analysis (signal_id);
+CREATE INDEX IF NOT EXISTS idx_signals_analysis_type ON signals_analysis (analysis_type, analyzed_at);
+
+-- Tabela 'backtest_signals'
+CREATE INDEX IF NOT EXISTS idx_backtest_signals_symbol ON backtest_signals (symbol, signal_datetime);
+CREATE INDEX IF NOT EXISTS idx_backtest_signals_status ON backtest_signals (status, created_at);
+
+-- Tabela 'backtest_results'
+CREATE INDEX IF NOT EXISTS idx_backtest_results_symbol ON backtest_results (symbol, created_at);
+CREATE INDEX IF NOT EXISTS idx_backtest_results_strategy ON backtest_results (strategy, symbol);
+CREATE INDEX IF NOT EXISTS idx_backtest_results_pnl ON backtest_results (total_pnl, symbol);
 CREATE INDEX IF NOT EXISTS idx_logs_conta_id ON logs (conta_id, data_hora);
 CREATE INDEX IF NOT EXISTS idx_monitoramento_evento_data ON monitoramento (tipo_evento, data_hora_evento);
 CREATE INDEX IF NOT EXISTS idx_monitoramento_ordem_posicao ON monitoramento (id_ordem, id_posicao);
@@ -596,9 +646,14 @@ CREATE INDEX IF NOT EXISTS idx_posicoes_fechadas_pnl ON posicoes_fechadas (liqui
 CREATE INDEX IF NOT EXISTS idx_posicoes_fechadas_id_original ON posicoes_fechadas (id_original);
 
 -- Tabelas de Análise
-CREATE INDEX IF NOT EXISTS idx_divap_analysis_confirmed ON divap_analysis (divap_confirmed, analyzed_at);
-CREATE INDEX IF NOT EXISTS idx_divap_analysis_patterns ON divap_analysis (bull_reversal_pattern, bear_reversal_pattern);
-CREATE INDEX IF NOT EXISTS idx_divap_analysis_signal ON divap_analysis (signal_id);
+CREATE INDEX IF NOT EXISTS idx_signals_analysis_confirmed ON signals_analysis (divap_confirmed, analyzed_at);
+CREATE INDEX IF NOT EXISTS idx_signals_analysis_patterns ON signals_analysis (bull_reversal_pattern, bear_reversal_pattern);
+CREATE INDEX IF NOT EXISTS idx_signals_analysis_signal ON signals_analysis (signal_id);
+CREATE INDEX IF NOT EXISTS idx_signals_analysis_type ON signals_analysis (analysis_type, analyzed_at);
+CREATE INDEX IF NOT EXISTS idx_backtest_signals_symbol ON backtest_signals (symbol, created_at);
+CREATE INDEX IF NOT EXISTS idx_backtest_signals_status ON backtest_signals (status, created_at);
+CREATE INDEX IF NOT EXISTS idx_backtest_results_symbol ON backtest_results (symbol, created_at);
+CREATE INDEX IF NOT EXISTS idx_backtest_results_pnl ON backtest_results (total_pnl, symbol);
 CREATE INDEX IF NOT EXISTS idx_signals_msg_chat_date ON signals_msg (chat_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_signals_msg_reply_chain ON signals_msg (reply_to_message_id, message_id);
 CREATE INDEX IF NOT EXISTS idx_signals_msg_symbol ON signals_msg (symbol, signal_id);
@@ -626,12 +681,13 @@ ANALYZE posicoes;
 ANALYZE ordens;
 ANALYZE monitoramento;
 ANALYZE webhook_signals;
-ANALYZE divap_analysis;
+ANALYZE signals_analysis;
 ANALYZE signals_msg;
 ANALYZE ordens_fechadas;
 ANALYZE posicoes_fechadas;
 ANALYZE logs;
-ANALYZE signals_backtest;
+ANALYZE backtest_signals;
+ANALYZE backtest_results;
 
 -- Confirma todas as alterações da transação
 COMMIT;

@@ -134,9 +134,9 @@ def update_exchange_info_database(exchange_name):
                 # INSERIR novo símbolo
                 cols = ', '.join(symbol_values.keys())
                 vals = ', '.join(['%s'] * len(symbol_values))
-                sql = f"INSERT INTO exchange_symbols (exchange, symbol, {cols}) VALUES (%s, %s, {vals})"
+                sql = f"INSERT INTO exchange_symbols (exchange, symbol, {cols}) VALUES (%s, %s, {vals}) RETURNING id"
                 cursor.execute(sql, (exchange_name, symbol, *symbol_values.values()))
-                symbol_id = cursor.lastrowid
+                symbol_id = cursor.fetchone()[0]
                 inserts += 1
             else:
                 # ✅ COMPARAÇÃO MELHORADA - NORMALIZAR ANTES DE COMPARAR
@@ -166,6 +166,11 @@ def update_exchange_info_database(exchange_name):
             api_filters = symbol_data.get('filters', [])
             db_filters = db_filters_map.get(symbol, {})
             
+            # Validar que symbol_id é válido antes de processar filtros
+            if not symbol_id or symbol_id <= 0:
+                print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [EXCHANGE-INFO] ❌ AVISO: Pular filtros para símbolo {symbol} - symbol_id inválido: {symbol_id}")
+                continue
+            
             # Mapear filtros da API
             api_filters_map = {}
             for f in api_filters:
@@ -193,12 +198,16 @@ def update_exchange_info_database(exchange_name):
                 
                 if not db_filter:
                     # INSERIR novo filtro
-                    filter_values = {**api_filter, 'symbol_id': symbol_id}
-                    cols = ', '.join(filter_values.keys())
-                    vals = ', '.join(['%s'] * len(filter_values))
-                    sql = f"INSERT INTO exchange_filters ({cols}) VALUES ({vals})"
-                    cursor.execute(sql, tuple(filter_values.values()))
-                    filter_inserts += 1
+                    try:
+                        filter_values = {**api_filter, 'symbol_id': symbol_id}
+                        cols = ', '.join(filter_values.keys())
+                        vals = ', '.join(['%s'] * len(filter_values))
+                        sql = f"INSERT INTO exchange_filters ({cols}) VALUES ({vals})"
+                        cursor.execute(sql, tuple(filter_values.values()))
+                        filter_inserts += 1
+                    except Exception as e:
+                        print(f"[{datetime.datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] [EXCHANGE-INFO] ❌ Erro ao inserir filtro {filter_type} para símbolo {symbol} (symbol_id={symbol_id}): {e}")
+                        continue
                 else:
                     # VERIFICAR se filtro precisa ser atualizado
                     needs_filter_update = False

@@ -257,8 +257,8 @@ async function getApiCredentials(accountId) {
     const result = await db.query(`
       SELECT api_key, api_secret, ws_api_key, ws_api_secret, telegram_bot_token, telegram_chat_id, nome
       FROM contas 
-      WHERE id = $1 AND ativa = true
-    `, [accountId]);
+      WHERE id = $1 AND ativa = $2
+    `, [accountId, true]);
 
     if (result.rows.length === 0) {
       throw new Error(`Conta ${accountId} não encontrada ou inativa`);
@@ -883,8 +883,8 @@ async function updateAccountBalance(db, saldo, accountId) {
     const currentBalanceResult = await client.query(`
       SELECT saldo_futuros, saldo_base_calculo_futuros 
       FROM contas 
-      WHERE id = $1 AND ativa = true
-    `, [accountId]);
+      WHERE id = $1 AND ativa = $2
+    `, [accountId, true]);
 
     if (currentBalanceResult.rows.length === 0) {
       throw new Error(`Conta ${accountId} não encontrada ou inativa`);
@@ -934,8 +934,8 @@ async function getBaseCalculoBalance(accountId) {
     const result = await db.query(`
       SELECT saldo_base_calculo_futuros 
       FROM contas 
-      WHERE id = $1 AND ativa = true
-    `, [accountId]);
+      WHERE id = $1 AND ativa = $2
+    `, [accountId, true]);
     
     if (result.rows.length === 0) {
       throw new Error(`Conta ${accountId} não encontrada ou inativa`);
@@ -958,8 +958,8 @@ async function getCorretoraPorId(corretoraId) {
     const db = await getDatabaseInstance();
     const result = await db.query(`
       SELECT * FROM corretoras 
-      WHERE id = $1 AND ativa = true
-    `, [corretoraId]);
+      WHERE id = $1 AND ativa = $2
+    `, [corretoraId, true]);
     
     return result.rows[0] || null;
   } catch (error) {
@@ -1044,5 +1044,317 @@ module.exports = {
   getBaseCalculoBalance,
   getCorretoraPorId,
   registrarLog,
-  closePool
+  closePool,
+  insertSignalAnalysis,
+  insertBacktestSignal,
+  insertBacktestResult
 };
+
+/**
+ * Insere uma análise de sinal na tabela signals_analysis
+ * @param {Object} analysisData - Dados da análise
+ * @returns {Promise<number>} - ID da análise inserida
+ */
+async function insertSignalAnalysis(analysisData) {
+  const db = await getDatabaseInstance();
+  
+  try {
+    const {
+      signal_id,
+      symbol,
+      timeframe,
+      side,
+      entry_price,
+      stop_loss,
+      take_profit,
+      divap_confirmed,
+      bull_div,
+      bear_div,
+      high_volume,
+      candle_patterns,
+      analysis_type = 'trade',
+      analysis_datetime = new Date(),
+      candle_n1_data = null,
+      candle_n2_data = null,
+      candle_n3_data = null,
+      notes = null
+    } = analysisData;
+
+    const query = `
+      INSERT INTO signals_analysis (
+        signal_id, symbol, timeframe, side, entry_price, stop_loss, take_profit,
+        divap_confirmed, bull_div, bear_div, high_volume, candle_patterns,
+        analysis_type, analysis_datetime, candle_n1_data, candle_n2_data, 
+        candle_n3_data, notes
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18
+      ) RETURNING id
+    `;
+
+    const result = await db.query(query, [
+      signal_id, symbol, timeframe, side, entry_price, stop_loss, take_profit,
+      divap_confirmed, bull_div, bear_div, high_volume, candle_patterns,
+      analysis_type, analysis_datetime, candle_n1_data, candle_n2_data, 
+      candle_n3_data, notes
+    ]);
+
+    console.log(`[DB] ✅ Análise de sinal inserida com ID: ${result.rows[0].id}`);
+    return result.rows[0].id;
+
+  } catch (error) {
+    console.error(`[DB] ❌ Erro ao inserir análise de sinal:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Insere um sinal de backtest na tabela backtest_signals
+ * @param {Object} backtestData - Dados do backtest
+ * @returns {Promise<number>} - ID do backtest inserido
+ */
+async function insertBacktestSignal(backtestData) {
+  const db = await getDatabaseInstance();
+  
+  try {
+    const {
+      signal_id,
+      symbol,
+      timeframe,
+      side,
+      entry_price,
+      stop_loss,
+      take_profit,
+      divap_confirmed,
+      cancelled = false,
+      cancel_reason = null,
+      signal_datetime = new Date(),
+      analysis_datetime = new Date()
+    } = backtestData;
+
+    const query = `
+      INSERT INTO backtest_signals (
+        signal_id, symbol, timeframe, side, entry_price, stop_loss, take_profit,
+        divap_confirmed, cancelled, cancel_reason, signal_datetime, analysis_datetime
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12
+      ) RETURNING id
+    `;
+
+    const result = await db.query(query, [
+      signal_id, symbol, timeframe, side, entry_price, stop_loss, take_profit,
+      divap_confirmed, cancelled, cancel_reason, signal_datetime, analysis_datetime
+    ]);
+
+    console.log(`[DB] ✅ Sinal de backtest inserido com ID: ${result.rows[0].id}`);
+    return result.rows[0].id;
+
+  } catch (error) {
+    console.error(`[DB] ❌ Erro ao inserir sinal de backtest:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Insere um resultado de backtest na tabela backtest_results
+ * @param {Object} resultData - Dados do resultado
+ * @returns {Promise<number>} - ID do resultado inserido
+ */
+async function insertBacktestResult(resultData) {
+  const db = await getDatabaseInstance();
+  
+  try {
+    const {
+      backtest_signal_id,
+      symbol,
+      strategy,
+      initial_capital,
+      final_capital,
+      pnl_value,
+      pnl_percentage,
+      entry_price,
+      exit_price,
+      entry_fee,
+      exit_fee,
+      total_fees,
+      quantity,
+      side,
+      entry_datetime,
+      exit_datetime,
+      duration_minutes,
+      max_drawdown,
+      max_profit,
+      tp1_price = null,
+      tp1_hit = false,
+      tp2_price = null,
+      tp2_hit = false,
+      tp3_price = null,
+      tp3_hit = false,
+      tp4_price = null,
+      tp4_hit = false,
+      tp5_price = null,
+      tp5_hit = false,
+      sl_price = null,
+      sl_hit = false,
+      trailing_stop_activated = false,
+      trailing_stop_price = null,
+      exit_reason = null,
+      notes = null
+    } = resultData;
+
+    const query = `
+      INSERT INTO backtest_results (
+        backtest_signal_id, symbol, strategy, initial_capital, final_capital,
+        pnl_value, pnl_percentage, entry_price, exit_price, entry_fee, exit_fee,
+        total_fees, quantity, side, entry_datetime, exit_datetime, duration_minutes,
+        max_drawdown, max_profit, tp1_price, tp1_hit, tp2_price, tp2_hit,
+        tp3_price, tp3_hit, tp4_price, tp4_hit, tp5_price, tp5_hit,
+        sl_price, sl_hit, trailing_stop_activated, trailing_stop_price,
+        exit_reason, notes
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17,
+        $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35
+      ) RETURNING id
+    `;
+
+    const result = await db.query(query, [
+      backtest_signal_id, symbol, strategy, initial_capital, final_capital,
+      pnl_value, pnl_percentage, entry_price, exit_price, entry_fee, exit_fee,
+      total_fees, quantity, side, entry_datetime, exit_datetime, duration_minutes,
+      max_drawdown, max_profit, tp1_price, tp1_hit, tp2_price, tp2_hit,
+      tp3_price, tp3_hit, tp4_price, tp4_hit, tp5_price, tp5_hit,
+      sl_price, sl_hit, trailing_stop_activated, trailing_stop_price,
+      exit_reason, notes
+    ]);
+
+    console.log(`[DB] ✅ Resultado de backtest inserido com ID: ${result.rows[0].id}`);
+    return result.rows[0].id;
+
+  } catch (error) {
+    console.error(`[DB] ❌ Erro ao inserir resultado de backtest:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Obtém análises de sinais por critérios
+ * @param {Object} criteria - Critérios de busca
+ * @returns {Promise<Array>} - Array de análises
+ */
+async function getSignalAnalyses(criteria = {}) {
+  const db = await getDatabaseInstance();
+  
+  try {
+    let query = `
+      SELECT sa.*, ws.created_at as signal_created_at, ws.message_text
+      FROM signals_analysis sa
+      LEFT JOIN webhook_signals ws ON sa.signal_id = ws.id
+      WHERE 1=1
+    `;
+    
+    const params = [];
+    let paramIndex = 1;
+    
+    if (criteria.symbol) {
+      query += ` AND sa.symbol = $${paramIndex}`;
+      params.push(criteria.symbol);
+      paramIndex++;
+    }
+    
+    if (criteria.analysis_type) {
+      query += ` AND sa.analysis_type = $${paramIndex}`;
+      params.push(criteria.analysis_type);
+      paramIndex++;
+    }
+    
+    if (criteria.divap_confirmed !== undefined) {
+      query += ` AND sa.divap_confirmed = $${paramIndex}`;
+      params.push(criteria.divap_confirmed);
+      paramIndex++;
+    }
+    
+    if (criteria.date_from) {
+      query += ` AND sa.analysis_datetime >= $${paramIndex}`;
+      params.push(criteria.date_from);
+      paramIndex++;
+    }
+    
+    if (criteria.date_to) {
+      query += ` AND sa.analysis_datetime <= $${paramIndex}`;
+      params.push(criteria.date_to);
+      paramIndex++;
+    }
+    
+    query += ` ORDER BY sa.analysis_datetime DESC`;
+    
+    if (criteria.limit) {
+      query += ` LIMIT $${paramIndex}`;
+      params.push(criteria.limit);
+    }
+    
+    const result = await db.query(query, params);
+    return result.rows;
+    
+  } catch (error) {
+    console.error(`[DB] ❌ Erro ao obter análises de sinais:`, error.message);
+    throw error;
+  }
+}
+
+/**
+ * Obtém resultados de backtest por critérios
+ * @param {Object} criteria - Critérios de busca
+ * @returns {Promise<Array>} - Array de resultados
+ */
+async function getBacktestResults(criteria = {}) {
+  const db = await getDatabaseInstance();
+  
+  try {
+    let query = `
+      SELECT br.*, bs.signal_id, bs.signal_datetime
+      FROM backtest_results br
+      LEFT JOIN backtest_signals bs ON br.backtest_signal_id = bs.id
+      WHERE 1=1
+    `;
+    
+    const params = [];
+    let paramIndex = 1;
+    
+    if (criteria.symbol) {
+      query += ` AND br.symbol = $${paramIndex}`;
+      params.push(criteria.symbol);
+      paramIndex++;
+    }
+    
+    if (criteria.strategy) {
+      query += ` AND br.strategy = $${paramIndex}`;
+      params.push(criteria.strategy);
+      paramIndex++;
+    }
+    
+    if (criteria.date_from) {
+      query += ` AND br.entry_datetime >= $${paramIndex}`;
+      params.push(criteria.date_from);
+      paramIndex++;
+    }
+    
+    if (criteria.date_to) {
+      query += ` AND br.entry_datetime <= $${paramIndex}`;
+      params.push(criteria.date_to);
+      paramIndex++;
+    }
+    
+    query += ` ORDER BY br.entry_datetime DESC`;
+    
+    if (criteria.limit) {
+      query += ` LIMIT $${paramIndex}`;
+      params.push(criteria.limit);
+    }
+    
+    const result = await db.query(query, params);
+    return result.rows;
+    
+  } catch (error) {
+    console.error(`[DB] ❌ Erro ao obter resultados de backtest:`, error.message);
+    throw error;
+  }
+}

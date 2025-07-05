@@ -43,7 +43,7 @@ class TestDatabaseOperations:
         cursor = self.conn.cursor()
         # Ordem de limpeza respeitando foreign keys
         tables = [
-            'logs', 'signals_backtest', 'signals_msg', 'divap_analysis',
+            'logs', 'backtest_signals', 'signals_msg', 'signals_analysis',
             'webhook_signals', 'monitoramento', 'ordens_fechadas', 
             'posicoes_fechadas', 'ordens', 'posicoes', 'exchange_filters',
             'exchange_symbols', 'exchange_leverage_brackets', 'contas',
@@ -631,8 +631,8 @@ class TestDatabaseOperations:
 
     # =============== TESTES DE DIVAP ANALYSIS ===============
     
-    async def test_divap_analysis_crud(self):
-        """Testa operações CRUD na tabela divap_analysis"""
+    async def test_signals_analysis_crud(self):
+        """Testa operações CRUD na tabela signals_analysis"""
         async with self.pool.acquire() as conn:
             # Criar signal primeiro
             conta_result = await conn.fetchrow("""
@@ -677,42 +677,44 @@ class TestDatabaseOperations:
             }
             
             result = await conn.fetchrow("""
-                INSERT INTO divap_analysis (signal_id, is_bull_divap, is_bear_divap, divap_confirmed,
+                INSERT INTO signals_analysis (signal_id, is_bull_divap, is_bear_divap, divap_confirmed,
                                           rsi, volume, volume_sma, high_volume, bull_div, bear_div,
-                                          message, bull_reversal_pattern, bear_reversal_pattern)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                                          message, bull_reversal_pattern, bear_reversal_pattern, analysis_type)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
                 RETURNING id
             """, analysis_data['signal_id'], analysis_data['is_bull_divap'], analysis_data['is_bear_divap'],
                 analysis_data['divap_confirmed'], analysis_data['rsi'], analysis_data['volume'],
                 analysis_data['volume_sma'], analysis_data['high_volume'], analysis_data['bull_div'],
                 analysis_data['bear_div'], analysis_data['message'], analysis_data['bull_reversal_pattern'],
-                analysis_data['bear_reversal_pattern'])
+                analysis_data['bear_reversal_pattern'], 'trade')
             
             analysis_id = result['id']
             assert analysis_id is not None
-            print(f"✅ DIVAP Analysis criada com ID: {analysis_id}")
+            print(f"✅ Signals Analysis criada com ID: {analysis_id}")
             
             # READ
-            analysis = await conn.fetchrow("SELECT * FROM divap_analysis WHERE id = $1", analysis_id)
+            analysis = await conn.fetchrow("SELECT * FROM signals_analysis WHERE id = $1", analysis_id)
             assert analysis['signal_id'] == analysis_data['signal_id']
             assert analysis['divap_confirmed'] == analysis_data['divap_confirmed']
-            print(f"✅ Analysis encontrada: Signal {analysis['signal_id']} - Confirmed: {analysis['divap_confirmed']}")
+            assert analysis['analysis_type'] == 'trade'
+            print(f"✅ Analysis encontrada: Signal {analysis['signal_id']} - Confirmed: {analysis['divap_confirmed']} - Type: {analysis['analysis_type']}")
             
             # UPDATE
             new_message = 'Updated analysis with additional confirmation'
             await conn.execute("""
-                UPDATE divap_analysis 
-                SET message = $1, analyzed_at = $2
-                WHERE id = $3
-            """, new_message, datetime.now(), analysis_id)
+                UPDATE signals_analysis 
+                SET message = $1, analyzed_at = $2, analysis_type = $3
+                WHERE id = $4
+            """, new_message, datetime.now(), 'backtest', analysis_id)
             
-            updated_analysis = await conn.fetchrow("SELECT * FROM divap_analysis WHERE id = $1", analysis_id)
+            updated_analysis = await conn.fetchrow("SELECT * FROM signals_analysis WHERE id = $1", analysis_id)
             assert updated_analysis['message'] == new_message
-            print(f"✅ Analysis atualizada: message = {updated_analysis['message'][:50]}...")
+            assert updated_analysis['analysis_type'] == 'backtest'
+            print(f"✅ Analysis atualizada: message = {updated_analysis['message'][:50]}... - Type: {updated_analysis['analysis_type']}")
             
             # DELETE
-            await conn.execute("DELETE FROM divap_analysis WHERE id = $1", analysis_id)
-            deleted_analysis = await conn.fetchrow("SELECT * FROM divap_analysis WHERE id = $1", analysis_id)
+            await conn.execute("DELETE FROM signals_analysis WHERE id = $1", analysis_id)
+            deleted_analysis = await conn.fetchrow("SELECT * FROM signals_analysis WHERE id = $1", analysis_id)
             assert deleted_analysis is None
             print("✅ Analysis deletada com sucesso")
 
@@ -889,7 +891,7 @@ if __name__ == "__main__":
             test_class.test_posicoes_crud,
             test_class.test_ordens_crud,
             test_class.test_webhook_signals_crud,
-            test_class.test_divap_analysis_crud,
+            test_class.test_signals_analysis_crud,
             test_class.test_logs_crud,
             test_class.test_complex_queries
         ]

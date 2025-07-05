@@ -38,7 +38,7 @@ def test_postgresql_operations():
             cursor.execute("ALTER TABLE corretoras DISABLE TRIGGER ALL")
             cursor.execute("ALTER TABLE users DISABLE TRIGGER ALL")
             cursor.execute("ALTER TABLE signals_msg DISABLE TRIGGER ALL")
-            cursor.execute("ALTER TABLE divap_analysis DISABLE TRIGGER ALL")
+            cursor.execute("ALTER TABLE signals_analysis DISABLE TRIGGER ALL")
             print("✅ Triggers desabilitados para testes")
         except Exception as e:
             print(f"⚠️ Aviso: Não foi possível desabilitar triggers: {e}")
@@ -47,7 +47,7 @@ def test_postgresql_operations():
         cursor.execute("DELETE FROM users WHERE id IN (9001, 9002, 9003)")
         cursor.execute("DELETE FROM corretoras WHERE id IN (9001, 9002, 9003)")
         cursor.execute("DELETE FROM signals_msg WHERE id IN (9001, 9002, 9003)")
-        cursor.execute("DELETE FROM divap_analysis WHERE id IN (9001, 9002, 9003)")
+        cursor.execute("DELETE FROM signals_analysis WHERE id IN (9001, 9002, 9003)")
         
         print("✅ Dados de teste limpos")
         
@@ -123,28 +123,30 @@ def test_postgresql_operations():
         assert signal is None
         print("  ✅ DELETE - OK")
         
-        # TESTE 4: Divap_analysis
-        print("\n🧪 TESTE 4: TABELA DIVAP_ANALYSIS")
+        # TESTE 4: Signals_analysis
+        print("\n🧪 TESTE 4: TABELA SIGNALS_ANALYSIS")
         cursor.execute("""
-            INSERT INTO divap_analysis (id, bull_reversal_pattern, bear_reversal_pattern)
-            VALUES (9004, true, false)
+            INSERT INTO signals_analysis (id, bull_reversal_pattern, bear_reversal_pattern, analysis_type)
+            VALUES (9004, true, false, 'trade')
         """)
         
-        cursor.execute("SELECT * FROM divap_analysis WHERE id = 9004")
-        divap = cursor.fetchone()
-        assert divap['bull_reversal_pattern'] == True
+        cursor.execute("SELECT * FROM signals_analysis WHERE id = 9004")
+        analysis = cursor.fetchone()
+        assert analysis['bull_reversal_pattern'] == True
+        assert analysis['analysis_type'] == 'trade'
         print("  ✅ INSERT/SELECT - OK")
         
-        cursor.execute("UPDATE divap_analysis SET bear_reversal_pattern = true WHERE id = 9004")
-        cursor.execute("SELECT * FROM divap_analysis WHERE id = 9004")
-        divap = cursor.fetchone()
-        assert divap['bear_reversal_pattern'] == True
+        cursor.execute("UPDATE signals_analysis SET bear_reversal_pattern = true, analysis_type = 'backtest' WHERE id = 9004")
+        cursor.execute("SELECT * FROM signals_analysis WHERE id = 9004")
+        analysis = cursor.fetchone()
+        assert analysis['bear_reversal_pattern'] == True
+        assert analysis['analysis_type'] == 'backtest'
         print("  ✅ UPDATE - OK")
         
-        cursor.execute("DELETE FROM divap_analysis WHERE id = 9004")
-        cursor.execute("SELECT * FROM divap_analysis WHERE id = 9004")
-        divap = cursor.fetchone()
-        assert divap is None
+        cursor.execute("DELETE FROM signals_analysis WHERE id = 9004")
+        cursor.execute("SELECT * FROM signals_analysis WHERE id = 9004")
+        analysis = cursor.fetchone()
+        assert analysis is None
         print("  ✅ DELETE - OK")
         
         # TESTE 5: Recursos PostgreSQL específicos

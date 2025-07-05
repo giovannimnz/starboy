@@ -24,7 +24,7 @@ class TelegramApiService {
       }
 
       const db = await getDatabaseInstance();
-      const result = await db.query(`SELECT telegram_bot_token, telegram_chat_id, nome FROM contas WHERE id = $1 AND ativa = true`, [accountId]
+      const result = await db.query(`SELECT telegram_bot_token, telegram_chat_id, nome FROM contas WHERE id = $1 AND ativa = $2`, [accountId, true]
       );
 
       if (result.rows.length === 0) {

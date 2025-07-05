@@ -20,7 +20,7 @@ async function startAllInstances() {
     console.log('[INSTANCE-MANAGER] 🚀 Iniciando todas as instâncias...');
     
     const db = await getDatabaseInstance();
-    const result = await db.query('SELECT id, nome FROM contas WHERE ativa = true');
+    const result = await db.query('SELECT id, nome FROM contas WHERE ativa = $1', [true]);
     const accounts = result.rows;
     
     if (accounts.length === 0) {
@@ -77,7 +77,7 @@ async function startInstance(accountId) {
     
     // Validar conta no banco
     const db = await getDatabaseInstance();
-    const result = await db.query(`SELECT nome FROM contas WHERE id = $1 AND ativa = true`, [accountId]);
+    const result = await db.query(`SELECT nome FROM contas WHERE id = $1 AND ativa = $2`, [accountId, true]);
     const accounts = result.rows;
     
     if (!accounts || accounts.length === 0) {

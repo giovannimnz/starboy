@@ -108,8 +108,8 @@ async function loadCredentialsFromDatabase(accountId) {
             co.ambiente, co.corretora, co.futures_rest_api_url, co.futures_ws_market_url, co.futures_ws_api_url
      FROM contas c
      JOIN corretoras co ON c.id_corretora = co.id
-     WHERE c.id = $1 AND c.ativa = true`,
-    [accountId]
+     WHERE c.id = $1 AND c.ativa = $2`,
+    [accountId, true]
   );
 
   const rows = result.rows;

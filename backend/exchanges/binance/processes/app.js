@@ -97,7 +97,7 @@ async function iniciarTodasContas() {
   
   try {
     const db = await getDatabaseInstance();
-    const result = await db.query('SELECT id, nome FROM contas WHERE ativa = true');
+    const result = await db.query('SELECT id, nome FROM contas WHERE ativa = $1', [true]);
     const accounts = result.rows;
     
     if (accounts.length === 0) {
@@ -133,7 +133,7 @@ async function listarContasAtivas() {
   // Mostrar também contas disponíveis mas não ativas
   try {
     const db = await getDatabaseInstance();
-    const result = await db.query('SELECT id, nome, ativa FROM contas WHERE ativa = true');
+    const result = await db.query('SELECT id, nome, ativa FROM contas WHERE ativa = $1', [true]);
     const allAccounts = result.rows;
     
     const inactiveAccounts = allAccounts.filter(acc => 
@@ -156,7 +156,7 @@ async function iniciarContaEspecifica() {
   
   try {
     const db = await getDatabaseInstance();
-    const result = await db.query('SELECT id, nome, ativa FROM contas WHERE ativa = true');
+    const result = await db.query('SELECT id, nome, ativa FROM contas WHERE ativa = $1', [true]);
     const accounts = result.rows;
     
     if (accounts.length === 0) {
@@ -253,7 +253,7 @@ async function reiniciarContaEspecifica() {
   
   try {
     const db = await getDatabaseInstance();
-    const result = await db.query('SELECT id, nome, ativa FROM contas WHERE ativa = true');
+    const result = await db.query('SELECT id, nome, ativa FROM contas WHERE ativa = $1', [true]);
     const accounts = result.rows;
     
     if (accounts.length === 0) {
@@ -320,7 +320,7 @@ async function mostrarEstatisticas() {
   
   try {
     const db = await getDatabaseInstance();
-    const result = await db.query('SELECT COUNT(*) as total FROM contas WHERE ativa = true');
+    const result = await db.query('SELECT COUNT(*) as total FROM contas WHERE ativa = $1', [true]);
     const totalAccounts = result.rows;
     const totalAtivas = totalAccounts[0].total;
     

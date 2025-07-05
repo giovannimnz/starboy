@@ -85,25 +85,25 @@ def test_imports():
         sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'indicators'))
         
         try:
-            from exchange_bracket_updater import update_leverage_brackets
+            from utils.exchange_bracket_updater import update_leverage_brackets
             print("✅ exchange_bracket_updater importado com sucesso")
         except ImportError as e:
             print(f"❌ Erro ao importar exchange_bracket_updater: {e}")
         
         try:
-            from exchange_info_updater import update_exchange_info_database
+            from utils.exchange_info_updater import update_exchange_info_database
             print("✅ exchange_info_updater importado com sucesso")
         except ImportError as e:
             print(f"❌ Erro ao importar exchange_info_updater: {e}")
         
         try:
-            from senhas import pers_api_hash, pers_api_id, API_KEY, API_SECRET
+            from utils.senhas import pers_api_hash, pers_api_id, API_KEY, API_SECRET
             print("✅ senhas importado com sucesso")
         except ImportError as e:
             print(f"❌ Erro ao importar senhas: {e}")
         
         try:
-            from analysis.divap_check import DIVAPAnalyzer
+            from utils.analysis.divap_check import DIVAPAnalyzer
             print("✅ DIVAPAnalyzer importado com sucesso")
         except ImportError as e:
             print(f"❌ Erro ao importar DIVAPAnalyzer: {e}")
