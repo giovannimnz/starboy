@@ -120,7 +120,7 @@ def update_leverage_brackets():
                     
                     symbol_id = cursor.fetchone()['id']
                     symbols_inserted += 1
-                    print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ➕ Símbolo {symbol} inserido automaticamente (ID: {symbol_id})")
+                    #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ➕ Símbolo {symbol} inserido automaticamente (ID: {symbol_id})")
                     
                 except Exception as e:
                     print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] ❌ Erro ao inserir símbolo {symbol}: {e}")
@@ -177,7 +177,7 @@ def update_leverage_brackets():
                     ))
                     changes_count += 1
                     
-            print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 📊 Brackets processados para {symbol}")
+            #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 📊 Brackets processados para {symbol}")
         
         # Verificar e remover símbolos obsoletos (que não existem mais na Binance)
         cursor.execute("""
@@ -202,7 +202,7 @@ def update_leverage_brackets():
                     WHERE symbol = %s AND exchange = 'binance'
                 """, (obsolete_symbol,))
                 
-                print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🗑️ Removido símbolo obsoleto: {obsolete_symbol}")
+                #print(f"[{datetime.now().strftime('%d-%m-%Y | %H:%M:%S')}] 🗑️ Removido símbolo obsoleto: {obsolete_symbol}")
         
         conn.commit()
         cursor.close()
