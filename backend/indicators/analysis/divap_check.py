@@ -45,13 +45,53 @@ class DIVAPAnalyzer:
         logger.info("Conexões fechadas")
     
     def get_signals_by_date_symbol(self, date_str, symbol=None):
-        """Obtém sinais por data e símbolo do canal específico -1002444455075"""
+        """Obtém sinais por data e símbolo - primeiro verifica canal específico, senão usa os disponíveis"""
         try:
             # Converter data do formato DD-MM-YYYY para datetime
             date_obj = datetime.strptime(date_str, '%d-%m-%Y')
             start_date = date_obj.replace(hour=0, minute=0, second=0, microsecond=0)
             end_date = date_obj.replace(hour=23, minute=59, second=59, microsecond=999999)
             
+            # Verificar se existem sinais do canal específico
+            query_check = """
+                SELECT COUNT(*) as total
+                FROM webhook_signals ws
+                WHERE ws.chat_id_orig_sinal = %s
+                AND ws.created_at >= %s
+                AND ws.created_at <= %s
+            """
+            
+            self.cursor.execute(query_check, [-1002444455075, start_date, end_date])
+            result = self.cursor.fetchone()
+            target_channel = -1002444455075
+            
+            if result['total'] == 0:
+                # Se não existir sinais do canal específico para esta data, usar qualquer canal disponível
+                logger.info(f"Canal -1002444455075 não possui sinais para {date_str}, usando canais disponíveis...")
+                
+                # Verificar quais canais têm sinais para esta data
+                query_available = """
+                    SELECT chat_id_orig_sinal, COUNT(*) as total
+                    FROM webhook_signals 
+                    WHERE chat_id_orig_sinal IS NOT NULL
+                    AND created_at >= %s
+                    AND created_at <= %s
+                    GROUP BY chat_id_orig_sinal
+                    ORDER BY total DESC
+                    LIMIT 5
+                """
+                
+                self.cursor.execute(query_available, [start_date, end_date])
+                available_channels = self.cursor.fetchall()
+                
+                if available_channels:
+                    target_channel = available_channels[0]['chat_id_orig_sinal']
+                    logger.info(f"Usando canal com mais sinais: {target_channel}")
+                else:
+                    logger.info("Nenhum canal com sinais encontrado para esta data")
+                    return []
+            
+            # Query principal
             query = """
                 SELECT ws.*, sa.divap_confirmed, sa.analysis_type
                 FROM webhook_signals ws
@@ -61,7 +101,7 @@ class DIVAPAnalyzer:
                 AND ws.created_at <= %s
             """
             
-            params = [-1002444455075, start_date, end_date]
+            params = [target_channel, start_date, end_date]
             
             if symbol:
                 query += " AND ws.symbol = %s"
@@ -72,7 +112,7 @@ class DIVAPAnalyzer:
             self.cursor.execute(query, params)
             signals = self.cursor.fetchall()
             
-            logger.info(f"Obtidos {len(signals)} sinais para {date_str} do canal -1002444455075")
+            logger.info(f"Obtidos {len(signals)} sinais para {date_str} do canal {target_channel}")
             return signals
             
         except Exception as e:

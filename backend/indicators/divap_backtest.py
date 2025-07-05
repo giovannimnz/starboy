@@ -15,8 +15,50 @@ from dotenv import load_dotenv
 from pathlib import Path
 import pathlib
 import re
+import asyncio
+from telethon import TelegramClient, events
+from telethon.tl.types import Channel, Chat, User, Message
 
 sys.path.append(str(Path(__file__).parent))
+
+# Importar credenciais do Telegram
+try:
+    from utils.senhas import pers_api_hash, pers_api_id
+except ImportError:
+    print("[ERRO] Não foi possível importar credenciais do Telegram de utils.senhas")
+    pers_api_hash = None
+    pers_api_id = None
+
+# Configurar o caminho do .env
+env_path = Path(__file__).parents[2] / 'config' / '.env'
+load_dotenv(dotenv_path=env_path)
+
+# Configurações dos grupos do Telegram
+def parse_grupos_origem():
+    """Converte a string de grupos origem do .env em lista de inteiros"""
+    grupos_str = os.getenv('GRUPOS_ORIGEM_IDS', '-4192806079')
+    grupos = []
+    
+    if not grupos_str or grupos_str.strip() == '':
+        print(f"[AVISO] GRUPOS_ORIGEM_IDS vazio no .env, usando valor padrão")
+        return [-4192806079]
+    
+    for grupo in grupos_str.split(','):
+        grupo = grupo.strip()
+        if grupo:
+            try:
+                # Garantir que seja negativo
+                grupo_id = int(grupo)
+                if grupo_id > 0:
+                    grupo_id = -grupo_id
+                grupos.append(grupo_id)
+            except ValueError:
+                print(f"[ERRO] Grupo inválido no .env: {grupo}")
+    
+    return grupos if grupos else [-4192806079]
+
+GRUPOS_ORIGEM_IDS = parse_grupos_origem()
+print(f"[CONFIG] Grupos de origem configurados: {GRUPOS_ORIGEM_IDS}")
 
 # Configurar o caminho do .env
 env_path = Path(__file__).parents[2] / 'config' / '.env'
@@ -76,6 +118,11 @@ STRATEGIES = {
     }
 }
 
+# Configurações de parsing
+PREJUIZO_MAXIMO_PERCENTUAL_DO_CAPITAL_TOTAL = 4.90
+TAXA_ENTRADA = 0.02
+TAXA_SAIDA = 0.05
+
 # Mapeamento de timeframes para minutos
 TIMEFRAME_MINUTES = {
     '1m': 1,
@@ -91,6 +138,275 @@ TIMEFRAME_MINUTES = {
     '12h': 720,
     '1d': 1440
 }
+
+# ===== FUNÇÕES DE PARSING DE MENSAGENS =====
+
+def normalize_number(value):
+    """Normaliza números no formato string (ex.: "1.234,56" -> "1234.56")."""
+    if not isinstance(value, str):
+        return value
+    value = value.replace(",", ".")
+    if value.count(".") > 1:
+        parts = value.split(".")
+        return ".".join(parts[:-1]) + "." + parts[-1]
+    return value
+
+def translate_side(side):
+    """Traduz o lado da operação para português."""
+    if not side: 
+        return side
+    side = side.upper()
+    return "COMPRA" if side == "BUY" else "VENDA" if side == "SELL" else side
+
+def clean_symbol(symbol):
+    """Remove o sufixo '.P' do símbolo, se presente."""
+    return symbol[:-2] if symbol and symbol.endswith(".P") else symbol
+
+def extract_trade_info(message_text):
+    """
+    Extrai informações de trade de uma mensagem do Telegram.
+    Adaptado do divap.py para uso no backtest.
+    """
+    if not message_text:
+        return None
+        
+    # Normalizar texto
+    text = message_text.strip()
+    
+    # Padrões de regex para extrair informações
+    patterns = {
+        'symbol': r'(?:PAIR:|Symbol:|Coin:|#)[\s]*([A-Z0-9]+(?:USDT|BUSD|BTC|ETH|BNB)?)',
+        'side': r'(?:DIRECTION:|Side:|Action:|TYPE:)[\s]*([A-Z]+)',
+        'leverage': r'(?:LEVERAGE:|Lev:|X)[\s]*([0-9]+)',
+        'entry': r'(?:ENTRY:|Entry Price:|BUY:|SELL:|Price:)[\s]*([0-9,.]+)',
+        'sl': r'(?:SL:|Stop Loss:|STOP:)[\s]*([0-9,.]+)',
+        'tp1': r'(?:TP1:|Take Profit 1:|TARGET 1:|T1:)[\s]*([0-9,.]+)',
+        'tp2': r'(?:TP2:|Take Profit 2:|TARGET 2:|T2:)[\s]*([0-9,.]+)',
+        'tp3': r'(?:TP3:|Take Profit 3:|TARGET 3:|T3:)[\s]*([0-9,.]+)',
+        'tp4': r'(?:TP4:|Take Profit 4:|TARGET 4:|T4:)[\s]*([0-9,.]+)',
+        'tp5': r'(?:TP5:|Take Profit 5:|TARGET 5:|T5:)[\s]*([0-9,.]+)',
+        'timeframe': r'(?:TIMEFRAME:|TF:|Time:)[\s]*([0-9]+[mhd])',
+        'capital_pct': r'(?:RISK:|Risk:|Capital:)[\s]*([0-9,.]+)%?'
+    }
+    
+    # Extrair informações usando regex
+    extracted = {}
+    for key, pattern in patterns.items():
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            extracted[key] = match.group(1).strip()
+    
+    # Se não encontrou informações básicas, tentar padrões mais flexíveis
+    if not extracted.get('symbol'):
+        # Buscar símbolos USDT
+        symbol_match = re.search(r'([A-Z0-9]+)USDT', text, re.IGNORECASE)
+        if symbol_match:
+            extracted['symbol'] = symbol_match.group(0).upper()
+    
+    # Buscar LONG/SHORT
+    if not extracted.get('side'):
+        if re.search(r'\bLONG\b', text, re.IGNORECASE):
+            extracted['side'] = 'LONG'
+        elif re.search(r'\bSHORT\b', text, re.IGNORECASE):
+            extracted['side'] = 'SHORT'
+        elif re.search(r'\bBUY\b', text, re.IGNORECASE):
+            extracted['side'] = 'BUY'
+        elif re.search(r'\bSELL\b', text, re.IGNORECASE):
+            extracted['side'] = 'SELL'
+    
+    # Validar se tem informações mínimas
+    if not extracted.get('symbol') or not extracted.get('side'):
+        return None
+    
+    # Processar e normalizar dados
+    trade_info = {
+        'symbol': clean_symbol(extracted.get('symbol', '')),
+        'side': translate_side(extracted.get('side', '')),
+        'leverage': int(extracted.get('leverage', 10)),
+        'entry_price': float(normalize_number(extracted.get('entry', '0'))) if extracted.get('entry') else 0,
+        'sl_price': float(normalize_number(extracted.get('sl', '0'))) if extracted.get('sl') else 0,
+        'tp1_price': float(normalize_number(extracted.get('tp1', '0'))) if extracted.get('tp1') else 0,
+        'tp2_price': float(normalize_number(extracted.get('tp2', '0'))) if extracted.get('tp2') else 0,
+        'tp3_price': float(normalize_number(extracted.get('tp3', '0'))) if extracted.get('tp3') else 0,
+        'tp4_price': float(normalize_number(extracted.get('tp4', '0'))) if extracted.get('tp4') else 0,
+        'tp5_price': float(normalize_number(extracted.get('tp5', '0'))) if extracted.get('tp5') else 0,
+        'timeframe': extracted.get('timeframe', '15m'),
+        'capital_pct': float(normalize_number(extracted.get('capital_pct', '2'))) if extracted.get('capital_pct') else 2.0
+    }
+    
+    # Validar preços
+    if trade_info['entry_price'] <= 0:
+        return None
+    
+    return trade_info
+
+def save_signal_to_database(trade_info: Dict, message_date: datetime, chat_id: int, message_id: int, conn, cursor) -> Optional[int]:
+    """
+    Salva sinal extraído no banco de dados usando a data original da mensagem.
+    """
+    try:
+        # Usar conta_id = 1 como padrão para backtest
+        conta_id = 1
+        
+        insert_query = """
+            INSERT INTO webhook_signals (
+                symbol, side, leverage, entry_price, sl_price, 
+                tp1_price, tp2_price, tp3_price, tp4_price, tp5_price,
+                timeframe, capital_pct, status, conta_id, 
+                chat_id_orig_sinal, message_id_orig, created_at, updated_at
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            )
+            RETURNING id
+        """
+        
+        values = (
+            trade_info['symbol'],
+            trade_info['side'],
+            trade_info['leverage'],
+            trade_info['entry_price'],
+            trade_info['sl_price'],
+            trade_info['tp1_price'],
+            trade_info['tp2_price'],
+            trade_info['tp3_price'],
+            trade_info['tp4_price'],
+            trade_info['tp5_price'],
+            trade_info['timeframe'],
+            trade_info['capital_pct'],
+            'active',
+            conta_id,
+            chat_id,
+            message_id,
+            message_date,  # Usar a data original da mensagem
+            message_date
+        )
+        
+        cursor.execute(insert_query, values)
+        signal_id = cursor.fetchone()[0]
+        conn.commit()
+        
+        logger.info(f"Sinal salvo no banco: {trade_info['symbol']} {trade_info['side']} - ID: {signal_id}")
+        return signal_id
+        
+    except Exception as e:
+        logger.error(f"Erro ao salvar sinal no banco: {e}")
+        conn.rollback()
+        return None
+
+# ===== CLASSE TELEGRAM SCRAPER =====
+
+class TelegramScraper:
+    """Scraper para buscar mensagens históricas do Telegram"""
+    
+    def __init__(self, db_config: Dict):
+        self.db_config = db_config
+        self.conn = None
+        self.cursor = None
+        self.client = None
+        
+    def connect_db(self):
+        """Conecta ao banco de dados"""
+        try:
+            self.conn = psycopg2.connect(**self.db_config)
+            self.cursor = self.conn.cursor(cursor_factory=RealDictCursor)
+            logger.info("Telegram Scraper conectado ao banco")
+        except Exception as e:
+            logger.error(f"Erro ao conectar ao banco: {e}")
+            raise
+    
+    async def connect_telegram(self):
+        """Conecta ao Telegram"""
+        try:
+            if not pers_api_id or not pers_api_hash:
+                raise ValueError("Credenciais do Telegram não configuradas")
+            
+            self.client = TelegramClient('backtest_session', pers_api_id, pers_api_hash)
+            await self.client.start()
+            logger.info("Conectado ao Telegram")
+            
+        except Exception as e:
+            logger.error(f"Erro ao conectar ao Telegram: {e}")
+            raise
+    
+    async def get_messages_from_channel(self, channel_id: int, start_date: datetime = None, end_date: datetime = None, limit: int = 1000):
+        """
+        Busca mensagens históricas de um canal do Telegram.
+        """
+        try:
+            messages = []
+            
+            # Buscar mensagens
+            async for message in self.client.iter_messages(
+                channel_id, 
+                offset_date=end_date if end_date else None,
+                reverse=True,
+                limit=limit
+            ):
+                if not message.text:
+                    continue
+                    
+                # Filtrar por data se especificado
+                if start_date and message.date < start_date:
+                    continue
+                if end_date and message.date > end_date:
+                    continue
+                
+                messages.append({
+                    'id': message.id,
+                    'text': message.text,
+                    'date': message.date,
+                    'chat_id': channel_id
+                })
+            
+            logger.info(f"Obtidas {len(messages)} mensagens do canal {channel_id}")
+            return messages
+            
+        except Exception as e:
+            logger.error(f"Erro ao buscar mensagens do canal {channel_id}: {e}")
+            return []
+    
+    async def scrape_and_save_signals(self, channels: List[int], start_date: datetime = None, end_date: datetime = None):
+        """
+        Faz scraping de mensagens e salva sinais no banco.
+        """
+        total_signals = 0
+        
+        for channel_id in channels:
+            logger.info(f"Fazendo scraping do canal {channel_id}")
+            
+            messages = await self.get_messages_from_channel(channel_id, start_date, end_date)
+            
+            for message in messages:
+                # Tentar extrair informações de trade
+                trade_info = extract_trade_info(message['text'])
+                
+                if trade_info:
+                    # Salvar no banco usando a data original da mensagem
+                    signal_id = save_signal_to_database(
+                        trade_info, 
+                        message['date'], 
+                        message['chat_id'], 
+                        message['id'],
+                        self.conn,
+                        self.cursor
+                    )
+                    
+                    if signal_id:
+                        total_signals += 1
+                        logger.info(f"Sinal {total_signals}: {trade_info['symbol']} {trade_info['side']} - {message['date']}")
+        
+        logger.info(f"Scraping concluído: {total_signals} sinais salvos")
+        return total_signals
+    
+    async def close_connections(self):
+        """Fecha conexões"""
+        if self.client:
+            await self.client.disconnect()
+        if self.cursor:
+            self.cursor.close()
+        if self.conn:
+            self.conn.close()
+        logger.info("Conexões do Telegram Scraper fechadas")
 
 class BacktestEngine:
     def __init__(self, db_config: Dict, binance_config: Dict):
@@ -253,8 +569,68 @@ class BacktestEngine:
         return False
     
     def get_signals_for_backtest(self) -> List[Dict]:
-        """Obtém sinais para backtest apenas do canal específico -1002444455075"""
+        """Obtém sinais para backtest - primeiro verifica se existe o canal específico, senão usa os configurados"""
         try:
+            # Primeiro, verificar se existem sinais do canal específico solicitado
+            query_check = """
+                SELECT COUNT(*) as total
+                FROM webhook_signals ws
+                WHERE ws.chat_id_orig_sinal = %s
+            """
+            
+            self.cursor.execute(query_check, [-1002444455075])
+            result = self.cursor.fetchone()
+            target_channel = -1002444455075
+            
+            if result['total'] == 0:
+                # Se não existir sinais do canal específico, usar os grupos configurados no .env
+                print("⚠️  Canal -1002444455075 não possui sinais, usando grupos configurados...")
+                
+                # Verificar quais canais têm sinais disponíveis
+                query_available = """
+                    SELECT chat_id_orig_sinal, COUNT(*) as total
+                    FROM webhook_signals 
+                    WHERE chat_id_orig_sinal IS NOT NULL
+                    GROUP BY chat_id_orig_sinal
+                    ORDER BY total DESC
+                    LIMIT 5
+                """
+                
+                self.cursor.execute(query_available)
+                available_channels = self.cursor.fetchall()
+                
+                print("\n📊 Canais com sinais disponíveis:")
+                for channel in available_channels:
+                    print(f"   Chat ID: {channel['chat_id_orig_sinal']} - Total: {channel['total']}")
+                
+                # Usar o canal com mais sinais, ou o configurado no .env se existir
+                grupos_origem_env = [-4192806079]  # Do .env
+                
+                # Verificar se o grupo do .env tem sinais
+                query_env_check = """
+                    SELECT COUNT(*) as total
+                    FROM webhook_signals ws
+                    WHERE ws.chat_id_orig_sinal = %s
+                """
+                
+                self.cursor.execute(query_env_check, [grupos_origem_env[0]])
+                env_result = self.cursor.fetchone()
+                
+                if env_result['total'] > 0:
+                    target_channel = grupos_origem_env[0]
+                    print(f"✅ Usando canal configurado no .env: {target_channel}")
+                else:
+                    # Usar o canal com mais sinais
+                    if available_channels:
+                        target_channel = available_channels[0]['chat_id_orig_sinal']
+                        print(f"✅ Usando canal com mais sinais: {target_channel}")
+                    else:
+                        print("❌ Nenhum canal com sinais encontrado")
+                        return []
+            else:
+                print(f"✅ Usando canal específico: {target_channel}")
+            
+            # Query principal para obter sinais
             query = """
                 SELECT ws.*, sa.divap_confirmed, sa.analysis_type
                 FROM webhook_signals ws
@@ -262,7 +638,7 @@ class BacktestEngine:
                 WHERE ws.chat_id_orig_sinal = %s
             """
             
-            params = [-1002444455075]
+            params = [target_channel]
             
             if self.start_date:
                 query += " AND ws.created_at >= %s"
@@ -277,7 +653,7 @@ class BacktestEngine:
             self.cursor.execute(query, params)
             signals = self.cursor.fetchall()
             
-            logger.info(f"Obtidos {len(signals)} sinais para backtest do canal -1002444455075")
+            logger.info(f"Obtidos {len(signals)} sinais para backtest do canal {target_channel}")
             return signals
             
         except Exception as e:
@@ -809,6 +1185,84 @@ def interactive_mode():
     finally:
         analyzer.close_connections()
 
+def telegram_scraper_mode():
+    """Modo de scraping do Telegram"""
+    print("\n" + "="*60)
+    print("📱 SCRAPING DO TELEGRAM")
+    print("="*60)
+    print("Busca mensagens históricas do Telegram, extrai sinais")
+    print("e salva no banco com a data original da mensagem.")
+    print("="*60)
+    
+    scraper = TelegramScraper(DB_CONFIG)
+    
+    try:
+        # Conectar ao banco e Telegram
+        scraper.connect_db()
+        asyncio.run(scraper.connect_telegram())
+        
+        # Configurar canais
+        print(f"\n📡 Canais configurados: {GRUPOS_ORIGEM_IDS}")
+        
+        # Solicitar período de scraping
+        print("\n📅 PERÍODO DE SCRAPING:")
+        print("1. Período específico")
+        print("2. Últimos 30 dias")
+        print("3. Últimos 7 dias")
+        print("4. Desde o início")
+        
+        period_choice = input("\nEscolha uma opção (1-4): ").strip()
+        
+        start_date = None
+        end_date = None
+        
+        if period_choice == "1":
+            start_str = input("Data inicial (DD-MM-YYYY): ").strip()
+            end_str = input("Data final (DD-MM-YYYY): ").strip()
+            try:
+                start_date = datetime.strptime(start_str, "%d-%m-%Y")
+                end_date = datetime.strptime(end_str, "%d-%m-%Y")
+                print(f"✅ Período: {start_date.strftime('%d-%m-%Y')} a {end_date.strftime('%d-%m-%Y')}")
+            except ValueError:
+                print("❌ Formato de data inválido. Usando padrão (últimos 7 dias)")
+                end_date = datetime.now()
+                start_date = end_date - timedelta(days=7)
+        elif period_choice == "2":
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=30)
+            print("✅ Período: Últimos 30 dias")
+        elif period_choice == "3":
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=7)
+            print("✅ Período: Últimos 7 dias")
+        elif period_choice == "4":
+            start_date = None
+            end_date = None
+            print("✅ Período: Desde o início")
+        else:
+            print("❌ Opção inválida. Usando padrão (últimos 7 dias)")
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=7)
+        
+        # Executar scraping
+        print(f"\n🚀 Iniciando scraping...")
+        total_signals = asyncio.run(scraper.scrape_and_save_signals(GRUPOS_ORIGEM_IDS, start_date, end_date))
+        
+        print(f"\n✅ Scraping concluído!")
+        print(f"📊 Total de sinais salvos: {total_signals}")
+        
+        # Perguntar se quer executar backtest
+        if total_signals > 0:
+            run_backtest = input("\n🎯 Deseja executar backtest com os sinais encontrados? (s/n): ").strip().lower()
+            if run_backtest == 's':
+                backtest_mode()
+        
+    except Exception as e:
+        logger.error(f"Erro no scraping do Telegram: {e}")
+        traceback.print_exc()
+    finally:
+        asyncio.run(scraper.close_connections())
+
 def main():
     """Função principal"""
     print("\n" + "="*60)
@@ -821,15 +1275,18 @@ def main():
     print("\nModos disponíveis:")
     print("1. Modo Interativo (análise individual)")
     print("2. Modo Backtest (análise em lote)")
-    print("3. Sair")
+    print("3. Scraping do Telegram (buscar mensagens históricas)")
+    print("4. Sair")
     
-    choice = input("\nEscolha um modo (1-3): ").strip()
+    choice = input("\nEscolha um modo (1-4): ").strip()
     
     if choice == "1":
         interactive_mode()
     elif choice == "2":
         backtest_mode()
     elif choice == "3":
+        telegram_scraper_mode()
+    elif choice == "4":
         print("\n👋 Saindo...")
     else:
         print("\n❌ Opção inválida.")
