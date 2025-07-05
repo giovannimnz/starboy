@@ -184,15 +184,15 @@ class BacktestEngine:
         while True:
             period_choice = input("\nEscolha uma opção (1-2): ").strip()
             if period_choice == "1":
-                start_date = input("Data inicial (YYYY-MM-DD): ").strip()
-                end_date = input("Data final (YYYY-MM-DD): ").strip()
+                start_date = input("Data inicial (DD-MM-YYYY): ").strip()
+                end_date = input("Data final (DD-MM-YYYY): ").strip()
                 try:
-                    self.start_date = datetime.strptime(start_date, "%Y-%m-%d")
-                    self.end_date = datetime.strptime(end_date, "%Y-%m-%d")
+                    self.start_date = datetime.strptime(start_date, "%d-%m-%Y")
+                    self.end_date = datetime.strptime(end_date, "%d-%m-%Y")
                     print(f"✅ Período: {start_date} até {end_date}")
                     break
                 except ValueError:
-                    print("❌ Formato de data inválido. Use YYYY-MM-DD")
+                    print("❌ Formato de data inválido. Use DD-MM-YYYY")
             elif period_choice == "2":
                 self.start_date = None
                 self.end_date = None
@@ -253,16 +253,16 @@ class BacktestEngine:
         return False
     
     def get_signals_for_backtest(self) -> List[Dict]:
-        """Obtém sinais para backtest"""
+        """Obtém sinais para backtest apenas do canal específico -1002444455075"""
         try:
             query = """
                 SELECT ws.*, sa.divap_confirmed, sa.analysis_type
                 FROM webhook_signals ws
                 LEFT JOIN signals_analysis sa ON ws.id = sa.signal_id
-                WHERE 1=1
+                WHERE ws.chat_id_orig_sinal = %s
             """
             
-            params = []
+            params = [-1002444455075]
             
             if self.start_date:
                 query += " AND ws.created_at >= %s"
@@ -277,7 +277,7 @@ class BacktestEngine:
             self.cursor.execute(query, params)
             signals = self.cursor.fetchall()
             
-            logger.info(f"Obtidos {len(signals)} sinais para backtest")
+            logger.info(f"Obtidos {len(signals)} sinais para backtest do canal -1002444455075")
             return signals
             
         except Exception as e:
@@ -586,7 +586,16 @@ class BacktestEngine:
         cancelled_trades = 0
         
         for i, signal in enumerate(signals, 1):
-            print(f"\n🔍 Processando sinal {i}/{len(signals)}: {signal.get('symbol')}")
+            # Formatar data para DD-MM-YYYY
+            signal_date = signal.get('created_at')
+            if isinstance(signal_date, str):
+                signal_datetime = datetime.fromisoformat(signal_date.replace('Z', '+00:00'))
+            else:
+                signal_datetime = signal_date
+            
+            formatted_date = signal_datetime.strftime('%d-%m-%Y %H:%M:%S')
+            
+            print(f"\n🔍 Processando sinal {i}/{len(signals)}: {signal.get('symbol')} em {formatted_date}")
             
             # Verificar se deve cancelar entrada
             current_time = datetime.now()
@@ -717,7 +726,7 @@ def interactive_mode():
                     print("\n❌ ID inválido. Digite um número inteiro.")
             
             elif choice == "2":
-                date_str = input("Digite a data (DD-MM-AAAA): ").strip()
+                date_str = input("Digite a data (DD-MM-YYYY): ").strip()
                 symbol_input = input("Digite o símbolo (ex: ETH ou ETHUSDT): ").strip()
                 
                 try:
@@ -735,7 +744,14 @@ def interactive_mode():
                         print(f"\n📋 Encontrados {len(signals)} sinais:")
                         for i, s in enumerate(signals):
                             tf = s.get('timeframe', 'N/A')
-                            print(f"{i+1}. ID: {s['id']} - {s['symbol']} {tf} {s['side']} @ {s['created_at']}")
+                            # Formatar data para DD-MM-YYYY
+                            signal_date = s.get('created_at')
+                            if isinstance(signal_date, str):
+                                signal_datetime = datetime.fromisoformat(signal_date.replace('Z', '+00:00'))
+                            else:
+                                signal_datetime = signal_date
+                            formatted_date = signal_datetime.strftime('%d-%m-%Y %H:%M:%S')
+                            print(f"{i+1}. ID: {s['id']} - {s['symbol']} {tf} {s['side']} @ {formatted_date}")
                         
                         try:
                             choice_idx = int(input("\nDigite o número do sinal para analisar (ou 0 para voltar): ").strip())
@@ -746,7 +762,7 @@ def interactive_mode():
                         except (ValueError, TypeError):
                             print("\n❌ Digite um número válido.")
                 except ValueError:
-                    print("\n❌ Formato de data inválido. Use DD-MM-AAAA.")
+                    print("\n❌ Formato de data inválido. Use DD-MM-YYYY.")
             
             elif choice == "3":
                 print("\n🔍 MONITOR DE SINAIS")
