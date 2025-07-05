@@ -56,11 +56,11 @@ def cleanup_test_data():
         execute_query("ALTER TABLE contas DISABLE TRIGGER ALL", fetch=False)
         execute_query("ALTER TABLE webhook_signals DISABLE TRIGGER ALL", fetch=False)
         execute_query("ALTER TABLE signals_msg DISABLE TRIGGER ALL", fetch=False)
-        execute_query("ALTER TABLE divap_analysis DISABLE TRIGGER ALL", fetch=False)
+        execute_query("ALTER TABLE signals_analysis DISABLE TRIGGER ALL", fetch=False)
         execute_query("ALTER TABLE posicoes DISABLE TRIGGER ALL", fetch=False)
         execute_query("ALTER TABLE ordens DISABLE TRIGGER ALL", fetch=False)
         execute_query("ALTER TABLE logs DISABLE TRIGGER ALL", fetch=False)
-        execute_query("ALTER TABLE signals_backtest DISABLE TRIGGER ALL", fetch=False)
+        execute_query("ALTER TABLE backtest_signals DISABLE TRIGGER ALL", fetch=False)
         execute_query("ALTER TABLE exchange_symbols DISABLE TRIGGER ALL", fetch=False)
         execute_query("ALTER TABLE exchange_filters DISABLE TRIGGER ALL", fetch=False)
         execute_query("ALTER TABLE exchange_leverage_brackets DISABLE TRIGGER ALL", fetch=False)
@@ -69,7 +69,7 @@ def cleanup_test_data():
         
         # Ordem de limpeza respeitando foreign keys
         tables = [
-            'logs', 'signals_backtest', 'signals_msg', 'divap_analysis',
+            'logs', 'backtest_signals', 'signals_msg', 'signals_analysis',
             'monitoramento', 'ordens_fechadas', 'posicoes_fechadas',
             'ordens', 'posicoes', 'webhook_signals', 'exchange_filters',
             'exchange_symbols', 'exchange_leverage_brackets', 'contas',
@@ -367,8 +367,8 @@ def test_signals_msg_crud():
     assert result == 1, "Falha ao deletar signals_msg"
     print("  ✅ DELETE signals_msg - OK")
 
-def test_divap_analysis_crud():
-    """Testa operações CRUD na tabela divap_analysis - ESTRUTURA REAL"""
+def test_signals_analysis_crud():
+    """Testa operações CRUD na tabela signals_analysis - ESTRUTURA REAL"""
     print("\n🧪 TESTE 6: TABELA DIVAP_ANALYSIS")
     
     # INSERT
@@ -393,7 +393,7 @@ def test_divap_analysis_crud():
     }
     
     insert_query = """
-        INSERT INTO divap_analysis (id, signal_id, is_bull_divap, is_bear_divap, divap_confirmed,
+        INSERT INTO signals_analysis (id, signal_id, is_bull_divap, is_bear_divap, divap_confirmed,
                                   rsi, volume, volume_sma, high_volume, bull_div, bear_div,
                                   message, price_reversal_up, price_reversal_down,
                                   bull_reversal_pattern, bear_reversal_pattern, analyzed_at)
@@ -404,36 +404,36 @@ def test_divap_analysis_crud():
     """
     
     result = execute_query(insert_query, divap_data, fetch=False)
-    assert result == 1, "Falha ao inserir divap_analysis"
-    print("  ✅ INSERT divap_analysis - OK")
+    assert result == 1, "Falha ao inserir signals_analysis"
+    print("  ✅ INSERT signals_analysis - OK")
     
     # SELECT
-    select_query = "SELECT * FROM divap_analysis WHERE id = %s"
+    select_query = "SELECT * FROM signals_analysis WHERE id = %s"
     result = execute_query(select_query, (9007,))
-    assert result is not None and len(result) == 1, "Falha ao buscar divap_analysis"
+    assert result is not None and len(result) == 1, "Falha ao buscar signals_analysis"
     assert result[0]['is_bull_divap'] == True
     assert result[0]['divap_confirmed'] == True
     assert result[0]['rsi'] == 65.5
-    print("  ✅ SELECT divap_analysis - OK")
+    print("  ✅ SELECT signals_analysis - OK")
     
     # UPDATE
-    update_query = """UPDATE divap_analysis SET divap_confirmed = %s, 
+    update_query = """UPDATE signals_analysis SET divap_confirmed = %s, 
                      bear_reversal_pattern = %s, rsi = %s WHERE id = %s"""
     result = execute_query(update_query, (False, True, 35.2, 9007), fetch=False)
-    assert result == 1, "Falha ao atualizar divap_analysis"
+    assert result == 1, "Falha ao atualizar signals_analysis"
     
     # Verificar update
     result = execute_query(select_query, (9007,))
     assert result[0]['divap_confirmed'] == False
     assert result[0]['bear_reversal_pattern'] == True
     assert abs(result[0]['rsi'] - 35.2) < 0.1  # float comparison
-    print("  ✅ UPDATE divap_analysis - OK")
+    print("  ✅ UPDATE signals_analysis - OK")
     
     # DELETE
-    delete_query = "DELETE FROM divap_analysis WHERE id = %s"
+    delete_query = "DELETE FROM signals_analysis WHERE id = %s"
     result = execute_query(delete_query, (9007,), fetch=False)
-    assert result == 1, "Falha ao deletar divap_analysis"
-    print("  ✅ DELETE divap_analysis - OK")
+    assert result == 1, "Falha ao deletar signals_analysis"
+    print("  ✅ DELETE signals_analysis - OK")
 
 def test_exchange_symbols_crud():
     """Testa operações CRUD na tabela exchange_symbols"""
@@ -912,8 +912,8 @@ def test_logs_crud():
     assert result == 1, "Falha ao deletar log"
     print("  ✅ DELETE logs - OK")
 
-def test_signals_backtest_crud():
-    """Testa operações CRUD na tabela signals_backtest"""
+def test_backtest_signals_crud():
+    """Testa operações CRUD na tabela backtest_signals"""
     print("\n🧪 TESTE 15: TABELA SIGNALS_BACKTEST")
     
     # INSERT - baseado na estrutura real
@@ -932,41 +932,41 @@ def test_signals_backtest_crud():
     }
     
     insert_query = """
-        INSERT INTO signals_backtest (id, symbol, side, leverage, capital_pct, 
+        INSERT INTO backtest_signals (id, symbol, side, leverage, capital_pct, 
                                     entry_price, sl_price, chat_id, status, timeframe, message_id)
         VALUES (%(id)s, %(symbol)s, %(side)s, %(leverage)s, %(capital_pct)s,
                 %(entry_price)s, %(sl_price)s, %(chat_id)s, %(status)s, %(timeframe)s, %(message_id)s)
     """
     
     result = execute_query(insert_query, backtest_data, fetch=False)
-    assert result == 1, "Falha ao inserir signals_backtest"
-    print("  ✅ INSERT signals_backtest - OK")
+    assert result == 1, "Falha ao inserir backtest_signals"
+    print("  ✅ INSERT backtest_signals - OK")
     
     # SELECT
-    select_query = "SELECT * FROM signals_backtest WHERE id = %s"
+    select_query = "SELECT * FROM backtest_signals WHERE id = %s"
     result = execute_query(select_query, (9017,))
-    assert result is not None and len(result) == 1, "Falha ao buscar signals_backtest"
+    assert result is not None and len(result) == 1, "Falha ao buscar backtest_signals"
     assert result[0]['symbol'] == 'TESTUSDT'
     assert result[0]['status'] == 'WIN'
     assert result[0]['side'] == 'BUY'
-    print("  ✅ SELECT signals_backtest - OK")
+    print("  ✅ SELECT backtest_signals - OK")
     
     # UPDATE
-    update_query = "UPDATE signals_backtest SET status = %s, entry_price = %s WHERE id = %s"
+    update_query = "UPDATE backtest_signals SET status = %s, entry_price = %s WHERE id = %s"
     result = execute_query(update_query, ('LOSS', Decimal('44500.00'), 9017), fetch=False)
-    assert result == 1, "Falha ao atualizar signals_backtest"
+    assert result == 1, "Falha ao atualizar backtest_signals"
     
     # Verificar update
     result = execute_query(select_query, (9017,))
     assert result[0]['status'] == 'LOSS'
     assert result[0]['entry_price'] == Decimal('44500.00')
-    print("  ✅ UPDATE signals_backtest - OK")
+    print("  ✅ UPDATE backtest_signals - OK")
     
     # DELETE
-    delete_query = "DELETE FROM signals_backtest WHERE id = %s"
+    delete_query = "DELETE FROM backtest_signals WHERE id = %s"
     result = execute_query(delete_query, (9017,), fetch=False)
-    assert result == 1, "Falha ao deletar signals_backtest"
-    print("  ✅ DELETE signals_backtest - OK")
+    assert result == 1, "Falha ao deletar backtest_signals"
+    print("  ✅ DELETE backtest_signals - OK")
 
 def run_all_tests():
     """Executa todos os testes CRUD"""
@@ -986,7 +986,7 @@ def run_all_tests():
             test_contas_crud,
             test_webhook_signals_crud,
             test_signals_msg_crud,
-            test_divap_analysis_crud,
+            test_signals_analysis_crud,
             test_exchange_symbols_crud,
             test_exchange_filters_crud,
             test_exchange_leverage_brackets_crud,
@@ -995,7 +995,7 @@ def run_all_tests():
             test_ordens_crud,
             test_monitoramento_crud,
             test_logs_crud,
-            test_signals_backtest_crud
+            test_backtest_signals_crud
         ]
         
         total_tests = len(test_functions)
@@ -1018,7 +1018,7 @@ def run_all_tests():
         # Reabilitar triggers
         try:
             tables = ['users', 'corretoras', 'contas', 'webhook_signals', 'signals_msg', 
-                     'divap_analysis', 'posicoes', 'ordens', 'logs', 'signals_backtest',
+                     'signals_analysis', 'posicoes', 'ordens', 'logs', 'backtest_signals',
                      'exchange_symbols', 'exchange_filters', 'exchange_leverage_brackets',
                      'configuracoes', 'monitoramento']
             

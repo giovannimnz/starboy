@@ -55,7 +55,7 @@ class TestDatabaseOperationsFixed:
         try:
             # Ordem de limpeza respeitando foreign keys
             tables = [
-                'logs', 'signals_backtest', 'signals_msg', 'divap_analysis',
+                'logs', 'backtest_signals', 'signals_msg', 'signals_analysis',
                 'webhook_signals', 'monitoramento', 'ordens_fechadas', 
                 'posicoes_fechadas', 'ordens', 'posicoes', 'exchange_filters',
                 'exchange_symbols', 'exchange_leverage_brackets', 'contas',

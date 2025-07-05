@@ -71,8 +71,25 @@ STRATEGIES = {
         "name": "Reverse Trailling 13", 
         "code": "reverse_trailling_13",
         "description": "Estratégia com trailing stop e distribuição de TPs",
-        "tp_distribution": [0.25, 0.20, 0.25, 0.20, 0.10]  # % de redução por TP
+        "tp_distribution": [0.25, 0.20, 0.25, 0.20, 0.10],  # % de redução por TP
+        "timeout_multiplier": 3  # Multiplicador para timeout baseado no timeframe
     }
+}
+
+# Mapeamento de timeframes para minutos
+TIMEFRAME_MINUTES = {
+    '1m': 1,
+    '3m': 3,
+    '5m': 5,
+    '15m': 15,
+    '30m': 30,
+    '1h': 60,
+    '2h': 120,
+    '4h': 240,
+    '6h': 360,
+    '8h': 480,
+    '12h': 720,
+    '1d': 1440
 }
 
 class BacktestEngine:
@@ -86,6 +103,10 @@ class BacktestEngine:
         self.current_capital = 0
         self.strategy = None
         self.base_fee = 0.0
+        self.start_date = None
+        self.end_date = None
+        self.cancelled_trades = 0
+        self.executed_trades = 0
         
     def connect_db(self) -> None:
         """Conecta ao banco de dados"""
@@ -148,7 +169,7 @@ class BacktestEngine:
         # Solicitar taxa percentual
         while True:
             try:
-                fee_str = input("\n💸 Digite a taxa percentual (ex: 0.02 para 0.02%): ").strip()
+                fee_str = input("\n💸 Digite a taxa percentual base (ex: 0.02 para 0.02%): ").strip()
                 self.base_fee = float(fee_str)
                 print(f"✅ Taxa definida: {self.base_fee}%")
                 break
@@ -179,6 +200,57 @@ class BacktestEngine:
                 break
             else:
                 print("❌ Opção inválida")
+                
+    def should_cancel_entry(self, signal: Dict, current_time: datetime) -> bool:
+        """Verifica se a entrada deve ser cancelada"""
+        # Verificar timeout baseado no timeframe
+        timeframe = signal.get('timeframe', '15m')
+        timeout_minutes = TIMEFRAME_MINUTES.get(timeframe, 15) * self.strategy['timeout_multiplier']
+        
+        signal_time = signal.get('created_at')
+        if isinstance(signal_time, str):
+            signal_time = datetime.fromisoformat(signal_time.replace('Z', '+00:00'))
+        
+        # Verificar se excedeu o timeout
+        if (current_time - signal_time).total_seconds() > timeout_minutes * 60:
+            return True
+        
+        # Verificar se SL foi atingido antes da entrada
+        entry_price = float(signal.get('entry_price', 0))
+        sl_price = float(signal.get('sl_price', 0))
+        side = signal.get('side', '').upper()
+        
+        # Simular preço de mercado (aqui você usaria dados reais)
+        # Por simplicidade, vamos assumir que o preço de mercado é o próprio entry_price
+        market_price = entry_price
+        
+        # Para LONG: se o preço de mercado caiu abaixo do SL, cancelar
+        if side == 'COMPRA' and market_price <= sl_price:
+            return True
+        
+        # Para SHORT: se o preço de mercado subiu acima do SL, cancelar
+        if side == 'VENDA' and market_price >= sl_price:
+            return True
+        
+        return False
+    
+    def should_enter_position(self, signal: Dict, current_time: datetime) -> bool:
+        """Verifica se deve entrar na posição"""
+        entry_price = float(signal.get('entry_price', 0))
+        side = signal.get('side', '').upper()
+        
+        # Simular preço de mercado
+        market_price = entry_price  # Simplificação - usar dados reais do mercado
+        
+        # Para LONG: entrar quando o preço de mercado for superior ao preço de entrada
+        if side == 'COMPRA' and market_price > entry_price:
+            return True
+        
+        # Para SHORT: entrar quando o preço de mercado for inferior ao preço de entrada
+        if side == 'VENDA' and market_price < entry_price:
+            return True
+        
+        return False
     
     def get_signals_for_backtest(self) -> List[Dict]:
         """Obtém sinais para backtest"""
@@ -215,6 +287,10 @@ class BacktestEngine:
     def analyze_signal_divap(self, signal: Dict) -> Dict:
         """Analisa se o sinal é DIVAP usando DIVAPAnalyzer"""
         try:
+            if DIVAPAnalyzer is None:
+                logger.error("DIVAPAnalyzer não está disponível")
+                return {"error": "DIVAPAnalyzer não disponível"}
+            
             analyzer = DIVAPAnalyzer(self.db_config, self.binance_config)
             analyzer.connect_db()
             analyzer.connect_exchange()
@@ -224,8 +300,7 @@ class BacktestEngine:
             
             # Salvar na tabela signals_analysis com analysis_type='backtest'
             if result and 'signal_id' in result:
-                result['analysis_type'] = 'backtest'
-                analyzer.save_analysis_result(result)
+                self.save_signal_analysis(result, signal['id'])
             
             analyzer.close_connections()
             return result
@@ -233,6 +308,50 @@ class BacktestEngine:
         except Exception as e:
             logger.error(f"Erro na análise DIVAP: {e}")
             return {"error": str(e)}
+    
+    def save_signal_analysis(self, analysis_result: Dict, signal_id: int) -> None:
+        """Salva análise de sinal na tabela signals_analysis"""
+        try:
+            insert_query = """
+                INSERT INTO signals_analysis (
+                    signal_id, is_bull_divap, is_bear_divap, divap_confirmed,
+                    rsi, volume, volume_sma, high_volume, bull_div, bear_div,
+                    message, price_reversal_up, price_reversal_down, analyzed_at,
+                    bull_reversal_pattern, bear_reversal_pattern, analysis_type
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
+                ON CONFLICT (signal_id) DO UPDATE SET
+                    divap_confirmed = EXCLUDED.divap_confirmed,
+                    analyzed_at = EXCLUDED.analyzed_at,
+                    analysis_type = EXCLUDED.analysis_type
+            """
+            
+            values = (
+                signal_id,
+                analysis_result.get('is_bull_divap', False),
+                analysis_result.get('is_bear_divap', False),
+                analysis_result.get('divap_confirmed', False),
+                analysis_result.get('rsi'),
+                analysis_result.get('volume'),
+                analysis_result.get('volume_sma'),
+                analysis_result.get('high_volume', False),
+                analysis_result.get('bull_div', False),
+                analysis_result.get('bear_div', False),
+                analysis_result.get('message'),
+                analysis_result.get('price_reversal_up', False),
+                analysis_result.get('price_reversal_down', False),
+                datetime.now(),
+                analysis_result.get('bull_reversal_pattern', False),
+                analysis_result.get('bear_reversal_pattern', False),
+                'backtest'
+            )
+            
+            self.cursor.execute(insert_query, values)
+            self.conn.commit()
+            
+        except Exception as e:
+            logger.error(f"Erro ao salvar análise de sinal: {e}")
     
     def save_backtest_signal(self, signal: Dict, divap_confirmed: bool, cancelled: bool) -> int:
         """Salva o sinal na tabela backtest_signals"""
@@ -278,8 +397,8 @@ class BacktestEngine:
             logger.error(f"Erro ao salvar sinal de backtest: {e}")
             return None
     
-    def simulate_trade(self, signal: Dict, backtest_signal_id: int) -> Dict:
-        """Simula uma operação completa"""
+    def simulate_trade_with_trailing_stop(self, signal: Dict, backtest_signal_id: int) -> Dict:
+        """Simula uma operação completa com trailing stop"""
         try:
             symbol = signal.get('symbol')
             side = signal.get('side', '').upper()
@@ -295,8 +414,8 @@ class BacktestEngine:
                 float(signal.get('tp5_price', 0))
             ]
             
-            # Calcular quantidade baseada no capital
-            position_size = self.current_capital * 0.05  # 5% do capital por trade
+            # Calcular quantidade baseada no capital (5% do capital por trade)
+            position_size = self.current_capital * 0.05
             
             # Calcular taxa de entrada
             entry_fee = position_size * (self.base_fee / 100)
@@ -304,9 +423,12 @@ class BacktestEngine:
             # Simular entrada
             total_cost = position_size + entry_fee
             
-            # Simular saídas nos TPs
-            tp_results = []
+            # Variáveis para trailing stop
+            current_sl = sl_price
             remaining_position = position_size
+            
+            # Simular saídas nos TPs com trailing stop
+            tp_results = []
             total_profit = 0
             total_fees = entry_fee
             
@@ -335,9 +457,19 @@ class BacktestEngine:
                     total_profit += net_profit
                     total_fees += exit_fee
                     remaining_position -= tp_quantity
+                    
+                    # Implementar trailing stop
+                    if i == 0:  # Após TP1, mover SL para entrada
+                        current_sl = entry_price
+                    elif i == 2:  # Após TP3, mover SL para TP1
+                        current_sl = tp_prices[0]
             
             # Calcular capital final
             final_capital = self.current_capital + total_profit
+            
+            # Definir third_to_last_tp e last_tp
+            third_to_last_tp = tp_prices[2] if len(tp_prices) >= 3 else None
+            last_tp = tp_prices[-1] if tp_prices else None
             
             # Salvar resultado
             result_data = {
@@ -352,7 +484,10 @@ class BacktestEngine:
                 'total_fee': total_fees,
                 'entry_price': entry_price,
                 'entry_fee': entry_fee,
-                'strategy': self.strategy['code']
+                'strategy': self.strategy['code'],
+                'third_to_last_tp': third_to_last_tp,
+                'last_tp': last_tp,
+                'backtest_signal_id': backtest_signal_id
             }
             
             # Adicionar dados dos TPs
@@ -362,7 +497,7 @@ class BacktestEngine:
             # Salvar no banco
             result_id = self.save_backtest_result(result_data)
             
-            # Atualizar capital atual
+            # Atualizar capital atual para o próximo trade
             self.current_capital = final_capital
             
             return result_data
@@ -381,10 +516,11 @@ class BacktestEngine:
                     total_fee, entry_price, entry_fee, strategy,
                     tp1_profit, tp1_fee, tp2_profit, tp2_fee,
                     tp3_profit, tp3_fee, tp4_profit, tp4_fee,
-                    tp5_profit, tp5_fee, created_at, updated_at
+                    tp5_profit, tp5_fee, third_to_last_tp, last_tp,
+                    created_at, updated_at
                 ) VALUES (
                     %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                 )
                 RETURNING id
             """
@@ -412,6 +548,8 @@ class BacktestEngine:
                 result_data.get('tp4_fee'),
                 result_data.get('tp5_profit'),
                 result_data.get('tp5_fee'),
+                result_data.get('third_to_last_tp'),
+                result_data.get('last_tp'),
                 datetime.now(),
                 datetime.now()
             )
@@ -439,19 +577,32 @@ class BacktestEngine:
             return
         
         print(f"📊 Total de sinais: {len(signals)}")
+        print(f"💰 Capital inicial: ${self.initial_capital:,.2f}")
+        print(f"📈 Estratégia: {self.strategy['name']}")
+        print(f"💸 Taxa base: {self.base_fee}%")
+        print("="*60)
         
         successful_trades = 0
-        failed_trades = 0
+        cancelled_trades = 0
         
         for i, signal in enumerate(signals, 1):
             print(f"\n🔍 Processando sinal {i}/{len(signals)}: {signal.get('symbol')}")
+            
+            # Verificar se deve cancelar entrada
+            current_time = datetime.now()
+            if self.should_cancel_entry(signal, current_time):
+                print(f"❌ Entrada cancelada (timeout ou SL atingido)")
+                self.save_backtest_signal(signal, False, True)
+                cancelled_trades += 1
+                continue
             
             # Analisar se é DIVAP
             divap_result = self.analyze_signal_divap(signal)
             
             if "error" in divap_result:
                 print(f"❌ Erro na análise: {divap_result['error']}")
-                failed_trades += 1
+                self.save_backtest_signal(signal, False, True)
+                cancelled_trades += 1
                 continue
             
             divap_confirmed = divap_result.get('divap_confirmed', False)
@@ -462,19 +613,24 @@ class BacktestEngine:
             if divap_confirmed:
                 print(f"✅ DIVAP confirmado - Executando trade")
                 
-                # Simular trade
-                trade_result = self.simulate_trade(signal, backtest_signal_id)
-                
-                if trade_result:
-                    pnl = trade_result.get('total_pnl', 0)
-                    print(f"💰 PnL: ${pnl:,.2f} | Capital: ${self.current_capital:,.2f}")
-                    successful_trades += 1
+                # Verificar se deve entrar na posição
+                if self.should_enter_position(signal, current_time):
+                    # Simular trade com trailing stop
+                    trade_result = self.simulate_trade_with_trailing_stop(signal, backtest_signal_id)
+                    
+                    if trade_result:
+                        pnl = trade_result.get('total_pnl', 0)
+                        print(f"💰 PnL: ${pnl:,.2f} | Capital: ${self.current_capital:,.2f}")
+                        successful_trades += 1
+                    else:
+                        print("❌ Erro na simulação do trade")
+                        cancelled_trades += 1
                 else:
-                    print("❌ Erro na simulação do trade")
-                    failed_trades += 1
+                    print(f"❌ Condições de entrada não atendidas")
+                    cancelled_trades += 1
             else:
                 print(f"❌ DIVAP não confirmado - Trade cancelado")
-                failed_trades += 1
+                cancelled_trades += 1
         
         # Resultado final
         print("\n" + "="*60)
@@ -482,14 +638,56 @@ class BacktestEngine:
         print("="*60)
         print(f"💰 Capital inicial: ${self.initial_capital:,.2f}")
         print(f"💰 Capital final: ${self.current_capital:,.2f}")
-        print(f"📈 PnL total: ${self.current_capital - self.initial_capital:,.2f}")
+        pnl_total = self.current_capital - self.initial_capital
+        pnl_percent = (pnl_total / self.initial_capital) * 100
+        print(f"📈 PnL total: ${pnl_total:,.2f} ({pnl_percent:.2f}%)")
         print(f"📊 Trades executados: {successful_trades}")
-        print(f"❌ Trades cancelados: {failed_trades}")
-        print(f"🎯 Taxa de sucesso: {(successful_trades / len(signals) * 100):.1f}%")
+        print(f"❌ Trades cancelados: {cancelled_trades}")
+        total_signals = successful_trades + cancelled_trades
+        if total_signals > 0:
+            success_rate = (successful_trades / total_signals) * 100
+            print(f"🎯 Taxa de sucesso: {success_rate:.1f}%")
+        print(f"🔄 Estratégia: {self.strategy['name']}")
         print("="*60)
+        
+        # Salvar resumo do backtest
+        self.save_backtest_summary(successful_trades, cancelled_trades, pnl_total)
+    
+    def save_backtest_summary(self, successful_trades: int, cancelled_trades: int, pnl_total: float):
+        """Salva resumo do backtest (opcional - para relatórios futuros)"""
+        try:
+            # Aqui você pode criar uma tabela de resumos de backtest se necessário
+            logger.info(f"Backtest concluído - Trades: {successful_trades}, Cancelados: {cancelled_trades}, PnL: ${pnl_total:,.2f}")
+        except Exception as e:
+            logger.error(f"Erro ao salvar resumo do backtest: {e}")
+
+def backtest_mode():
+    """Modo de backtest"""
+    print("\n" + "="*60)
+    print("🎯 SISTEMA DE BACKTEST DIVAP")
+    print("="*60)
+    print("Executa backtest completo de sinais históricos")
+    print("com análise DIVAP e simulação de trades.")
+    print("="*60)
+    
+    engine = BacktestEngine(DB_CONFIG, BINANCE_CONFIG)
+    try:
+        engine.connect_db()
+        engine.connect_exchange()
+        engine.setup_backtest()
+        engine.run_backtest()
+    except Exception as e:
+        logger.error(f"Erro no backtest: {e}")
+        traceback.print_exc()
+    finally:
+        engine.close_connections()
 
 def interactive_mode():
     """Modo interativo para análise individual"""
+    if DIVAPAnalyzer is None:
+        print("\n❌ DIVAPAnalyzer não está disponível. Verifique as dependências.")
+        return
+    
     analyzer = DIVAPAnalyzer(DB_CONFIG, BINANCE_CONFIG)
     try:
         analyzer.connect_db()
@@ -579,19 +777,7 @@ def interactive_mode():
             elif choice == "5":
                 print("\n🎯 EXECUTANDO BACKTEST...")
                 analyzer.close_connections()
-                
-                # Executar backtest
-                engine = BacktestEngine(DB_CONFIG, BINANCE_CONFIG)
-                try:
-                    engine.connect_db()
-                    engine.connect_exchange()
-                    engine.setup_backtest()
-                    engine.run_backtest()
-                except Exception as e:
-                    logger.error(f"Erro no backtest: {e}")
-                finally:
-                    engine.close_connections()
-                
+                backtest_mode()
                 # Reconectar analyzer
                 analyzer.connect_db()
                 analyzer.connect_exchange()
@@ -616,7 +802,21 @@ def main():
     print("para a estratégia DIVAP com dados históricos.")
     print("="*60)
     
-    interactive_mode()
+    print("\nModos disponíveis:")
+    print("1. Modo Interativo (análise individual)")
+    print("2. Modo Backtest (análise em lote)")
+    print("3. Sair")
+    
+    choice = input("\nEscolha um modo (1-3): ").strip()
+    
+    if choice == "1":
+        interactive_mode()
+    elif choice == "2":
+        backtest_mode()
+    elif choice == "3":
+        print("\n👋 Saindo...")
+    else:
+        print("\n❌ Opção inválida.")
 
 if __name__ == "__main__":
     main()

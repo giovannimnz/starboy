@@ -46,8 +46,8 @@ tables_to_check = [
     'users', 'corretoras', 'contas', 'configuracoes',
     'exchange_symbols', 'exchange_filters', 'exchange_leverage_brackets',
     'posicoes', 'ordens', 'monitoramento', 'webhook_signals',
-    'divap_analysis', 'signals_msg', 'ordens_fechadas', 
-    'posicoes_fechadas', 'logs', 'signals_backtest'
+    'signals_analysis', 'signals_msg', 'ordens_fechadas', 
+    'posicoes_fechadas', 'logs', 'backtest_signals'
 ]
 
 print("🔍 VERIFICANDO ESTRUTURAS DE TODAS AS TABELAS")

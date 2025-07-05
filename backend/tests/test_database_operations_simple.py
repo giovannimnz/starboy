@@ -54,7 +54,7 @@ class TestDatabaseOperations:
             
             # Ordem de limpeza respeitando foreign keys
             tables = [
-                'logs', 'signals_backtest', 'signals_msg', 'divap_analysis',
+                'logs', 'backtest_signals', 'signals_msg', 'signals_analysis',
                 'webhook_signals', 'monitoramento', 'ordens_fechadas', 
                 'posicoes_fechadas', 'ordens', 'posicoes', 'exchange_filters',
                 'exchange_symbols', 'exchange_leverage_brackets', 'contas',
@@ -239,8 +239,8 @@ class TestDatabaseOperations:
     # TESTES TABELA DIVAP_ANALYSIS
     # ===============================
     
-    def test_divap_analysis_crud(self):
-        """Testa operações CRUD na tabela divap_analysis"""
+    def test_signals_analysis_crud(self):
+        """Testa operações CRUD na tabela signals_analysis"""
         print("\n🧪 Testando operações CRUD - DIVAP_ANALYSIS")
         
         # INSERT
@@ -257,41 +257,41 @@ class TestDatabaseOperations:
         }
         
         insert_query = """
-            INSERT INTO divap_analysis (id, symbol, side, price, quantity, divap_confirmado, divap_score, created_at, status)
+            INSERT INTO signals_analysis (id, symbol, side, price, quantity, divap_confirmado, divap_score, created_at, status)
             VALUES (%(id)s, %(symbol)s, %(side)s, %(price)s, %(quantity)s, %(divap_confirmado)s, %(divap_score)s, %(created_at)s, %(status)s)
         """
         
         result = execute_query(insert_query, divap_data, fetch=False)
-        assert result == 1, "Falha ao inserir divap_analysis"
-        print("✅ INSERT divap_analysis - OK")
+        assert result == 1, "Falha ao inserir signals_analysis"
+        print("✅ INSERT signals_analysis - OK")
         
         # SELECT
-        select_query = "SELECT * FROM divap_analysis WHERE id = %s"
+        select_query = "SELECT * FROM signals_analysis WHERE id = %s"
         result = execute_query(select_query, (9007,))
-        assert result is not None and len(result) == 1, "Falha ao buscar divap_analysis"
+        assert result is not None and len(result) == 1, "Falha ao buscar signals_analysis"
         assert result[0]['symbol'] == 'BTCUSDT'
         assert result[0]['divap_confirmado'] == True
-        print("✅ SELECT divap_analysis - OK")
+        print("✅ SELECT signals_analysis - OK")
         
         # UPDATE
-        update_query = "UPDATE divap_analysis SET status = %s WHERE id = %s"
+        update_query = "UPDATE signals_analysis SET status = %s WHERE id = %s"
         result = execute_query(update_query, ('CLOSED', 9007), fetch=False)
-        assert result == 1, "Falha ao atualizar divap_analysis"
+        assert result == 1, "Falha ao atualizar signals_analysis"
         
         # Verificar update
         result = execute_query(select_query, (9007,))
         assert result[0]['status'] == 'CLOSED'
-        print("✅ UPDATE divap_analysis - OK")
+        print("✅ UPDATE signals_analysis - OK")
         
         # DELETE
-        delete_query = "DELETE FROM divap_analysis WHERE id = %s"
+        delete_query = "DELETE FROM signals_analysis WHERE id = %s"
         result = execute_query(delete_query, (9007,), fetch=False)
-        assert result == 1, "Falha ao deletar divap_analysis"
+        assert result == 1, "Falha ao deletar signals_analysis"
         
         # Verificar delete
         result = execute_query(select_query, (9007,))
         assert result is None or len(result) == 0
-        print("✅ DELETE divap_analysis - OK")
+        print("✅ DELETE signals_analysis - OK")
 
 def run_all_tests():
     """Executa todos os testes"""
@@ -310,7 +310,7 @@ def run_all_tests():
             'test_users_crud',
             'test_corretoras_crud',
             'test_signals_msg_crud',
-            'test_divap_analysis_crud'
+            'test_signals_analysis_crud'
         ]
         
         total_tests = len(test_methods)

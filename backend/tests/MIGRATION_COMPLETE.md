@@ -155,7 +155,7 @@ CURRENT_TIMESTAMP
 3. **contas** - Contas de trading
 4. **webhook_signals** - Sinais de webhook
 5. **signals_msg** - Mensagens de sinais
-6. **divap_analysis** - Análises DIVAP
+6. **signals_analysis** - Análises DIVAP
 7. **exchange_symbols** - Símbolos de exchange
 8. **exchange_filters** - Filtros de exchange
 9. **exchange_leverage_brackets** - Brackets de alavancagem
@@ -164,7 +164,7 @@ CURRENT_TIMESTAMP
 12. **ordens** - Ordens de trading
 13. **monitoramento** - Eventos de monitoramento
 14. **logs** - Logs do sistema
-15. **signals_backtest** - Sinais de backtest
+15. **backtest_signals** - Sinais de backtest
 
 ### 🔧 CORREÇÕES ESPECÍFICAS REALIZADAS
 - **Tipos de dados**: Ajustados campos `VARCHAR` vs `DECIMAL` conforme estrutura real

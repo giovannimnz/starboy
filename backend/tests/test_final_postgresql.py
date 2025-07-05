@@ -184,7 +184,7 @@ def test_postgresql_operations():
             cursor.execute("ALTER TABLE corretoras ENABLE TRIGGER ALL")
             cursor.execute("ALTER TABLE users ENABLE TRIGGER ALL")
             cursor.execute("ALTER TABLE signals_msg ENABLE TRIGGER ALL")
-            cursor.execute("ALTER TABLE divap_analysis ENABLE TRIGGER ALL")
+            cursor.execute("ALTER TABLE signals_analysis ENABLE TRIGGER ALL")
             print("✅ Triggers reabilitados")
         except Exception as e:
             print(f"⚠️ Aviso: Não foi possível reabilitar triggers: {e}")
